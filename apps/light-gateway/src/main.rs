@@ -12706,7 +12706,6 @@ protocols:
     enabled: true
     versions: ["2025-11-25", "2025-06-18", "2025-03-26"]
   stateless:
-    enabled: true
     versions: ["2026-07-28"]
     maxSubscriptionDurationMs: 2000
 tools: []
@@ -12795,7 +12794,6 @@ protocols:
     enabled: true
     versions: ["2025-11-25", "2025-06-18", "2025-03-26"]
   stateless:
-    enabled: true
     versions: ["2026-07-28"]
     maxSubscriptionDurationMs: 2000
 tools: []
@@ -13623,5 +13621,4 @@ endpointRules:
         );
     }
     include!("mcp_conformance_tests.rs");
-
 }

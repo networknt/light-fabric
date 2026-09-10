@@ -481,8 +481,6 @@ pub enum McpStatelessToLegacyBridge {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct McpStatelessProtocolConfig {
-    #[serde(default)]
-    pub enabled: bool,
     #[serde(
         default = "default_stateless_protocol_versions",
         deserialize_with = "deserialize_typed_list"
@@ -521,7 +519,6 @@ pub struct McpStatelessProtocolConfig {
 impl Default for McpStatelessProtocolConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             versions: default_stateless_protocol_versions(),
             discover_ttl_ms: default_stateless_discover_ttl_ms(),
             discover_cache_scope: McpCacheScope::default(),
@@ -1514,21 +1511,6 @@ impl<'a> StatelessFrontendAdapter<'a> {
         Self { runtime }
     }
 
-    fn disabled_response(
-        response_mode: McpResponseMode,
-        id: JsonValue,
-        version: &str,
-    ) -> Result<McpHttpResponse, RuntimeError> {
-        let _profile = FrontendProfile::Stateless;
-        rpc_error_with_data(
-            response_mode,
-            id,
-            -32022,
-            format!("MCP stateless protocol version `{version}` is disabled"),
-            json!({"requested":version,"supported":[]}),
-        )
-    }
-
     async fn post(
         &self,
         request: McpHttpRequest,
@@ -1910,12 +1892,7 @@ impl McpRouterRuntime {
             .map_err(|message| {
                 RuntimeError::Unsupported(format!("invalid mcp-router.originAllowlist: {message}"))
             })?;
-        let tools = prepare_tools(
-            &config.tools,
-            &config.schema,
-            config.protocols.stateless.enabled,
-        )
-        .map_err(|error| {
+        let tools = prepare_tools(&config.tools, &config.schema, true).map_err(|error| {
             MCP_SCHEMA_PREPARATION_REJECTED.fetch_add(1, Ordering::Relaxed);
             let message = error.to_string();
             tracing::warn!(
@@ -2115,7 +2092,6 @@ impl McpRouterRuntime {
         ClassifierConfig {
             legacy_enabled: self.config.protocols.legacy.enabled,
             legacy_versions: &self.config.protocols.legacy.versions,
-            stateless_enabled: self.config.protocols.stateless.enabled,
             stateless_versions: &self.config.protocols.stateless.versions,
         }
     }
@@ -2505,14 +2481,10 @@ impl McpRouterRuntime {
                     .post(request, context, response_mode, payload)
                     .await
             }
-            Ok(Classification::Stateless { version, enabled }) => {
-                if enabled {
-                    StatelessFrontendAdapter::new(self)
-                        .post(request, context, payload, &version)
-                        .await
-                } else {
-                    StatelessFrontendAdapter::disabled_response(response_mode, request_id, &version)
-                }
+            Ok(Classification::Stateless { version }) => {
+                StatelessFrontendAdapter::new(self)
+                    .post(request, context, payload, &version)
+                    .await
             }
             Err(rejection) => classification_rejection_response_for_post(
                 response_mode,
@@ -6707,11 +6679,7 @@ pub fn validate_mcp_router_config_for_deployment(
         });
     } else {
         for tool in &effective_config.tools {
-            match prepare_tools(
-                std::slice::from_ref(tool),
-                &effective_config.schema,
-                effective_config.protocols.stateless.enabled,
-            ) {
+            match prepare_tools(std::slice::from_ref(tool), &effective_config.schema, true) {
                 Err(error) => {
                     let configuration_wide = error.tool_name == "<configuration>";
                     errors.push(schema_preparation_validation_error(error));
@@ -6736,11 +6704,8 @@ pub fn validate_mcp_router_config_for_deployment(
         // Run this only after every individual tool is valid so invalid generated
         // catalogs still report every independently bad tool.
         if errors.is_empty()
-            && let Err(error) = prepare_tools(
-                &effective_config.tools,
-                &effective_config.schema,
-                effective_config.protocols.stateless.enabled,
-            )
+            && let Err(error) =
+                prepare_tools(&effective_config.tools, &effective_config.schema, true)
         {
             errors.push(schema_preparation_validation_error(error));
         }
@@ -6833,9 +6798,9 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
                 .to_string(),
         ));
     }
-    if config.protocols.stateless.enabled && config.protocols.stateless.versions.is_empty() {
+    if config.protocols.stateless.versions.is_empty() {
         return Err(RuntimeError::Unsupported(
-            "mcp-router.protocols.stateless.versions must not be empty when enabled".to_string(),
+            "mcp-router.protocols.stateless.versions must not be empty".to_string(),
         ));
     }
     if config.protocols.legacy.versions.is_empty() {
@@ -9944,7 +9909,7 @@ tools:
     }
 
     #[test]
-    fn legacy_flat_config_defaults_to_legacy_only() {
+    fn legacy_flat_config_defaults_include_stateless() {
         let config = serde_yaml::from_str::<McpRouterConfig>(
             "enabled: true\npath: /mcp\nmaxSessions: 5\nmaxSessionsPerClient: 2\ntools: []\n",
         )
@@ -9958,19 +9923,17 @@ tools:
                 .iter()
                 .any(|v| v == "2025-11-25")
         );
-        assert!(!config.protocols.stateless.enabled);
         assert_eq!(
             config.protocols.stateless.versions,
             [STATELESS_PROTOCOL_VERSION]
         );
         let defaults = McpRouterConfig::default();
-        assert!(!defaults.protocols.stateless.enabled);
         assert_eq!(
             defaults.protocols.stateless.versions,
             config.protocols.stateless.versions
         );
         let template = include_str!("../../../apps/light-gateway/config/mcp-router.yml");
-        assert!(template.contains("enabled: ${mcp-router.protocols.stateless.enabled:false}"));
+        assert!(!template.contains("mcp-router.protocols.stateless.enabled"));
         assert!(
             template.contains("versions: ${mcp-router.protocols.stateless.versions:[2026-07-28]}")
         );
@@ -9982,7 +9945,6 @@ tools:
             r#"
 protocols:
   stateless:
-    enabled: true
     versions: [2026-07-28]
     discoverCacheScope: private
     toolsListCacheScope: private
@@ -10008,9 +9970,11 @@ protocols:
             "toolsListCacheScope: public",
             "statelessToLegacyBridge: perRequest",
             "unknownStatelessControl: true",
+            "enabled: true",
+            "enabled: false",
         ] {
             let yaml = format!(
-                "protocols:\n  stateless:\n    enabled: true\n    versions: [2026-07-28]\n    {}\n",
+                "protocols:\n  stateless:\n    versions: [2026-07-28]\n    {}\n",
                 invalid
             );
             assert!(
@@ -12531,7 +12495,7 @@ endpointRules:
             )
             .expect("rule config"),
         ));
-        let mut config = stateless_test_config(vec![test_tool(
+        let config = stateless_test_config(vec![test_tool(
             "weather",
             "Get weather",
             base.as_str(),
@@ -12545,7 +12509,6 @@ endpointRules:
                 }
             }),
         )]);
-        config.protocols.stateless.enabled = true;
         let runtime = McpRouterRuntime::new_with_policy(config, Some(policy)).expect("runtime");
         let context = McpRequestContext {
             auth: Some(AuthPrincipal {
@@ -12926,7 +12889,7 @@ endpointRules:
     #[test]
     fn deployment_validation_report_is_machine_readable_and_tool_scoped() {
         let tool = test_tool(
-            "broken[v2]",
+            "broken_v2",
             "Broken",
             "https://example.com",
             McpHttpMethod::Get,
@@ -12940,7 +12903,7 @@ endpointRules:
         assert!(!report.valid);
         assert_eq!(report.tools_checked, 1);
         assert_eq!(report.errors.len(), 1);
-        assert_eq!(report.errors[0].tool_name, "broken[v2]");
+        assert_eq!(report.errors[0].tool_name, "broken_v2");
         assert_eq!(report.errors[0].schema_kind, "inputSchema");
         assert_eq!(report.errors[0].json_pointer, "/$ref");
         assert_eq!(report.errors[0].reason_code, "UNRESOLVED_LOCAL_REFERENCE");
@@ -13044,8 +13007,7 @@ endpointRules:
                 ]
             }),
         );
-        let mut config = stateless_test_config(vec![tool]);
-        config.protocols.stateless.enabled = true;
+        let config = stateless_test_config(vec![tool]);
         let runtime = McpRouterRuntime::new(config).expect("runtime");
         let arguments = json!({"model":"persons"});
 
@@ -13355,7 +13317,6 @@ endpointRules:
             protocols: McpProtocolsConfig {
                 legacy: McpLegacyProtocolConfig::default(),
                 stateless: McpStatelessProtocolConfig {
-                    enabled: false,
                     versions: vec![STATELESS_PROTOCOL_VERSION.to_string()],
                     ..McpStatelessProtocolConfig::default()
                 },
@@ -14919,7 +14880,7 @@ endpointRules:
             serde_json::from_slice(response.body.buffered().unwrap()).unwrap()
         }
         let (base, received) = spawn_http_server(http_json_response(json!({"ok":true}))).await;
-        let mut config = stateless_test_config(vec![test_tool(
+        let config = stateless_test_config(vec![test_tool(
             "accounts",
             "Accounts",
             &base,
@@ -14927,7 +14888,6 @@ endpointRules:
             Some("accounts@call"),
             default_input_schema(),
         )]);
-        config.protocols.stateless.enabled = true;
         let original =
             McpRouterRuntime::new_with_policy(config.clone(), Some(policy("manager"))).unwrap();
         for _ in 0..2 {
@@ -15046,7 +15006,7 @@ endpointRules:
     }
 
     #[tokio::test]
-    async fn stateless_post_is_classified_but_disabled_without_session_mutation() {
+    async fn stateless_post_works_by_default_without_session_mutation() {
         let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
         let stale_session_id = {
             let mut store = runtime.sessions.lock().await;
@@ -15062,43 +15022,25 @@ endpointRules:
         };
         let before = runtime.sessions.lock().await.len();
         let response = runtime
-            .handle_request(McpHttpRequest {
-                method: "POST".to_string(),
-                path: "/mcp".to_string(),
-                headers: vec![
-                    accept_json(),
-                    (MCP_SESSION_ID_HEADER.to_string(), stale_session_id),
-                    (
-                        MCP_PROTOCOL_VERSION_HEADER.to_string(),
-                        STATELESS_PROTOCOL_VERSION.to_string(),
-                    ),
-                ],
-                body: serde_json::to_vec(&json!({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/list",
-                    "params": {
-                        "_meta": {
-                            "io.modelcontextprotocol/protocolVersion": STATELESS_PROTOCOL_VERSION
-                        }
-                    }
-                }))
-                .expect("body"),
-            })
+            .handle_request(stateless_request(
+                "tools/list",
+                json!({}),
+                Some(&stale_session_id),
+            ))
             .await
             .expect("handle")
             .expect("response");
-        assert_eq!(response.status, 400);
+        assert_eq!(response.status, 200);
         assert!(
             String::from_utf8_lossy(response.body.buffered().expect("buffered response"))
-                .contains("is disabled")
+                .contains("\"tools\"")
         );
         assert_eq!(runtime.sessions.lock().await.len(), before);
     }
 
     #[tokio::test]
     async fn stateless_discover_is_complete_private_and_sessionless() {
-        let mut runtime = stateless_test_runtime(Vec::new());
+        let runtime = stateless_test_runtime(Vec::new());
         let stale_session_id = {
             let mut store = runtime.sessions.lock().await;
             let id = uuid::Uuid::new_v4().to_string();
@@ -15108,7 +15050,6 @@ endpointRules:
             );
             id
         };
-        runtime.config.protocols.stateless.enabled = true;
         let response = runtime
             .handle_request(stateless_request(
                 "server/discover",
@@ -15170,8 +15111,7 @@ endpointRules:
                 }
             }),
         );
-        let mut config = stateless_test_config(vec![tool]);
-        config.protocols.stateless.enabled = true;
+        let config = stateless_test_config(vec![tool]);
         let runtime = McpRouterRuntime::new(config).expect("runtime");
         let mut request = stateless_request(
             "tools/call",
@@ -15273,8 +15213,7 @@ endpointRules:
                 }
             }),
         );
-        let mut config = stateless_test_config(vec![tool]);
-        config.protocols.stateless.enabled = true;
+        let config = stateless_test_config(vec![tool]);
         let runtime = McpRouterRuntime::new(config).expect("runtime");
         let mut request = stateless_request(
             "tools/call",
@@ -15321,8 +15260,7 @@ endpointRules:
                 "unevaluatedProperties":false
             }),
         );
-        let mut config = stateless_test_config(vec![tool]);
-        config.protocols.stateless.enabled = true;
+        let config = stateless_test_config(vec![tool]);
         let error = McpRouterRuntime::new(config)
             .err()
             .expect("invalid composed header");
@@ -15340,8 +15278,7 @@ endpointRules:
             default_input_schema(),
         );
         tool.api_type = McpToolType::Mcp;
-        let mut config = stateless_test_config(vec![tool]);
-        config.protocols.stateless.enabled = true;
+        let config = stateless_test_config(vec![tool]);
         let runtime = McpRouterRuntime::new(config).expect("runtime");
         let response = runtime
             .handle_request(stateless_request(
@@ -15491,9 +15428,8 @@ endpointRules:
             data.len()
         );
         let (base, received) = spawn_http_server(http).await;
-        let mut config =
+        let config =
             stateless_test_config(vec![stateless_mcp_backend_tool("modern_backend", &base)]);
-        config.protocols.stateless.enabled = true;
         let runtime = McpRouterRuntime::new(config).unwrap();
         let mut request = stateless_request(
             "tools/call",
@@ -15597,11 +15533,10 @@ endpointRules:
             "result":{"resultType":"complete","content":[{"type":"text","text":"ok"}]}
         })))
         .await;
-        let mut config = stateless_test_config(vec![stateless_mcp_backend_tool(
+        let config = stateless_test_config(vec![stateless_mcp_backend_tool(
             "modern_backend",
             base.as_str(),
         )]);
-        config.protocols.stateless.enabled = true;
         let runtime = McpRouterRuntime::new(config).expect("runtime");
         let response = runtime
             .handle_request(stateless_request(
@@ -15670,8 +15605,7 @@ endpointRules:
 
     #[tokio::test]
     async fn stateless_subscription_acknowledges_then_publishes_tagged_change_and_closes() {
-        let mut runtime = stateless_test_runtime(Vec::new());
-        runtime.config.protocols.stateless.enabled = true;
+        let runtime = stateless_test_runtime(Vec::new());
         let response = runtime
             .handle_request(stateless_request(
                 "subscriptions/listen",
@@ -15738,7 +15672,7 @@ endpointRules:
 
     #[tokio::test]
     async fn invalid_reload_keeps_last_known_good_and_publishes_no_tools_change() {
-        let mut runtime = stateless_test_runtime(vec![test_tool(
+        let runtime = stateless_test_runtime(vec![test_tool(
             "stable",
             "Stable",
             "http://127.0.0.1:1",
@@ -15746,7 +15680,6 @@ endpointRules:
             None,
             default_input_schema(),
         )]);
-        runtime.config.protocols.stateless.enabled = true;
         let response = runtime
             .handle_request(stateless_request(
                 "subscriptions/listen",
@@ -15791,7 +15724,6 @@ endpointRules:
     #[tokio::test]
     async fn stateless_subscription_disconnect_releases_capacity_and_emits_nothing_later() {
         let mut config = stateless_test_config(Vec::new());
-        config.protocols.stateless.enabled = true;
         config.protocols.stateless.max_subscriptions = 1;
         config.protocols.stateless.max_subscriptions_per_principal = 1;
         let runtime = McpRouterRuntime::new(config).expect("runtime");
@@ -15827,8 +15759,7 @@ endpointRules:
 
     #[tokio::test]
     async fn stateless_subscription_slow_consumer_is_closed_without_unbounded_queueing() {
-        let mut runtime = stateless_test_runtime(Vec::new());
-        runtime.config.protocols.stateless.enabled = true;
+        let runtime = stateless_test_runtime(Vec::new());
         let response = runtime
             .handle_request(stateless_request(
                 "subscriptions/listen",
@@ -15861,7 +15792,6 @@ endpointRules:
     #[tokio::test]
     async fn stateless_subscription_honors_token_expiry_before_maximum_duration() {
         let mut runtime = stateless_test_runtime(Vec::new());
-        runtime.config.protocols.stateless.enabled = true;
         runtime
             .config
             .protocols
@@ -15906,8 +15836,7 @@ endpointRules:
 
     #[tokio::test]
     async fn stateless_subscription_ignores_last_event_id_and_does_not_replay() {
-        let mut runtime = stateless_test_runtime(Vec::new());
-        runtime.config.protocols.stateless.enabled = true;
+        let runtime = stateless_test_runtime(Vec::new());
         let mut request = stateless_request(
             "subscriptions/listen",
             json!({"notifications":{"toolsListChanged":false}}),
@@ -15935,8 +15864,7 @@ endpointRules:
 
     #[tokio::test]
     async fn stateless_subscription_runtime_shutdown_is_graceful_and_releases_capacity() {
-        let mut runtime = stateless_test_runtime(Vec::new());
-        runtime.config.protocols.stateless.enabled = true;
+        let runtime = stateless_test_runtime(Vec::new());
         let response = runtime
             .handle_request(stateless_request(
                 "subscriptions/listen",
@@ -15961,8 +15889,7 @@ endpointRules:
 
     #[tokio::test]
     async fn stateless_subscription_rejects_oversized_request_id_before_allocation() {
-        let mut runtime = stateless_test_runtime(Vec::new());
-        runtime.config.protocols.stateless.enabled = true;
+        let runtime = stateless_test_runtime(Vec::new());
         let mut request = stateless_request(
             "subscriptions/listen",
             json!({"notifications":{"toolsListChanged":true}}),
@@ -15993,11 +15920,10 @@ endpointRules:
             }
         })))
         .await;
-        let mut config = stateless_test_config(vec![stateless_mcp_backend_tool(
+        let config = stateless_test_config(vec![stateless_mcp_backend_tool(
             "modern_backend",
             base.as_str(),
         )]);
-        config.protocols.stateless.enabled = true;
         let runtime = McpRouterRuntime::new(config).expect("runtime");
         let response = runtime
             .handle_request(stateless_request(
@@ -16044,8 +15970,7 @@ endpointRules:
         let mut tool = stateless_mcp_backend_tool("modern_backend", "http://127.0.0.1:1");
         tool.backend_credential_mode = Some(McpBackendCredentialMode::Caller);
         tool.backend_resource = Some("https://runtime.example.com/mcp".to_string());
-        let mut config = stateless_test_config(vec![tool]);
-        config.protocols.stateless.enabled = true;
+        let config = stateless_test_config(vec![tool]);
         let runtime = McpRouterRuntime::new(config).expect("runtime");
         let mut request = stateless_request(
             "tools/call",
@@ -16094,8 +16019,7 @@ endpointRules:
         let mut tool = stateless_mcp_backend_tool("modern_backend", base.as_str());
         tool.backend_credential_mode = Some(McpBackendCredentialMode::Caller);
         tool.backend_resource = Some(resource.clone());
-        let mut config = stateless_test_config(vec![tool]);
-        config.protocols.stateless.enabled = true;
+        let config = stateless_test_config(vec![tool]);
         let runtime = McpRouterRuntime::new(config).expect("runtime");
         let mut request = stateless_request(
             "tools/call",
@@ -16140,11 +16064,10 @@ endpointRules:
             &[(MCP_SESSION_ID_HEADER, "must-not-exist")],
         ))
         .await;
-        let mut config = stateless_test_config(vec![stateless_mcp_backend_tool(
+        let config = stateless_test_config(vec![stateless_mcp_backend_tool(
             "modern_backend",
             base.as_str(),
         )]);
-        config.protocols.stateless.enabled = true;
         let runtime = McpRouterRuntime::new(config).expect("runtime");
         let response = runtime
             .handle_request(stateless_request(
@@ -16177,11 +16100,10 @@ endpointRules:
             &[(MCP_PROTOCOL_VERSION_HEADER, "2025-11-25")],
         ))
         .await;
-        let mut config = stateless_test_config(vec![stateless_mcp_backend_tool(
+        let config = stateless_test_config(vec![stateless_mcp_backend_tool(
             "modern_backend",
             base.as_str(),
         )]);
-        config.protocols.stateless.enabled = true;
         let runtime = McpRouterRuntime::new(config).expect("runtime");
         let response = runtime
             .handle_request(stateless_request(
@@ -16218,8 +16140,7 @@ endpointRules:
             "properties":{"city":{"type":"string","x-mcp-header":"City"}}
         });
         tool.input_schema_configured = true;
-        let mut config = stateless_test_config(vec![tool]);
-        config.protocols.stateless.enabled = true;
+        let config = stateless_test_config(vec![tool]);
         let runtime = McpRouterRuntime::new(config).expect("runtime");
         let mut request = stateless_request(
             "tools/call",
@@ -16258,7 +16179,6 @@ endpointRules:
             None,
             default_input_schema(),
         )]);
-        config.protocols.stateless.enabled = true;
         config.max_response_body_bytes = MAX_MCP_ERROR_RESPONSE_BYTES;
         let runtime = McpRouterRuntime::new(config).expect("runtime");
         let response = runtime
@@ -16300,7 +16220,6 @@ endpointRules:
             None,
             default_input_schema(),
         )]);
-        config.protocols.stateless.enabled = true;
         config
             .protocols
             .stateless
@@ -16357,14 +16276,12 @@ endpointRules:
             Some("dev"),
             None,
         )));
-        let mut first = McpRouterRuntime::new_with_discovery(
+        let first = McpRouterRuntime::new_with_discovery(
             stateless_test_config(Vec::new()),
             Some(discovery.clone()),
         )
         .expect("runtime");
-        first.config.protocols.stateless.enabled = true;
-        let mut second = stateless_test_runtime(Vec::new());
-        second.config.protocols.stateless.enabled = true;
+        let second = stateless_test_runtime(Vec::new());
         let first_body = first
             .handle_request(stateless_request("server/discover", json!({}), None))
             .await
@@ -16391,7 +16308,7 @@ endpointRules:
     async fn stateless_discover_list_and_call_alternate_independent_replicas() {
         let response = http_json_response(json!({"replicaIndependent": true}));
         let (base, received) = spawn_http_sequence_server(vec![response.clone(), response]).await;
-        let mut config = stateless_test_config(vec![test_tool(
+        let config = stateless_test_config(vec![test_tool(
             "weather",
             "Get weather",
             base.as_str(),
@@ -16399,7 +16316,6 @@ endpointRules:
             None,
             default_input_schema(),
         )]);
-        config.protocols.stateless.enabled = true;
         let replicas = [
             McpRouterRuntime::new(config.clone()).expect("first replica"),
             McpRouterRuntime::new(config).expect("second replica"),
@@ -16449,7 +16365,7 @@ endpointRules:
 
     #[tokio::test]
     async fn stateless_tools_list_is_deterministic_bounded_and_principal_private() {
-        let mut runtime = stateless_test_runtime(vec![
+        let runtime = stateless_test_runtime(vec![
             test_tool(
                 "zeta",
                 "Zeta",
@@ -16467,7 +16383,6 @@ endpointRules:
                 default_input_schema(),
             ),
         ]);
-        runtime.config.protocols.stateless.enabled = true;
         for user in ["alice", "bob"] {
             let response = runtime
                 .handle_request_with_context(
@@ -16524,8 +16439,7 @@ endpointRules:
             ),
         ]);
         config.protocols.stateless.max_tools_list_items = 1;
-        let mut runtime = McpRouterRuntime::new(config).expect("runtime");
-        runtime.config.protocols.stateless.enabled = true;
+        let runtime = McpRouterRuntime::new(config).expect("runtime");
         let response = runtime
             .handle_request(stateless_request("tools/list", json!({}), None))
             .await
@@ -16556,8 +16470,7 @@ endpointRules:
             default_input_schema(),
         )]);
         config.max_response_body_bytes = MAX_MCP_ERROR_RESPONSE_BYTES;
-        let mut runtime = McpRouterRuntime::new(config).expect("runtime");
-        runtime.config.protocols.stateless.enabled = true;
+        let runtime = McpRouterRuntime::new(config).expect("runtime");
         let response = runtime
             .handle_request(stateless_request("tools/list", json!({}), None))
             .await
@@ -16575,8 +16488,7 @@ endpointRules:
     async fn stateless_cached_list_rechecks_final_envelope_size() {
         let mut config = stateless_test_config(Vec::new());
         config.max_response_body_bytes = MAX_MCP_ERROR_RESPONSE_BYTES;
-        let mut runtime = McpRouterRuntime::new(config).expect("runtime");
-        runtime.config.protocols.stateless.enabled = true;
+        let runtime = McpRouterRuntime::new(config).expect("runtime");
         let first = runtime
             .handle_request(stateless_request("tools/list", json!({}), None))
             .await
@@ -16634,8 +16546,7 @@ endpointRules:
 
     #[tokio::test]
     async fn stateless_list_rejects_cursor_legacy_query_and_unknown_method() {
-        let mut runtime = stateless_test_runtime(Vec::new());
-        runtime.config.protocols.stateless.enabled = true;
+        let runtime = stateless_test_runtime(Vec::new());
         for params in [
             json!({"cursor":"opaque"}),
             json!({"cursor":7}),
@@ -16668,8 +16579,7 @@ endpointRules:
 
     #[tokio::test]
     async fn stateless_transport_returns_frozen_header_and_version_errors() {
-        let mut runtime = stateless_test_runtime(Vec::new());
-        runtime.config.protocols.stateless.enabled = true;
+        let runtime = stateless_test_runtime(Vec::new());
         let mut mismatch = stateless_request("server/discover", json!({}), None);
         mismatch
             .headers
@@ -17841,8 +17751,7 @@ toolMetadata:
     }
     #[tokio::test]
     async fn final_contract_rejects_invalid_ids_and_returns_version_error_data() {
-        let mut runtime = stateless_test_runtime(Vec::new());
-        runtime.config.protocols.stateless.enabled = true;
+        let runtime = stateless_test_runtime(Vec::new());
         for invalid in [
             JsonValue::Null,
             json!({}),
@@ -17874,15 +17783,6 @@ toolMetadata:
             body["error"]["data"],
             json!({"requested":"future","supported":[STATELESS_PROTOCOL_VERSION]})
         );
-        let response = StatelessFrontendAdapter::disabled_response(
-            McpResponseMode::Json,
-            json!(1),
-            STATELESS_PROTOCOL_VERSION,
-        )
-        .unwrap();
-        let body: JsonValue = serde_json::from_slice(response.body.buffered().unwrap()).unwrap();
-        assert_eq!(body["error"]["code"], -32022);
-        assert_eq!(body["error"]["data"]["supported"], json!([]));
     }
 
     #[test]
@@ -17905,8 +17805,7 @@ toolMetadata:
     }
     #[tokio::test]
     async fn duplicate_modern_version_headers_use_header_mismatch_envelope() {
-        let mut config = stateless_test_config(Vec::new());
-        config.protocols.stateless.enabled = true;
+        let config = stateless_test_config(Vec::new());
         let runtime = McpRouterRuntime::new(config).unwrap();
         let mut request = stateless_request("server/discover", json!({}), None);
         request.headers.push((

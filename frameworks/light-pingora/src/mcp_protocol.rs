@@ -18,7 +18,7 @@ pub(crate) enum FrontendProfile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Classification {
     Legacy,
-    Stateless { version: String, enabled: bool },
+    Stateless { version: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,7 +36,6 @@ pub(crate) enum ClassificationRejection {
 pub(crate) struct ClassifierConfig<'a> {
     pub legacy_enabled: bool,
     pub legacy_versions: &'a [String],
-    pub stateless_enabled: bool,
     pub stateless_versions: &'a [String],
 }
 
@@ -106,17 +105,13 @@ pub(crate) fn classify_post(
         if header_version != body_version {
             return Err(ClassificationRejection::ProtocolVersionMismatch);
         }
-        if !is_known_stateless_version(header_version)
-            && !contains(config.stateless_versions, header_version)
-        {
+        if !contains(config.stateless_versions, header_version) {
             return Err(ClassificationRejection::UnsupportedProtocolVersion(
                 header_version.to_string(),
             ));
         }
         return Ok(Classification::Stateless {
             version: header_version.to_string(),
-            enabled: config.stateless_enabled
-                && contains(config.stateless_versions, header_version),
         });
     }
 
@@ -184,7 +179,6 @@ mod tests {
         ClassifierConfig {
             legacy_enabled: true,
             legacy_versions: &LEGACY,
-            stateless_enabled: false,
             stateless_versions: &STATELESS,
         }
     }
@@ -222,7 +216,6 @@ mod tests {
             classify_post(config(), &[STATELESS_PROTOCOL_VERSION], true, &stateless),
             Ok(Classification::Stateless {
                 version: STATELESS_PROTOCOL_VERSION.to_string(),
-                enabled: false
             })
         );
         assert_eq!(
