@@ -769,12 +769,48 @@ where
 }
 
 fn validate_csrf(session: &Session, claims: &JsonValue) -> Result<(), HandlerRejection> {
-    let header_csrf = request_csrf(session)
+    let (header_csrf, source) = request_csrf_with_source(session)
         .ok_or_else(|| HandlerRejection::new(401, "ERR10036", "X-CSRF-TOKEN header is missing"))?;
     let jwt_csrf = claim_string(claims, "csrf").ok_or_else(|| {
         HandlerRejection::new(401, "ERR10038", "CSRF token is missing in JWT token")
     })?;
     if header_csrf != jwt_csrf {
+        // Record relationships only, never credentials or query strings.
+        let diagnostics =
+            csrf_cookie_diagnostics(request_cookie_pairs(session), &header_csrf, &jwt_csrf);
+        let expires_at = claims.get("exp").and_then(JsonValue::as_u64);
+        let now = now_seconds();
+        let count = CSRF_MISMATCH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::info!(
+            target: "light_pingora::spa_auth_telemetry",
+            event = "spa_auth_csrf_mismatch",
+            code = "ERR10039",
+            method = %session.req_header().method,
+            path = session.req_header().uri.path(),
+            csrf_source = source,
+            request_matches_selected_cookie = diagnostics.request_matches_selected_cookie,
+            jwt_matches_selected_cookie = diagnostics.jwt_matches_selected_cookie,
+            request_matches_any_cookie = diagnostics.request_matches_any_cookie,
+            jwt_matches_any_cookie = diagnostics.jwt_matches_any_cookie,
+            csrf_cookie_count = diagnostics.csrf_cookie_count,
+            access_token_cookie_count = diagnostics.access_token_cookie_count,
+            refresh_token_cookie_count = diagnostics.refresh_token_cookie_count,
+            jwt_expired = expires_at.map(|expiry| expiry <= now),
+            jwt_seconds_remaining = expires_at.map(|expiry| expiry.saturating_sub(now)),
+            count,
+            counter_scope = "process",
+            reset = "process_restart",
+            "SPA request rejected because request and JWT CSRF values differ"
+        );
+        if count.is_power_of_two() {
+            tracing::warn!(
+                target: "light_pingora::spa_auth_telemetry",
+                event = "spa_auth_csrf_mismatch_checkpoint",
+                code = "ERR10039",
+                count,
+                "SPA CSRF mismatches continue; inspect spa_auth_csrf_mismatch info events"
+            );
+        }
         return Err(HandlerRejection::new(
             401,
             "ERR10039",
@@ -784,11 +820,52 @@ fn validate_csrf(session: &Session, claims: &JsonValue) -> Result<(), HandlerRej
     Ok(())
 }
 
+static CSRF_MISMATCH_COUNT: AtomicU64 = AtomicU64::new(0);
+
 pub(crate) fn request_csrf(session: &Session) -> Option<String> {
+    request_csrf_with_source(session).map(|(value, _)| value)
+}
+
+fn request_csrf_with_source(session: &Session) -> Option<(String, &'static str)> {
     request_header(session, CSRF_HEADER)
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| websocket_protocol_csrf(session))
-        .or_else(|| query_param(session, CSRF_COOKIE))
+        .map(|value| (value, "header"))
+        .or_else(|| websocket_protocol_csrf(session).map(|value| (value, "websocket_protocol")))
+        .or_else(|| query_param(session, CSRF_COOKIE).map(|value| (value, "query")))
+}
+
+#[derive(Default)]
+struct CsrfCookieDiagnostics {
+    csrf_cookie_count: usize,
+    access_token_cookie_count: usize,
+    refresh_token_cookie_count: usize,
+    request_matches_selected_cookie: bool,
+    jwt_matches_selected_cookie: bool,
+    request_matches_any_cookie: bool,
+    jwt_matches_any_cookie: bool,
+}
+
+fn csrf_cookie_diagnostics<'a>(
+    cookies: impl Iterator<Item = (&'a str, &'a str)>,
+    request_csrf: &str,
+    jwt_csrf: &str,
+) -> CsrfCookieDiagnostics {
+    let mut result = CsrfCookieDiagnostics::default();
+    for (name, value) in cookies {
+        match name {
+            CSRF_COOKIE => {
+                result.csrf_cookie_count += 1;
+                result.request_matches_selected_cookie = value == request_csrf;
+                result.jwt_matches_selected_cookie = value == jwt_csrf;
+                result.request_matches_any_cookie |= value == request_csrf;
+                result.jwt_matches_any_cookie |= value == jwt_csrf;
+            }
+            ACCESS_TOKEN_COOKIE => result.access_token_cookie_count += 1,
+            REFRESH_TOKEN_COOKIE => result.refresh_token_cookie_count += 1,
+            _ => {}
+        }
+    }
+    result
 }
 
 fn websocket_protocol_csrf(session: &Session) -> Option<String> {
@@ -837,23 +914,28 @@ fn request_header(session: &Session, name: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn cookie_pairs(value: &str) -> impl Iterator<Item = (&str, &str)> {
+    value.split(';').filter_map(|cookie| {
+        let (name, value) = cookie.trim().split_once('=')?;
+        let name = name.trim();
+        (!name.is_empty()).then_some((name, value.trim()))
+    })
+}
+
+fn request_cookie_pairs(session: &Session) -> impl Iterator<Item = (&str, &str)> {
+    session
+        .req_header()
+        .headers
+        .get_all("cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(cookie_pairs)
+}
+
 pub(crate) fn request_cookies(session: &Session) -> BTreeMap<String, String> {
-    let mut cookies = BTreeMap::new();
-    for value in session.req_header().headers.get_all("cookie") {
-        let Ok(value) = value.to_str() else {
-            continue;
-        };
-        for cookie in value.split(';') {
-            let Some((name, value)) = cookie.trim().split_once('=') else {
-                continue;
-            };
-            let name = name.trim();
-            if !name.is_empty() {
-                cookies.insert(name.to_string(), value.trim().to_string());
-            }
-        }
-    }
-    cookies
+    request_cookie_pairs(session)
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect()
 }
 
 fn session_cookie_headers(
@@ -1340,6 +1422,60 @@ fn default_refresh_max_entries() -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn csrf_diagnostics_distinguish_duplicate_matches_from_selected_cookie() {
+        let headers = [
+            "csrf=request; accessToken=one",
+            "csrf=jwt; csrf=other; accessToken=two; refreshToken=r",
+        ];
+        let diagnostics = super::csrf_cookie_diagnostics(
+            headers
+                .iter()
+                .flat_map(|header| super::cookie_pairs(header)),
+            "request",
+            "jwt",
+        );
+        assert_eq!(diagnostics.csrf_cookie_count, 3);
+        assert_eq!(diagnostics.access_token_cookie_count, 2);
+        assert_eq!(diagnostics.refresh_token_cookie_count, 1);
+        assert!(diagnostics.request_matches_any_cookie);
+        assert!(diagnostics.jwt_matches_any_cookie);
+        assert!(!diagnostics.request_matches_selected_cookie);
+        assert!(!diagnostics.jwt_matches_selected_cookie);
+        let selected: std::collections::BTreeMap<_, _> = headers
+            .iter()
+            .flat_map(|header| super::cookie_pairs(header))
+            .collect();
+        assert_eq!(selected.get("csrf"), Some(&"other"));
+    }
+
+    #[test]
+    fn csrf_cookie_parser_preserves_whitespace_empty_and_equals_behavior() {
+        let cookies: Vec<_> =
+            super::cookie_pairs(" malformed; =ignored; csrf = token== ; csrf= ; accessToken=a ")
+                .collect();
+        assert_eq!(
+            cookies,
+            vec![("csrf", "token=="), ("csrf", ""), ("accessToken", "a")]
+        );
+        let diagnostics = super::csrf_cookie_diagnostics(cookies.into_iter(), "token==", "missing");
+        assert_eq!(diagnostics.csrf_cookie_count, 2);
+        assert!(diagnostics.request_matches_any_cookie);
+        assert!(!diagnostics.request_matches_selected_cookie);
+        assert!(!diagnostics.jwt_matches_any_cookie);
+    }
+
+    #[test]
+    fn csrf_diagnostics_without_cookie_report_no_matches() {
+        let diagnostics =
+            super::csrf_cookie_diagnostics(super::cookie_pairs("other=value"), "request", "jwt");
+        assert_eq!(diagnostics.csrf_cookie_count, 0);
+        assert!(!diagnostics.request_matches_any_cookie);
+        assert!(!diagnostics.jwt_matches_any_cookie);
+        assert!(!diagnostics.request_matches_selected_cookie);
+        assert!(!diagnostics.jwt_matches_selected_cookie);
+    }
+
     use super::*;
 
     #[test]
