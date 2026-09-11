@@ -4583,6 +4583,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "workspace-execution-protocol",
 ]
 
 [[package]]
@@ -4629,9 +4630,11 @@ dependencies = [
  "jsonschema",
  "serde_json",
  "sha2 0.10.9",
+ "task-workspace",
  "tempfile",
  "tokio",
  "uuid",
+ "workspace-execution-protocol",
 ]
 
 [[package]]
@@ -5050,6 +5053,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.10.9",
+ "task-workspace",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -5058,6 +5062,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "workspace-execution-protocol",
 ]
 
 [[package]]
@@ -7725,6 +7730,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "uuid",
+ "workspace-execution-protocol",
 ]
 
 [[package]]
@@ -9058,6 +9064,17 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "workspace-execution-protocol"
+version = "0.2.1"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

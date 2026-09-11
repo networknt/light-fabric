@@ -5,21 +5,42 @@ workspaces. The implementation is shared in `crates/task-workspace`.
 
 This is the local workspace service portion of the
 [Shared Task Workspaces design](../../docs/src/product/light-agent/shared-task-workspaces.md).
-It is **not yet connected to Portal Chat, signed workspace policy publication,
-or the controller's execution dispatch**. The current Portal coding form still
-requires a bundle. Registering this service does not change that form or enable
-a new native coding adapter.
+Portal Chat can dispatch standalone inspect/implement tasks through the personal
+native runner when a matching `codingProfile.workspaceBindings` policy is
+published. The CLI/MCP registration alone does not enable that integration.
+See [Chat and Workflow integration](../../docs/src/product/light-agent/shared-task-workspaces-chat-workflow.md)
+for the implemented path and the remaining workflow milestone.
+
+For a guided walkthrough, see the [shared task workspace tutorial](https://doc.lightapi.net/tutorial/workspace/shared-task-workspaces.html).
 
 ## Build and register
 
+Run these commands in a Linux terminal as the user that will launch the agents.
+The examples use Steve's host paths. Prerequisites are Rust/Cargo, Git, `jq`,
+bubblewrap (`/usr/bin/bwrap`) for `execute`, and authenticated `gh` for GitHub
+operations. Git must be able to read each registered origin without interactive
+credential prompts. Index providers are optional and must be configured before
+registration if you intend to use them.
+
 ```bash
-cargo build -p light-workspace
-# Discovery reads direct child Git repositories and their origin URLs.
-# It does not fetch, checkout, push, or change existing branches.
-target/debug/light-workspace discover /home/steve/workspace personal HOST_ID \
+cd /home/steve/workspace/light-fabric
+cargo build --release -p light-workspace
+umask 077
+# Replace HOST_ID with the Portal Host ID that owns this workspace.
+# Discovery reads origins and local refs without changing source checkouts.
+target/release/light-workspace discover /home/steve/workspace personal HOST_ID \
   com.networknt.agent.codex-personal-1.0.0 \
   com.networknt.agent.claude-personal-1.0.0 > discovery.json
+
+# Set grants BEFORE the first registration. Do not redirect onto discovery.json.
+jq '.workspace | .operations = ["edit", "execute", "review", "commit", "push", "issue", "pull-request"]' \
+  discovery.json > workspace.json
+jq '{id, hostId, agents, operations, indexers, repositoryCount: (.repositories | length)}' workspace.json
 ```
+
+If you already registered successfully, skip discovery and registration and go to
+[Connect a local agent](#connect-a-local-agent). Use the persisted registration
+when checking IDs and grants; changing the input file does not update it.
 
 The result has `workspace`, `integrationBranchNotKnownLocally`, and
 `skippedRepositories` with directory/reason diagnostics for unsuitable names or
@@ -33,7 +54,7 @@ Example (replace paths and identities):
   "schemaVersion": 1,
   "id": "personal",
   "hostId": "HOST_ID",
-  "agents": ["codex-personal", "claude-personal"],
+  "agents": ["com.networknt.agent.codex-personal-1.0.0", "com.networknt.agent.claude-personal-1.0.0"],
   "operations": ["edit", "execute", "review", "commit", "push", "issue", "pull-request"],
   "repositories": [
     {
@@ -58,11 +79,17 @@ Example (replace paths and identities):
 }
 ```
 
-Register using a new private directory (mode 0700):
+Register the extracted `workspace.json`, not the discovery wrapper. Keep the
+persistent store outside the source tree:
 
 ```bash
-target/debug/light-workspace /absolute/private/store register workspace.json
+install -d -m 700 /home/steve/.local/share/light-workspace
+target/release/light-workspace \
+  /home/steve/.local/share/light-workspace register workspace.json
 ```
+
+Expected output: `{"registered":"personal"}`. The private directory stores managed
+repositories, task worktrees, checkpoints, and indexes. Both agents use this path.
 
 Registration is metadata-only and idempotent for identical input. It rejects
 changes to an existing registration. The current implementation does not yet
@@ -70,52 +97,132 @@ provide membership migration or live grant revocation. Do not edit registration
 files while tasks or clients are active. Credentials stay in host-managed Git
 and GitHub authentication, not this JSON or the model's tool arguments.
 
-## Use from a local agent
+## Connect a local agent
 
-Configure one stdio MCP server in each native client's supported MCP configuration.
-Use a separate fixed identity for each agent:
+Here, **local agent** means the Codex CLI or Claude Code application running as
+`steve` on this Linux host. Open an ordinary terminal to run the commands below.
+These steps do not configure the `codex-personal` service in Portal Chat or require
+a Compose restart. The MCP client starts `light-workspace` as a child process and
+exchanges JSON over stdin/stdout; there is no URL or port to enter, and you do not
+start `serve` manually in another terminal.
 
-```json
-{
-  "mcpServers": {
-    "personal-workspace": {
-      "command": "/absolute/path/to/light-workspace",
-      "args": ["/absolute/private/store", "serve", "personal", "codex-personal"]
-    }
-  }
-}
-```
-
-The JSON above is a launch descriptor; translate it into the native client's
-configuration format where required. For the reviewer use `claude-personal` as
-the last argument. This identity is a trusted local launch setting, not proof
-of authentication for a network service. Never expose this process through an
-unauthenticated network wrapper. Host administrators can access/change the store;
-the process does not isolate one host administrator from another.
-
-The server exports `task_workspace`, with a strict operation-specific input
-schema. No request can override the bound workspace or agent identity. Supported
-operations are `create`, `status`, `files`, `read`, `edit`, `execute`, `freeze`,
-`review`, `remediate`, `commit`, `push`, `github`, `index`, `index-status` and
-`index-query`. The `call` command accepts the same input JSON on stdin for local
-administration and testing:
+### Check the registered identities
 
 ```bash
-printf '%s\n' '{"operation":"create","task":"task-384"}' |
-  target/debug/light-workspace /absolute/private/store call personal codex-personal
+jq '{id, agents, operations}' \
+  /home/steve/.local/share/light-workspace/personal/workspace.json
 ```
 
-Creation clones dedicated managed bare repositories, fetches each integration
-branch and creates one worktree/task branch per repository. It never attaches
-worktrees to your existing checkout. Integration branches must already exist
-on the configured remotes; no automatic fallback or remote branch creation
-occurs. A task's branch is `agent/TASK_ID` in every repository.
+The examples below assume the full agent IDs produced by the discovery command.
+Every launch identity must match an entry in `agents` exactly. The MCP server name
+`personal-workspace` is only a client-side label; the workspace ID is `personal`.
+Both clients use the same private store, with a different agent identity. This is
+an owner-local launch setting, not network authentication or isolation between
+host administrators. Do not run the clients as different Linux users against this
+0700 store without designing an authenticated shared service first.
+
+### Add the server to Codex CLI
+
+Run this once in your Linux terminal, using your existing Codex installation and
+login. It updates your local Codex configuration, not `workspace.json`:
+
+```bash
+codex mcp add personal-workspace -- \
+  /home/steve/workspace/light-fabric/target/release/light-workspace \
+  /home/steve/.local/share/light-workspace serve personal \
+  com.networknt.agent.codex-personal-1.0.0
+
+codex mcp list
+```
+
+The list should contain `personal-workspace` and the command above. Start a new
+Codex CLI session by running `codex`; in its interactive prompt enter `/mcp`.
+Check that `personal-workspace` connects and exposes `task_workspace`.
+An existing session may need to be restarted to pick up the new configuration.
+
+Codex stores this entry in `~/.codex/config.toml`. Do not paste an `mcpServers`
+JSON object into that TOML file. For long workspace operations you can add
+`tool_timeout_sec = 600` inside the existing `[mcp_servers.personal-workspace]`
+table. That is a client timeout, not a guarantee that indexing all repositories
+will finish in ten minutes. Prefer the direct CLI for the initial clone and large
+index builds. See the [official Codex MCP documentation](https://developers.openai.com/codex/mcp/).
+
+### Add the server to Claude Code (optional second agent)
+
+In your Linux terminal, with Claude Code installed and signed in:
+
+```bash
+claude mcp add --transport stdio --scope user personal-workspace -- \
+  /home/steve/workspace/light-fabric/target/release/light-workspace \
+  /home/steve/.local/share/light-workspace serve personal \
+  com.networknt.agent.claude-personal-1.0.0
+
+claude mcp get personal-workspace
+```
+
+Start a new session with `claude`, then use `/mcp` to inspect the connection.
+`--scope user` keeps this setting in your user configuration instead of creating
+a repository `.mcp.json`. See the [Claude Code MCP documentation](https://code.claude.com/docs/en/mcp).
+You can connect Codex first and add Claude later; two separate processes share
+persistent tasks through the same store and task locks.
+
+### Create the first task outside the model session
+
+Run this in your Linux terminal after checking Git access to the registered
+origins. The first creation clones **every registered repository** and fetches its
+integration branch. For a 129-repository workspace this can take time and disk
+space; registration itself did not download these repositories. The managed copies
+come from the recorded origins, so uncommitted edits in `/home/steve/workspace`
+are not imported.
+
+```bash
+printf '%s\n' '{"operation":"create","task":"workspace-smoke-1"}' | \
+  /home/steve/workspace/light-fabric/target/release/light-workspace \
+  /home/steve/.local/share/light-workspace call personal \
+  com.networknt.agent.codex-personal-1.0.0
+```
+
+Expected output includes `"state": "ready"` and `checkouts` with one managed path
+per repository, each on `agent/workspace-smoke-1`. Retrying the same task ID resumes
+provisioning or returns the existing task. Do not invent a new task ID on every
+retry. Missing `develop` branches must be resolved explicitly; there is no fallback
+to `master`. Task creation makes no commits, pushes, issues, or PRs.
+
+### Ask the connected agent to use it
+
+In the **Codex conversation**, enter:
+
+> Use the personal-workspace MCP server's task_workspace tool. Call status for
+> task workspace-smoke-1 and report its state and repository names. Use only the
+> workspace tools for this task; do not access its files through host shell or
+> native file tools. Do not edit, commit, push, or create GitHub resources.
+
+The tool arguments for that first call are:
+
+```json
+{"operation":"status","task":"workspace-smoke-1"}
+```
+
+Then ask it to read a specific file, for example:
+
+> For workspace-smoke-1, use task_workspace read to read README.md in repository
+> light-fabric and summarize the project. Do not change files.
+
+Use a repository name returned by `status` if `light-fabric` is not registered.
+This confirms the model can use the tool rather than merely seeing its name.
+The model client handles its own model login; the workspace server does not log
+in to Codex/Claude on your behalf.
+
+The manager must remain the only agent write path. Instructions to use MCP are
+workflow guidance, not a security boundary: an agent with unrestricted host file
+or shell access can bypass the freeze. This tutorial does not configure a hardened
+native-agent sandbox. Workspace `execute` does sandbox the commands it launches.
 
 ## Implement, review and deliver
 
 1. `create` a task. `files` returns the repository contents and revision evidence;
    `read` returns UTF-8 file content and its digest (up to 1 MiB).
-2. `edit` with `{repository, path, content, expectedDigest}`. For a new file use
+2. `edit` takes a nested `edit` object: `{operation: "edit", task, edit: {repository, path, content, expectedDigest}}. For a new file use
    `expectedDigest: null`; for deletion use `content: null`. Digest preconditions
    prevent overwriting another agent's intervening changes.
 3. For local commands, `execute` takes `access: "implement"`, an absolute
@@ -228,3 +335,18 @@ read-only review, host-file isolation, timeout recovery, index copies/freshness,
 reviewed multi-repository commits, local-remote pushes, PR base/head verification,
 uncertain-effect retry, and the stdio MCP transport. They do not perform billable
 model calls or create real GitHub issues/PRs.
+
+## Setup troubleshooting
+
+| Symptom | Check or next step |
+|---|---|
+| `No such file or directory` from registration | Run from the directory containing `workspace.json`, or give its absolute path. Extract `.workspace` from discovery first. |
+| Shell says the binary does not exist | Build with `--release` and use `target/release/light-workspace` consistently. |
+| `workspace already registered with different membership or grants` | Registrations are immutable. Before any tasks or active clients exist, back up the unused workspace directory and register the corrected input. With existing tasks, retain the registration and use a new workspace ID/store until migration is implemented. Never overwrite stored metadata to bypass the guard. |
+| `agent has no workspace grant` | Match the full agent ID in the stored `agents` array; a shortened name is a different identity. |
+| `serve` appears to hang in a terminal | It is waiting for MCP JSON. Let the client launch it; use `call` for a direct JSON operation. |
+| `/mcp` does not show the server | Check the client registration and absolute binary path, then start a new client session. |
+| Tool timeout during first task creation | Use the terminal `call` command above and retry the same task ID; check Git authentication and integration branches. |
+| `index provider is not configured by host` | Discovery leaves `indexers` empty. Add provider configuration before registration; merely installing an indexer does not register it. Existing registrations have no update command. |
+| Review command cannot write | Review mounts source files read-only. Writable build/test copies are not yet implemented. |
+| Portal Chat still requests a repository bundle | Expected: this local MCP setup is not wired into Portal Chat yet. |

@@ -7,6 +7,9 @@ coding request, runner, or Claude adapter implements it.
 Implementation has started in `crates/task-workspace` and `apps/light-workspace`.
 The [local workspace service guide](shared-task-workspaces-runtime.md) describes
 the runnable CLI/MCP service, qualification, and remaining integration gaps.
+The [Chat and Workflow Integration design](shared-task-workspaces-chat-workflow.md)
+defines the next implementation: authenticated workspace jobs, interactive task
+selection, durable agent handoff, and deployment gates.
 
 This design extends [Development Workflow Orchestration](development-workflow-orchestration.md)
 and [Coding Harness Integration](coding-harness-integration.md). The workflow

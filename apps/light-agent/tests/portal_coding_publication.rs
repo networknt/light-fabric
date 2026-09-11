@@ -34,3 +34,28 @@ fn java_coding_publication_preserves_rust_content_and_contract_digests() {
         profile.qualification.contract_digest
     );
 }
+
+#[test]
+fn java_workspace_bindings_preserve_rust_signed_profile_and_legacy_absence() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/portal-workspace-coding-profile.json"
+    ))
+    .unwrap();
+    let profile: light_agent::agent_config::CodingProfilePolicy =
+        serde_json::from_value(fixture["profile"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(&profile).unwrap(), fixture["profile"]);
+    assert_eq!(canonical_digest(&profile).unwrap(), fixture["digest"]);
+    assert_eq!(profile.workspace_bindings.len(), 1);
+    profile.workspace_bindings[0].validate().unwrap();
+    let mut legacy = fixture["profile"].clone();
+    legacy.as_object_mut().unwrap().remove("workspaceBindings");
+    let old: light_agent::agent_config::CodingProfilePolicy =
+        serde_json::from_value(legacy.clone()).unwrap();
+    assert!(
+        !serde_json::to_value(old)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("workspaceBindings")
+    );
+}

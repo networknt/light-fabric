@@ -7,3 +7,5 @@ pub mod staging;
 pub mod supervisor;
 pub mod transport;
 pub mod worker_process;
+
+mod workspace_result;

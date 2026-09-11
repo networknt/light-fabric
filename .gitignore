@@ -31,3 +31,8 @@ AGENTS.md
 CLAUDE.md
 apps/light-gateway/config-cache/
 dist/
+# Local workspace registration and Python runtime artifacts
+/discovery.json
+/workspace.json
+/workspace.before-*.json
+__pycache__/

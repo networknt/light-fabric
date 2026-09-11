@@ -46,11 +46,16 @@ pub(crate) fn capture(checkouts: &[Checkout]) -> Result<Checkpoint> {
         }
         let head = git::text(root, &["rev-parse", "HEAD"])?;
         let index = git::run(root, &["ls-files", "--stage", "-z"])?;
-        if index
-            .split(|b| *b == 0)
-            .any(|entry| entry.starts_with(b"160000 "))
-        {
-            bail!("submodules require separate workspace registration and are not supported yet");
+        let submodules = gitlinks(&index)?;
+        for name in &submodules {
+            let path = safe_file(root, name)?;
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_dir() && fs::read_dir(&path)?.next().is_none() => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                _ => bail!(
+                    "initialized or modified submodule requires separate workspace registration"
+                ),
+            }
         }
         let names = git::run(
             root,
@@ -68,6 +73,12 @@ pub(crate) fn capture(checkouts: &[Checkout]) -> Result<Checkpoint> {
             .collect();
         let mut files = Vec::new();
         for name in names {
+            if submodules
+                .iter()
+                .any(|module| Path::new(name).starts_with(module))
+            {
+                continue;
+            }
             let path = safe_file(root, name)?;
             let metadata = match fs::symlink_metadata(&path) {
                 Ok(value) => value,
@@ -131,6 +142,31 @@ pub(crate) fn validate_checkout(checkout: &Checkout) -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("invalid worktree path"))?
     {
         bail!("worktree Git link is outside its managed repository");
+    }
+    Ok(())
+}
+
+fn gitlinks(index: &[u8]) -> Result<BTreeSet<String>> {
+    index
+        .split(|byte| *byte == 0)
+        .filter(|entry| entry.starts_with(b"160000 "))
+        .map(|entry| {
+            let path = entry
+                .splitn(2, |byte| *byte == b'\t')
+                .nth(1)
+                .ok_or_else(|| anyhow::anyhow!("invalid Git index entry"))?;
+            Ok(std::str::from_utf8(path)?.to_owned())
+        })
+        .collect()
+}
+
+pub(crate) fn reject_submodule_edit(root: &Path, relative: &str) -> Result<()> {
+    let index = git::run(root, &["ls-files", "--stage", "-z"])?;
+    if gitlinks(&index)?
+        .iter()
+        .any(|module| Path::new(relative).starts_with(module))
+    {
+        bail!("submodule contents are not editable through workspace file tools");
     }
     Ok(())
 }

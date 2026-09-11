@@ -822,3 +822,582 @@ fn discovery_reports_invalid_children_and_keeps_valid_repositories() {
             .any(|entry| entry.directory == dotted && !entry.reason.is_empty())
     );
 }
+
+#[test]
+fn provisioning_fetches_integration_branch_created_after_initial_clone() {
+    let (temp, store, mut workspace) = setup();
+    workspace.id = "new-branch".into();
+    workspace.repositories.truncate(1);
+    workspace.repositories[0].integration_branch = "integration".into();
+    store.register(&workspace).unwrap();
+    let error = store
+        .create_task("new-branch", "retry", "codex-personal")
+        .unwrap_err();
+    assert!(error.to_string().contains("backend"));
+    assert!(error.to_string().contains("integration"));
+    assert!(
+        temp.path()
+            .join("managed/new-branch/repositories/backend")
+            .is_dir()
+    );
+    git(
+        Path::new(&workspace.repositories[0].source),
+        &["branch", "integration", "develop"],
+    );
+    let task = store
+        .create_task("new-branch", "retry", "codex-personal")
+        .unwrap();
+    assert_eq!(task.state, TaskState::Ready);
+    assert_eq!(task.checkouts.len(), 1);
+}
+
+#[test]
+fn durable_workspace_jobs_are_scoped_idempotent_and_reauthorize_before_provisioning() {
+    use workspace_execution_protocol::*;
+    let (temp, store, workspace) = setup();
+    let context = AdmissionContext {
+        host_id: "host".into(),
+        environment: "dev".into(),
+        subject: "steve".into(),
+        agent_id: "codex-personal".into(),
+        runner_id: "runner".into(),
+        coding_turn_authorized: true,
+    };
+    let policy = WorkspaceAccessPolicy {
+        schema_version: VERSION,
+        workspace_id: "portal".into(),
+        host_id: "host".into(),
+        environment: "dev".into(),
+        runner_id: "runner".into(),
+        membership_revision: task_workspace::membership_revision(&workspace).unwrap(),
+        authorization_revision: 1,
+        subjects: BTreeSet::from(["steve".into()]),
+        agents: workspace.agents.clone(),
+        intents: BTreeSet::from([WorkspaceIntent::Inspect, WorkspaceIntent::Implement]),
+    };
+    let request = WorkspaceRequest {
+        schema_version: VERSION,
+        request_id: "request-1".into(),
+        workspace_id: "portal".into(),
+        expected_membership_revision: policy.membership_revision.clone(),
+        task: TaskSelection::New {
+            description: "Understand config".into(),
+        },
+        intent: WorkspaceIntent::Inspect,
+        expected_checkpoint_digest: None,
+        instruction: "Explain this repository".into(),
+    };
+    let job = store
+        .admit_job(&request, &context, &policy, &policy.intents)
+        .unwrap();
+    assert_eq!(job.state, task_workspace::WorkspaceJobState::Queued);
+    assert!(
+        !temp
+            .path()
+            .join("managed/portal/tasks")
+            .join(&job.task_id)
+            .exists()
+    );
+    assert_eq!(
+        store
+            .admit_job(&request, &context, &policy, &policy.intents)
+            .unwrap(),
+        job
+    );
+    let mut changed = request.clone();
+    changed.instruction = "Changed".into();
+    assert!(
+        store
+            .admit_job(&changed, &context, &policy, &policy.intents)
+            .is_err()
+    );
+    let mut revoked = policy.clone();
+    revoked.subjects.clear();
+    revoked.authorization_revision += 1;
+    assert!(
+        store
+            .provision_job("portal", &job.job_id, &context, &revoked, &policy.intents)
+            .is_err()
+    );
+    assert!(
+        !temp
+            .path()
+            .join("managed/portal/tasks")
+            .join(&job.task_id)
+            .exists()
+    );
+    let restarted = WorkspaceStore::open(temp.path().join("managed")).unwrap();
+    let ready = restarted
+        .provision_job("portal", &job.job_id, &context, &policy, &policy.intents)
+        .unwrap();
+    assert_eq!(ready.state, task_workspace::WorkspaceJobState::Ready);
+    assert_eq!(ready.task_id, job.task_id);
+    // A committed model result is reusable, but a crashed model turn must never
+    // be replayed merely because the caller retries its request.
+    let execution = restarted.claim_job_execution(&ready).unwrap();
+    assert!(restarted.claim_job_execution(&ready).is_err());
+    match execution {
+        task_workspace::JobExecution::Active(mut active) => {
+            active.mark_started().unwrap();
+            active.finish(serde_json::json!({"result":"done"})).unwrap()
+        }
+        _ => panic!("first claim must be active"),
+    }
+    match restarted.claim_job_execution(&ready).unwrap() {
+        task_workspace::JobExecution::Cached(value) => assert_eq!(value["result"], "done"),
+        _ => panic!("completed claim must be cached"),
+    }
+    let mut uncertain_request = request.clone();
+    uncertain_request.request_id = "uncertain-request".into();
+    uncertain_request.task = TaskSelection::Existing {
+        task_id: ready.task_id.clone(),
+    };
+    let uncertain = restarted
+        .admit_job(&uncertain_request, &context, &policy, &policy.intents)
+        .unwrap();
+    let uncertain = restarted
+        .provision_job(
+            "portal",
+            &uncertain.job_id,
+            &context,
+            &policy,
+            &policy.intents,
+        )
+        .unwrap();
+    // A setup/spawn failure releases only the job lock; the admitted job remains retryable.
+    let setup_attempt = restarted.claim_job_execution(&uncertain).unwrap();
+    assert!(
+        Command::new(temp.path().join("missing-bwrap"))
+            .spawn()
+            .is_err()
+    );
+    drop(setup_attempt);
+    let execution = restarted.claim_job_execution(&uncertain).unwrap();
+    let task_before = restarted
+        .status("portal", &ready.task_id, "codex-personal")
+        .unwrap();
+    assert!(
+        restarted
+            .begin_tool_session(
+                "portal",
+                &ready.task_id,
+                "codex-personal",
+                true,
+                Some("invalid-checkpoint")
+            )
+            .is_err()
+    );
+    drop(execution);
+    assert_eq!(
+        restarted
+            .status("portal", &ready.task_id, "codex-personal")
+            .unwrap(),
+        task_before
+    );
+    match restarted.claim_job_execution(&uncertain).unwrap() {
+        task_workspace::JobExecution::Active(mut active) => {
+            active.mark_started().unwrap();
+            // Crash after the uncertainty boundary must still prevent duplicate execution.
+        }
+        _ => panic!("setup failure must remain retryable"),
+    }
+    assert!(restarted.claim_job_execution(&uncertain).is_err());
+    assert_eq!(
+        restarted
+            .status("portal", &job.task_id, "codex-personal")
+            .unwrap()
+            .checkouts
+            .len(),
+        3
+    );
+    assert_eq!(
+        restarted
+            .provision_job("portal", &job.job_id, &context, &policy, &policy.intents)
+            .unwrap(),
+        ready
+    );
+    assert!(
+        restarted
+            .provision_job("portal", &job.job_id, &context, &revoked, &policy.intents)
+            .is_err()
+    );
+}
+
+#[test]
+fn workspace_membership_revision_excludes_grants_but_legacy_digest_does_not_change() {
+    let (_temp, store, workspace) = setup();
+    let task = store
+        .create_task("portal", "legacy", "codex-personal")
+        .unwrap();
+    let revision = task_workspace::membership_revision(&workspace).unwrap();
+    let mut changed = workspace.clone();
+    changed.agents.insert("another".into());
+    changed.operations.clear();
+    assert_eq!(
+        task_workspace::membership_revision(&changed).unwrap(),
+        revision
+    );
+    changed.repositories.reverse();
+    assert_eq!(
+        task_workspace::membership_revision(&changed).unwrap(),
+        revision
+    );
+    changed.repositories[0].integration_branch = "next".into();
+    assert_ne!(
+        task_workspace::membership_revision(&changed).unwrap(),
+        revision
+    );
+    assert_eq!(
+        store
+            .status("portal", "legacy", "codex-personal")
+            .unwrap()
+            .membership_digest,
+        task.membership_digest
+    );
+}
+
+#[test]
+fn inspection_keeps_task_state_and_blocks_writers_until_guard_is_released() {
+    let (_temp, store, _) = setup();
+    let task = store
+        .create_task("portal", "inspect", "codex-personal")
+        .unwrap();
+    let inspection = store
+        .begin_inspection("portal", "inspect", "claude-personal", None)
+        .unwrap();
+    assert_eq!(
+        inspection
+            .read_file("backend", "README.md")
+            .unwrap()
+            .content,
+        "base\n"
+    );
+    assert!(
+        inspection
+            .read_file("backend", "../frontend/README.md")
+            .is_err()
+    );
+    assert!(inspection.read_file("backend", ".git").is_err());
+    assert!(
+        store
+            .edit_file(
+                "portal",
+                "inspect",
+                "codex-personal",
+                task_workspace::FileEdit {
+                    repository: "backend".into(),
+                    path: "README.md".into(),
+                    content: Some("changed".into()),
+                    expected_digest: Some(
+                        inspection.read_file("backend", "README.md").unwrap().digest
+                    )
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(
+        store.status("portal", "inspect", "codex-personal").unwrap(),
+        task
+    );
+    drop(inspection);
+    let frozen = store.freeze("portal", "inspect", "codex-personal").unwrap();
+    let approved = store
+        .review(
+            "portal",
+            "inspect",
+            "claude-personal",
+            &frozen.checkpoint.unwrap().digest,
+            true,
+            "reviewed".into(),
+        )
+        .unwrap();
+    let inspection = store
+        .begin_inspection(
+            "portal",
+            "inspect",
+            "claude-personal",
+            approved.checkpoint.as_ref().map(|c| c.digest.as_str()),
+        )
+        .unwrap();
+    assert_eq!(
+        inspection.checkpoint(),
+        approved.checkpoint.as_ref().unwrap()
+    );
+    drop(inspection);
+    assert_eq!(
+        store.status("portal", "inspect", "codex-personal").unwrap(),
+        approved
+    );
+}
+
+#[test]
+fn runner_tool_session_binds_task_and_holds_writer_lease_until_finished() {
+    use task_workspace::FileEdit;
+    let (_temp, store, _) = setup();
+    store
+        .create_task("portal", "chat-task", "codex-personal")
+        .unwrap();
+    let mut session = store
+        .begin_tool_session("portal", "chat-task", "codex-personal", true, None)
+        .unwrap();
+    assert_eq!(
+        store
+            .status("portal", "chat-task", "codex-personal")
+            .unwrap()
+            .state,
+        TaskState::Running
+    );
+    assert!(
+        store
+            .begin_tool_session("portal", "chat-task", "claude-personal", true, None)
+            .is_err()
+    );
+    assert!(session.read_file("other", "README.md").is_err());
+    assert!(session.read_file("backend", "../README.md").is_err());
+    let original = session.read_file("backend", "README.md").unwrap();
+    session
+        .edit_file(FileEdit {
+            repository: "backend".into(),
+            path: "README.md".into(),
+            content: Some("implemented\n".into()),
+            expected_digest: Some(original.digest.clone()),
+        })
+        .unwrap();
+    assert!(
+        session
+            .edit_file(FileEdit {
+                repository: "backend".into(),
+                path: "README.md".into(),
+                content: Some("stale\n".into()),
+                expected_digest: Some(original.digest)
+            })
+            .is_err()
+    );
+    assert_eq!(
+        session.read_file("backend", "README.md").unwrap().content,
+        "implemented\n"
+    );
+    let checkpoint = session.finish().unwrap();
+    assert_eq!(
+        store
+            .files("portal", "chat-task", "claude-personal")
+            .unwrap(),
+        checkpoint
+    );
+    assert_eq!(
+        store
+            .status("portal", "chat-task", "codex-personal")
+            .unwrap()
+            .state,
+        TaskState::Ready
+    );
+    let session = store
+        .begin_tool_session("portal", "chat-task", "codex-personal", true, None)
+        .unwrap();
+    drop(session);
+    assert_eq!(
+        store
+            .status("portal", "chat-task", "codex-personal")
+            .unwrap()
+            .state,
+        TaskState::Interrupted
+    );
+}
+
+#[test]
+fn inspection_tool_session_preserves_approval_and_rejects_edits() {
+    let (_temp, store, _) = setup();
+    store
+        .create_task("portal", "inspect", "codex-personal")
+        .unwrap();
+    let frozen = store.freeze("portal", "inspect", "codex-personal").unwrap();
+    let digest = frozen.checkpoint.unwrap().digest;
+    let approved = store
+        .review(
+            "portal",
+            "inspect",
+            "claude-personal",
+            &digest,
+            true,
+            "Fine".into(),
+        )
+        .unwrap();
+    let mut session = store
+        .begin_tool_session("portal", "inspect", "codex-personal", false, Some(&digest))
+        .unwrap();
+    assert!(
+        session
+            .edit_file(task_workspace::FileEdit {
+                repository: "backend".into(),
+                path: "new.txt".into(),
+                content: Some("no".into()),
+                expected_digest: None
+            })
+            .is_err()
+    );
+    session.finish().unwrap();
+    assert_eq!(
+        store.status("portal", "inspect", "codex-personal").unwrap(),
+        approved
+    );
+}
+
+#[test]
+fn model_tool_arguments_cannot_override_scope_or_implicitly_delete() {
+    use serde_json::json;
+    let (_temp, store, _) = setup();
+    store
+        .create_task("portal", "scoped", "codex-personal")
+        .unwrap();
+    let mut session = store
+        .begin_tool_session("portal", "scoped", "codex-personal", true, None)
+        .unwrap();
+    assert_eq!(
+        session
+            .call_tool(json!({"operation":"repositories"}))
+            .unwrap()["repositories"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert!(
+        session
+            .call_tool(
+                json!({"operation":"read","repository":"backend","path":"README.md","task":"other"})
+            )
+            .is_err()
+    );
+    assert!(
+        session
+            .call_tool(json!({"operation":"execute","command":"cat /etc/passwd"}))
+            .is_err()
+    );
+    let read = session
+        .call_tool(json!({"operation":"read","repository":"backend","path":"README.md"}))
+        .unwrap();
+    assert!(session.call_tool(json!({"operation":"edit","repository":"backend","path":"README.md","expectedDigest":read["digest"]})).is_err());
+    session.call_tool(json!({"operation":"edit","repository":"backend","path":"new.txt","content":"created","expectedDigest":null})).unwrap();
+    session.finish().unwrap();
+    assert_eq!(
+        store
+            .read_file("portal", "scoped", "claude-personal", "backend", "new.txt")
+            .unwrap()
+            .content,
+        "created"
+    );
+}
+
+#[test]
+fn uninitialized_submodule_is_pinned_but_file_tools_cannot_enter_it() {
+    let (_temp, store, _workspace) = setup();
+    let task = store
+        .create_task("portal", "submodule", "codex-personal")
+        .unwrap();
+    let checkout = &task.checkouts[0];
+    let head = git(&checkout.path, &["rev-parse", "HEAD"]);
+    git(
+        &checkout.path,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{},vendor/theme", head.trim()),
+        ],
+    );
+    std::fs::create_dir_all(checkout.path.join("vendor/theme")).unwrap();
+    let inspection = store
+        .begin_inspection("portal", "submodule", "codex-personal", None)
+        .unwrap();
+    let before = inspection.checkpoint().digest.clone();
+    assert!(
+        !inspection.checkpoint().repositories[0]
+            .files
+            .iter()
+            .any(|f| f.path.starts_with("vendor/theme"))
+    );
+    drop(inspection);
+    let edit = task_workspace::FileEdit {
+        repository: checkout.repository.clone(),
+        path: "vendor/theme/escape.txt".into(),
+        content: Some("blocked".into()),
+        expected_digest: None,
+    };
+    assert!(
+        store
+            .edit_file("portal", "submodule", "codex-personal", edit.clone())
+            .is_err()
+    );
+    let mut session = store
+        .begin_tool_session("portal", "submodule", "codex-personal", true, None)
+        .unwrap();
+    assert!(session.edit_file(edit).is_err());
+    session.finish().unwrap();
+    assert!(!checkout.path.join("vendor/theme/escape.txt").exists());
+    git(
+        &checkout.path,
+        &["update-index", "--force-remove", "vendor/theme"],
+    );
+    let inspection = store
+        .begin_inspection("portal", "submodule", "codex-personal", None)
+        .unwrap();
+    assert_ne!(before, inspection.checkpoint().digest);
+    drop(inspection);
+    git(
+        &checkout.path,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{},vendor/theme", head.trim()),
+        ],
+    );
+    std::fs::write(
+        checkout.path.join("vendor/theme/outside.txt"),
+        "not checkpointed",
+    )
+    .unwrap();
+    assert!(
+        store
+            .begin_inspection("portal", "submodule", "codex-personal", None)
+            .is_err()
+    );
+}
+
+#[test]
+fn existing_task_reopens_offline_without_refreshing_pinned_revisions() {
+    let (temp, store, workspace) = setup();
+    let task = store
+        .create_task("portal", "offline", "codex-personal")
+        .unwrap();
+    for repo in &workspace.repositories {
+        fs::rename(
+            &repo.source,
+            temp.path().join(format!("offline-{}", repo.name)),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        store
+            .create_task("portal", "offline", "codex-personal")
+            .unwrap(),
+        task
+    );
+    // New tasks must still fetch current integration branches and report unavailable origins.
+    assert!(
+        store
+            .create_task("portal", "new-offline", "codex-personal")
+            .is_err()
+    );
+    // Interrupted provisioning also uses its persisted base, without a remote fetch.
+    let metadata = temp.path().join("managed/portal/tasks/offline/task.json");
+    let mut provisioning = task.clone();
+    provisioning.state = TaskState::Provisioning;
+    fs::write(metadata, serde_json::to_vec(&provisioning).unwrap()).unwrap();
+    assert_eq!(
+        store
+            .create_task("portal", "offline", "codex-personal")
+            .unwrap(),
+        task
+    );
+}

@@ -16,7 +16,9 @@ persistent multi-repository task worktrees, workspace-wide agent access, review
 of shared uncommitted changes, indexing, and task PRs targeting `develop` before
 release promotion to `master`. It adds a workspace execution mode alongside the
 immutable bundle path while retaining the lifecycle and trusted-action ownership
-defined here.
+defined here. The [Chat and Workflow Integration design](shared-task-workspaces-chat-workflow.md)
+specifies the shared admission and runner path for interactive workspace jobs and
+workflow-owned implementation/review stages.
 
 Use a hybrid architecture:
 

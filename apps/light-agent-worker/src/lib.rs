@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 mod codex_app_server;
 mod coding_session;
+mod workspace;
 
 pub fn capabilities() -> RuntimeCapabilities {
     coding_agent_runtime::codex_worker_capabilities()
@@ -143,6 +144,27 @@ async fn run_scenario<W: AsyncWrite + Unpin>(
     cancel: tokio::sync::watch::Receiver<Option<String>>,
     deadline: Option<tokio::time::Instant>,
 ) -> Result<()> {
+    if input.get("workspaceSpec").is_some() {
+        if enterprise_gateway.is_some() {
+            bail!("workspace enterprise adapter is not qualified");
+        }
+        if let Err(error) =
+            workspace::run(writer, identity, sequence, input, cancel, deadline).await
+        {
+            return emit(
+                writer,
+                identity,
+                sequence,
+                RuntimeEventPayload::Terminal {
+                    class: ResultClass::TerminalFailure,
+                    output: None,
+                    error: Some(error.to_string()),
+                },
+            )
+            .await;
+        }
+        return Ok(());
+    }
     let scenario = input
         .get("scenario")
         .and_then(Value::as_str)

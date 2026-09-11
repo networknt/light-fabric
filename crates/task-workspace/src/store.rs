@@ -20,7 +20,7 @@ pub struct WorkspaceStore {
     pub(crate) root: PathBuf,
 }
 
-fn directory(path: &Path) -> Result<()> {
+pub(crate) fn directory(path: &Path) -> Result<()> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true).mode(0o700).create(path)?;
     ensure!(
@@ -187,13 +187,19 @@ impl WorkspaceStore {
                         &repo.source,
                         temporary.to_str().context("repository path")?,
                     ],
-                )?;
+                )
+                .with_context(|| format!("repository {}: clone failed", repo.name))?;
                 fs::rename(temporary, &target)?;
             }
             ensure!(
-                git::text(&target, &["rev-parse", "--is-bare-repository"])? == "true",
+                git::text(&target, &["rev-parse", "--is-bare-repository"])
+                    .with_context(|| format!("repository {}: validate managed clone", repo.name))?
+                    == "true",
                 "managed repository is not bare"
             );
+            let reference = format!("refs/heads/{}", repo.integration_branch);
+            git::run(&target, &["fetch", "--no-tags", "origin", &format!("+{reference}:{reference}")])
+                .with_context(|| format!("repository {}: fetch integration branch {} failed; verify remote access and branch existence", repo.name, repo.integration_branch))?;
             git::text(
                 &target,
                 &[
@@ -201,7 +207,13 @@ impl WorkspaceStore {
                     "--verify",
                     &format!("refs/heads/{}^{{commit}}", repo.integration_branch),
                 ],
-            )?;
+            )
+            .with_context(|| {
+                format!(
+                    "repository {}: integration branch {} does not resolve to a commit",
+                    repo.name, repo.integration_branch
+                )
+            })?;
         }
         Ok(())
     }
@@ -211,7 +223,6 @@ impl WorkspaceStore {
         let root = self.workspace_path(workspace_id)?;
         let task_root = self.task_path(workspace_id, task_id)?;
         let _workspace_lock = lock(&root.join("workspace.lock"))?;
-        self.prepare_repositories(&workspace)?;
         directory(&task_root)?;
         let _task_lock = lock(&task_root.join("task.lock"))?;
         directory(&task_root.join("tree"))?;
@@ -219,21 +230,12 @@ impl WorkspaceStore {
         let mut task = if metadata.exists() {
             self.load_task(&workspace, task_id)?
         } else {
+            // Only new tasks refresh remote branches. Existing tasks retain their pinned bases.
+            self.prepare_repositories(&workspace)?;
             let mut checkouts = Vec::new();
             for repo in &workspace.repositories {
                 let source = root.join("repositories").join(&repo.name);
                 let reference = format!("refs/heads/{}", repo.integration_branch);
-                // Fetch the integration branch explicitly: bare clone has no
-                // remote-tracking refspec. Never derive a task base from an old task.
-                git::run(
-                    &source,
-                    &[
-                        "fetch",
-                        "--no-tags",
-                        "origin",
-                        &format!("+{reference}:{reference}"),
-                    ],
-                )?;
                 checkouts.push(Checkout {
                     repository: repo.name.clone(),
                     branch: format!("agent/{task_id}"),
@@ -481,6 +483,7 @@ impl WorkspaceStore {
             .find(|r| r.repository == edit.repository)
             .context("repository is not in this workspace")?;
         let path = checkpoint::safe_file(&checkout.path, &edit.path)?;
+        checkpoint::reject_submodule_edit(&checkout.path, &edit.path)?;
         let existing = if path.exists() {
             Some(checkpoint::digest(&fs::read(&path)?))
         } else {

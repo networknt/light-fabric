@@ -396,7 +396,7 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
         sequence,
         RuntimeEventPayload::Terminal {
             class: ResultClass::Success,
-            output: Some(json!({"adapter":CODEX_APP_SERVER_ADAPTER_ID,"adapterVersion":CODEX_APP_SERVER_VERSION,"threadId":thread_id,"turnId":turn_id,"authentication":authentication,"codingThread":receipt,"validationEvidence":terminal.validation_evidence})),
+            output: Some(json!({"adapter":CODEX_APP_SERVER_ADAPTER_ID,"adapterVersion":CODEX_APP_SERVER_VERSION,"threadId":thread_id,"turnId":turn_id,"authentication":authentication,"codingThread":receipt,"validationEvidence":terminal.validation_evidence,"finalMessage":terminal.final_message})),
             error: None,
         },
     )
@@ -466,7 +466,7 @@ async fn prepare_enterprise_gateway(
     ))
 }
 
-fn authentication_evidence(
+pub(super) fn authentication_evidence(
     profile: CodingAuthenticationProfile,
     account_response: &Value,
     credential_generation: Option<u64>,
@@ -983,7 +983,7 @@ async fn verify_candidate_unchanged(repository: &Path, admitted_patch: &str) -> 
     Ok(())
 }
 
-async fn validate_contract(
+pub(super) async fn validate_contract(
     contract: &CodingAdapterContract,
     qualification: &CodingAdapterQualification,
 ) -> Result<()> {

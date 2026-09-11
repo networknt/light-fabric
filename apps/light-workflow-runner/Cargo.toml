@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+task-workspace = { path = "../../crates/task-workspace" }
+workspace-execution-protocol = { path = "../../crates/workspace-execution-protocol" }
 agent-runtime-protocol = { path = "../../crates/agent-runtime-protocol" }
 agent-core = { path = "../../crates/agent-core" }
 async-trait.workspace = true

@@ -171,6 +171,14 @@
       "migrationId": "0006_workflow_endpoint_resolution",
       "path": "crates/workflow-store/migrations/workflow-postgres/0006_workflow_endpoint_resolution.sql",
       "sha256": "d1130d058d80a718d2fe3006940e87c6bb25bced09bce2d77a973aebe9f6929d"
+    },
+    {
+      "order": 22,
+      "owner": "execution-store",
+      "schema": "execution_ops",
+      "migrationId": "0002_prefixed_policy_digests",
+      "path": "crates/execution-store/migrations/execution-postgres/0002_prefixed_policy_digests.sql",
+      "sha256": "30ec81e366d7024249866cc3dd3ae2148443c7e7f31c51a9507e9c50661635a6"
     }
   ],
   "roleProfileVersion": 1,

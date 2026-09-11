@@ -91,6 +91,16 @@ fn coding_thread_scope(
     }))?))
 }
 
+// Cleanup retains its original payload for idempotency, but its durable owner is
+// requestedBy, not the registration UUID that changes when an agent restarts.
+const EXECUTION_OUTBOX_DISPATCH_SQL: &str =
+    "SELECT host_id,dispatch_id,request_id,command_kind,command_payload,payload_digest
+     FROM agent_execution_outbox_t WHERE state='PENDING' AND next_attempt_ts<=now()
+     AND host_id=$1 AND (
+       (command_kind='REQUEST' AND command_payload->>'originInstanceId' IN ($2,$3))
+       OR (command_kind='CLEANUP' AND command_payload->>'requestedBy'=$3))
+     ORDER BY created_ts,dispatch_id LIMIT 32";
+
 #[derive(Debug, Clone)]
 pub struct AgentRuntimeAuthority {
     pub host_id: Uuid,
@@ -870,17 +880,21 @@ impl AgentRepository {
     }
 
     pub async fn dispatch_execution_outbox(&self) -> Result<u64> {
+        let authority = self
+            .authority
+            .as_ref()
+            .context("Agent outbox dispatch requires runtime authority")?;
         let execution = self
             .execution
             .as_ref()
             .context("Agent execution API client is not configured")?;
-        let rows = sqlx::query(
-            "SELECT host_id,dispatch_id,request_id,command_kind,command_payload,payload_digest
-             FROM agent_execution_outbox_t WHERE state='PENDING' AND next_attempt_ts<=now()
-             ORDER BY created_ts,dispatch_id LIMIT 32",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query(EXECUTION_OUTBOX_DISPATCH_SQL)
+            .bind(authority.host_id)
+            .bind(authority.instance_id.to_string())
+            // Workspace requests use their admitted service identity as origin instance.
+            .bind(&authority.service_id)
+            .fetch_all(&self.pool)
+            .await?;
         let mut dispatched = 0;
         for row in rows {
             let host_id: Uuid = row.try_get("host_id")?;
@@ -3045,6 +3059,57 @@ async fn append_event(
 #[cfg(test)]
 mod tests {
     #[tokio::test]
+    #[ignore = "requires LIGHT_AGENT_TEST_DATABASE_URL"]
+    async fn cleanup_dispatch_survives_registration_rotation_and_isolates_agents() {
+        let pool = sqlx::PgPool::connect(
+            &std::env::var("LIGHT_AGENT_TEST_DATABASE_URL").expect("test DB required"),
+        )
+        .await
+        .unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("CREATE TEMP TABLE agent_execution_outbox_t(host_id uuid, dispatch_id uuid, request_id uuid, command_kind text, command_payload jsonb, payload_digest text, state text, next_attempt_ts timestamptz, created_ts timestamptz) ON COMMIT DROP")
+            .execute(&mut *tx).await.unwrap();
+        let host = uuid::Uuid::now_v7();
+        let old_instance = uuid::Uuid::now_v7();
+        let new_instance = uuid::Uuid::now_v7();
+        let mut expected = std::collections::BTreeSet::new();
+        for (row_host, kind, origin, owner, selected) in [
+            (host, "CLEANUP", old_instance.to_string(), "agent-a", true),
+            (host, "CLEANUP", new_instance.to_string(), "agent-b", false),
+            (host, "REQUEST", "agent-a".into(), "agent-a", true),
+            (host, "REQUEST", "agent-b".into(), "agent-b", false),
+            (
+                uuid::Uuid::now_v7(),
+                "CLEANUP",
+                old_instance.to_string(),
+                "agent-a",
+                false,
+            ),
+        ] {
+            let id = uuid::Uuid::now_v7();
+            if selected {
+                expected.insert(id);
+            }
+            sqlx::query("INSERT INTO agent_execution_outbox_t VALUES($1,$2,$2,$3,$4,'digest','PENDING',now(),now())")
+                .bind(row_host).bind(id).bind(kind)
+                .bind(serde_json::json!({"originInstanceId":origin,"requestedBy":owner}))
+                .execute(&mut *tx).await.unwrap();
+        }
+        let rows = sqlx::query(super::EXECUTION_OUTBOX_DISPATCH_SQL)
+            .bind(host)
+            .bind(new_instance.to_string())
+            .bind("agent-a")
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+        use sqlx::Row;
+        let actual: std::collections::BTreeSet<uuid::Uuid> =
+            rows.iter().map(|r| r.get("dispatch_id")).collect();
+        assert_eq!(actual, expected);
+        tx.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn reconciliation_retry_is_independent_capped_and_resets() {
         let mut failed = super::ReconciliationRetry::default();
         let mut healthy = super::ReconciliationRetry::default();
@@ -4238,3 +4303,5 @@ mod tests {
         .unwrap();
     }
 }
+#[path = "workspace_dispatch.rs"]
+mod workspace_dispatch;

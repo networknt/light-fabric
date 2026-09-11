@@ -1,5 +1,7 @@
+mod chat_execution;
 mod coding_jobs;
 mod gateway_credentials;
+mod workspace_chat;
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use axum::{
@@ -2535,6 +2537,8 @@ struct ClientMessage {
     #[serde(default)]
     coding: Option<CodingDispatchRequest>,
     #[serde(default)]
+    workspace: Option<workspace_execution_protocol::WorkspaceRequest>,
+    #[serde(default)]
     edge_action: Option<EdgeActionSpec>,
 }
 
@@ -2562,7 +2566,7 @@ fn resolve_client_turn(
     message: &ClientMessage,
     policy: Option<&light_agent::agent_config::AgentTurnPolicy>,
 ) -> Result<RequestedProfile, String> {
-    let inferred = if message.coding.is_some() {
+    let inferred = if message.coding.is_some() || message.workspace.is_some() {
         RequestedProfile::Coding
     } else if message.edge_action.is_some() {
         RequestedProfile::PersonalAssistant
@@ -2570,7 +2574,10 @@ fn resolve_client_turn(
         RequestedProfile::Enterprise
     };
     let requested = message.profile.unwrap_or(inferred);
-    if requested != inferred || (message.coding.is_some() && message.edge_action.is_some()) {
+    let payloads = usize::from(message.coding.is_some())
+        + usize::from(message.workspace.is_some())
+        + usize::from(message.edge_action.is_some());
+    if requested != inferred || payloads > 1 {
         return Err("Profile and typed execution payload do not match".into());
     }
     authorize_turn_type(requested, policy)?;
@@ -3603,6 +3610,15 @@ fn coding_profile_from_policy(
                 .into(),
         ));
     }
+    let mut workspace_ids = std::collections::HashSet::new();
+    for binding in &policy.workspace_bindings {
+        binding
+            .validate()
+            .map_err(|e| RuntimeError::Config(e.to_string()))?;
+        if !workspace_ids.insert(&binding.workspace_id) {
+            return Err(RuntimeError::Config("duplicate workspace binding".into()));
+        }
+    }
     Ok(Some(CodingProfileConfig {
         product_profile_digest: policy.product_profile_digest.clone(),
         repository_uri_prefix: policy.repository_uri_prefix.clone(),
@@ -3803,6 +3819,14 @@ async fn handle_socket(
         ))
         .await;
 
+    let _ = sender
+        .send(Message::Text(
+            workspace_chat::catalog(&state, authenticated.owner.principal_id)
+                .to_string()
+                .into(),
+        ))
+        .await;
+
     if state.workload_credentials.is_some() {
         // Session ownership has already been verified above. Reconcile identifiers,
         // never replay an accepted or ambiguously completed turn on reconnect.
@@ -3825,7 +3849,54 @@ async fn handle_socket(
             ))
             .await;
     }
-    while let Some(Ok(msg)) = receiver.next().await {
+    let polls_execution_results = matches!(&session_message,
+        ServerMessage::Session { turn_types, .. } if turn_types.contains(&"coding"));
+    let mut result_poll = tokio::time::interval(std::time::Duration::from_secs(2));
+    result_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut delivered_results = std::collections::HashSet::new();
+    loop {
+        let msg = tokio::select! {
+            message = receiver.next() => match message {
+                Some(Ok(message)) => message,
+                _ => break,
+            },
+            _ = result_poll.tick(), if polls_execution_results => {
+                if state.workload_credentials.is_some() && authenticated.caller_claims
+                    .get("exp").and_then(|v| v.as_i64())
+                    .is_none_or(|exp| exp <= chrono::Utc::now().timestamp()) {
+                    send_authentication_required(&mut sender, None, false).await;
+                    break;
+                }
+                // Bind every poll to the authenticated session owner and current policy.
+                // Only execution-backed turns are projected; ordinary chat streams itself.
+                let rows = sqlx::query("SELECT t.turn_id,t.state,t.terminal_result FROM agent_turn_t t
+                    JOIN agent_session_t s ON s.host_id=t.host_id AND s.session_id=t.session_id
+                    JOIN agent_policy_snapshot_t p ON p.host_id=s.host_id AND p.policy_snapshot_id=s.policy_snapshot_id
+                    WHERE t.host_id=$1 AND t.session_id=$2 AND s.principal_id=$3
+                    AND s.state='ACTIVE' AND LEAST(s.idle_expires_ts,s.maximum_expires_ts)>now()
+                    AND p.revoked_ts IS NULL AND (t.execution_attempt_id IS NOT NULL OR EXISTS (
+                        SELECT 1 FROM agent_execution_outbox_t o
+                        WHERE o.host_id=t.host_id AND o.request_id=t.scheduling_request_id
+                        AND o.command_kind='REQUEST'))
+                    AND t.state IN ('COMPLETED','FAILED','CANCELLED','UNKNOWN')
+                    ORDER BY t.turn_sequence DESC LIMIT 100")
+                    .bind(state.host_id).bind(session_id)
+                    .bind(authenticated.owner.principal_id.to_string())
+                    .fetch_all(&state.domain.pool()).await;
+                if let Ok(rows) = rows {
+                    for row in rows.into_iter().rev() {
+                        let turn_id: Uuid = row.get("turn_id");
+                        if delivered_results.contains(&turn_id) { continue; }
+                        let result: Option<serde_json::Value> = row.get("terminal_result");
+                        let payload = chat_execution::result_message(turn_id, row.get::<String,_>("state").as_str(),
+                            result.as_ref().unwrap_or(&serde_json::Value::Null));
+                        if sender.send(Message::Text(payload.to_string().into())).await.is_err() { return; }
+                        delivered_results.insert(turn_id);
+                    }
+                }
+                continue;
+            }
+        };
         if let Message::Text(text) = msg {
             let client_msg: ClientMessage = match serde_json::from_str(&text) {
                 Ok(m) => m,
@@ -3901,6 +3972,23 @@ async fn handle_socket(
                 }
             };
 
+            let workspace_spec = match workspace_chat::admit(
+                &state,
+                &client_msg,
+                authenticated.owner.principal_id,
+            ) {
+                Ok(spec) => spec,
+                Err(error) => {
+                    let _ = sender
+                        .send(Message::Text(
+                            serde_json::json!({"type":"error","message":error.to_string()})
+                                .to_string()
+                                .into(),
+                        ))
+                        .await;
+                    continue;
+                }
+            };
             let user_text = client_msg.text.clone();
             let client_message_id = client_msg
                 .client_message_id
@@ -4051,6 +4139,48 @@ async fn handle_socket(
             };
             trim_history(&mut history);
 
+            if let Some(spec) = workspace_spec {
+                let result = match state.coding_profile.as_ref() {
+                    Some(profile)
+                        if profile.product_profile_digest
+                            == turn_resolution.product_profile_digest =>
+                    {
+                        state
+                            .domain
+                            .schedule_workspace_turn(
+                                state.host_id,
+                                AgentSessionId(session_id),
+                                admitted.turn_id,
+                                &spec,
+                                &profile.runtime,
+                            )
+                            .await
+                    }
+                    _ => Err(anyhow!(
+                        "workspace coding profile no longer matches this turn"
+                    )),
+                };
+                let payload = match result {
+                    Ok(id) => {
+                        serde_json::json!({"type":"executionAccepted","profile":"coding","request_id":id})
+                    }
+                    Err(error) => {
+                        let _ = state
+                            .domain
+                            .fail_turn(
+                                state.host_id,
+                                AgentSessionId(session_id),
+                                admitted.turn_id,
+                                "workspace dispatch failed",
+                            )
+                            .await;
+                        error!("Workspace dispatch failed: {error}");
+                        serde_json::json!({"type":"error","message":"Workspace task could not be scheduled"})
+                    }
+                };
+                let _ = sender.send(Message::Text(payload.to_string().into())).await;
+                continue;
+            }
             if requested_profile == RequestedProfile::Coding {
                 let outcome: Result<Uuid> = async {
                     let config = state
@@ -6317,6 +6447,7 @@ security.skipPathPrefixes: [/health]
             review_model: coding_agent_runtime::CODING_REVIEWER_ALIAS.into(),
             authentication_profile: CodingAuthenticationProfile::PersonalSubscription,
             enterprise_gateway: None,
+            workspace_bindings: Vec::new(),
         };
         let admitted_contract = coding_agent_runtime::CodingAdapterContract {
             schema_version: policy.schema_version,

@@ -29,6 +29,8 @@ pub struct WorkerProcessConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_executable: Option<std::path::PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_config: Option<std::path::PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub broker: Option<AttemptBrokerConfig>,
 }
 
@@ -82,6 +84,16 @@ impl WorkerProcessConfig {
             .is_some_and(|path| !path.is_absolute())
         {
             return Err("agent worker codexExecutable must be an absolute path".into());
+        }
+        if let Some(path) = &self.workspace_config {
+            if self.codex_home.is_none() || self.broker.is_some() || self.sandbox_launcher.is_some()
+            {
+                return Err(
+                    "workspace execution requires a dedicated personal native runner".into(),
+                );
+            }
+            task_workspace::RunnerWorkspaceConfig::load(path)
+                .map_err(|error| format!("invalid runner workspace configuration: {error}"))?;
         }
         if self.codex_home.is_some() && self.broker.is_some() {
             return Err(
@@ -214,6 +226,30 @@ pub async fn run_worker_process(
     if spec.expected_capability_digest != config.capability_digest {
         return Err("worker capability digest is not admitted by this runner".into());
     }
+    if let Some(value) = spec.input.get("workspaceSpec") {
+        let workspace: workspace_execution_protocol::WorkspaceExecutionSpec =
+            serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+        let path = config
+            .workspace_config
+            .as_ref()
+            .ok_or("runner does not support workspace tasks")?;
+        task_workspace::RunnerWorkspaceConfig::load(path)
+            .and_then(|c| c.authorize(&workspace))
+            .map_err(|e| e.to_string())?;
+        if workspace.binding.host_id != lease.lease.origin.host_id.to_string()
+            || workspace.agent_id != lease.lease.origin.instance_id
+            || config.codex_home.is_none()
+            || config.sandbox_launcher.is_some()
+            || config.broker.is_some()
+            || spec.broker.is_some()
+            || spec.enterprise_gateway.is_some()
+            || spec.input.get("codingSpec").is_some()
+        {
+            return Err(
+                "workspace execution differs from its authenticated personal runner scope".into(),
+            );
+        }
+    }
     verify_binary(&config.executable, &config.binary_digest).await?;
     if let Some(launcher) = &config.sandbox_launcher {
         verify_binary(&launcher.executable, &launcher.binary_digest).await?;
@@ -282,6 +318,15 @@ pub async fn run_worker_process(
     }
     if let Some(codex_executable) = &config.codex_executable {
         command.env("LIGHT_CODEX_EXECUTABLE", codex_executable);
+    }
+    if spec.input.get("workspaceSpec").is_some() {
+        command.env(
+            "LIGHT_WORKSPACE_CONFIG",
+            config
+                .workspace_config
+                .as_ref()
+                .ok_or("workspace config missing")?,
+        );
     }
     #[cfg(unix)]
     command.process_group(0);
@@ -430,6 +475,11 @@ pub async fn run_worker_process(
                 }
                 journal.record_runtime_event(&event)?;
                 if let RuntimeEventPayload::Terminal { class, mut output, error } = event.payload {
+                    if class == ResultClass::Success && let Some(workspace) = spec.input.get("workspaceSpec") {
+                        let workspace = serde_json::from_value(workspace.clone()).map_err(|e|format!("invalid workspace input: {e}"))?;
+                        crate::workspace_result::validate(&workspace,output.as_ref().ok_or("workspace worker omitted its result")?)?;
+                    }
+
                     if class == ResultClass::Success && let Some(admitted) = &coding_spec {
                         let authentication: coding_agent_runtime::CodingAuthenticationEvidence =
                             serde_json::from_value(
@@ -831,6 +881,7 @@ sys.stdin.readline()
             sandbox_launcher: None,
             codex_home: None,
             codex_executable: None,
+            workspace_config: None,
             broker: None,
         }
     }
@@ -1048,6 +1099,7 @@ event(2,{{"type":"terminal","class":"success","output":{{"budget":budget}},"erro
             sandbox_launcher: None,
             codex_home: None,
             codex_executable: None,
+            workspace_config: None,
             broker: None,
         }
     }

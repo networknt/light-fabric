@@ -84,6 +84,14 @@ impl Supervisor {
         mut capability: execution_runner_protocol::BackendCapability,
         agent_worker: Option<&WorkerProcessConfig>,
     ) -> execution_runner_protocol::BackendCapability {
+        if agent_worker.is_some_and(|worker| {
+            worker.workspace_config.is_some()
+                && worker.codex_home.is_some()
+                && worker.sandbox_launcher.is_none()
+                && worker.broker.is_none()
+        }) {
+            capability.features.push("task-workspace-v1".into());
+        }
         if agent_worker.is_some() {
             if !capability
                 .actions
@@ -1308,6 +1316,7 @@ mod tests {
             sandbox_launcher: None,
             codex_home: None,
             codex_executable: None,
+            workspace_config: None,
             broker: None,
         };
         let feature = "personal-subscription-auth-v1";

@@ -637,6 +637,7 @@ allowedCommandTemplateDigests: [sha256:template-digest]
             sandbox_launcher: None,
             codex_home: None,
             codex_executable: None,
+            workspace_config: None,
             broker: None,
         });
         let document = config

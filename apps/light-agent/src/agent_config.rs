@@ -424,6 +424,8 @@ pub struct CodingProfilePolicy {
     pub authentication_profile: coding_agent_runtime::CodingAuthenticationProfile,
     #[serde(default)]
     pub enterprise_gateway: Option<CodingGatewayPolicy>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_bindings: Vec<workspace_execution_protocol::WorkspaceAccessPolicy>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

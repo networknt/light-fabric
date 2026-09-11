@@ -92,6 +92,7 @@
   - [Development Workflow Orchestration](product/light-agent/development-workflow-orchestration.md)
   - [Shared Task Workspaces](product/light-agent/shared-task-workspaces.md)
     - [Local Workspace Runtime](product/light-agent/shared-task-workspaces-runtime.md)
+    - [Chat and Workflow Integration](product/light-agent/shared-task-workspaces-chat-workflow.md)
   - [Deploy Native](product/light-agent/deploy-native.md)
   - [Deploy Kubernetes](product/light-agent/deploy-kubernetes.md)
 - [Light-Deployer](product/light-deployer.md)

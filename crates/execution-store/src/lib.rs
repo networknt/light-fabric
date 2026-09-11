@@ -11,10 +11,16 @@ pub const EXPECTED_SCHEMA: &str = "execution_ops";
 pub const EXPECTED_RUNTIME_ROLE: &str = "operations_execution_runtime";
 pub const DEFAULT_DATABASE_URL_FILE: &str = "/run/secrets/execution-database-url";
 pub const MIGRATION_ID: &str = "0001_execution_foundations";
-pub const MIGRATIONS: &[(&str, &str)] = &[(
-    MIGRATION_ID,
-    include_str!("../migrations/execution-postgres/0001_execution_foundations.sql"),
-)];
+pub const MIGRATIONS: &[(&str, &str)] = &[
+    (
+        MIGRATION_ID,
+        include_str!("../migrations/execution-postgres/0001_execution_foundations.sql"),
+    ),
+    (
+        "0002_prefixed_policy_digests",
+        include_str!("../migrations/execution-postgres/0002_prefixed_policy_digests.sql"),
+    ),
+];
 
 pub const TABLES: &[&str] = &[
     "runner_session_t",
@@ -125,7 +131,7 @@ mod tests {
     #[test]
     fn frozen_execution_inventory_is_exact() {
         assert_eq!(TABLES.len(), 12);
-        assert_eq!(MIGRATIONS.len(), 1);
+        assert_eq!(MIGRATIONS.len(), 2);
         let sql = MIGRATIONS[0].1;
         for table in TABLES {
             assert!(sql.contains(&format!("execution_ops.{table}")));
