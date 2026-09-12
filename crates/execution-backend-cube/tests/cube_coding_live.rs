@@ -64,6 +64,8 @@ async fn immutable_repository_returns_canonical_patch_through_live_cube() {
     let bundle_bytes = fs::read(&bundle).unwrap();
     let repository_digest = format!("sha256:{:x}", Sha256::digest(&bundle_bytes));
     let spec = CodingTurnSpec {
+        codex_policy: None,
+        native_model: None,
         thread: None,
         repository_digest: repository_digest.clone(),
         base_revision: revision.clone(),

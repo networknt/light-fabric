@@ -121,11 +121,14 @@ impl CodingSession {
     ) -> Result<Self> {
         let control = spec.thread.as_ref().context("missing thread control")?;
         // The repository base and all authority stay fixed within a role's stage.
-        let binding = json!({"scope":scope,"runnerId":control.runner_id,"stageId":control.stage_id,"role":spec.role,
+        let mut binding = json!({"scope":scope,"runnerId":control.runner_id,"stageId":control.stage_id,"role":spec.role,
             "roleProfile":spec.role_profile,"model":spec.model_alias,"authentication":spec.authentication_profile,
             "contract":contract_digest,"repositoryDigest":spec.repository_digest,"baseRevision":spec.base_revision,
             "workspaceRoot":spec.workspace_root,"writableRoots":spec.writable_roots,"allowedTools":spec.allowed_tools,
             "manifest":spec.materialization_manifest_digest});
+        if let Some(policy) = &spec.codex_policy {
+            binding["codexPolicy"] = serde_json::to_value(policy)?;
+        }
         Self::open_bound(
             home,
             scope,
@@ -209,11 +212,9 @@ impl CodingSession {
         self.save()
     }
     /// Candidate adapters can bind native metadata before begin; no disk write occurs here.
-    #[cfg(any(test, feature = "claude-prototype"))]
     pub(crate) fn adapter_state(&self) -> Option<&Value> {
         self.state.get("adapterState")
     }
-    #[cfg(any(test, feature = "claude-prototype"))]
     pub(crate) fn set_adapter_state(&mut self, value: Value) {
         self.state["adapterState"] = value;
     }

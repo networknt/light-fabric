@@ -402,6 +402,8 @@ fn default_true() -> bool {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CodingProfilePolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_policy: Option<coding_agent_runtime::codex::PersonalPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_policy: Option<coding_agent_runtime::claude::LaunchPolicy>,
     pub schema_version: u16,
     pub product_profile_digest: String,

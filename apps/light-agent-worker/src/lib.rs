@@ -499,6 +499,8 @@ mod tests {
             writable_roots: writable_roots.clone(),
         };
         let spec = CodingTurnSpec {
+            codex_policy: None,
+            native_model: None,
             thread: None,
             repository_digest: format!("sha256:{:064x}", 1),
             base_revision: "a".repeat(40),

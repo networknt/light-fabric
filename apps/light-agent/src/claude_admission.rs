@@ -13,7 +13,17 @@ pub(super) fn admit_native_selection(
         if request.thread.is_none() || runtime.enterprise_gateway.is_some() {
             bail!("Claude requires explicit workflow-owned personal thread control");
         }
-    } else if request.native_model.is_some() || runtime.claude_policy.is_some() {
+    } else if runtime.contract.adapter_id == coding_agent_runtime::CODEX_APP_SERVER_ADAPTER_ID
+        && let Some(policy) = &runtime.codex_policy
+    {
+        policy.validate(request.native_model.as_deref())?;
+        if runtime.enterprise_gateway.is_some() || runtime.claude_policy.is_some() {
+            bail!("Codex personal policy requires the personal route");
+        }
+    } else if request.native_model.is_some()
+        || runtime.claude_policy.is_some()
+        || runtime.codex_policy.is_some()
+    {
         bail!("nativeModel is not supported by the selected coding adapter");
     }
     Ok(())

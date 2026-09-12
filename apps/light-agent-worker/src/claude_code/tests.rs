@@ -18,6 +18,8 @@ fn policy() -> LaunchPolicy {
 fn turn() -> ClaudeTurn {
     ClaudeTurn {
         coding: CodingTurnSpec {
+            codex_policy: None,
+            native_model: None,
             thread: Some(CodingThreadControl {
                 runner_id: "runner".into(),
                 session_ref: Uuid::new_v4(),

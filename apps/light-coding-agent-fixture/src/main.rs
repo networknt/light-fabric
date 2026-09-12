@@ -133,6 +133,8 @@ mod tests {
         let digest = format!("sha256:{:x}", Sha256::digest(fs::read(&bundle).unwrap()));
         let request = CodingFixtureRequest {
             spec: CodingTurnSpec {
+                codex_policy: None,
+                native_model: None,
                 thread: None,
                 repository_digest: digest.clone(),
                 base_revision: revision.clone(),

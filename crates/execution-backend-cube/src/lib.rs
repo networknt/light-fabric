@@ -902,6 +902,8 @@ mod tests {
     #[test]
     fn trusted_side_canonicalizes_cube_coding_patch() {
         let spec = CodingTurnSpec {
+            codex_policy: None,
+            native_model: None,
             thread: None,
             repository_digest: format!("sha256:{}", "1".repeat(64)),
             base_revision: "a".repeat(40),

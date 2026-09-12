@@ -25,5 +25,17 @@
     "panic-containment",
     "dependency-compatibility",
     "license-compatibility"
-  ]
+  ],
+  "extensions": {
+    "codex-personal-policy-v1": {
+      "contractDigest": "sha256:5effaaf3e65a7d6ea42896a6c4f192c2a34ffa53e96841e2a82f296783073875",
+      "evidenceDigest": "sha256:08696d08e6da78ad201a84cb8ae605858beb396551abfe1e2e8e8329acf0831b",
+      "status": "local-qualified",
+      "gates": [
+        "test-codex-personal-config.py",
+        "run-coding-thread-smoke.py --personal-policy inherit",
+        "run-coding-thread-smoke.py --personal-policy trusted-personal-unattended"
+      ]
+    }
+  }
 }

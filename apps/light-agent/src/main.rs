@@ -3541,6 +3541,22 @@ fn coding_profile_from_policy(
     contract
         .validate()
         .map_err(|error| RuntimeError::Config(error.to_string()))?;
+    if let Some(codex) = &policy.codex_policy {
+        if contract.adapter_id != coding_agent_runtime::CODEX_APP_SERVER_ADAPTER_ID
+            || policy.authentication_profile != CodingAuthenticationProfile::PersonalSubscription
+            || policy.enterprise_gateway.is_some()
+            || !contract
+                .required_features
+                .contains("codex-personal-policy-v1")
+        {
+            return Err(RuntimeError::Config(
+                "codexPolicy requires the personal Codex adapter".into(),
+            ));
+        }
+        codex
+            .validate(None)
+            .map_err(|e| RuntimeError::Config(e.to_string()))?;
+    }
     if contract.adapter_id == coding_agent_runtime::claude::ADAPTER_ID {
         coding_agent_runtime::claude::require_local_contract(&contract, &policy.qualification)
             .map_err(|e| RuntimeError::Config(e.to_string()))?;
@@ -3655,6 +3671,7 @@ fn coding_profile_from_policy(
             contract: contract.clone(),
             qualification: policy.qualification.clone(),
             model: policy.model.clone(),
+            codex_policy: policy.codex_policy.clone(),
             claude_policy: policy.claude_policy.clone(),
             native_model: None,
             enterprise_gateway: policy.enterprise_gateway.clone(),
@@ -3663,6 +3680,7 @@ fn coding_profile_from_policy(
             contract,
             qualification: policy.qualification.clone(),
             model: policy.review_model.clone(),
+            codex_policy: policy.codex_policy.clone(),
             claude_policy: policy.claude_policy.clone(),
             native_model: None,
             enterprise_gateway: policy.enterprise_gateway.clone(),
@@ -4261,6 +4279,11 @@ async fn handle_socket(
                         writable_roots: writable_roots.clone(),
                     };
                     let spec = CodingTurnSpec {
+                        codex_policy: runtime.codex_policy.clone(),
+                        native_model: runtime
+                            .codex_policy
+                            .as_ref()
+                            .and(request.native_model.clone()),
                         thread: request.thread.clone(),
                         repository_digest: request.repository.digest.clone(),
                         base_revision: request.base_revision.clone(),
@@ -6445,6 +6468,7 @@ security.skipPathPrefixes: [/health]
             }
         };
         let mut policy = CodingProfilePolicy {
+            codex_policy: None,
             claude_policy: None,
             schema_version: 1,
             product_profile_digest: digest(1),

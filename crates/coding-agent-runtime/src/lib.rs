@@ -1,4 +1,5 @@
 pub mod claude;
+pub mod codex;
 use agent_runtime_protocol::canonical_digest;
 use base64::Engine;
 use execution_security::ProtectedPathPolicy;
@@ -17,7 +18,9 @@ pub const CODEX_APP_SERVER_BINARY_DIGEST: &str =
 pub fn codex_worker_capabilities() -> agent_runtime_protocol::RuntimeCapabilities {
     agent_runtime_protocol::RuntimeCapabilities {
         adapter_id: CODEX_APP_SERVER_ADAPTER_ID.into(),
-        adapter_version: CODEX_APP_SERVER_VERSION.into(),
+        // Worker implementation revision, independent of the pinned native CLI.
+        // Changing the supported input contract must change the capability digest.
+        adapter_version: format!("{CODEX_APP_SERVER_VERSION}-personal-policy-v1"),
         adapter_protocol_version: CODEX_APP_SERVER_PROTOCOL_VERSION.into(),
         protocol_version: agent_runtime_protocol::PROTOCOL_VERSION.into(),
         actions: BTreeSet::from(["mock".into(), "coding.codex-app-server-v1".into()]),
@@ -34,7 +37,7 @@ pub fn codex_worker_capabilities() -> agent_runtime_protocol::RuntimeCapabilitie
 pub const CODEX_EMBEDDED_ADAPTER_ID: &str = "codex-embedded-v1";
 pub const CODEX_EMBEDDED_UPSTREAM_REVISION: &str = "657a993cbee87acf52d14b758ce49dbd46d1b8eb";
 pub const CODEX_APP_SERVER_QUALIFICATION_EVIDENCE_DIGEST: &str =
-    "sha256:6fe22317953bbfd2192ae9c4bca64828b447731ee00940041b1395f5f7b50bf4";
+    "sha256:5bea40c988edd30a30aa7cd25e0be4ccc69be54fa66229f940769515fd39787b";
 pub const CODEX_EMBEDDED_PROTOTYPE_EVIDENCE_DIGEST: &str =
     "sha256:98fc7e79b0680efa86f534dd456fd89f7959ed59b1b3bd421727f5a05dcf9174";
 pub const CODING_ADAPTER_CONTRACT_VERSION: u16 = 1;
@@ -698,6 +701,10 @@ impl CodingThreadControl {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CodingTurnSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_policy: Option<codex::PersonalPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread: Option<CodingThreadControl>,
     pub repository_digest: String,
     pub base_revision: String,
@@ -734,6 +741,16 @@ impl CodingTurnSpec {
     }
 
     pub fn validate(&self) -> Result<(), CodingError> {
+        if let Some(policy) = &self.codex_policy {
+            if self.authentication_profile != CodingAuthenticationProfile::PersonalSubscription {
+                return Err(CodingError::Spec);
+            }
+            policy
+                .validate(self.native_model.as_deref())
+                .map_err(|_| CodingError::Spec)?;
+        } else if self.native_model.is_some() {
+            return Err(CodingError::Spec);
+        }
         if let Some(thread) = &self.thread {
             thread.validate()?;
             // Persisted native thread storage is not mounted into enterprise sandboxes.
@@ -1025,6 +1042,8 @@ mod tests {
     use std::collections::BTreeSet;
     fn spec() -> CodingTurnSpec {
         CodingTurnSpec {
+            codex_policy: None,
+            native_model: None,
             thread: None,
             repository_digest: format!("sha256:{:064x}", 1),
             base_revision: "a".repeat(40),

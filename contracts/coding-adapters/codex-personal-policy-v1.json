@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "feature": "codex-personal-policy-v1",
+  "adapterId": "codex-app-server-v1",
+  "nativeVersion": "0.153.4",
+  "policyField": "agentPolicy.execution.codingProfile.codexPolicy",
+  "workflowModelField": "coding.nativeModel",
+  "permissionSources": {
+    "agent-policy": {
+      "modes": [
+        "managed"
+      ],
+      "mapping": "existing role sandbox and approvalPolicy never"
+    },
+    "codex-cli": {
+      "modes": [
+        "inherit",
+        "trusted-personal-unattended"
+      ],
+      "inherit": "omit thread and turn approval and sandbox fields",
+      "trusted-personal-unattended": "approvalPolicy never and danger-full-access, subject to native requirements and outer namespace"
+    }
+  },
+  "interaction": [
+    "unattended"
+  ],
+  "modelAdmission": "exact allowedModels plus native account catalog, no aliases or reroutes",
+  "resume": "bind selected model and published policy; omitted model retains checkpoint selection",
+  "configurationReload": "new App Server process per worker invocation; hash opaque layer versions only",
+  "filesystemBoundary": "bubblewrap with read-only host, Git metadata and policy surfaces; admitted implementation writes or review scratch; private temporary storage; hidden Light checkpoints",
+  "publication": "canonical validated patch and existing review contract",
+  "enterpriseExpansion": false
+}

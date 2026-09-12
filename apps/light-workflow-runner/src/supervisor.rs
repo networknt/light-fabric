@@ -161,6 +161,25 @@ impl Supervisor {
                     .features
                     .push("workflow-coding-threads-v1".into());
             }
+            if !claude
+                && agent_worker.is_some_and(|worker| {
+                    worker.codex_home.is_some()
+                        && worker.sandbox_launcher.is_none()
+                        && worker.broker.is_none()
+                        && agent_runtime_protocol::canonical_digest(
+                            &coding_agent_runtime::codex_worker_capabilities(),
+                        )
+                        .ok()
+                        .as_ref()
+                            == Some(&worker.capability_digest)
+                })
+                && !capability
+                    .features
+                    .iter()
+                    .any(|f| f == "codex-personal-policy-v1")
+            {
+                capability.features.push("codex-personal-policy-v1".into());
+            }
             if claude
                 && !capability
                     .features
@@ -1349,6 +1368,11 @@ mod tests {
                 .any(|f| f == feature)
         );
         worker.codex_home = Some("/owner/codex".into());
+        // Exact pre-extension capabilities, rather than an arbitrary unknown digest.
+        let mut old_capabilities = coding_agent_runtime::codex_worker_capabilities();
+        old_capabilities.adapter_version = coding_agent_runtime::CODEX_APP_SERVER_VERSION.into();
+        worker.capability_digest =
+            agent_runtime_protocol::canonical_digest(&old_capabilities).unwrap();
         let legacy = Supervisor::admitted_backend_capability(base.clone(), Some(&worker));
         assert!(
             !legacy
@@ -1361,6 +1385,18 @@ mod tests {
         )
         .unwrap();
         let updated = Supervisor::admitted_backend_capability(base.clone(), Some(&worker));
+        assert!(
+            updated
+                .features
+                .iter()
+                .any(|f| f == "codex-personal-policy-v1")
+        );
+        assert!(
+            !legacy
+                .features
+                .iter()
+                .any(|f| f == "codex-personal-policy-v1")
+        );
         assert!(
             updated
                 .features

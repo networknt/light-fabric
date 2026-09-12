@@ -162,6 +162,7 @@ pub struct EdgeActionSpec {
 
 #[derive(Debug, Clone)]
 pub struct CodingAdapterRuntime {
+    pub codex_policy: Option<coding_agent_runtime::codex::PersonalPolicy>,
     pub claude_policy: Option<coding_agent_runtime::claude::LaunchPolicy>,
     pub native_model: Option<String>,
     pub contract: CodingAdapterContract,
@@ -1533,6 +1534,18 @@ impl AgentRepository {
         spec.validate()?;
         repository.validate(spec)?;
         runtime.contract.validate()?;
+        if spec.codex_policy != runtime.codex_policy
+            || (runtime.codex_policy.is_some() && spec.native_model != runtime.native_model)
+            || (runtime.codex_policy.is_some()
+                && runtime.contract.adapter_id != coding_agent_runtime::CODEX_APP_SERVER_ADAPTER_ID)
+            || (runtime.codex_policy.is_some()
+                && !runtime
+                    .contract
+                    .required_features
+                    .contains("codex-personal-policy-v1"))
+        {
+            bail!("Codex selection differs from the admitted policy");
+        }
         match (&runtime.claude_policy, runtime.contract.adapter_id.as_str()) {
             (Some(policy), coding_agent_runtime::claude::ADAPTER_ID) => {
                 coding_agent_runtime::claude::require_local_contract(
@@ -1551,7 +1564,7 @@ impl AgentRepository {
                 }
             }
             (None, coding_agent_runtime::CODEX_APP_SERVER_ADAPTER_ID)
-                if runtime.native_model.is_none() =>
+                if runtime.native_model.is_none() || runtime.codex_policy.is_some() =>
             {
                 ()
             }
@@ -4073,6 +4086,7 @@ mod tests {
             "schemaDigest":coding_agent_runtime::CODEX_APP_SERVER_SCHEMA_DIGEST,"requiredFeatures":["codex-app-server-v1"]
         })).unwrap();
         let runtime = CodingAdapterRuntime {
+            codex_policy: None,
             claude_policy: None,
             native_model: None,
             qualification: coding_agent_runtime::CodingAdapterQualification {

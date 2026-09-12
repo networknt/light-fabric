@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "feature": "codex-personal-policy-v1",
+  "adapterId": "codex-app-server-v1",
+  "nativeVersion": "0.153.4",
+  "nativeBinaryDigest": "sha256:56ef98ab4032d317ab26e9b5e5a175650717351edb16ed9cde0cb6d1734d62da",
+  "status": "local-qualified",
+  "verifiedOn": "2026-09-12",
+  "checks": {
+    "typedAdmissionAndInjection": "passed",
+    "pinnedConfigurationPrecedenceAndManagedRequirements": "passed",
+    "relativeConfigurationPathsAndProjectTrust": "passed",
+    "outerFilesystemAndPolicyProtection": "passed",
+    "descendantCancellation": "passed",
+    "failureTerminalDelivery": "passed",
+    "nativeInheritedNewResumeClose": "passed",
+    "nativeTrustedNewResumeClose": "passed",
+    "nativeInvalidModelAndSwitchRejection": "passed",
+    "changedNativeDefaultKeepsSessionModel": "passed",
+    "remoteToolRoleEnforcement": "deployment-specific-unqualified",
+    "absentPolicySurfacesAndReplacementProtection": "passed",
+    "nativeReservedProviderOverrideRejection": "passed",
+    "cancellationPreservesPartialFramesAndCommittedReceipt": "passed",
+    "nativeInterruptAndDeadlineGrace": "passed",
+    "legacyProcessGroupInheritance": "passed",
+    "legacyApprovalAndErrorEvidence": "passed",
+    "preExtensionWorkerFeatureRejection": "passed"
+  },
+  "liveModel": "gpt-6-astra",
+  "notes": [
+    "No credentials, native settings, or conversation content are included.",
+    "A filesystem namespace does not restrict mutations through remote MCP services. Qualify service-side role enforcement for each deployment."
+  ],
+  "workerCapabilityVersion": "0.153.4-personal-policy-v1"
+}

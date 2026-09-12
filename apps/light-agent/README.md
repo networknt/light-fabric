@@ -164,7 +164,7 @@ agentPolicy:
         status: qualified
         evaluatedDimensions: [protocol-lifecycle, approval-mediation, streaming-events, usage-accounting, cancellation, resumability, canonical-patch, review-isolation, authentication-profiles, workspace-isolation, panic-containment, dependency-compatibility, license-compatibility]
         contractDigest: sha256:<exact-launch-contract-digest>
-        evidenceDigest: sha256:6fe22317953bbfd2192ae9c4bca64828b447731ee00940041b1395f5f7b50bf4
+        evidenceDigest: sha256:5bea40c988edd30a30aa7cd25e0be4ccc69be54fa66229f940769515fd39787b
       model: coding-implementer
       reviewModel: coding-reviewer
       # personal-subscription or enterprise-api. This value is immutable for
@@ -296,3 +296,5 @@ The `/chat` entry also covers `/chat/` and its descendants. Other browser routes
 need their own allowlist entry; query/header service selection does not bypass
 this check. Missing, opaque (`null`), malformed, and unlisted origins are denied.
 Keep any existing `/ctrl/mcp` allowlist entry when adding `/chat`.
+
+Personal Codex profiles may opt into [native permissions and workflow-selected models](../../docs/src/product/light-agent-worker/codex-personal-policy.md) using published `codexPolicy` and the `codex-personal-policy-v1` required feature.

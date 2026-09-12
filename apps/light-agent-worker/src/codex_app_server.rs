@@ -26,6 +26,7 @@ use tokio::{
 };
 
 const GIT_EXECUTABLE: &str = "/usr/bin/git";
+mod personal;
 
 pub(super) async fn run<W: AsyncWrite + Unpin>(
     writer: &mut W,
@@ -36,7 +37,118 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
     cancel: tokio::sync::watch::Receiver<Option<String>>,
     deadline: Option<tokio::time::Instant>,
 ) -> Result<()> {
-    let spec: CodingTurnSpec = serde_json::from_value(required(&input, "codingSpec")?.clone())?;
+    complete_operation(writer, identity, sequence, async |writer, sequence| {
+        run_inner(
+            writer,
+            identity,
+            sequence,
+            input,
+            enterprise_gateway,
+            cancel,
+            deadline,
+        )
+        .await
+    })
+    .await
+}
+
+/// The operation owns its cancellation points. Event writes and committed result
+/// delivery must finish even when the cancellation signal is already set.
+async fn complete_operation<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    identity: &RuntimeIdentity,
+    sequence: &mut u64,
+    operation: impl AsyncFnOnce(&mut W, &mut u64) -> Result<()>,
+) -> Result<()> {
+    let outcome = operation(writer, sequence).await;
+    let (class, error) = match outcome {
+        Ok(()) => return Ok(()),
+        Err(error) if error.is::<TurnCancelled>() => (
+            ResultClass::Cancelled,
+            "coding turn cancelled or deadline elapsed".into(),
+        ),
+        Err(error) => (
+            ResultClass::TerminalFailure,
+            format!("coding turn failed: {error}"),
+        ),
+    };
+    emit(
+        writer,
+        identity,
+        sequence,
+        RuntimeEventPayload::Terminal {
+            class,
+            output: None,
+            error: Some(error),
+        },
+    )
+    .await
+}
+
+#[derive(Debug)]
+struct TurnCancelled;
+impl std::fmt::Display for TurnCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("coding turn cancelled or deadline elapsed")
+    }
+}
+impl std::error::Error for TurnCancelled {}
+
+struct TurnControl {
+    cancel: tokio::sync::watch::Receiver<Option<String>>,
+    deadline: Option<tokio::time::Instant>,
+}
+impl TurnControl {
+    async fn request(
+        &self,
+        stdin: &mut tokio::process::ChildStdin,
+        id: u64,
+        method: &str,
+        params: Value,
+    ) -> Result<()> {
+        // Only the disposable native stream may be abandoned mid-write. On an
+        // error the caller exits and destroys this process; it never reuses it.
+        tokio::select! {
+            biased;
+            _ = self.cancelled() => Err(TurnCancelled.into()),
+            result = request(stdin, id, method, params) => result,
+        }
+    }
+
+    async fn cancelled(&self) {
+        let mut cancel = self.cancel.clone();
+        let changed = async {
+            loop {
+                if cancel.borrow().is_some() {
+                    return;
+                }
+                if cancel.changed().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            }
+        };
+        let expired = async {
+            if let Some(deadline) = self.deadline {
+                tokio::time::sleep_until(deadline).await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        };
+        tokio::select! { _ = changed => {}, _ = expired => {} }
+    }
+}
+
+async fn run_inner<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    identity: &RuntimeIdentity,
+    sequence: &mut u64,
+    input: Value,
+    enterprise_gateway: Option<EnterpriseGatewayConfig>,
+    cancel: tokio::sync::watch::Receiver<Option<String>>,
+    deadline: Option<tokio::time::Instant>,
+) -> Result<()> {
+    let control = TurnControl { cancel, deadline };
+    let mut spec: CodingTurnSpec = serde_json::from_value(required(&input, "codingSpec")?.clone())?;
     spec.validate()?;
     let manifest: MaterializationManifest =
         serde_json::from_value(required(&input, "materializationManifest")?.clone())?;
@@ -50,6 +162,13 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
     let qualification: CodingAdapterQualification =
         serde_json::from_value(required(&input, "adapterQualification")?.clone())?;
     validate_contract(&contract, &qualification).await?;
+    if spec.codex_policy.is_some()
+        && !contract
+            .required_features
+            .contains("codex-personal-policy-v1")
+    {
+        bail!("Codex personal policy requires its admitted contract feature");
+    }
     let staged: Vec<StagedInput> =
         serde_json::from_value(required(&input, "runtimeStagedInputs")?.clone())?;
     let bundle = staged
@@ -180,9 +299,33 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
             .env(credential_env, token);
     } else if let Some(home) = std::env::var_os("LIGHT_CODEX_HOME") {
         command.env("CODEX_HOME", home);
+        if spec
+            .codex_policy
+            .as_ref()
+            .is_some_and(|p| p.native_permissions())
+        {
+            if let Some(home) = std::env::var_os("HOME") {
+                command.env("HOME", home);
+            }
+            if let Some(path) = std::env::var_os("PATH") {
+                command.env("PATH", path);
+            }
+        }
     }
     command.arg("app-server");
-    let mut child = command.spawn().context("spawn pinned Codex App Server")?;
+    command.current_dir(turn_cwd);
+    if spec
+        .codex_policy
+        .as_ref()
+        .is_some_and(|p| p.native_permissions())
+    {
+        personal::isolate(&mut command, &spec, &repository, turn_cwd)?;
+    }
+    let detached = spec
+        .codex_policy
+        .as_ref()
+        .is_some_and(|p| p.native_permissions());
+    let (mut child, mut process_group) = spawn_native_process(&mut command, detached)?;
     let mut stdin = child.stdin.take().context("Codex stdin unavailable")?;
     let stdout = child.stdout.take().context("Codex stdout unavailable")?;
     let stderr = child.stderr.take().context("Codex stderr unavailable")?;
@@ -192,23 +335,57 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
         bounded.read_to_end(&mut bytes).await
     });
     let mut stdout = BufReader::new(stdout);
+    if spec.codex_policy.is_some() {
+        emit(
+            writer,
+            identity,
+            sequence,
+            RuntimeEventPayload::Progress {
+                message: "codex-personal: initializing native process".into(),
+            },
+        )
+        .await?;
+    }
 
-    request(
+    control.request(
         &mut stdin,
         1,
         "initialize",
         json!({"clientInfo":{"name":"light-agent-worker","title":"Light Agent Worker","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":false,"requestAttestation":false}}),
     )
     .await?;
-    response(&mut stdout, 1).await?;
+    response_controlled(&mut stdout, 1, spec.codex_policy.is_some(), Some(&control)).await?;
     notification(&mut stdin, "initialized").await?;
-    request(&mut stdin, 2, "account/read", json!({"refreshToken":false})).await?;
-    let account = response(&mut stdout, 2).await?;
+    control
+        .request(&mut stdin, 2, "account/read", json!({"refreshToken":false}))
+        .await?;
+    let account =
+        response_controlled(&mut stdout, 2, spec.codex_policy.is_some(), Some(&control)).await?;
     let authentication = authentication_evidence(
         spec.authentication_profile,
         &account,
         enterprise_home.as_ref().map(|value| value.3),
     )?;
+    if spec.codex_policy.is_some() {
+        emit(
+            writer,
+            identity,
+            sequence,
+            RuntimeEventPayload::Progress {
+                message: "codex-personal: checking configured model and account catalog".into(),
+            },
+        )
+        .await?;
+    }
+    let native_evidence = personal::select_model(
+        &mut stdin,
+        &mut stdout,
+        &mut spec,
+        session.as_mut(),
+        turn_cwd,
+        &control,
+    )
+    .await?;
     let (method, params) = thread_open_params(
         &spec,
         turn_cwd,
@@ -221,8 +398,21 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
     if let Some(session) = session.as_mut() {
         session.begin()?;
     }
-    request(&mut stdin, 3, method, params).await?;
-    let thread = response(&mut stdout, 3).await?;
+    control.request(&mut stdin, 3, method, params).await?;
+    let thread =
+        response_controlled(&mut stdout, 3, spec.codex_policy.is_some(), Some(&control)).await?;
+    if spec.codex_policy.is_some() {
+        personal::verify_thread(&thread, &spec)?;
+        emit(
+            writer,
+            identity,
+            sequence,
+            RuntimeEventPayload::Progress {
+                message: "codex-personal: native thread admitted".into(),
+            },
+        )
+        .await?;
+    }
     let thread_id = string_at(&thread, "/result/thread/id")?;
     if let Some(expected) = session.as_ref().and_then(|s| s.thread_id())
         && expected != thread_id
@@ -239,18 +429,27 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
         // than hold the worker until the runner kills it at the execution deadline.
         let budget = archive_budget(deadline)
             .context("too little execution budget left to close the thread")?;
-        tokio::time::timeout(budget, archive_thread(&mut stdin, &mut stdout, thread_id))
-            .await
-            .with_context(|| {
-                format!(
-                    "thread/archive did not answer within {}s",
-                    budget.as_secs_f32()
-                )
-            })??;
+        tokio::time::timeout(
+            budget,
+            archive_thread(
+                &mut stdin,
+                &mut stdout,
+                thread_id,
+                spec.codex_policy.is_some(),
+            ),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "thread/archive did not answer within {}s",
+                budget.as_secs_f32()
+            )
+        })??;
         let receipt = session
             .as_mut()
             .context("close requires persisted session")?
             .finish(thread_id, "", true)?;
+        process_group.terminate();
         shutdown(&mut child).await;
         stderr_drain.abort();
         return emit(
@@ -259,20 +458,22 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
             sequence,
             RuntimeEventPayload::Terminal {
                 class: ResultClass::Success,
-                output: Some(json!({"authentication":authentication,"codingThread":receipt})),
+                output: Some(json!({"authentication":authentication,"nativeSelection":native_evidence,"codingThread":receipt})),
                 error: None,
             },
         )
         .await;
     }
-    request(
-        &mut stdin,
-        4,
-        "turn/start",
-        turn_start_params(&spec, thread_id, &repository, turn_cwd),
-    )
-    .await?;
-    let turn = response(&mut stdout, 4).await?;
+    control
+        .request(
+            &mut stdin,
+            4,
+            "turn/start",
+            turn_start_params(&spec, thread_id, &repository, turn_cwd),
+        )
+        .await?;
+    let turn =
+        response_controlled(&mut stdout, 4, spec.codex_policy.is_some(), Some(&control)).await?;
     let turn_id = string_at(&turn, "/result/turn/id")?;
     let terminal = drive_turn(
         writer,
@@ -282,10 +483,23 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
         &mut stdout,
         thread_id,
         turn_id,
-        cancel,
+        &control,
+        spec.codex_policy.is_some(),
     )
     .await?;
+    if spec.codex_policy.is_some() {
+        emit(
+            writer,
+            identity,
+            sequence,
+            RuntimeEventPayload::Progress {
+                message: "codex-personal: native turn completed".into(),
+            },
+        )
+        .await?;
+    }
     if terminal.status != "completed" {
+        process_group.terminate();
         shutdown(&mut child).await;
         stderr_drain.abort();
         emit(
@@ -334,6 +548,7 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
             deadline,
         )
         .await?;
+        process_group.terminate();
         shutdown(&mut child).await;
         stderr_drain.abort();
         return emit(
@@ -342,7 +557,7 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
             sequence,
             RuntimeEventPayload::Terminal {
                 class: ResultClass::Success,
-                output: Some(json!({"adapter":CODEX_APP_SERVER_ADAPTER_ID,"adapterVersion":CODEX_APP_SERVER_VERSION,"threadId":thread_id,"turnId":turn_id,"authentication":authentication,"codingThread":receipt,"codingReview":result,"reviewValidationEvidence":terminal.validation_evidence})),
+                output: Some(json!({"adapter":CODEX_APP_SERVER_ADAPTER_ID,"adapterVersion":CODEX_APP_SERVER_VERSION,"threadId":thread_id,"turnId":turn_id,"authentication":authentication,"nativeSelection":native_evidence,"codingThread":receipt,"codingReview":result,"reviewValidationEvidence":terminal.validation_evidence})),
                 error: None,
             },
         )
@@ -388,6 +603,18 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
         deadline,
     )
     .await?;
+    if spec.codex_policy.is_some() {
+        emit(
+            writer,
+            identity,
+            sequence,
+            RuntimeEventPayload::Progress {
+                message: "codex-personal: checkpoint committed, stopping native process".into(),
+            },
+        )
+        .await?;
+    }
+    process_group.terminate();
     shutdown(&mut child).await;
     stderr_drain.abort();
     emit(
@@ -396,11 +623,28 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
         sequence,
         RuntimeEventPayload::Terminal {
             class: ResultClass::Success,
-            output: Some(json!({"adapter":CODEX_APP_SERVER_ADAPTER_ID,"adapterVersion":CODEX_APP_SERVER_VERSION,"threadId":thread_id,"turnId":turn_id,"authentication":authentication,"codingThread":receipt,"validationEvidence":terminal.validation_evidence,"finalMessage":terminal.final_message})),
+            output: Some(json!({"adapter":CODEX_APP_SERVER_ADAPTER_ID,"adapterVersion":CODEX_APP_SERVER_VERSION,"threadId":thread_id,"turnId":turn_id,"authentication":authentication,"nativeSelection":native_evidence,"codingThread":receipt,"validationEvidence":terminal.validation_evidence,"finalMessage":terminal.final_message})),
             error: None,
         },
     )
     .await
+}
+
+fn spawn_native_process(
+    command: &mut Command,
+    detached: bool,
+) -> Result<(Child, personal::ProcessGroup)> {
+    // Only bubblewrap's die-with-parent route may leave the runner-owned group.
+    if detached {
+        command.process_group(0);
+    }
+    let child = command.spawn().context("spawn pinned Codex App Server")?;
+    let group = personal::ProcessGroup(if detached {
+        child.id().context("Codex process id missing")?
+    } else {
+        0
+    });
+    Ok((child, group))
 }
 
 async fn prepare_enterprise_gateway(
@@ -564,21 +808,34 @@ async fn drive_turn<W: AsyncWrite + Unpin>(
     stdout: &mut BufReader<tokio::process::ChildStdout>,
     thread_id: &str,
     turn_id: &str,
-    mut cancel: tokio::sync::watch::Receiver<Option<String>>,
+    control: &TurnControl,
+    personal_policy: bool,
 ) -> Result<TurnTerminal> {
     let mut interrupt_sent = false;
+    let mut interrupt_deadline = tokio::time::Instant::now();
     let mut final_message = None;
     let mut validation_evidence = Vec::new();
     loop {
-        let line = tokio::select! {
-            frame = read_app_server_frame(stdout) => frame?,
-            changed = cancel.changed(), if !interrupt_sent => {
-                if changed.is_ok() && cancel.borrow().is_some() {
-                    request(stdin, 99, "turn/interrupt", json!({"threadId":thread_id,"turnId":turn_id})).await?;
+        // Keep the frame read alive across an interrupt. Dropping a partial
+        // read would discard bytes already consumed from the native JSONL stream.
+        let frame = read_app_server_frame(stdout);
+        tokio::pin!(frame);
+        let line = loop {
+            tokio::select! {
+                value = &mut frame => break value?,
+                _ = control.cancelled(), if !interrupt_sent => {
+                    tokio::time::timeout(std::time::Duration::from_secs(5),
+                        request(stdin, 99, "turn/interrupt", json!({"threadId":thread_id,"turnId":turn_id})))
+                        .await.map_err(|_| TurnCancelled)??;
                     interrupt_sent = true;
-                    continue;
                 }
-                continue;
+                _ = tokio::time::sleep_until(interrupt_deadline), if interrupt_sent => {
+                    return Err(TurnCancelled.into());
+                }
+            }
+            if interrupt_sent {
+                interrupt_deadline =
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(5);
             }
         };
         let Some(value) = line else { break };
@@ -592,7 +849,11 @@ async fn drive_turn<W: AsyncWrite + Unpin>(
                 RuntimeEventPayload::ApprovalRequested {
                     request_id: id.to_string(),
                     kind: method.to_owned(),
-                    subject: value.get("params").cloned().unwrap_or(Value::Null),
+                    subject: if personal_policy {
+                        json!({"interaction":"unattended"})
+                    } else {
+                        value.get("params").cloned().unwrap_or(Value::Null)
+                    },
                 },
             )
             .await?;
@@ -616,12 +877,24 @@ async fn drive_turn<W: AsyncWrite + Unpin>(
             continue;
         }
         match value.get("method").and_then(Value::as_str) {
+            Some("model/rerouted") if personal_policy => {
+                bail!("Codex rerouted the selected model; start a new session")
+            }
             Some("item/completed")
                 if value.pointer("/params/threadId").and_then(Value::as_str) == Some(thread_id)
                     && value.pointer("/params/turnId").and_then(Value::as_str) == Some(turn_id)
                     && value.pointer("/params/item/type").and_then(Value::as_str)
                         == Some("agentMessage") =>
             {
+                emit(
+                    writer,
+                    identity,
+                    sequence,
+                    RuntimeEventPayload::Progress {
+                        message: "codex: final native message received".into(),
+                    },
+                )
+                .await?;
                 final_message = value
                     .pointer("/params/item/text")
                     .and_then(Value::as_str)
@@ -702,6 +975,12 @@ async fn drive_turn<W: AsyncWrite + Unpin>(
                     final_message,
                     validation_evidence,
                 });
+            }
+            Some("turn/completed") => {
+                bail!("Codex completed a different turn than the admitted operation")
+            }
+            Some("error") if personal_policy => {
+                bail!("Codex App Server reported an error (native details withheld)")
             }
             Some("error") => bail!("Codex App Server error: {}", value["params"]),
             _ => {}
@@ -789,7 +1068,12 @@ async fn finish_thread(
                 .to_string(),
         ),
         Some(budget) => {
-            match tokio::time::timeout(budget, archive_thread(stdin, stdout, thread_id)).await {
+            match tokio::time::timeout(
+                budget,
+                archive_thread(stdin, stdout, thread_id, spec.codex_policy.is_some()),
+            )
+            .await
+            {
                 Ok(Ok(())) => session.mark_closed().map_err(|error| error.to_string()),
                 Ok(Err(error)) => Err(error.to_string()),
                 Err(_) => Err(format!(
@@ -816,9 +1100,10 @@ async fn archive_thread(
     stdin: &mut tokio::process::ChildStdin,
     stdout: &mut BufReader<tokio::process::ChildStdout>,
     thread_id: &str,
+    personal_policy: bool,
 ) -> Result<()> {
     request(stdin, 5, "thread/archive", json!({"threadId":thread_id})).await?;
-    response(stdout, 5).await?;
+    response_controlled(stdout, 5, personal_policy, None).await?;
     Ok(())
 }
 
@@ -836,7 +1121,10 @@ fn thread_start_params(spec: &CodingTurnSpec, cwd: &Path) -> Value {
     // CodingRoleExecutionProfile, not on the model alias.
     if spec.authentication_profile == CodingAuthenticationProfile::EnterpriseApi {
         value["model"] = Value::String(spec.model_alias.clone());
+    } else if let Some(model) = &spec.native_model {
+        value["model"] = json!(model);
     }
+    personal::permissions(&mut value, spec, true);
     value
 }
 
@@ -859,6 +1147,8 @@ fn turn_start_params(
     });
     if spec.authentication_profile == CodingAuthenticationProfile::EnterpriseApi {
         value["model"] = Value::String(spec.model_alias.clone());
+    } else if let Some(model) = &spec.native_model {
+        value["model"] = json!(model);
     }
     if spec.role == CodingRole::Implement
         && let Some(remediation) = &spec.remediation
@@ -911,6 +1201,7 @@ fn turn_start_params(
         });
         value["outputSchema"] = coding_review_output_schema();
     }
+    personal::permissions(&mut value, spec, false);
     value
 }
 
@@ -1050,16 +1341,47 @@ async fn write_json(stdin: &mut tokio::process::ChildStdin, value: &Value) -> Re
     stdin.flush().await?;
     Ok(())
 }
+#[cfg(test)]
 async fn response(stdout: &mut BufReader<tokio::process::ChildStdout>, id: u64) -> Result<Value> {
-    while let Some(value) = read_app_server_frame(stdout).await? {
+    response_controlled(stdout, id, false, None).await
+}
+
+async fn response_controlled(
+    stdout: &mut BufReader<tokio::process::ChildStdout>,
+    id: u64,
+    personal_policy: bool,
+    control: Option<&TurnControl>,
+) -> Result<Value> {
+    loop {
+        let cancelled = async {
+            if let Some(control) = control {
+                control.cancelled().await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        };
+        let value = tokio::select! {
+            biased;
+            _ = cancelled => return Err(TurnCancelled.into()),
+            value = read_app_server_frame(stdout) => value?,
+        };
+        let Some(value) = value else {
+            bail!("App Server closed before response {id}");
+        };
+        if personal_policy && value.get("method").and_then(Value::as_str) == Some("model/rerouted")
+        {
+            bail!("Codex rerouted the selected model; start a new session");
+        }
         if value.get("id").and_then(Value::as_u64) == Some(id) {
             if value.get("error").is_some() {
+                if personal_policy {
+                    bail!("App Server request {id} failed (native details withheld)");
+                }
                 bail!("App Server request {id} failed: {}", value["error"]);
             }
             return Ok(value);
         }
     }
-    bail!("App Server closed before response {id}")
 }
 
 async fn read_app_server_frame<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<Option<Value>> {
@@ -1182,6 +1504,8 @@ mod tests {
             resolved_finding_ids: std::collections::BTreeSet::new(),
         };
         CodingTurnSpec {
+            codex_policy: None,
+            native_model: None,
             thread: None,
             repository_digest: implementation.repository_digest.clone(),
             base_revision: implementation.base_revision.clone(),
@@ -1215,7 +1539,7 @@ mod tests {
         }
     }
 
-    fn persistent_spec() -> CodingTurnSpec {
+    pub(super) fn persistent_spec() -> CodingTurnSpec {
         let mut spec = review_spec("");
         spec.role = CodingRole::Implement;
         spec.role_profile =

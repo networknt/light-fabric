@@ -1,5 +1,8 @@
 # Workflow-controlled coding threads
 
+For native permission inheritance and `coding.nativeModel`, see
+[Personal Codex permissions and models](codex-personal-policy.md).
+
 The workflow chooses conversation boundaries. Keep an implementer thread and a
 separate reviewer thread through one stage's implementation/review/remediation
 cycle. Close them when the stage is accepted, then allocate new session references

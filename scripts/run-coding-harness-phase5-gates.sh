@@ -14,7 +14,7 @@ cargo test --locked -p light-agent-worker --lib \
 app_evidence="contracts/coding-adapters/codex-app-server-v1-qualification.json"
 embedded_evidence="contracts/coding-adapters/codex-embedded-v1-prototype.json"
 test "$(sha256sum "$app_evidence" | cut -d' ' -f1)" = \
-  "6fe22317953bbfd2192ae9c4bca64828b447731ee00940041b1395f5f7b50bf4"
+  "5bea40c988edd30a30aa7cd25e0be4ccc69be54fa66229f940769515fd39787b"
 test "$(sha256sum "$embedded_evidence" | cut -d' ' -f1)" = \
   "98fc7e79b0680efa86f534dd456fd89f7959ed59b1b3bd421727f5a05dcf9174"
 

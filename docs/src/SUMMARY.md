@@ -90,6 +90,7 @@
   - [Claude Personal Worker](product/light-agent/claude-personal-worker.md)
   - [Shared Native Coding Sessions](product/light-agent/shared-native-coding-sessions.md)
   - [Workflow Coding Thread Lifecycle](product/light-agent-worker/workflow-thread-lifecycle.md)
+  - [Personal Codex Permissions and Models](product/light-agent-worker/codex-personal-policy.md)
   - [Worker Codex Upgrade Strategy](product/light-agent-worker/codex-upgrade-strategy.md)
   - [Development Workflow Orchestration](product/light-agent/development-workflow-orchestration.md)
   - [Shared Task Workspaces](product/light-agent/shared-task-workspaces.md)

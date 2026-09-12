@@ -1014,6 +1014,8 @@ sys.stdin.readline()
         authentication_profile: coding_agent_runtime::CodingAuthenticationProfile,
     ) -> serde_json::Value {
         serde_json::to_value(coding_agent_runtime::CodingTurnSpec {
+            codex_policy: None,
+            native_model: None,
             thread: None,
             repository_digest: format!("sha256:{}", "1".repeat(64)),
             base_revision: "a".repeat(40),
