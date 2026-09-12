@@ -141,6 +141,7 @@ repo-root `build.sh`. All release images use the `networknt` Docker Hub
 namespace:
 
 ```text
+networknt/light-a2a
 networknt/light-agent
 networknt/light-deployer
 networknt/light-gateway

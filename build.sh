@@ -17,6 +17,7 @@ NO_CACHE=false
 SKIP_LATEST=false
 
 APPS=(
+  "light-a2a"
   "light-agent"
   "light-deployer"
   "light-gateway"
@@ -79,7 +80,7 @@ contains_app() {
 
 dockerfile_for_app() {
   case "$1" in
-    light-agent|light-gateway|light-workflow|light-knowledge-admin)
+    light-a2a|light-agent|light-gateway|light-workflow|light-knowledge-admin)
       printf 'apps/%s/docker/Dockerfile\n' "$1"
       ;;
     light-deployer)

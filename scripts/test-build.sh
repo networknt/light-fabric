@@ -38,6 +38,7 @@ grep -Fxq '!target/release/light-knowledge-admin' "${REPO_ROOT}/.dockerignore" |
 }
 
 APPS=(
+  "light-a2a"
   "light-agent"
   "light-deployer"
   "light-gateway"
@@ -84,6 +85,14 @@ for app in "${APPS[@]}"; do
   grep -Fxq -- "build --locked --release --package ${app} --bin ${app}" "$CARGO_LOG"
   assert_line "build --no-cache --tag networknt/${app}:9.8.7 --tag networknt/${app}:latest --file ${dockerfile} ."
 done
+
+: > "$DOCKER_LOG"
+: > "$CARGO_LOG"
+"${REPO_ROOT}/apps/light-a2a/build.sh" 9.8.8 --local --skip-latest
+grep -Fxq -- "build --locked --release --package light-a2a --bin light-a2a" "$CARGO_LOG"
+[[ "$(wc -l < "$CARGO_LOG")" -eq 1 ]]
+assert_line "build --tag networknt/light-a2a:9.8.8 --file apps/light-a2a/docker/Dockerfile ."
+[[ "$(wc -l < "$DOCKER_LOG")" -eq 1 ]]
 
 : > "$DOCKER_LOG"
 : > "$CARGO_LOG"

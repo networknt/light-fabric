@@ -23,6 +23,7 @@ TARGETS=(
 )
 
 APPS=(
+  "light-a2a"
   "light-agent"
   "light-deployer"
   "light-gateway"

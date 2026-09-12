@@ -5,6 +5,7 @@
 target/*
 !target/release/
 target/release/*
+!target/release/light-a2a
 !target/release/light-agent
 !target/release/light-deployer
 !target/release/light-gateway
