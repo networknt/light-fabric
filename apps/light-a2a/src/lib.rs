@@ -135,11 +135,11 @@ pub struct A2aBinding {
     pub artifact_retention: A2aArtifactRetentionPolicy,
     #[serde(default)]
     pub trusted_signing_profile: Option<TrustedCardSigningProfile>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_url: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outbound_policy: Option<OutboundPolicy>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase6_profile: Option<Phase6Profile>,
 }
 
@@ -3266,6 +3266,20 @@ mod tests {
     fn refresh_content_digest(config: &mut A2aConfig) {
         config.runtime_policy.content_digest =
             canonical_projection_digest(&serde_json::json!({"bindings": config.bindings})).unwrap();
+    }
+
+    #[test]
+    fn portal_omitted_optional_fields_preserve_binding_digest() {
+        let config = valid_config(0);
+        let mut published = serde_json::to_value(&config.bindings[0]).unwrap();
+        for key in ["remoteUrl", "outboundPolicy", "phase6Profile"] {
+            published.as_object_mut().unwrap().remove(key);
+        }
+        let parsed: A2aBinding = serde_json::from_value(published.clone()).unwrap();
+        assert_eq!(
+            canonical_projection_digest(&json!({"bindings":[published]})).unwrap(),
+            canonical_projection_digest(&json!({"bindings":[parsed]})).unwrap()
+        );
     }
 
     #[test]

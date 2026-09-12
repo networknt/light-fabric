@@ -1,49 +1,49 @@
 runtimePolicy:
-  publicationId: ${runtimePolicy.publicationId:}
-  releaseVersion: ${runtimePolicy.releaseVersion:0}
-  policySnapshotId: ${runtimePolicy.policySnapshotId:}
-  policyVersion: ${runtimePolicy.policyVersion:0}
-  policyDigest: ${runtimePolicy.policyDigest:}
-  audience: ${runtimePolicy.audience:light-a2a}
-  host: ${runtimePolicy.host:}
-  serviceId: ${runtimePolicy.serviceId:com.networknt.light-a2a-1.0.0}
-  envTag: ${runtimePolicy.envTag:dev}
-  contentDigest: ${runtimePolicy.contentDigest:}
-  sourceEventSequence: ${runtimePolicy.sourceEventSequence:0}
-  schemaVersion: ${runtimePolicy.schemaVersion:1}
-  createdAt: ${runtimePolicy.createdAt:}
-  validFrom: ${runtimePolicy.validFrom:}
-  refreshAfter: ${runtimePolicy.refreshAfter:}
-  expiresAt: ${runtimePolicy.expiresAt:}
-  revocationEpoch: ${runtimePolicy.revocationEpoch:0}
-  compatibilityGeneration: ${runtimePolicy.compatibilityGeneration:1}
+  publicationId: ${a2a.runtimePolicy.publicationId:}
+  releaseVersion: ${a2a.runtimePolicy.releaseVersion:0}
+  policySnapshotId: ${a2a.runtimePolicy.policySnapshotId:}
+  policyVersion: ${a2a.runtimePolicy.policyVersion:0}
+  policyDigest: ${a2a.runtimePolicy.policyDigest:}
+  audience: ${a2a.runtimePolicy.audience:light-a2a}
+  host: ${a2a.runtimePolicy.host:}
+  serviceId: ${a2a.runtimePolicy.serviceId:com.networknt.light-a2a-1.0.0}
+  envTag: ${a2a.runtimePolicy.envTag:dev}
+  contentDigest: ${a2a.runtimePolicy.contentDigest:}
+  sourceEventSequence: ${a2a.runtimePolicy.sourceEventSequence:0}
+  schemaVersion: ${a2a.runtimePolicy.schemaVersion:1}
+  createdAt: ${a2a.runtimePolicy.createdAt:}
+  validFrom: ${a2a.runtimePolicy.validFrom:}
+  refreshAfter: ${a2a.runtimePolicy.refreshAfter:}
+  expiresAt: ${a2a.runtimePolicy.expiresAt:}
+  revocationEpoch: ${a2a.runtimePolicy.revocationEpoch:0}
+  compatibilityGeneration: ${a2a.runtimePolicy.compatibilityGeneration:1}
 operationalStore:
-  contractVersion: ${operationalStore.contractVersion:2}
-  bindingId: ${operationalStore.bindingId:}
-  bindingDigest: ${operationalStore.bindingDigest:}
-  hostId: ${operationalStore.hostId:}
-  environment: ${operationalStore.environment:dev}
-  serverHost: ${operationalStore.serverHost:postgres}
-  port: ${operationalStore.port:5432}
-  tlsMode: ${operationalStore.tlsMode:DISABLE}
-  serviceOwner: ${operationalStore.serviceOwner:light-a2a}
-  schema: ${operationalStore.schema:a2a_ops}
-  expectedDatabase: ${operationalStore.expectedDatabase:operations}
-  minimumSchemaGeneration: ${operationalStore.minimumSchemaGeneration:2}
-  databaseUrlFile: ${operationalStore.databaseUrlFile:/run/secrets/operational-database-url}
-  credentialGeneration: ${operationalStore.credentialGeneration:1}
+  contractVersion: ${a2a.operationalStore.contractVersion:2}
+  bindingId: ${a2a.operationalStore.bindingId:}
+  bindingDigest: ${a2a.operationalStore.bindingDigest:}
+  hostId: ${a2a.operationalStore.hostId:}
+  environment: ${a2a.operationalStore.environment:dev}
+  serverHost: ${a2a.operationalStore.serverHost:postgres}
+  port: ${a2a.operationalStore.port:5432}
+  tlsMode: ${a2a.operationalStore.tlsMode:DISABLE}
+  serviceOwner: ${a2a.operationalStore.serviceOwner:light-a2a}
+  schema: ${a2a.operationalStore.schema:a2a_ops}
+  expectedDatabase: ${a2a.operationalStore.expectedDatabase:operations}
+  minimumSchemaGeneration: ${a2a.operationalStore.minimumSchemaGeneration:2}
+  databaseUrlFile: ${a2a.operationalStore.databaseUrlFile:/run/secrets/operational-database-url}
+  credentialGeneration: ${a2a.operationalStore.credentialGeneration:1}
 managedArtifactStore:
-  bindingId: ${artifactStore.bindingId:}
-  bindingDigest: ${artifactStore.bindingDigest:}
-  minimumSchemaGeneration: ${artifactStore.minimumSchemaGeneration:1}
-  databaseUrlFile: ${artifactStore.databaseUrlFile:/run/secrets/artifact-database-url}
-  rootDirectory: ${artifactStore.rootDirectory:/var/lib/light-a2a/artifacts}
-  scanProfileId: ${artifactStore.scanProfileId:light-a2a-static-v1}
-  allowedMediaTypes: ${artifactStore.allowedMediaTypes:[text/plain,application/json,application/pdf,image/png,image/jpeg]}
-authorizationContextKeyFile: ${a2aPolicy.authorizationContextKeyFile:/run/secrets/a2a-authorized-context-key}
-maximumDatabaseConnections: ${a2aPolicy.maximumDatabaseConnections:16}
-maximumRequestBytes: ${a2aPolicy.maximumRequestBytes:1048576}
-maximumResponseBytes: ${a2aPolicy.maximumResponseBytes:4194304}
-requestTimeoutMs: ${a2aPolicy.requestTimeoutMs:120000}
-allowUnsignedAgentCards: ${a2aPolicy.allowUnsignedAgentCards:false}
-bindings: ${a2aPolicy.bindings:[]}
+  bindingId: ${a2a.artifactStore.bindingId:}
+  bindingDigest: ${a2a.artifactStore.bindingDigest:}
+  minimumSchemaGeneration: ${a2a.artifactStore.minimumSchemaGeneration:1}
+  databaseUrlFile: ${a2a.artifactStore.databaseUrlFile:/run/secrets/artifact-database-url}
+  rootDirectory: ${a2a.artifactStore.rootDirectory:/var/lib/light-a2a/artifacts}
+  scanProfileId: ${a2a.artifactStore.scanProfileId:light-a2a-static-v1}
+  allowedMediaTypes: ${a2a.artifactStore.allowedMediaTypes:[text/plain,application/json,application/pdf,image/png,image/jpeg]}
+authorizationContextKeyFile: ${a2a.a2aPolicy.authorizationContextKeyFile:/run/secrets/a2a-authorized-context-key}
+maximumDatabaseConnections: ${a2a.a2aPolicy.maximumDatabaseConnections:16}
+maximumRequestBytes: ${a2a.a2aPolicy.maximumRequestBytes:1048576}
+maximumResponseBytes: ${a2a.a2aPolicy.maximumResponseBytes:4194304}
+requestTimeoutMs: ${a2a.a2aPolicy.requestTimeoutMs:120000}
+allowUnsignedAgentCards: ${a2a.a2aPolicy.allowUnsignedAgentCards:false}
+bindings: ${a2a.a2aPolicy.bindings:[]}
