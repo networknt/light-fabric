@@ -1,10 +1,16 @@
 [package]
 name = "light-agent-worker"
+default-run = "light-agent-worker"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+claude-prototype = []
+
 [dependencies]
+serde = { workspace = true }
+libc = "0.2"
 task-workspace = { path = "../../crates/task-workspace" }
 workspace-execution-protocol = { path = "../../crates/workspace-execution-protocol" }
 agent-core = { path = "../../crates/agent-core" }
@@ -28,3 +34,12 @@ uuid = { workspace = true }
 jsonschema = { workspace = true }
 # start_paused: the bounded thread/archive test must not really wait out its timeout.
 tokio = { workspace = true, features = ["test-util"] }
+
+[[example]]
+name = "claude-coding"
+required-features = ["claude-prototype"]
+
+[[bin]]
+name = "light-claude-worker"
+path = "src/claude_code/main.rs"
+required-features = ["claude-prototype"]

@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "adapter": "claude-code-v1",
+  "workerBoundary": "runner-admission-fenced-runtime-and-journal",
+  "productionQualified": false,
+  "permissionSource": "claude-cli",
+  "checks": {
+    "implementationContext": true,
+    "independentReviewContext": true,
+    "refreshedCandidate": true,
+    "close": true,
+    "nativeAuth": true,
+    "canonicalPatch": true,
+    "independentTest": true
+  },
+  "turns": [
+    {
+      "turn": "implement-new",
+      "state": "READY",
+      "nativeModel": "claude-sonnet-5",
+      "credentialSource": "native-claude-store",
+      "patchDigest": "sha256:16b165b01a01bd73c487c9b82498cc8cde798cf2e619b24fdd875a950318984d",
+      "verdict": null
+    },
+    {
+      "turn": "review-new",
+      "state": "READY",
+      "nativeModel": "claude-sonnet-5",
+      "credentialSource": "native-claude-store",
+      "patchDigest": null,
+      "verdict": "approved"
+    },
+    {
+      "turn": "implement-resume",
+      "state": "READY",
+      "nativeModel": "claude-sonnet-5",
+      "credentialSource": "native-claude-store",
+      "patchDigest": "sha256:9dfd02028ff5a38510dc3b43b18c021a84a87a13e77bd0cc830b97637b8b4000",
+      "verdict": null
+    },
+    {
+      "turn": "review-resume-close",
+      "state": "CLOSED",
+      "nativeModel": "claude-sonnet-5",
+      "credentialSource": "native-claude-store",
+      "patchDigest": null,
+      "verdict": "approved"
+    },
+    {
+      "turn": "implement-close",
+      "state": "CLOSED",
+      "nativeModel": null,
+      "credentialSource": null,
+      "patchDigest": null,
+      "verdict": null
+    }
+  ],
+  "observedOn": "2026-09-12",
+  "cli": {
+    "version": "2.1.269 (Claude Code)",
+    "platform": "linux-x86_64",
+    "binaryDigest": "sha256:25e44883f54419569a3d739f38cbbdaebe83b09895da0f343e1b003710a4775b"
+  },
+  "scope": "Local Agent admission tests and real runner/worker lease-fenced dispatch proof. Live Portal/controller enrollment and distribution remain Phase 3 qualification."
+}

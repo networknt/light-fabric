@@ -886,6 +886,9 @@ fn durable_workspace_jobs_are_scoped_idempotent_and_reauthorize_before_provision
         intent: WorkspaceIntent::Inspect,
         expected_checkpoint_digest: None,
         instruction: "Explain this repository".into(),
+
+        thread: None,
+        native_model: None,
     };
     let job = store
         .admit_job(&request, &context, &policy, &policy.intents)
@@ -1400,4 +1403,92 @@ fn existing_task_reopens_offline_without_refreshing_pinned_revisions() {
             .unwrap(),
         task
     );
+}
+
+#[test]
+fn finished_tool_checkpoint_is_admissible_by_a_different_reviewer() {
+    use workspace_execution_protocol::*;
+    let (_temp, store, workspace) = setup();
+    store
+        .create_task("portal", "handoff", "codex-personal")
+        .unwrap();
+    let mut writer = store
+        .begin_tool_session("portal", "handoff", "codex-personal", true, None)
+        .unwrap();
+    let original = writer.read_file("backend", "README.md").unwrap();
+    writer
+        .edit_file(task_workspace::FileEdit {
+            repository: "backend".into(),
+            path: "README.md".into(),
+            content: Some("handoff\n".into()),
+            expected_digest: Some(original.digest),
+        })
+        .unwrap();
+    let checkpoint = writer.finish().unwrap();
+    let context = AdmissionContext {
+        host_id: "host".into(),
+        environment: "dev".into(),
+        subject: "owner".into(),
+        agent_id: "claude-personal".into(),
+        runner_id: "claude".into(),
+        coding_turn_authorized: true,
+    };
+    let binding = WorkspaceAccessPolicy {
+        schema_version: 1,
+        workspace_id: "portal".into(),
+        host_id: "host".into(),
+        environment: "dev".into(),
+        runner_id: "claude".into(),
+        membership_revision: task_workspace::membership_revision(&workspace).unwrap(),
+        authorization_revision: 1,
+        subjects: BTreeSet::from(["owner".into()]),
+        agents: workspace.agents.clone(),
+        intents: BTreeSet::from([WorkspaceIntent::Review]),
+    };
+    let request = WorkspaceRequest {
+        schema_version: 1,
+        request_id: "review".into(),
+        workspace_id: "portal".into(),
+        expected_membership_revision: binding.membership_revision.clone(),
+        task: TaskSelection::Existing {
+            task_id: "handoff".into(),
+        },
+        intent: WorkspaceIntent::Review,
+        expected_checkpoint_digest: Some(checkpoint.digest.clone()),
+        instruction: "review".into(),
+        thread: None,
+        native_model: None,
+    };
+    let job = store
+        .admit_job(&request, &context, &binding, &standalone_intents())
+        .unwrap();
+    store
+        .provision_job(
+            "portal",
+            &job.job_id,
+            &context,
+            &binding,
+            &standalone_intents(),
+        )
+        .unwrap();
+    let mut reviewer = store
+        .begin_tool_session(
+            "portal",
+            "handoff",
+            "claude-personal",
+            false,
+            Some(&checkpoint.digest),
+        )
+        .unwrap();
+    assert!(
+        reviewer
+            .edit_file(task_workspace::FileEdit {
+                repository: "backend".into(),
+                path: "README.md".into(),
+                content: Some("bad".into()),
+                expected_digest: None
+            })
+            .is_err()
+    );
+    assert_eq!(reviewer.finish().unwrap().digest, checkpoint.digest);
 }

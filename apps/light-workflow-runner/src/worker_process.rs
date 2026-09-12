@@ -27,6 +27,10 @@ pub struct WorkerProcessConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_home: Option<std::path::PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_home: Option<std::path::PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_executable: Option<std::path::PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_executable: Option<std::path::PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_config: Option<std::path::PathBuf>,
@@ -85,8 +89,11 @@ impl WorkerProcessConfig {
         {
             return Err("agent worker codexExecutable must be an absolute path".into());
         }
+        self.validate_claude_configuration()?;
         if let Some(path) = &self.workspace_config {
-            if self.codex_home.is_none() || self.broker.is_some() || self.sandbox_launcher.is_some()
+            if (self.codex_home.is_none() && self.claude_home.is_none())
+                || self.broker.is_some()
+                || self.sandbox_launcher.is_some()
             {
                 return Err(
                     "workspace execution requires a dedicated personal native runner".into(),
@@ -238,7 +245,7 @@ pub async fn run_worker_process(
             .map_err(|e| e.to_string())?;
         if workspace.binding.host_id != lease.lease.origin.host_id.to_string()
             || workspace.agent_id != lease.lease.origin.instance_id
-            || config.codex_home.is_none()
+            || (config.codex_home.is_none() && config.claude_home.is_none())
             || config.sandbox_launcher.is_some()
             || config.broker.is_some()
             || spec.broker.is_some()
@@ -312,6 +319,13 @@ pub async fn run_worker_process(
         .kill_on_drop(true);
     if let Some(broker) = &broker {
         command.env("LIGHT_AGENT_BROKER_SOCKET", broker.socket_path());
+    }
+    if let Some(home) = &config.claude_home {
+        command.env("LIGHT_CLAUDE_HOME", home);
+        command.env("HOME", home.parent().ok_or("Claude home has no parent")?);
+    }
+    if let Some(executable) = &config.claude_executable {
+        command.env("LIGHT_CLAUDE_EXECUTABLE", executable);
     }
     if let Some(codex_home) = &config.codex_home {
         command.env("LIGHT_CODEX_HOME", codex_home);
@@ -478,9 +492,21 @@ pub async fn run_worker_process(
                     if class == ResultClass::Success && let Some(workspace) = spec.input.get("workspaceSpec") {
                         let workspace = serde_json::from_value(workspace.clone()).map_err(|e|format!("invalid workspace input: {e}"))?;
                         crate::workspace_result::validate(&workspace,output.as_ref().ok_or("workspace worker omitted its result")?)?;
+                        let result=output.as_ref().unwrap();
+                        let claude=spec.input.pointer("/adapterContract/adapterId").and_then(serde_json::Value::as_str)==Some(coding_agent_runtime::claude::ADAPTER_ID);
+                        if (result.pointer("/authentication/credentialSource").and_then(serde_json::Value::as_str)==Some("native-claude-store")) != claude {return Err("workspace credential source mismatch".into());}
+                        if let Some(thread)=&workspace.request.thread { validate_thread_receipt(thread,result.get("codingThread").ok_or("workspace conversation receipt missing")?)?; }
                     }
 
                     if class == ResultClass::Success && let Some(admitted) = &coding_spec {
+                        if admitted.thread.as_ref().is_some_and(|t| t.mode==coding_agent_runtime::CodingThreadMode::Close)
+                            && spec.input.pointer("/adapterContract/adapterId").and_then(serde_json::Value::as_str)==Some(coding_agent_runtime::claude::ADAPTER_ID) {
+                            let thread=admitted.thread.as_ref().unwrap();
+                            let receipt=output.as_ref().and_then(|v|v.get("codingThread")).ok_or("Claude close omitted receipt")?;
+                            validate_thread_receipt(thread,receipt)?;
+                            if validated_patch.is_some() {return Err("Claude close emitted a patch".into());}
+                            break WorkerOutcome{class,output,error,events:sequence};
+                        }
                         let authentication: coding_agent_runtime::CodingAuthenticationEvidence =
                             serde_json::from_value(
                                 output
@@ -493,6 +519,10 @@ pub async fn run_worker_process(
                                 format!("invalid coding authentication evidence: {error}")
                             })?;
                         authentication.validate().map_err(|error| error.to_string())?;
+                        let claude=spec.input.pointer("/adapterContract/adapterId").and_then(serde_json::Value::as_str)==Some(coding_agent_runtime::claude::ADAPTER_ID);
+                        if (authentication.credential_source==coding_agent_runtime::CodingCredentialSource::NativeClaudeStore)!=claude {
+                            return Err("worker credential source differs from the selected adapter".into());
+                        }
                         if authentication.profile != admitted.authentication_profile {
                             return Err(
                                 "coding authentication evidence differs from admitted profile"
@@ -684,11 +714,85 @@ fn validate_authentication_profile(
     config: &WorkerProcessConfig,
 ) -> Result<(), String> {
     let Some(value) = spec.input.get("codingSpec") else {
+        if let Some(workspace) = spec.input.get("workspaceSpec") {
+            let workspace: workspace_execution_protocol::WorkspaceExecutionSpec =
+                serde_json::from_value(workspace.clone()).map_err(|e| e.to_string())?;
+            let contract: coding_agent_runtime::CodingAdapterContract =
+                serde_json::from_value(spec.input["adapterContract"].clone())
+                    .map_err(|e| e.to_string())?;
+            if let Some(thread) = &workspace.request.thread {
+                if thread.runner_id != workspace.binding.runner_id {
+                    return Err("workspace conversation runner mismatch".into());
+                }
+            }
+            if contract.adapter_id == coding_agent_runtime::claude::ADAPTER_ID {
+                let qualification =
+                    serde_json::from_value(spec.input["adapterQualification"].clone())
+                        .map_err(|e| e.to_string())?;
+                coding_agent_runtime::claude::require_local_contract(&contract, &qualification)
+                    .map_err(|e| e.to_string())?;
+                let policy: coding_agent_runtime::claude::LaunchPolicy =
+                    serde_json::from_value(spec.input["claudePolicy"].clone())
+                        .map_err(|e| e.to_string())?;
+                policy
+                    .resolve(workspace.request.native_model.as_deref())
+                    .map_err(|e| e.to_string())?;
+                if config.claude_home.is_none() || config.codex_home.is_some() {
+                    return Err("Claude workspace requires Claude pool".into());
+                }
+            } else if contract.adapter_id != coding_agent_runtime::CODEX_APP_SERVER_ADAPTER_ID
+                || config.codex_home.is_none()
+                || config.claude_home.is_some()
+            {
+                return Err("workspace adapter differs from the personal runner".into());
+            }
+        }
         return Ok(());
     };
     let coding: coding_agent_runtime::CodingTurnSpec =
         serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
     coding.validate().map_err(|error| error.to_string())?;
+    let adapter = spec
+        .input
+        .pointer("/adapterContract/adapterId")
+        .and_then(serde_json::Value::as_str);
+    if adapter == Some(coding_agent_runtime::claude::ADAPTER_ID) {
+        let contract = serde_json::from_value(spec.input["adapterContract"].clone())
+            .map_err(|e| format!("invalid Claude contract: {e}"))?;
+        let qualification = serde_json::from_value(spec.input["adapterQualification"].clone())
+            .map_err(|e| format!("invalid Claude qualification: {e}"))?;
+        coding_agent_runtime::claude::require_local_contract(&contract, &qualification)
+            .map_err(|e| e.to_string())?;
+        let policy: coding_agent_runtime::claude::LaunchPolicy =
+            serde_json::from_value(spec.input["claudePolicy"].clone())
+                .map_err(|e| e.to_string())?;
+        let model: Option<String> = serde_json::from_value(
+            spec.input
+                .get("nativeModel")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        )
+        .map_err(|e| e.to_string())?;
+        policy
+            .resolve(model.as_deref())
+            .map_err(|e| e.to_string())?;
+        if coding.authentication_profile
+            != coding_agent_runtime::CodingAuthenticationProfile::PersonalSubscription
+            || coding.thread.is_none()
+            || config.claude_home.is_none()
+            || config.claude_executable.is_none()
+            || config.codex_home.is_some()
+            || config.broker.is_some()
+            || spec.broker.is_some()
+            || spec.enterprise_gateway.is_some()
+        {
+            return Err("Claude job does not match the dedicated personal runner".into());
+        }
+        return Ok(());
+    }
+    if config.claude_home.is_some() {
+        return Err("non-Claude job cannot use a Claude runner".into());
+    }
     let valid = match coding.authentication_profile {
         coding_agent_runtime::CodingAuthenticationProfile::PersonalSubscription => {
             config.codex_home.is_some()
@@ -881,6 +985,8 @@ sys.stdin.readline()
             sandbox_launcher: None,
             codex_home: None,
             codex_executable: None,
+            claude_home: None,
+            claude_executable: None,
             workspace_config: None,
             broker: None,
         }
@@ -1099,6 +1205,8 @@ event(2,{{"type":"terminal","class":"success","output":{{"budget":budget}},"erro
             sandbox_launcher: None,
             codex_home: None,
             codex_executable: None,
+            claude_home: None,
+            claude_executable: None,
             workspace_config: None,
             broker: None,
         }
@@ -1382,5 +1490,54 @@ event(2,{{"type":"terminal","class":"success","output":{{"budget":budget}},"erro
         let error = read_event(&mut reader, 128).await.unwrap_err();
 
         assert_eq!(error, "worker event exceeds admitted limit");
+    }
+    #[test]
+    fn claude_native_admission_rejects_cross_pool_policy_and_model_confusion() {
+        use coding_agent_runtime::claude as c;
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = fixture(dir.path(), &c::capabilities(), false);
+        let home = dir.path().join("claude-home");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        config.claude_home = Some(home);
+        config.claude_executable = Some(std::fs::canonicalize("/usr/bin/true").unwrap());
+        config.validate().unwrap();
+        let d = agent_core::sha256_digest(b"test");
+        let contract:coding_agent_runtime::CodingAdapterContract=serde_json::from_value(serde_json::json!({
+            "schemaVersion":1,"adapterId":c::ADAPTER_ID,"adapterVersion":c::VERSION,"adapterProtocolVersion":c::PROTOCOL,
+            "actionKind":c::ACTION,"compatibilityDigest":d,"imageDigest":d,"capabilityDigest":config.capability_digest,
+            "templateId":c::TEMPLATE,"templateVersion":1,"templateDigest":d,"executable":"/usr/local/bin/claude",
+            "binaryDigest":c::BINARY_DIGEST,"schemaDigest":c::schema_digest(),
+            "requiredFeatures":[c::ADAPTER_ID,"canonical-patch-output","workflow-coding-threads-v1","claude-review-namespace-v1"]
+        })).unwrap();
+        let evidence = serde_json::json!({"schemaVersion":1,"adapterId":c::ADAPTER_ID,"adapterVersion":c::VERSION,"status":"local-qualified",
+            "evaluatedDimensions":c::local_dimensions(),"contractDigest":contract.digest().unwrap(),"evidenceDigest":c::evidence_digest()});
+        let mut coding =
+            coding_spec(coding_agent_runtime::CodingAuthenticationProfile::PersonalSubscription);
+        coding["thread"] = serde_json::json!({"runnerId":"claude-runner","sessionRef":Uuid::new_v4(),"stageId":"stage","mode":"new","closeAfterTurn":false});
+        let mut s = spec(config.capability_digest.clone());
+        s.input = serde_json::json!({"codingSpec":coding,"adapterContract":contract,"adapterQualification":evidence,
+            "nativeModel":"sonnet","claudePolicy":{"permissionSource":"claude-cli","permissionMode":"inherit","defaultModel":"sonnet",
+                "models":{"sonnet":"claude-sonnet-5"},"tools":[],"allowedTools":[]}});
+        validate_authentication_profile(&lease(), &s, &config).unwrap();
+        let mut bad = s.clone();
+        bad.input["nativeModel"] = serde_json::json!("other");
+        assert!(validate_authentication_profile(&lease(), &bad, &config).is_err());
+        let mut bad = s.clone();
+        bad.input["codingSpec"]["authenticationProfile"] = serde_json::json!("enterprise-api");
+        assert!(validate_authentication_profile(&lease(), &bad, &config).is_err());
+        let mut bad = s.clone();
+        bad.input["adapterContract"]["adapterId"] = serde_json::json!("codex-app-server-v1");
+        assert!(validate_authentication_profile(&lease(), &bad, &config).is_err());
+        let mut bad = config.clone();
+        bad.codex_home = bad.claude_home.clone();
+        assert!(bad.validate().is_err());
+        assert!(validate_authentication_profile(&lease(), &s, &bad).is_err());
+        let mut bad = config.clone();
+        bad.capability_digest = d;
+        assert!(bad.validate().is_err());
+        let mut bad = s;
+        bad.input["adapterQualification"]["status"] = serde_json::json!("qualified");
+        assert!(validate_authentication_profile(&lease(), &bad, &config).is_err());
     }
 }

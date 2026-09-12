@@ -1,0 +1,150 @@
+{
+  "date": "2026-09-12",
+  "status": "passed",
+  "nativeWorkerLoop": {
+    "status": "passed",
+    "boundary": "native-workers-shared-store",
+    "crossAdapterReview": true,
+    "independentFileValidation": true,
+    "turns": [
+      {
+        "adapter": "codex",
+        "intent": "implement",
+        "mode": "new",
+        "workspace": {
+          "checkpointDigest": "sha256:08151752a8e0eb347f0e4f7fd6831fda3427e3fc65a7f6d2be7c4a5c45e7d2d3",
+          "intent": "implement",
+          "jobId": "job-63f7b93bee9d157741098b756fdf43489e452ed329a8f303bcb97e810f1d4046",
+          "taskId": "task-63f7b93bee9d157741098b756fdf43489e452ed329a8f303bcb97e810f1d4046",
+          "workspaceId": "shared"
+        },
+        "thread": {
+          "checkpoint": "01a0960e-ebe5-7a82-9a72-1b82fe017dc6",
+          "sessionRef": "1e5208fe-b56c-4268-bd86-3ff64f838769",
+          "state": "READY"
+        }
+      },
+      {
+        "adapter": "claude",
+        "intent": "review",
+        "mode": "new",
+        "workspace": {
+          "checkpointDigest": "sha256:08151752a8e0eb347f0e4f7fd6831fda3427e3fc65a7f6d2be7c4a5c45e7d2d3",
+          "intent": "review",
+          "jobId": "job-dca944fe7583e3c5d07f0dc3a63dfb109b547f12d7cecf488e1e9393b2bd3a1c",
+          "taskId": "task-63f7b93bee9d157741098b756fdf43489e452ed329a8f303bcb97e810f1d4046",
+          "workspaceId": "shared"
+        },
+        "thread": {
+          "checkpoint": "01a0960f-1709-7b61-8d5c-81184576caef",
+          "sessionRef": "5ed987d4-e497-4162-a851-62e5e485db2c",
+          "state": "READY"
+        }
+      },
+      {
+        "adapter": "codex",
+        "intent": "implement",
+        "mode": "resume",
+        "workspace": {
+          "checkpointDigest": "sha256:620c52b4c587f3d2aeb02a366159d820c4d3fbad4dfeb854b8f97fb4e0bc498b",
+          "intent": "implement",
+          "jobId": "job-33450c3e71085c9cbc4e16d1c790ef262fda3c8b70f60f2a2f1b064be1622406",
+          "taskId": "task-63f7b93bee9d157741098b756fdf43489e452ed329a8f303bcb97e810f1d4046",
+          "workspaceId": "shared"
+        },
+        "thread": {
+          "checkpoint": "01a0960f-6b92-7400-895a-b8ca4673cc2e",
+          "sessionRef": "1e5208fe-b56c-4268-bd86-3ff64f838769",
+          "state": "READY"
+        }
+      },
+      {
+        "adapter": "claude",
+        "intent": "review",
+        "mode": "resume",
+        "workspace": {
+          "checkpointDigest": "sha256:620c52b4c587f3d2aeb02a366159d820c4d3fbad4dfeb854b8f97fb4e0bc498b",
+          "intent": "review",
+          "jobId": "job-a49d48ab2bd95ea6f385665ef5bf37ba4e84fe922cebd330e451347259495420",
+          "taskId": "task-63f7b93bee9d157741098b756fdf43489e452ed329a8f303bcb97e810f1d4046",
+          "workspaceId": "shared"
+        },
+        "thread": {
+          "checkpoint": "01a0960f-8969-7783-ae9f-f703f0de0978",
+          "sessionRef": "5ed987d4-e497-4162-a851-62e5e485db2c",
+          "state": "READY"
+        }
+      },
+      {
+        "adapter": "codex",
+        "intent": "implement",
+        "mode": "close",
+        "workspace": {
+          "checkpointDigest": "sha256:620c52b4c587f3d2aeb02a366159d820c4d3fbad4dfeb854b8f97fb4e0bc498b",
+          "intent": "implement",
+          "jobId": "job-102f23a391df5f4e35a4b3917ae52ce5f1b9e0d97581842009ddd15d91243763",
+          "taskId": "task-63f7b93bee9d157741098b756fdf43489e452ed329a8f303bcb97e810f1d4046",
+          "workspaceId": "shared"
+        },
+        "thread": {
+          "checkpoint": "01a0960f-6b92-7400-895a-b8ca4673cc2e",
+          "sessionRef": "1e5208fe-b56c-4268-bd86-3ff64f838769",
+          "state": "CLOSED"
+        }
+      },
+      {
+        "adapter": "claude",
+        "intent": "review",
+        "mode": "close",
+        "workspace": {
+          "checkpointDigest": "sha256:620c52b4c587f3d2aeb02a366159d820c4d3fbad4dfeb854b8f97fb4e0bc498b",
+          "intent": "review",
+          "jobId": "job-a76dc3c87277881a5dd36dbeaa598ed9170b33a2760ad54fb1052759b57daa65",
+          "taskId": "task-63f7b93bee9d157741098b756fdf43489e452ed329a8f303bcb97e810f1d4046",
+          "workspaceId": "shared"
+        },
+        "thread": {
+          "checkpoint": "01a0960f-8969-7783-ae9f-f703f0de0978",
+          "sessionRef": "5ed987d4-e497-4162-a851-62e5e485db2c",
+          "state": "CLOSED"
+        }
+      }
+    ]
+  },
+  "deployedReadOnlyTurns": [
+    {
+      "adapter": "codex",
+      "codingThread": {
+        "checkpoint": "01a09617-39d8-7773-af5f-aea0d515c15a",
+        "sessionRef": "50aff86c-4eea-4a54-87b4-a8565ced236e",
+        "state": "CLOSED"
+      },
+      "state": "COMPLETED",
+      "turnId": "01a09616-d118-72f0-9d3c-49fc213cc75c",
+      "type": "executionResult",
+      "workspace": {
+        "checkpointDigest": "sha256:2ef0444ebdf4bb2d6b7ae6320c06a8769229b1899d5f680df018b2d73464e4b8",
+        "taskId": "workspace-smoke-1",
+        "workspaceId": "personal"
+      }
+    },
+    {
+      "adapter": "claude",
+      "codingThread": {
+        "checkpoint": "01a09617-a2b1-7ad3-9c28-2617b3c10a18",
+        "sessionRef": "b9061952-d681-4273-9234-e14cb9e42036",
+        "state": "CLOSED"
+      },
+      "state": "COMPLETED",
+      "turnId": "01a09617-3e84-70f3-a002-e7184855470e",
+      "type": "executionResult",
+      "workspace": {
+        "checkpointDigest": "sha256:2ef0444ebdf4bb2d6b7ae6320c06a8769229b1899d5f680df018b2d73464e4b8",
+        "taskId": "workspace-smoke-1",
+        "workspaceId": "personal"
+      }
+    }
+  ],
+  "normalRestart": "portal-config-loc/scripts/deploy-local.sh lt passed",
+  "workflowEngineInvocation": "not qualified: existing cross-database Agent bridge prerequisite remains"
+}

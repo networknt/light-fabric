@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "adapterId": "claude-code-v1",
+  "status": "prototype-only",
+  "productionQualified": false,
+  "binary": {
+    "version": "2.1.269 (Claude Code)",
+    "sha256": "25e44883f54419569a3d739f38cbbdaebe83b09895da0f343e1b003710a4775b",
+    "system": "Linux",
+    "machine": "x86_64"
+  },
+  "limits": {
+    "frameBytes": 1048576,
+    "outputBytes": 8388608,
+    "stderrBytes": 65536,
+    "timeoutSeconds": 120
+  },
+  "requiredFlags": [
+    "--print",
+    "--output-format",
+    "--input-format",
+    "--session-id",
+    "--resume",
+    "--model",
+    "--permission-mode",
+    "--permission-prompts",
+    "--safe-mode",
+    "--tools"
+  ],
+  "eligibility": {
+    "localFeasibility": "user-requested personal native CLI evaluation",
+    "supportedDistribution": "unresolved; obtain current vendor eligibility determination before promotion",
+    "checkedOn": "2026-09-12",
+    "sources": [
+      "https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan",
+      "https://code.claude.com/docs/en/legal-and-compliance"
+    ]
+  },
+  "models": {
+    "sonnet": "claude-sonnet-5"
+  }
+}

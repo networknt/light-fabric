@@ -61,7 +61,7 @@ impl AgentRepository {
             turn_id,
             action_attempt_id: AgentActionAttemptId(turn_id.0),
             policy_digest: policy.clone(),
-            input: json!({"workspaceSpec":spec,"adapterContract":runtime.contract,"adapterQualification":runtime.qualification}),
+            input: json!({"workspaceSpec":spec,"adapterContract":runtime.contract,"adapterQualification":runtime.qualification,"claudePolicy":runtime.claude_policy}),
             wall_clock_timeout_ms: (timeout as u64).min(300_000),
             maximum_event_bytes: 1024 * 1024,
             maximum_stderr_bytes: 1024 * 1024,

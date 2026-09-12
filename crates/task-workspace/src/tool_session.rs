@@ -195,6 +195,11 @@ impl WorkspaceToolSession {
             self.task.state = TaskState::Ready;
             self.task.writer = None;
             self.task.execution_context = None;
+        }
+        // The returned checkpoint must also be admissible by the next reader or writer.
+        // READY is not approval: freeze/approve/commit still require their own transitions.
+        if self.task.state == TaskState::Ready {
+            self.task.checkpoint = Some(snapshot.clone());
             write(&self.journal, &self.task)?;
         }
         self.finished = true;

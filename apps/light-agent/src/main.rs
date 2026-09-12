@@ -1,3 +1,5 @@
+mod claude_admission;
+use claude_admission::admit_native_selection;
 mod chat_execution;
 mod coding_jobs;
 mod gateway_credentials;
@@ -2509,6 +2511,8 @@ enum RequestedProfile {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CodingDispatchRequest {
     #[serde(default)]
+    native_model: Option<String>,
+    #[serde(default)]
     thread: Option<coding_agent_runtime::CodingThreadControl>,
     repository: ImmutableRepositoryInput,
     base_revision: String,
@@ -3537,25 +3541,49 @@ fn coding_profile_from_policy(
     contract
         .validate()
         .map_err(|error| RuntimeError::Config(error.to_string()))?;
-    policy
-        .qualification
-        .require_selectable(&contract)
-        .map_err(|error| {
-            RuntimeError::Config(format!("coding adapter qualification is invalid: {error}"))
-        })?;
-    if contract.adapter_id != coding_agent_runtime::CODEX_APP_SERVER_ADAPTER_ID
-        || contract.adapter_version != coding_agent_runtime::CODEX_APP_SERVER_VERSION
-        || contract.adapter_protocol_version
-            != coding_agent_runtime::CODEX_APP_SERVER_PROTOCOL_VERSION
-        || contract.action_kind != "coding.codex-app-server-v1"
-        || contract.template_id != "coding-codex-app-server-v1"
-        || contract.executable != "/usr/local/bin/codex"
-        || contract.binary_digest != coding_agent_runtime::CODEX_APP_SERVER_BINARY_DIGEST
-        || contract.schema_digest != coding_agent_runtime::CODEX_APP_SERVER_SCHEMA_DIGEST
-    {
-        return Err(RuntimeError::Config(
-            "coding profile does not match the pinned Codex App Server contract".into(),
-        ));
+    if contract.adapter_id == coding_agent_runtime::claude::ADAPTER_ID {
+        coding_agent_runtime::claude::require_local_contract(&contract, &policy.qualification)
+            .map_err(|e| RuntimeError::Config(e.to_string()))?;
+        let claude = policy
+            .claude_policy
+            .as_ref()
+            .ok_or_else(|| RuntimeError::Config("Claude profile requires claudePolicy".into()))?;
+        claude
+            .resolve(None)
+            .map_err(|e| RuntimeError::Config(e.to_string()))?;
+        if policy.authentication_profile != CodingAuthenticationProfile::PersonalSubscription
+            || policy.enterprise_gateway.is_some()
+        {
+            return Err(RuntimeError::Config(
+                "Claude requires a personal coding profile without enterprise routes".into(),
+            ));
+        }
+    } else {
+        if policy.claude_policy.is_some() {
+            return Err(RuntimeError::Config(
+                "claudePolicy requires the Claude adapter".into(),
+            ));
+        }
+        policy
+            .qualification
+            .require_selectable(&contract)
+            .map_err(|error| {
+                RuntimeError::Config(format!("coding adapter qualification is invalid: {error}"))
+            })?;
+        if contract.adapter_id != coding_agent_runtime::CODEX_APP_SERVER_ADAPTER_ID
+            || contract.adapter_version != coding_agent_runtime::CODEX_APP_SERVER_VERSION
+            || contract.adapter_protocol_version
+                != coding_agent_runtime::CODEX_APP_SERVER_PROTOCOL_VERSION
+            || contract.action_kind != "coding.codex-app-server-v1"
+            || contract.template_id != "coding-codex-app-server-v1"
+            || contract.executable != "/usr/local/bin/codex"
+            || contract.binary_digest != coding_agent_runtime::CODEX_APP_SERVER_BINARY_DIGEST
+            || contract.schema_digest != coding_agent_runtime::CODEX_APP_SERVER_SCHEMA_DIGEST
+        {
+            return Err(RuntimeError::Config(
+                "coding profile does not match the pinned Codex App Server contract".into(),
+            ));
+        }
     }
     if let Some(gateway) = &policy.enterprise_gateway {
         let url = url::Url::parse(&gateway.base_url).map_err(|error| {
@@ -3627,12 +3655,16 @@ fn coding_profile_from_policy(
             contract: contract.clone(),
             qualification: policy.qualification.clone(),
             model: policy.model.clone(),
+            claude_policy: policy.claude_policy.clone(),
+            native_model: None,
             enterprise_gateway: policy.enterprise_gateway.clone(),
         },
         reviewer_runtime: CodingAdapterRuntime {
             contract,
             qualification: policy.qualification.clone(),
             model: policy.review_model.clone(),
+            claude_policy: policy.claude_policy.clone(),
+            native_model: None,
             enterprise_gateway: policy.enterprise_gateway.clone(),
         },
     }))
@@ -4214,6 +4246,9 @@ async fn handle_socket(
                             BTreeSet::from(["fs.read".into(), "process.exec".into()]),
                         ),
                     };
+                    let mut runtime = runtime.clone();
+                    runtime.native_model = request.native_model.clone();
+                    admit_native_selection(&runtime, request)?;
                     let manifest = MaterializationManifest {
                         schema_version: 1,
                         materializer_id: "coding".into(),
@@ -4253,7 +4288,7 @@ async fn handle_socket(
                             &manifest,
                             &spec,
                             &request.repository,
-                            runtime,
+                            &runtime,
                         )
                         .await
                 }
@@ -6410,6 +6445,7 @@ security.skipPathPrefixes: [/health]
             }
         };
         let mut policy = CodingProfilePolicy {
+            claude_policy: None,
             schema_version: 1,
             product_profile_digest: digest(1),
             repository_uri_prefix: "file:///var/lib/light-agent/repositories/".into(),

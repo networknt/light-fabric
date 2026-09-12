@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "adapterId": "claude-code-v1",
+  "adapterVersion": "2.1.269",
+  "protocol": "claude-cli-stream-json-v1",
+  "binaryDigest": "sha256:25e44883f54419569a3d739f38cbbdaebe83b09895da0f343e1b003710a4775b",
+  "profile": "local-single-user-native-v1",
+  "workerBinary": "light-claude-worker",
+  "authentication": "personal-subscription",
+  "permissions": [
+    "agent-policy",
+    "claude-cli"
+  ],
+  "permissionModes": [
+    "inherit",
+    "dontAsk",
+    "bypassPermissions"
+  ],
+  "reviewOutput": "CodingReviewResult via --json-schema and structured_output",
+  "reviewIsolation": "private-native-session-state-and-bubblewrap-read-namespace-v1",
+  "writeIsolation": "bubblewrap-read-only-candidate-and-explicit-writable-mounts",
+  "interactiveApprovals": false,
+  "authoritativeUsage": false,
+  "productionQualified": false
+}

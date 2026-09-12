@@ -914,7 +914,7 @@ fn turn_start_params(
     value
 }
 
-fn coding_review_output_schema() -> Value {
+pub(crate) fn coding_review_output_schema() -> Value {
     json!({
         "type":"object",
         "additionalProperties":false,

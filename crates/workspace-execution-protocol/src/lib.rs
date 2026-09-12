@@ -56,10 +56,33 @@ pub struct WorkspaceRequest {
     pub intent: WorkspaceIntent,
     pub expected_checkpoint_digest: Option<String>,
     pub instruction: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<coding_agent_runtime::CodingThreadControl>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_model: Option<String>,
 }
 
 impl WorkspaceRequest {
     pub fn validate(&self) -> Result<(), ContractError> {
+        if let Some(thread) = &self.thread {
+            thread
+                .validate()
+                .map_err(|_| ContractError::Field("thread"))?;
+            if thread.mode != coding_agent_runtime::CodingThreadMode::New
+                && matches!(self.task, TaskSelection::New { .. })
+            {
+                return Err(ContractError::Field("resume requires existing task"));
+            }
+        }
+        if self.native_model.as_ref().is_some_and(|m| {
+            m.is_empty()
+                || m.len() > 128
+                || !m
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-._".contains(&b))
+        }) {
+            return Err(ContractError::Field("nativeModel"));
+        }
         if self.schema_version != VERSION {
             return Err(ContractError::Version);
         }
@@ -272,7 +295,11 @@ impl WorkspaceExecutionSpec {
 }
 
 pub fn standalone_intents() -> BTreeSet<WorkspaceIntent> {
-    BTreeSet::from([WorkspaceIntent::Inspect, WorkspaceIntent::Implement])
+    BTreeSet::from([
+        WorkspaceIntent::Inspect,
+        WorkspaceIntent::Implement,
+        WorkspaceIntent::Review,
+    ])
 }
 
 pub fn identifier(value: &str) -> bool {
@@ -309,6 +336,9 @@ mod tests {
             intent: WorkspaceIntent::Inspect,
             expected_checkpoint_digest: None,
             instruction: "Explain config publication".into(),
+
+            thread: None,
+            native_model: None,
         };
         let context = AdmissionContext {
             host_id: "host".into(),

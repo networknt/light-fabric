@@ -637,6 +637,8 @@ allowedCommandTemplateDigests: [sha256:template-digest]
             sandbox_launcher: None,
             codex_home: None,
             codex_executable: None,
+            claude_home: None,
+            claude_executable: None,
             workspace_config: None,
             broker: None,
         });

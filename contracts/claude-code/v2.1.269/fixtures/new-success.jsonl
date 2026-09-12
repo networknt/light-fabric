@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"019a0000-0000-7000-8000-000000000001","model":"claude-sonnet-5","permissionMode":"dontAsk","mcp_servers":[],"plugins":[]}
+{"type":"assistant","session_id":"019a0000-0000-7000-8000-000000000001","message":{"role":"assistant","content":[{"type":"text","text":"synthetic-marker"}]}}
+{"type":"result","subtype":"success","session_id":"019a0000-0000-7000-8000-000000000001","is_error":false,"result":"synthetic-marker","permission_denials":[],"usage":{"input_tokens":1,"output_tokens":1}}

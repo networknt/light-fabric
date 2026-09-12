@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 agent-runtime-protocol = { path = "../agent-runtime-protocol" }
 execution-security = { path = "../execution-security" }
 serde.workspace = true

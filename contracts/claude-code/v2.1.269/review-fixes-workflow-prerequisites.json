@@ -1,0 +1,19 @@
+{
+  "relations": {
+    "agent_definition_t": null,
+    "agent_policy_snapshot_t": null,
+    "agent_job_t": null,
+    "wf_definition_t": "wf_definition_t"
+  },
+  "schemaVersion": 1,
+  "observedOn": "2026-09-12",
+  "database": "operations",
+  "role": "operations_workflow_runtime",
+  "searchPath": [
+    "workflow_ops",
+    "operational_meta"
+  ],
+  "status": "blocked",
+  "reason": "service-mode catalog/job queries have no relations in the Workflow operational schema",
+  "mutationPerformed": false
+}

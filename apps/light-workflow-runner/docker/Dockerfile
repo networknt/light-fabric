@@ -5,6 +5,7 @@ COPY patches/ patches/
 COPY crates/ crates/
 COPY frameworks/ frameworks/
 COPY apps/ apps/
+COPY contracts/ contracts/
 RUN cargo build --locked --release -p light-workflow-runner -p light-agent-worker
 
 FROM node:24-bookworm AS codex

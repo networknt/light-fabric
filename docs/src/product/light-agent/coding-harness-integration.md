@@ -13,6 +13,11 @@ The durable requirement, design, implementation-plan, review, multi-repository,
 and GitHub issue lifecycle built on these workers is defined in
 [Development Workflow Orchestration](development-workflow-orchestration.md).
 
+For the opt-in locally qualified Claude subscription adapter, integration alternatives,
+and qualification plan, see [Claude Personal Worker](claude-personal-worker.md).
+Phase 2 supplies `light-claude-worker` and Agent/runner integration; production
+distribution and deployment qualification remain separate gates.
+
 ## Decision
 
 For the proposed persistent multi-repository input mode, see
@@ -916,9 +921,11 @@ Phase 5 is implemented as a fail-closed optional-adapter qualification layer:
 - `codex-embedded-v1` is recorded as `prototype-only`: only dependency and
   license dimensions have evidence, it has no launch-contract digest, it is
   absent from worker capabilities, and selection fails closed.
-- No `claude-code-v1` worker is shipped because no named harness-diversity or
-  native-client use case has been admitted. Anthropic models remain routable
-  behind logical aliases without implying Claude Code harness semantics.
+- No `claude-code-v1` worker is shipped. The proposed local subscription and
+  independent-harness use case is now described in
+  [Claude Personal Worker](claude-personal-worker.md); implementation and
+  qualification remain pending. Anthropic models remain routable behind logical
+  aliases without implying Claude Code harness semantics.
 - Future native harnesses, including Grok-oriented workers, require a new
   versioned adapter, an exact evidence manifest, and the same complete matrix.
   Model parity never implies adapter parity and adapters never silently fall

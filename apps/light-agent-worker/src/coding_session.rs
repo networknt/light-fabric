@@ -30,9 +30,18 @@ fn recorded_state(path: &Path) -> Option<Value> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
 
-/// Opens the per-thread lock. Callers hold the returned file for as long as they need
-/// exclusive ownership of that thread; dropping it releases the lock.
-fn lock_thread(lock_path: &Path) -> Result<File> {
+/// The guard explicitly unlocks on every exit path, including rejected opens and
+/// pruning, even while a fork-inherited description remains open.
+struct ThreadLock(File);
+impl Drop for ThreadLock {
+    fn drop(&mut self) {
+        // Unlock even on rejected opens and pruning: fork-inherited descriptions
+        // may outlive this descriptor until the child execs.
+        let _ = self.0.unlock();
+    }
+}
+
+fn lock_thread(lock_path: &Path) -> Result<ThreadLock> {
     if lock_path.is_symlink() {
         bail!("coding thread lock cannot be a symlink");
     }
@@ -42,9 +51,19 @@ fn lock_thread(lock_path: &Path) -> Result<File> {
         .read(true)
         .write(true)
         .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(lock_path)?;
-    lock.try_lock().context("coding thread is busy")?;
-    Ok(lock)
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
+    loop {
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(5))
+            }
+            Err(error) => return Err(error).context("coding thread is busy"),
+        }
+    }
+    Ok(ThreadLock(lock))
 }
 
 /// Best-effort reclamation of long-closed checkpoints.
@@ -86,7 +105,7 @@ fn prune_closed(root: &Path) {
 }
 
 pub(crate) struct CodingSession {
-    _lock: File,
+    _lock: ThreadLock,
     path: PathBuf,
     state: Value,
 }
@@ -101,6 +120,25 @@ impl CodingSession {
         contract_digest: &str,
     ) -> Result<Self> {
         let control = spec.thread.as_ref().context("missing thread control")?;
+        // The repository base and all authority stay fixed within a role's stage.
+        let binding = json!({"scope":scope,"runnerId":control.runner_id,"stageId":control.stage_id,"role":spec.role,
+            "roleProfile":spec.role_profile,"model":spec.model_alias,"authentication":spec.authentication_profile,
+            "contract":contract_digest,"repositoryDigest":spec.repository_digest,"baseRevision":spec.base_revision,
+            "workspaceRoot":spec.workspace_root,"writableRoots":spec.writable_roots,"allowedTools":spec.allowed_tools,
+            "manifest":spec.materialization_manifest_digest});
+        Self::open_bound(
+            home,
+            scope,
+            spec.thread.as_ref().context("missing thread control")?,
+            binding,
+        )
+    }
+    pub(crate) fn open_bound(
+        home: &Path,
+        scope: &str,
+        control: &coding_agent_runtime::CodingThreadControl,
+        binding: Value,
+    ) -> Result<Self> {
         control.validate()?;
         if !scope.starts_with("sha256:") || scope.len() != 71 {
             bail!("missing trusted coding thread scope");
@@ -123,12 +161,6 @@ impl CodingSession {
         if path.is_symlink() {
             bail!("coding thread checkpoint cannot be a symlink");
         }
-        // The repository base and all authority stay fixed within a role's stage.
-        let binding = json!({"scope":scope,"runnerId":control.runner_id,"stageId":control.stage_id,"role":spec.role,
-            "roleProfile":spec.role_profile,"model":spec.model_alias,"authentication":spec.authentication_profile,
-            "contract":contract_digest,"repositoryDigest":spec.repository_digest,"baseRevision":spec.base_revision,
-            "workspaceRoot":spec.workspace_root,"writableRoots":spec.writable_roots,"allowedTools":spec.allowed_tools,
-            "manifest":spec.materialization_manifest_digest});
         let state = match control.mode {
             CodingThreadMode::New => {
                 if path.exists() {
@@ -176,6 +208,16 @@ impl CodingSession {
         self.state["state"] = json!("IN_FLIGHT");
         self.save()
     }
+    /// Candidate adapters can bind native metadata before begin; no disk write occurs here.
+    #[cfg(any(test, feature = "claude-prototype"))]
+    pub(crate) fn adapter_state(&self) -> Option<&Value> {
+        self.state.get("adapterState")
+    }
+    #[cfg(any(test, feature = "claude-prototype"))]
+    pub(crate) fn set_adapter_state(&mut self, value: Value) {
+        self.state["adapterState"] = value;
+    }
+
     pub fn thread_id(&self) -> Option<&str> {
         self.state["threadId"].as_str()
     }
@@ -213,5 +255,65 @@ impl CodingSession {
         file.persist(&self.path)?;
         File::open(self.path.parent().unwrap())?.sync_all()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod lock_lifetime_tests {
+    use super::*;
+
+    #[test]
+    fn rejected_open_guard_releases_inherited_description() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("session.lock");
+        let guard = lock_thread(&path).unwrap();
+        let inherited = guard.0.try_clone().unwrap();
+        // Same guard is used before constructing CodingSession and by prune_closed.
+        drop(guard);
+        let next = lock_thread(&path).unwrap();
+        drop(inherited);
+        assert!(lock_thread(&path).is_err());
+        drop(next);
+    }
+
+    #[test]
+    fn acquisition_tolerates_short_inherited_lock_window() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("session.lock");
+        let owner = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        owner.try_lock().unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            owner.unlock().unwrap();
+        });
+        let next = lock_thread(&path).unwrap();
+        release.join().unwrap();
+        drop(next);
+    }
+
+    #[test]
+    fn dropping_owner_releases_lock_even_with_inherited_description() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("session.lock");
+        let file = lock_thread(&path).unwrap();
+        let inherited_description = file.0.try_clone().unwrap();
+        let owner = CodingSession {
+            _lock: file,
+            path: root.path().join("session.json"),
+            state: json!({}),
+        };
+        assert!(lock_thread(&path).is_err());
+        drop(owner);
+        let next = lock_thread(&path).unwrap();
+        drop(inherited_description);
+        // Closing the inherited old description cannot release the next owner's lock.
+        assert!(lock_thread(&path).is_err());
+        drop(next);
     }
 }

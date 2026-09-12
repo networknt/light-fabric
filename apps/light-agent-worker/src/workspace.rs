@@ -42,6 +42,13 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
             .context("adapterQualification missing")?
             .clone(),
     )?;
+    #[cfg(any(test, feature = "claude-prototype"))]
+    if contract.adapter_id == coding_agent_runtime::claude::ADAPTER_ID {
+        return super::claude_code::workspace::run(
+            writer, identity, sequence, input, cancel, deadline,
+        )
+        .await;
+    }
     super::codex_app_server::validate_contract(&contract, &qualification).await?;
     let executable =
         std::env::var_os("LIGHT_CODEX_EXECUTABLE").context("pinned Codex executable is missing")?;
@@ -100,6 +107,44 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
         cancel.borrow().is_none(),
         "workspace task cancelled before execution"
     );
+    let mut conversation = super::workspace_session::Conversation::open(
+        &config.store,
+        &spec,
+        &job.task_id,
+        &json!({"adapter":contract,"model":spec.request.native_model}),
+    )?;
+    if conversation.control.mode == coding_agent_runtime::CodingThreadMode::Close {
+        let tools = store.begin_tool_session(
+            &spec.request.workspace_id,
+            &job.task_id,
+            &context.agent_id,
+            false,
+            spec.request.expected_checkpoint_digest.as_deref(),
+        )?;
+        let checkpoint = tools.finish()?;
+        execution.mark_started()?;
+        let receipt = conversation.session.mark_closed()?;
+        let authentication = coding_agent_runtime::CodingAuthenticationEvidence {
+            profile: CodingAuthenticationProfile::PersonalSubscription,
+            credential_source: coding_agent_runtime::CodingCredentialSource::NativeCodexStore,
+            credential_generation: None,
+            authoritative_usage: false,
+        };
+        let output = json!({"finalMessage":"Conversation closed","authentication":authentication,"codingThread":receipt,
+            "workspace":{"workspaceId":spec.request.workspace_id,"taskId":job.task_id,"jobId":job.job_id,"checkpointDigest":checkpoint.digest,"intent":spec.request.intent}});
+        execution.finish(output.clone())?;
+        return emit(
+            writer,
+            identity,
+            sequence,
+            RuntimeEventPayload::Terminal {
+                class: ResultClass::Success,
+                output: Some(output),
+                error: None,
+            },
+        )
+        .await;
+    }
     let mut tools = None;
     let sandbox = tempfile::tempdir()?;
     std::fs::create_dir(sandbox.path().join("home"))?;
@@ -114,9 +159,9 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
     std::fs::write(sandbox.path().join("home/config.toml"), native_config())?;
     let executable =
         std::env::var_os("LIGHT_CODEX_EXECUTABLE").context("pinned Codex executable is missing")?;
-    let mut child = sandbox_command(sandbox.path(), Path::new(&executable))
-        .spawn()
-        .context("spawn isolated workspace Codex")?;
+    let mut native = sandbox_command(sandbox.path(), Path::new(&executable), &conversation.home);
+    // Bind persistent per-conversation state at the stable native home path.
+    let mut child = native.spawn().context("spawn isolated workspace Codex")?;
     let mut stdin = child.stdin.take().context("Codex stdin")?;
     let mut stdout = BufReader::new(child.stdout.take().context("Codex stdout")?);
     let stderr = child.stderr.take().context("Codex stderr")?;
@@ -134,20 +179,32 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
             &response(&mut stdout, 2).await?,
             None,
         )?;
-        rpc(&mut stdin, 3, "thread/start", thread_params()).await?;
+        let mut params = thread_params();
+        params["ephemeral"] = json!(false);
+        if let Some(model) = &spec.request.native_model {
+            params["model"] = json!(model);
+        }
+        let method = if conversation.control.mode == coding_agent_runtime::CodingThreadMode::Resume
+        {
+            params.as_object_mut().unwrap().remove("ephemeral");
+            params["threadId"] = json!(
+                conversation
+                    .session
+                    .thread_id()
+                    .context("native conversation missing")?
+            );
+            "thread/resume"
+        } else {
+            "thread/start"
+        };
+        tools = Some(conversation.begin_workspace(&store, &spec, &job.task_id)?);
+        rpc(&mut stdin, 3, method, params).await?;
         let thread = response(&mut stdout, 3).await?;
         let thread_id = thread
             .pointer("/result/thread/id")
             .and_then(Value::as_str)
             .context("thread ID missing")?
             .to_owned();
-        tools = Some(store.begin_tool_session(
-            &spec.request.workspace_id,
-            &job.task_id,
-            &context.agent_id,
-            spec.request.intent == WorkspaceIntent::Implement,
-            spec.request.expected_checkpoint_digest.as_deref(),
-        )?);
         execution.mark_started()?;
         rpc(&mut stdin,4,"turn/start",json!({"threadId":thread_id,"input":[{"type":"text","text":spec.request.instruction}],
             "cwd":"/session/work","approvalPolicy":"never","sandboxPolicy":{"type":"readOnly","networkAccess":false}})).await?;
@@ -223,16 +280,8 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
                         == Some("completed"),
                     "Codex workspace turn did not complete"
                 );
-                let answer = answer.context("Codex completed without an explanation")?;
-                ensure!(
-                    calls > 0,
-                    "Codex completed without accessing the task tools"
-                );
-                ensure!(
-                    answer.len() <= 64 * 1024,
-                    "workspace explanation exceeds limit"
-                );
-                return Ok::<_, anyhow::Error>((answer, authentication));
+                let answer = super::workspace_session::public_answer(answer.as_deref());
+                return Ok::<_, anyhow::Error>((answer, authentication, thread_id.clone()));
             }
             if value["method"] == "error" {
                 if value.pointer("/params/willRetry").and_then(Value::as_bool) == Some(true) {
@@ -273,10 +322,11 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
     {
         tools.finish()?;
     }
-    let (answer, authentication) = result?;
+    let (answer, authentication, native_id) = result?;
     RunnerWorkspaceConfig::load(config_path)?.authorize(&spec)?;
     let checkpoint = tools.context("workspace tool session missing")?.finish()?;
-    let output = json!({"finalMessage":answer,"authentication":authentication,"workspace":{
+    let receipt = conversation.finish(&native_id)?;
+    let output = json!({"codingThread":receipt,"finalMessage":answer,"authentication":authentication,"workspace":{
         "workspaceId":spec.request.workspace_id,"taskId":job.task_id,"jobId":job.job_id,
         "checkpointDigest":checkpoint.digest,"intent":spec.request.intent}});
     execution.finish(output.clone())?;
@@ -298,10 +348,10 @@ fn native_config() -> &'static str {
 }
 fn thread_params() -> Value {
     json!({"cwd":"/session/work","approvalPolicy":"never","sandbox":"read-only","ephemeral":true,
-        "baseInstructions":"You work on one managed multi-repository task. Use task_workspace for all repository access. Inspect requests are read-only. Implement requests may edit files with digest preconditions. Do not claim to run tests, commit, push, or open PRs: those tools are not available. Explain the result and any validation that remains.",
+        "baseInstructions":"You work on one managed multi-repository task. Use task_workspace for all repository access. The native read-only sandbox applies to local filesystem tools only. The external workspace manager authorizes task_workspace independently: its implementation edit operation is permitted even though native local file writes are forbidden. Inspect and review requests are read-only. Implement requests must use task_workspace edit with digest preconditions; these external tool edits are authorized. Do not claim to run tests, commit, push, or open PRs: those tools are not available. Explain the result and any validation that remains.",
         "dynamicTools":[task_workspace::workspace_tool_definition()]})
 }
-fn sandbox_command(root: &Path, executable: &Path) -> Command {
+fn sandbox_command(root: &Path, executable: &Path, home: &Path) -> Command {
     let mut command = Command::new("/usr/bin/bwrap");
     command.env_clear().env("PATH", "/usr/bin:/bin").args([
         "--die-with-parent",
@@ -338,9 +388,18 @@ fn sandbox_command(root: &Path, executable: &Path) -> Command {
         }
     }
     command
-        .arg("--bind")
+        .arg("--ro-bind")
         .arg(root)
         .arg("/session")
+        .arg("--bind")
+        .arg(home)
+        .arg("/session/home")
+        .arg("--ro-bind")
+        .arg(root.join("home/auth.json"))
+        .arg("/session/home/auth.json")
+        .arg("--ro-bind")
+        .arg(root.join("home/config.toml"))
+        .arg("/session/home/config.toml")
         .arg("--ro-bind")
         .arg(executable)
         .arg("/opt/codex")
@@ -444,18 +503,20 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join("work")).unwrap();
         std::fs::create_dir(root.path().join("home")).unwrap();
+        std::fs::write(root.path().join("home/auth.json"), "{}").unwrap();
+        std::fs::write(root.path().join("home/config.toml"), native_config()).unwrap();
         let script = host.path().join("codex");
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\ntest ! -e '{}' && test ! -e /home/steve && test -d /session/work\n",
+                "#!/bin/sh\ntest ! -e '{}' && test ! -e /home/steve && test -d /session/work && ! echo tampered > /session/home/config.toml && ! touch /session/work/native-write\n",
                 secret.display()
             ),
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::write(host.path().join("codex-code-mode-host"), "unused").unwrap();
-        let output = sandbox_command(root.path(), &script)
+        let output = sandbox_command(root.path(), &script, &root.path().join("home"))
             .output()
             .await
             .unwrap();

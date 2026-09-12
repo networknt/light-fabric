@@ -1,0 +1,7 @@
+# Local qualification image: use the normal runtime image plus the rebuilt static binary.
+# Build context is light-fabric/target/x86_64-unknown-linux-musl/release.
+ARG BASE_IMAGE=networknt/light-agent:2.3.5-dev.20260909.2338
+FROM ${BASE_IMAGE}
+COPY --chown=agent:agent light-agent /app/light-agent
+LABEL io.lightapi.agent.session-lifecycle="1"
+LABEL io.lightapi.agent.claude-personal="phase2"

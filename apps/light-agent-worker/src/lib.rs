@@ -11,19 +11,36 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
+#[cfg(any(test, feature = "claude-prototype"))]
+pub mod claude_code;
 mod codex_app_server;
 mod coding_session;
 mod workspace;
+mod workspace_session;
 
 pub fn capabilities() -> RuntimeCapabilities {
     coding_agent_runtime::codex_worker_capabilities()
 }
 
-pub async fn serve<R, W>(reader: R, mut writer: W) -> Result<()>
+pub async fn serve<R, W>(reader: R, writer: W) -> Result<()>
 where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    serve_as(reader, writer, capabilities()).await
+}
+#[cfg(any(test, feature = "claude-prototype"))]
+pub async fn serve_claude<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
+    reader: R,
+    writer: W,
+) -> Result<()> {
+    serve_as(reader, writer, coding_agent_runtime::claude::capabilities()).await
+}
+async fn serve_as<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
+    reader: R,
+    mut writer: W,
+    caps: RuntimeCapabilities,
+) -> Result<()> {
     let mut lines = reader.lines();
     let hello = lines
         .next_line()
@@ -39,7 +56,6 @@ where
     if identity.transport_nonce.len() < 32 {
         bail!("transport nonce is too short")
     }
-    let caps = capabilities();
     if canonical_digest(&caps)? != expected_capability_digest {
         bail!("capability digest mismatch")
     }
@@ -48,7 +64,9 @@ where
         &mut writer,
         &identity,
         &mut sequence,
-        RuntimeEventPayload::Ready { capabilities: caps },
+        RuntimeEventPayload::Ready {
+            capabilities: caps.clone(),
+        },
     )
     .await?;
     while let Some(line) = lines.next_line().await? {
@@ -62,6 +80,16 @@ where
                 enterprise_gateway,
                 deadline_ms,
             } => {
+                if let Some(adapter) = input
+                    .pointer("/adapterContract/adapterId")
+                    .and_then(Value::as_str)
+                {
+                    if adapter != caps.adapter_id {
+                        bail!("coding adapter does not match this worker binary");
+                    }
+                } else if caps.adapter_id != coding_agent_runtime::CODEX_APP_SERVER_ADAPTER_ID {
+                    bail!("Claude worker requires an admitted coding contract");
+                }
                 if let Some(gateway) = enterprise_gateway.as_deref() {
                     gateway.validate()?;
                     if gateway.binding.session_id != session_id
@@ -116,6 +144,9 @@ where
                 .await?
             }
             RuntimeCommand::Checkpoint { reason } => {
+                if caps.adapter_id != coding_agent_runtime::CODEX_APP_SERVER_ADAPTER_ID {
+                    bail!("Claude does not support protocol checkpoints");
+                }
                 emit(
                     &mut writer,
                     &identity,
@@ -165,6 +196,24 @@ async fn run_scenario<W: AsyncWrite + Unpin>(
         }
         return Ok(());
     }
+    #[cfg(any(test, feature = "claude-prototype"))]
+    if input
+        .pointer("/adapterContract/adapterId")
+        .and_then(Value::as_str)
+        == Some(coding_agent_runtime::claude::ADAPTER_ID)
+    {
+        return claude_code::runtime::run(
+            writer,
+            identity,
+            sequence,
+            input,
+            enterprise_gateway,
+            cancel,
+            deadline,
+        )
+        .await;
+    }
+
     let scenario = input
         .get("scenario")
         .and_then(Value::as_str)

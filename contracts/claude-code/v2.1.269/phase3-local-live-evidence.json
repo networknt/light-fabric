@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "adapter": "claude-code-v1",
+  "boundary": "published-Agent-controller-enrolled-runner",
+  "gatewayAuditDelta": 0,
+  "implementationContext": true,
+  "reviewContext": true,
+  "independentTest": true,
+  "turns": [
+    {
+      "turn": "implement-new",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095af-1d18-7a43-95b1-5635eb981d12",
+      "sessionState": "READY"
+    },
+    {
+      "turn": "implement-resume",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095af-5bbc-7400-a293-ca47b1551f2c",
+      "sessionState": "READY"
+    },
+    {
+      "turn": "review-new",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095af-a9da-7b50-bc21-22bd49f05936",
+      "sessionState": "READY"
+    },
+    {
+      "turn": "review-resume-close",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095b0-367c-77e1-960f-3401e9aaa57d",
+      "sessionState": "CLOSED"
+    },
+    {
+      "turn": "implement-close",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095b0-943b-7d11-9647-2a07e29174c8",
+      "sessionState": "CLOSED"
+    }
+  ],
+  "distribution": "portal-config-loc/all-in-lt",
+  "observedOn": "2026-09-12",
+  "nativeBinaryDigest": "sha256:25e44883f54419569a3d739f38cbbdaebe83b09895da0f343e1b003710a4775b",
+  "workerBinaryDigest": "sha256:1cbb393415a92de6d0c063e4c11e909a79c00956466b844e2c62e3414c61ad29",
+  "capabilityDigest": "sha256:29187108485d2ed0f5fa2214daba178303369b78e054af318c7f85356210f8ea",
+  "adapterContractDigest": "sha256:bf487c63f15e795356c65e6d1a66944c10ffdf91328f84bcfc6087ff68f279ef",
+  "policySnapshotId": "16af72ee-ad7d-31ba-bf4b-ea69095c16a7"
+}

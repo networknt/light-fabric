@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "adapter": "claude-code-v1",
+  "boundary": "published-Agent-controller-enrolled-runner",
+  "gatewayAuditDelta": 0,
+  "implementationContext": true,
+  "reviewContext": true,
+  "reviewCandidateRefreshed": true,
+  "ignoredBuildOutputExcluded": true,
+  "independentTest": true,
+  "validationCommand": "python3 -B -m unittest test_main",
+  "nativeBinaryDigest": "sha256:25e44883f54419569a3d739f38cbbdaebe83b09895da0f343e1b003710a4775b",
+  "workerBinaryDigest": "sha256:a2223b0a850f5e95ce72ec4e42c93a541fa2aed5a0955d974587e666fc3dc5c6",
+  "adapterContractDigest": "sha256:27ab26bbab937479a7219e6a134f03f5efb871c292fadc46520c815d660c749d",
+  "turns": [
+    {
+      "turn": "implement-new",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095cf-3d61-7173-bad0-032450986d84",
+      "sessionState": "READY"
+    },
+    {
+      "turn": "implement-resume",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095cf-7c04-7d63-b3ce-323f8f328918",
+      "sessionState": "READY"
+    },
+    {
+      "turn": "review-new",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095cf-d1f5-7ce1-9194-9eeead002ec1",
+      "sessionState": "READY"
+    },
+    {
+      "turn": "implement-refresh",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095d0-2fb9-76f3-9858-66301acda1b7",
+      "sessionState": "READY"
+    },
+    {
+      "turn": "review-resume-close",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095d0-5e97-7013-9583-822a49d9745c",
+      "sessionState": "CLOSED"
+    },
+    {
+      "turn": "implement-close",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095d0-b489-7b22-8523-31279c34a1f6",
+      "sessionState": "CLOSED"
+    }
+  ],
+  "observedOn": "2026-09-12",
+  "distribution": "portal-config-loc/all-in-lt",
+  "restartCommand": "./scripts/deploy-local.sh lt",
+  "restartExitCode": 0,
+  "policySnapshotId": "8fee4667-5e61-327b-bce0-ba628a934b21",
+  "publicationId": "a92a345a-e572-3f36-94ad-6f4a80a7263c",
+  "readinessChecks": [
+    "issuer-token-expiry",
+    "native-login-expiry",
+    "installed-process-identity",
+    "backend-compatibility",
+    "controller-connected"
+  ],
+  "workflowEngineQualified": false,
+  "cleanInstallerQualified": false,
+  "finalRestore": {
+    "command": "./scripts/deploy-local.sh lt",
+    "exitCode": 0,
+    "claudeConfigMount": "portal-config-loc/all-in-lt/light-agent-claude-personal-rust/config",
+    "agentHealthy": true,
+    "bothRunnersConnected": true,
+    "installedIdentitiesVerified": true
+  }
+}

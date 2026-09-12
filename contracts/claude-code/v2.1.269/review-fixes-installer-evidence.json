@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "adapter": "claude-code-v1",
+  "boundary": "installer-Agent-service-with-shared-local-infrastructure",
+  "gatewayAuditDelta": 0,
+  "implementationContext": true,
+  "reviewContext": true,
+  "reviewCandidateRefreshed": true,
+  "ignoredBuildOutputExcluded": true,
+  "independentTest": true,
+  "validationCommand": "python3 -B -m unittest test_main",
+  "nativeBinaryDigest": "sha256:25e44883f54419569a3d739f38cbbdaebe83b09895da0f343e1b003710a4775b",
+  "workerBinaryDigest": "sha256:a2223b0a850f5e95ce72ec4e42c93a541fa2aed5a0955d974587e666fc3dc5c6",
+  "adapterContractDigest": "sha256:27ab26bbab937479a7219e6a134f03f5efb871c292fadc46520c815d660c749d",
+  "turns": [
+    {
+      "turn": "implement-new",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095d4-4387-79b2-a4a7-d38ea6b40589",
+      "sessionState": "READY"
+    },
+    {
+      "turn": "implement-resume",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095d4-822d-73c2-9f4c-d0beb6d402a6",
+      "sessionState": "READY"
+    },
+    {
+      "turn": "review-new",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095d4-d81d-79b0-a0b0-73e794d2ad8d",
+      "sessionState": "READY"
+    },
+    {
+      "turn": "implement-refresh",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095d5-2639-7a22-b3af-d4f908b9f4bc",
+      "sessionState": "READY"
+    },
+    {
+      "turn": "review-resume-close",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095d5-64b9-7721-aee3-8d1acc4c24ab",
+      "sessionState": "CLOSED"
+    },
+    {
+      "turn": "implement-close",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095d5-c27b-74a0-9914-ea125e25ca1d",
+      "sessionState": "CLOSED"
+    }
+  ],
+  "observedOn": "2026-09-12",
+  "distribution": "light-portal-install",
+  "runnerLifecycle": "installer helper restarted active runners and verified installed identity and Controller connectivity",
+  "workflowEngineQualified": false,
+  "cleanInstallerQualified": false
+}

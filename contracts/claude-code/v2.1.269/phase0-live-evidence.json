@@ -1,0 +1,579 @@
+{
+  "schemaVersion": 1,
+  "recordedAtUtc": "2026-09-12T11:20:42Z",
+  "contractSha256": "b122e4f3b6e49fc61a4313921653321249f00cc6e6eab0f0ca2672053899fc45",
+  "adapterId": "claude-code-v1",
+  "productionQualified": false,
+  "binary": {
+    "version": "2.1.269 (Claude Code)",
+    "sha256": "25e44883f54419569a3d739f38cbbdaebe83b09895da0f343e1b003710a4775b",
+    "system": "Linux",
+    "machine": "x86_64"
+  },
+  "requestedModel": "sonnet",
+  "cases": [
+    {
+      "permissionSource": "agent-policy",
+      "operation": "new",
+      "status": "passed",
+      "markerRecall": true,
+      "hookObserved": false,
+      "observedModel": "claude-sonnet-5",
+      "permissionMode": "dontAsk",
+      "mcpServerCount": 0,
+      "pluginCount": 0,
+      "eventShapes": [
+        {
+          "type": "assistant",
+          "keys": [
+            "message",
+            "parent_tool_use_id",
+            "request_id",
+            "session_id",
+            "timestamp",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "rate_limit_event",
+          "keys": [
+            "rate_limit_info",
+            "session_id",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "result",
+          "keys": [
+            "api_error_status",
+            "duration_api_ms",
+            "duration_ms",
+            "fast_mode_disabled_reason",
+            "fast_mode_state",
+            "first_content_frame_ms",
+            "is_error",
+            "modelUsage",
+            "num_turns",
+            "permission_denials",
+            "queued_turn_count",
+            "result",
+            "result_index",
+            "session_id",
+            "stop_reason",
+            "subagent_stats",
+            "subtype",
+            "terminal_reason",
+            "time_to_request_ms",
+            "total_cost_usd",
+            "ttft_ms",
+            "ttft_stream_ms",
+            "type",
+            "usage",
+            "uuid"
+          ]
+        },
+        {
+          "type": "stream_event",
+          "keys": [
+            "event",
+            "parent_tool_use_id",
+            "session_id",
+            "ttft_ms",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "stream_event",
+          "keys": [
+            "event",
+            "parent_tool_use_id",
+            "session_id",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "system",
+          "keys": [
+            "agents",
+            "analytics_disabled",
+            "apiKeySource",
+            "capabilities",
+            "claude_code_version",
+            "cwd",
+            "fast_mode_disabled_reason",
+            "fast_mode_state",
+            "mcp_servers",
+            "messaging_socket_path",
+            "model",
+            "output_style",
+            "permissionMode",
+            "plugins",
+            "product_feedback_disabled",
+            "session_id",
+            "skills",
+            "slash_commands",
+            "subtype",
+            "terminal_slash_commands",
+            "tools",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "system",
+          "keys": [
+            "session_id",
+            "status",
+            "subtype",
+            "type",
+            "uuid"
+          ]
+        }
+      ],
+      "usagePresent": true,
+      "permissionDenialCount": 0
+    },
+    {
+      "permissionSource": "agent-policy",
+      "operation": "resume",
+      "status": "passed",
+      "markerRecall": true,
+      "hookObserved": false,
+      "observedModel": "claude-sonnet-5",
+      "permissionMode": "dontAsk",
+      "mcpServerCount": 0,
+      "pluginCount": 0,
+      "eventShapes": [
+        {
+          "type": "assistant",
+          "keys": [
+            "message",
+            "parent_tool_use_id",
+            "request_id",
+            "session_id",
+            "timestamp",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "rate_limit_event",
+          "keys": [
+            "rate_limit_info",
+            "session_id",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "result",
+          "keys": [
+            "api_error_status",
+            "duration_api_ms",
+            "duration_ms",
+            "fast_mode_disabled_reason",
+            "fast_mode_state",
+            "first_content_frame_ms",
+            "is_error",
+            "modelUsage",
+            "num_turns",
+            "permission_denials",
+            "queued_turn_count",
+            "result",
+            "result_index",
+            "session_id",
+            "stop_reason",
+            "subagent_stats",
+            "subtype",
+            "terminal_reason",
+            "time_to_request_ms",
+            "total_cost_usd",
+            "ttft_ms",
+            "ttft_stream_ms",
+            "type",
+            "usage",
+            "uuid"
+          ]
+        },
+        {
+          "type": "stream_event",
+          "keys": [
+            "event",
+            "parent_tool_use_id",
+            "session_id",
+            "ttft_ms",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "stream_event",
+          "keys": [
+            "event",
+            "parent_tool_use_id",
+            "session_id",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "system",
+          "keys": [
+            "agents",
+            "analytics_disabled",
+            "apiKeySource",
+            "capabilities",
+            "claude_code_version",
+            "cwd",
+            "fast_mode_disabled_reason",
+            "fast_mode_state",
+            "mcp_servers",
+            "messaging_socket_path",
+            "model",
+            "output_style",
+            "permissionMode",
+            "plugins",
+            "product_feedback_disabled",
+            "session_id",
+            "skills",
+            "slash_commands",
+            "subtype",
+            "terminal_slash_commands",
+            "tools",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "system",
+          "keys": [
+            "session_id",
+            "status",
+            "subtype",
+            "type",
+            "uuid"
+          ]
+        }
+      ],
+      "usagePresent": true,
+      "permissionDenialCount": 0
+    },
+    {
+      "permissionSource": "claude-cli",
+      "operation": "new",
+      "status": "passed",
+      "markerRecall": true,
+      "hookObserved": true,
+      "observedModel": "claude-sonnet-5",
+      "permissionMode": "dontAsk",
+      "mcpServerCount": 1,
+      "pluginCount": 0,
+      "eventShapes": [
+        {
+          "type": "assistant",
+          "keys": [
+            "message",
+            "parent_tool_use_id",
+            "request_id",
+            "session_id",
+            "timestamp",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "rate_limit_event",
+          "keys": [
+            "rate_limit_info",
+            "session_id",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "result",
+          "keys": [
+            "api_error_status",
+            "duration_api_ms",
+            "duration_ms",
+            "fast_mode_disabled_reason",
+            "fast_mode_state",
+            "first_content_frame_ms",
+            "is_error",
+            "modelUsage",
+            "num_turns",
+            "permission_denials",
+            "queued_turn_count",
+            "result",
+            "result_index",
+            "session_id",
+            "stop_reason",
+            "subagent_stats",
+            "subtype",
+            "terminal_reason",
+            "time_to_request_ms",
+            "total_cost_usd",
+            "ttft_ms",
+            "ttft_stream_ms",
+            "type",
+            "usage",
+            "uuid"
+          ]
+        },
+        {
+          "type": "stream_event",
+          "keys": [
+            "event",
+            "parent_tool_use_id",
+            "session_id",
+            "ttft_ms",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "stream_event",
+          "keys": [
+            "event",
+            "parent_tool_use_id",
+            "session_id",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "system",
+          "keys": [
+            "agents",
+            "analytics_disabled",
+            "apiKeySource",
+            "capabilities",
+            "claude_code_version",
+            "cwd",
+            "fast_mode_disabled_reason",
+            "fast_mode_state",
+            "mcp_servers",
+            "memory_paths",
+            "messaging_socket_path",
+            "model",
+            "output_style",
+            "permissionMode",
+            "plugins",
+            "product_feedback_disabled",
+            "session_id",
+            "skills",
+            "slash_commands",
+            "subtype",
+            "terminal_slash_commands",
+            "tools",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "system",
+          "keys": [
+            "exit_code",
+            "hook_event",
+            "hook_id",
+            "hook_name",
+            "outcome",
+            "output",
+            "session_id",
+            "stderr",
+            "stdout",
+            "subtype",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "system",
+          "keys": [
+            "hook_event",
+            "hook_id",
+            "hook_name",
+            "session_id",
+            "subtype",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "system",
+          "keys": [
+            "session_id",
+            "status",
+            "subtype",
+            "type",
+            "uuid"
+          ]
+        }
+      ],
+      "usagePresent": true,
+      "permissionDenialCount": 0
+    },
+    {
+      "permissionSource": "claude-cli",
+      "operation": "resume",
+      "status": "passed",
+      "markerRecall": true,
+      "hookObserved": true,
+      "observedModel": "claude-sonnet-5",
+      "permissionMode": "dontAsk",
+      "mcpServerCount": 1,
+      "pluginCount": 0,
+      "eventShapes": [
+        {
+          "type": "assistant",
+          "keys": [
+            "message",
+            "parent_tool_use_id",
+            "request_id",
+            "session_id",
+            "timestamp",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "rate_limit_event",
+          "keys": [
+            "rate_limit_info",
+            "session_id",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "result",
+          "keys": [
+            "api_error_status",
+            "duration_api_ms",
+            "duration_ms",
+            "fast_mode_disabled_reason",
+            "fast_mode_state",
+            "first_content_frame_ms",
+            "is_error",
+            "modelUsage",
+            "num_turns",
+            "permission_denials",
+            "queued_turn_count",
+            "result",
+            "result_index",
+            "session_id",
+            "stop_reason",
+            "subagent_stats",
+            "subtype",
+            "terminal_reason",
+            "time_to_request_ms",
+            "total_cost_usd",
+            "ttft_ms",
+            "ttft_stream_ms",
+            "type",
+            "usage",
+            "uuid"
+          ]
+        },
+        {
+          "type": "stream_event",
+          "keys": [
+            "event",
+            "parent_tool_use_id",
+            "session_id",
+            "ttft_ms",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "stream_event",
+          "keys": [
+            "event",
+            "parent_tool_use_id",
+            "session_id",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "system",
+          "keys": [
+            "agents",
+            "analytics_disabled",
+            "apiKeySource",
+            "capabilities",
+            "claude_code_version",
+            "cwd",
+            "fast_mode_disabled_reason",
+            "fast_mode_state",
+            "mcp_servers",
+            "memory_paths",
+            "messaging_socket_path",
+            "model",
+            "output_style",
+            "permissionMode",
+            "plugins",
+            "product_feedback_disabled",
+            "session_id",
+            "skills",
+            "slash_commands",
+            "subtype",
+            "terminal_slash_commands",
+            "tools",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "system",
+          "keys": [
+            "exit_code",
+            "hook_event",
+            "hook_id",
+            "hook_name",
+            "outcome",
+            "output",
+            "session_id",
+            "stderr",
+            "stdout",
+            "subtype",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "system",
+          "keys": [
+            "hook_event",
+            "hook_id",
+            "hook_name",
+            "session_id",
+            "subtype",
+            "type",
+            "uuid"
+          ]
+        },
+        {
+          "type": "system",
+          "keys": [
+            "session_id",
+            "status",
+            "subtype",
+            "type",
+            "uuid"
+          ]
+        }
+      ],
+      "usagePresent": true,
+      "permissionDenialCount": 0
+    }
+  ],
+  "technicalStatus": "passed",
+  "distributionEligibility": "unresolved",
+  "authenticationClass": "personal-subscription"
+}

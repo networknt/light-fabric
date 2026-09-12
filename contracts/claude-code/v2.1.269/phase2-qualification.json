@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "adapterId": "claude-code-v1",
+  "status": "local-qualified",
+  "scope": "Explicitly configured single-user personal worker; not distribution eligibility",
+  "gates": [
+    "scripts/run-claude-personal-phase2-gates.sh"
+  ],
+  "dimensions": {
+    "protocol-lifecycle": "framed RuntimeCommand/RuntimeEvent integration and strict native terminal parsing",
+    "approval-mediation": "unattended policy modes; capability false; no implicit approval replay",
+    "streaming-events": "bounded text events, identity and sequence validation",
+    "usage-accounting": "advisory only; native-claude-store cannot assert API billing",
+    "cancellation": "deadline and cancellation supervision with child group teardown",
+    "resumability": "workflow new/resume/close with owner/profile/model/checkpoint fencing",
+    "canonical-patch": "immutable bundle and protected-path validation at worker and runner",
+    "review-isolation": "fresh candidate, private native state, namespace hides host and other histories",
+    "authentication-profiles": "native personal only; no enterprise broker or Codex home",
+    "workspace-isolation": "Sparse filesystem namespace with read-only candidate and explicit writable mounts",
+    "panic-containment": "worker process failure is a failed attempt; no uncertain checkpoint reuse",
+    "dependency-compatibility": "pinned CLI, workspace builds and protocol regressions"
+  },
+  "licenseCompatibility": "unresolved; excluded from local technical qualification",
+  "productionQualified": false
+}

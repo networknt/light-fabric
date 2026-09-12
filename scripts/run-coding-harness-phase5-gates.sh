@@ -33,11 +33,16 @@ jq -e '
 ' "$embedded_evidence" >/dev/null
 
 # Optional harnesses must not leak into the production worker capability set.
-if rg -n 'codex-embedded-v1|claude-code-v1' \
+# Claude has a separate opt-in local-qualified binary; the default remains Codex-only.
+if rg -n 'codex-embedded-v1' \
+  --glob '!claude_code.rs' --glob '!**/claude_code/**' \
   apps/light-agent-worker/src apps/light-agent/src; then
   echo "an unqualified optional adapter entered a production selection path" >&2
   exit 1
 fi
+
+cargo test --locked -p light-agent-worker --features claude-prototype --lib \
+  claude_code::tests::candidate_never_changes_production_capabilities
 
 cargo fmt --check --manifest-path prototypes/codex-embedded-v1/Cargo.toml
 if [[ "${LIGHT_RUN_CODEX_EMBEDDED_PROBE:-0}" == "1" ]]; then
@@ -54,3 +59,5 @@ fi
 
 mdbook build docs
 echo "Coding harness Phase 5 gates passed; codex-embedded-v1 remains prototype-only."
+
+cargo test --locked -p coding-agent-runtime --lib local_qualification_never_satisfies_production_promotion

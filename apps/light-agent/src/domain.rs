@@ -162,6 +162,8 @@ pub struct EdgeActionSpec {
 
 #[derive(Debug, Clone)]
 pub struct CodingAdapterRuntime {
+    pub claude_policy: Option<coding_agent_runtime::claude::LaunchPolicy>,
+    pub native_model: Option<String>,
     pub contract: CodingAdapterContract,
     pub qualification: coding_agent_runtime::CodingAdapterQualification,
     pub model: String,
@@ -1088,7 +1090,7 @@ impl AgentRepository {
         for _ in 0..100 {
             let mut tx = self.pool.begin().await?;
             let row=sqlx::query("SELECT j.host_id,j.job_id,j.agent_def_id,j.idempotency_key,j.policy_digest,
-                    j.data_boundary_digest,j.deadline_ts,j.token_budget,j.cost_budget_micros,j.delegation_depth
+                    j.data_boundary_digest,j.deadline_ts,j.token_budget,j.cost_budget_micros,j.delegation_depth,(j.input ? 'workspace') AS workspace_job
                  FROM agent_job_t j
                  WHERE j.state='PENDING' AND j.deadline_ts>now()
                    AND j.host_id=$1 AND j.agent_def_id=$2 AND j.policy_digest=$3
@@ -1116,7 +1118,11 @@ impl AgentRepository {
             )
             .bind(host)
             .bind(job)
-            .bind(format!("workflow-job:{job}"))
+            .bind(if row.try_get::<bool, _>("workspace_job")? {
+                format!("workflow-agent:{}", authority.agent_def_id)
+            } else {
+                format!("workflow-job:{job}")
+            })
             .bind(authority.agent_def_id)
             .bind(authority.definition_version)
             .bind(authority.policy_snapshot_id)
@@ -1527,6 +1533,31 @@ impl AgentRepository {
         spec.validate()?;
         repository.validate(spec)?;
         runtime.contract.validate()?;
+        match (&runtime.claude_policy, runtime.contract.adapter_id.as_str()) {
+            (Some(policy), coding_agent_runtime::claude::ADAPTER_ID) => {
+                coding_agent_runtime::claude::require_local_contract(
+                    &runtime.contract,
+                    &runtime.qualification,
+                )?;
+                policy.resolve(runtime.native_model.as_deref())?;
+                if spec.authentication_profile
+                    != coding_agent_runtime::CodingAuthenticationProfile::PersonalSubscription
+                    || spec.thread.is_none()
+                    || runtime.enterprise_gateway.is_some()
+                {
+                    bail!(
+                        "Claude requires personal authentication and explicit workflow thread control"
+                    );
+                }
+            }
+            (None, coding_agent_runtime::CODEX_APP_SERVER_ADAPTER_ID)
+                if runtime.native_model.is_none() =>
+            {
+                ()
+            }
+            _ => bail!("native model/policy does not match the selected coding adapter"),
+        }
+
         if runtime.model != spec.model_alias {
             bail!("coding runtime model alias differs from immutable role profile")
         }
@@ -1667,6 +1698,8 @@ impl AgentRepository {
             policy_digest: policy.clone(),
             input: json!({
                 "codingSpec": spec,
+                "claudePolicy": runtime.claude_policy,
+                "nativeModel": runtime.native_model,
                 "threadScope": thread_scope,
                 "materializationManifest": manifest,
                 "adapterContract": runtime.contract,
@@ -4040,6 +4073,8 @@ mod tests {
             "schemaDigest":coding_agent_runtime::CODEX_APP_SERVER_SCHEMA_DIGEST,"requiredFeatures":["codex-app-server-v1"]
         })).unwrap();
         let runtime = CodingAdapterRuntime {
+            claude_policy: None,
+            native_model: None,
             qualification: coding_agent_runtime::CodingAdapterQualification {
                 schema_version: 1,
                 adapter_id: contract.adapter_id.clone(),

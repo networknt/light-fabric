@@ -17,6 +17,7 @@ COPY patches/ patches/
 # Copy the required crates, frameworks, and apps
 # Note: This Dockerfile expects to be built from the workspace root context.
 # Use specific directory copies to avoid bringing in unnecessary files
+COPY contracts/ contracts/
 COPY crates/ crates/
 COPY frameworks/ frameworks/
 COPY apps/ apps/
@@ -30,6 +31,7 @@ FROM debian:bookworm-slim
 
 # Deployment preflight requires independent session cleanup and structured WS errors.
 LABEL io.lightapi.agent.session-lifecycle="1"
+LABEL io.lightapi.agent.claude-personal="phase2"
 
 # Install runtime dependencies and create a non-root user
 RUN apt-get update && \

@@ -1473,6 +1473,7 @@ name = "coding-agent-runtime"
 version = "0.2.1"
 dependencies = [
  "agent-runtime-protocol",
+ "anyhow",
  "base64",
  "execution-security",
  "serde",
@@ -4628,6 +4629,8 @@ dependencies = [
  "execution-security",
  "hex",
  "jsonschema",
+ "libc",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "task-workspace",
@@ -9070,6 +9073,7 @@ dependencies = [
 name = "workspace-execution-protocol"
 version = "0.2.1"
 dependencies = [
+ "coding-agent-runtime",
  "hex",
  "serde",
  "serde_json",

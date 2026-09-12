@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "adapter": "claude-code-v1",
+  "boundary": "published-Agent-controller-enrolled-runner",
+  "gatewayAuditDelta": 0,
+  "implementationContext": true,
+  "reviewContext": true,
+  "independentTest": true,
+  "turns": [
+    {
+      "turn": "implement-new",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095b4-b6a3-7bd3-b612-b1b65dbd0727",
+      "sessionState": "READY"
+    },
+    {
+      "turn": "implement-resume",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095b4-fd1c-7db1-9e46-534460e8088b",
+      "sessionState": "READY"
+    },
+    {
+      "turn": "review-new",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095b5-5303-70c3-aa60-69d254830d0d",
+      "sessionState": "READY"
+    },
+    {
+      "turn": "review-resume-close",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095b5-b0c8-7322-b181-f99e732a6519",
+      "sessionState": "CLOSED"
+    },
+    {
+      "turn": "implement-close",
+      "state": "COMPLETED",
+      "fencingToken": 1,
+      "requestId": "01a095b6-165a-7201-94d3-61c47b67890c",
+      "sessionState": "CLOSED"
+    }
+  ],
+  "nativeBinaryDigest": "sha256:25e44883f54419569a3d739f38cbbdaebe83b09895da0f343e1b003710a4775b",
+  "workerBinaryDigest": "sha256:1cbb393415a92de6d0c063e4c11e909a79c00956466b844e2c62e3414c61ad29",
+  "capabilityDigest": "sha256:29187108485d2ed0f5fa2214daba178303369b78e054af318c7f85356210f8ea",
+  "adapterContractDigest": "sha256:bf487c63f15e795356c65e6d1a66944c10ffdf91328f84bcfc6087ff68f279ef",
+  "policySnapshotId": "16af72ee-ad7d-31ba-bf4b-ea69095c16a7",
+  "distribution": "portal-config-loc/all-in-lt",
+  "observedOn": "2026-09-12",
+  "restartCommand": "./scripts/deploy-local.sh lt",
+  "restartExitCode": 0,
+  "claudeConfigMount": "/home/steve/workspace/portal-config-loc/all-in-lt/light-agent-claude-personal-rust/config",
+  "connectedRunners": [
+    "personal-codex-runner",
+    "personal-claude-runner"
+  ]
+}

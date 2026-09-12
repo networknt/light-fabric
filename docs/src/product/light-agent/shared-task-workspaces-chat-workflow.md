@@ -1,7 +1,10 @@
 # Shared Task Workspaces: Chat and Workflow Integration
 
-Status: standalone Chat implementation, September 11, 2026. The workflow
-orchestration sections below remain a design for the next milestone.
+Status: shared Codex/Claude worker and Chat extension, September 12, 2026.
+See [Shared native coding sessions](shared-native-coding-sessions.md) for the
+current session contract and deployment prerequisites. Higher-level development
+workflow orchestration below remains a design; its cross-database job bridge is
+not yet qualified in the local stack.
 
 This document extends [Shared Task Workspaces](shared-task-workspaces.md) and
 [Development Workflow Orchestration](development-workflow-orchestration.md).
@@ -18,8 +21,8 @@ This document extends [Shared Task Workspaces](shared-task-workspaces.md) and
 - The Agent schedules through the existing durable execution outbox and
   Controller transport, pinned to the bound personal runner. The runner checks
   its private workspace configuration and the local registration again.
-- Native Codex uses an isolated temporary home containing only personal login
-  credentials. Host repositories, configuration, plugins and unrelated MCP
+- Native Codex and Claude use isolated per-conversation native state with only
+  their corresponding personal login. Host repositories, configuration, plugins and unrelated MCP
   servers are not mounted. Its only workspace tool is a scoped file facade:
   repository listing, paginated file listing, reads and digest-conditional edits.
 - A task lock spans the model turn. Unfinished writers are fenced. A durable
@@ -31,10 +34,10 @@ This document extends [Shared Task Workspaces](shared-task-workspaces.md) and
 - Chat displays the final explanation, task ID and checkpoint, and selects that
   existing task for follow-up. Result notifications are deduplicated.
 
-The first release supports **inspect** and **implement** on a personal native
-runner. Running commands/tests, indexing, GitHub delivery and independent review
-are available through the local manager where implemented, but are not exposed
-through this Chat adapter. Enterprise workspace adapters and workflow stages
+The adapters support **inspect**, **implement**, and read-only **review** on
+personal native runners. Review is tied to an exact workspace checkpoint. Running
+commands/tests, indexing, trusted approval, and GitHub delivery remain separate
+manager operations. Enterprise workspace adapters and workflow stages
 require separate qualification. Registering an MCP server alone does not enable
 Chat: publish a matching binding and deploy the workspace-enabled runner.
 

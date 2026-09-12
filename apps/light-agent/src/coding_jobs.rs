@@ -3,23 +3,25 @@ use super::*;
 #[cfg(test)]
 use serde_json::json;
 
-fn prepare<'a>(
-    config: &'a CodingProfileConfig,
+pub(super) fn prepare(
+    config: &CodingProfileConfig,
     request: &CodingDispatchRequest,
     prompt: &str,
 ) -> Result<(
     MaterializationManifest,
     CodingTurnSpec,
-    &'a CodingAdapterRuntime,
+    CodingAdapterRuntime,
 )> {
     validate_repository_input_uri(
         &request.repository.artifact_uri,
         &config.repository_uri_prefix,
     )?;
-    let runtime = match request.role {
-        CodingRole::Implement => &config.runtime,
-        CodingRole::Review => &config.reviewer_runtime,
+    let mut runtime = match request.role {
+        CodingRole::Implement => config.runtime.clone(),
+        CodingRole::Review => config.reviewer_runtime.clone(),
     };
+    runtime.native_model = request.native_model.clone();
+    admit_native_selection(&runtime, request)?;
     let writable_roots = match request.role {
         CodingRole::Implement if request.writable_roots.is_empty() => {
             BTreeSet::from([request.workspace_root.clone()])
@@ -95,6 +97,55 @@ async fn dispatch(state: &AgentState) -> Result<()> {
             if product_profile_digest != config.product_profile_digest {
                 bail!("turn policy does not authorize the coding profile");
             }
+            if let Some(request) = &message.workspace {
+                if message.coding.is_some()
+                    || message.text != request.instruction
+                    || message.client_message_id.as_deref() != Some(request.request_id.as_str())
+                {
+                    bail!("workflow workspace request conflicts with the coding message");
+                }
+                let subject = format!("workflow-agent:{}", state.agent_def_id);
+                let profile = state
+                    .agent_config
+                    .agent_policy
+                    .execution
+                    .coding_profile
+                    .as_ref()
+                    .context("workspace policy missing")?;
+                let binding = profile
+                    .workspace_bindings
+                    .iter()
+                    .find(|b| {
+                        b.workspace_id == request.workspace_id
+                            && b.host_id == state.host_id.to_string()
+                            && b.environment == state.env_tag.as_deref().unwrap_or_default()
+                            && b.subjects.contains(&subject)
+                            && b.agents.contains(&state.service_id)
+                    })
+                    .context("workflow workspace is not authorized")?
+                    .clone();
+                let spec = workspace_execution_protocol::WorkspaceExecutionSpec {
+                    request: request.clone(),
+                    binding,
+                    subject,
+                    agent_id: state.service_id.clone(),
+                };
+                spec.validate()?;
+                if request.thread.is_none() {
+                    bail!("workflow workspace turns require explicit conversation control");
+                }
+                state
+                    .domain
+                    .schedule_workspace_turn(
+                        state.host_id,
+                        AgentSessionId(job),
+                        AgentTurnId(turn),
+                        &spec,
+                        &config.runtime,
+                    )
+                    .await?;
+                return Ok(());
+            }
             let request = message
                 .coding
                 .context("workflow coding job requires typed coding input")?;
@@ -109,7 +160,7 @@ async fn dispatch(state: &AgentState) -> Result<()> {
                     &manifest,
                     &spec,
                     &request.repository,
-                    runtime,
+                    &runtime,
                 )
                 .await?;
             Ok(())
@@ -161,6 +212,8 @@ mod tests {
             required_features: BTreeSet::from(["codex-app-server-v1".into()]),
         };
         let runtime = CodingAdapterRuntime {
+            claude_policy: None,
+            native_model: None,
             qualification: CodingAdapterQualification {
                 schema_version: 1,
                 adapter_id: contract.adapter_id.clone(),

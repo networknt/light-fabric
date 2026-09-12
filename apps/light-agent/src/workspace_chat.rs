@@ -43,7 +43,7 @@ fn bindings(
 
 pub(super) fn catalog(state: &AgentState, principal: Uuid) -> serde_json::Value {
     serde_json::json!({"type":"workspaceCatalog", "workspaces": bindings(state, principal).into_iter().map(|b|
-        serde_json::json!({"workspaceId":b.workspace_id,"membershipRevision":b.membership_revision,
+        serde_json::json!({"workspaceId":b.workspace_id,"membershipRevision":b.membership_revision,"runnerId":b.runner_id,
             "intents":b.intents.intersection(&standalone_intents()).collect::<Vec<_>>() })).collect::<Vec<_>>()})
 }
 

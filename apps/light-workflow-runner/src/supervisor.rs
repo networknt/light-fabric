@@ -86,22 +86,29 @@ impl Supervisor {
     ) -> execution_runner_protocol::BackendCapability {
         if agent_worker.is_some_and(|worker| {
             worker.workspace_config.is_some()
-                && worker.codex_home.is_some()
+                && (worker.codex_home.is_some() || worker.claude_home.is_some())
                 && worker.sandbox_launcher.is_none()
                 && worker.broker.is_none()
         }) {
             capability.features.push("task-workspace-v1".into());
         }
         if agent_worker.is_some() {
-            if !capability
-                .actions
-                .iter()
-                .any(|action| action == "coding.codex-app-server-v1")
-            {
-                capability.actions.push("coding.codex-app-server-v1".into());
+            let claude = agent_worker.is_some_and(|w| w.claude_home.is_some());
+            let action = if claude {
+                coding_agent_runtime::claude::ACTION
+            } else {
+                "coding.codex-app-server-v1"
+            };
+            let adapter = if claude {
+                coding_agent_runtime::claude::ADAPTER_ID
+            } else {
+                "codex-app-server-v1"
+            };
+            if !capability.actions.iter().any(|existing| existing == action) {
+                capability.actions.push(action.into());
             }
             for feature in [
-                "codex-app-server-v1",
+                adapter,
                 "canonical-patch-output",
                 "immutable-repository-upload",
             ] {
@@ -120,7 +127,7 @@ impl Supervisor {
             // Only the dedicated native profile can expose the owner's Codex login.
             // Admission generation and live registration use this same capability builder.
             if agent_worker.is_some_and(|worker| {
-                worker.codex_home.is_some()
+                (worker.codex_home.is_some() || worker.claude_home.is_some())
                     && worker.sandbox_launcher.is_none()
                     && worker.broker.is_none()
             }) && !capability
@@ -134,12 +141,14 @@ impl Supervisor {
             }
             // A new runner must not advertise thread reuse for an older installed worker.
             if agent_worker.is_some_and(|worker| {
-                worker.codex_home.is_some()
+                (worker.codex_home.is_some() || worker.claude_home.is_some())
                     && worker.sandbox_launcher.is_none()
                     && worker.broker.is_none()
-                    && agent_runtime_protocol::canonical_digest(
-                        &coding_agent_runtime::codex_worker_capabilities(),
-                    )
+                    && agent_runtime_protocol::canonical_digest(&if claude {
+                        coding_agent_runtime::claude::capabilities()
+                    } else {
+                        coding_agent_runtime::codex_worker_capabilities()
+                    })
                     .ok()
                     .as_ref()
                         == Some(&worker.capability_digest)
@@ -151,6 +160,16 @@ impl Supervisor {
                 capability
                     .features
                     .push("workflow-coding-threads-v1".into());
+            }
+            if claude
+                && !capability
+                    .features
+                    .iter()
+                    .any(|f| f == "claude-review-namespace-v1")
+            {
+                capability
+                    .features
+                    .push("claude-review-namespace-v1".into());
             }
             let isolation_feature =
                 if agent_worker.is_some_and(|worker| worker.sandbox_launcher.is_some()) {
@@ -1316,6 +1335,8 @@ mod tests {
             sandbox_launcher: None,
             codex_home: None,
             codex_executable: None,
+            claude_home: None,
+            claude_executable: None,
             workspace_config: None,
             broker: None,
         };

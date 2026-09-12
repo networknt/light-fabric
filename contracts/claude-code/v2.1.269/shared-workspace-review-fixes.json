@@ -1,0 +1,148 @@
+{
+  "status": "passed",
+  "boundary": "native-workers-shared-store",
+  "crossAdapterReview": true,
+  "independentFileValidation": true,
+  "turns": [
+    {
+      "adapter": "codex",
+      "intent": "implement",
+      "mode": "new",
+      "workspace": {
+        "checkpointDigest": "sha256:2538d92624d3258362450a067b5afaf4b905cc8e1ad1f89350aafeb72894f1fd",
+        "intent": "implement",
+        "jobId": "job-30513a21ec88dfbf28c74fd994c58684e10526e3713f04d1032b9c5629af86b2",
+        "taskId": "task-30513a21ec88dfbf28c74fd994c58684e10526e3713f04d1032b9c5629af86b2",
+        "workspaceId": "shared"
+      },
+      "thread": {
+        "checkpoint": "01a09634-7d63-72a3-ac9e-5a52890f10ea",
+        "sessionRef": "597b91ab-e3a4-4070-be46-5d674bc573b3",
+        "state": "READY"
+      }
+    },
+    {
+      "adapter": "claude",
+      "intent": "review",
+      "mode": "new",
+      "workspace": {
+        "checkpointDigest": "sha256:2538d92624d3258362450a067b5afaf4b905cc8e1ad1f89350aafeb72894f1fd",
+        "intent": "review",
+        "jobId": "job-620206b20ecbe872476785416c2589ad8a6be6237c88e712d69ecbd8d71784ac",
+        "taskId": "task-30513a21ec88dfbf28c74fd994c58684e10526e3713f04d1032b9c5629af86b2",
+        "workspaceId": "shared"
+      },
+      "thread": {
+        "checkpoint": "01a09634-a4b9-7ff3-af07-cceaa88f50ba",
+        "sessionRef": "b715f86d-ec3a-48ad-9558-ea5bd1a0d012",
+        "state": "READY"
+      }
+    },
+    {
+      "adapter": "codex",
+      "intent": "implement",
+      "mode": "resume",
+      "workspace": {
+        "checkpointDigest": "sha256:707989f4cc1c2ed7de7c4ea99454773e466724b72e6889843a4ed5c0398809d6",
+        "intent": "implement",
+        "jobId": "job-810b824a41d07dd758e388df640150b013bd51ba90dedeed92c2ae26458eb20a",
+        "taskId": "task-30513a21ec88dfbf28c74fd994c58684e10526e3713f04d1032b9c5629af86b2",
+        "workspaceId": "shared"
+      },
+      "thread": {
+        "checkpoint": "01a09634-ea1e-7932-b776-ba2a9be6cb62",
+        "sessionRef": "597b91ab-e3a4-4070-be46-5d674bc573b3",
+        "state": "READY"
+      }
+    },
+    {
+      "adapter": "claude",
+      "intent": "review",
+      "mode": "resume",
+      "workspace": {
+        "checkpointDigest": "sha256:707989f4cc1c2ed7de7c4ea99454773e466724b72e6889843a4ed5c0398809d6",
+        "intent": "review",
+        "jobId": "job-eecc60ad9e100ffeb043ae75fa66ca99ac14b26d17ee87512ab7597ccdb986c9",
+        "taskId": "task-30513a21ec88dfbf28c74fd994c58684e10526e3713f04d1032b9c5629af86b2",
+        "workspaceId": "shared"
+      },
+      "thread": {
+        "checkpoint": "01a09635-1b37-7c52-aaf9-4ddf8d2983f9",
+        "sessionRef": "b715f86d-ec3a-48ad-9558-ea5bd1a0d012",
+        "state": "READY"
+      }
+    },
+    {
+      "adapter": "codex",
+      "intent": "implement",
+      "mode": "resume",
+      "workspace": {
+        "checkpointDigest": "sha256:707989f4cc1c2ed7de7c4ea99454773e466724b72e6889843a4ed5c0398809d6",
+        "intent": "implement",
+        "jobId": "job-6e98bd299d8575319d09791f7c8b72e54e2f18232fec2b21ab92066c115723e2",
+        "taskId": "task-30513a21ec88dfbf28c74fd994c58684e10526e3713f04d1032b9c5629af86b2",
+        "workspaceId": "shared"
+      },
+      "thread": {
+        "checkpoint": "01a09635-3aa9-7d41-9dae-a90ca169ea9b",
+        "sessionRef": "597b91ab-e3a4-4070-be46-5d674bc573b3",
+        "state": "READY"
+      }
+    },
+    {
+      "adapter": "claude",
+      "intent": "review",
+      "mode": "resume",
+      "workspace": {
+        "checkpointDigest": "sha256:707989f4cc1c2ed7de7c4ea99454773e466724b72e6889843a4ed5c0398809d6",
+        "intent": "review",
+        "jobId": "job-0c62aeefe5856f96625494ef685a5220b3ad0fbc8427f3607e01200f43475b6e",
+        "taskId": "task-30513a21ec88dfbf28c74fd994c58684e10526e3713f04d1032b9c5629af86b2",
+        "workspaceId": "shared"
+      },
+      "thread": {
+        "checkpoint": "01a09635-4fdf-7e10-8298-efce340a0126",
+        "sessionRef": "b715f86d-ec3a-48ad-9558-ea5bd1a0d012",
+        "state": "READY"
+      }
+    },
+    {
+      "adapter": "codex",
+      "intent": "implement",
+      "mode": "close",
+      "workspace": {
+        "checkpointDigest": "sha256:707989f4cc1c2ed7de7c4ea99454773e466724b72e6889843a4ed5c0398809d6",
+        "intent": "implement",
+        "jobId": "job-b0a9a6c00f0c4dd2bee4bfa8b9e3bc3f0c4bad7d266a576978b10de641a360bb",
+        "taskId": "task-30513a21ec88dfbf28c74fd994c58684e10526e3713f04d1032b9c5629af86b2",
+        "workspaceId": "shared"
+      },
+      "thread": {
+        "checkpoint": "01a09635-3aa9-7d41-9dae-a90ca169ea9b",
+        "sessionRef": "597b91ab-e3a4-4070-be46-5d674bc573b3",
+        "state": "CLOSED"
+      }
+    },
+    {
+      "adapter": "claude",
+      "intent": "review",
+      "mode": "close",
+      "workspace": {
+        "checkpointDigest": "sha256:707989f4cc1c2ed7de7c4ea99454773e466724b72e6889843a4ed5c0398809d6",
+        "intent": "review",
+        "jobId": "job-be0941b9f63a9355db5490f4c13520ad7f071a9140eeef9503a3cfb1175338fd",
+        "taskId": "task-30513a21ec88dfbf28c74fd994c58684e10526e3713f04d1032b9c5629af86b2",
+        "workspaceId": "shared"
+      },
+      "thread": {
+        "checkpoint": "01a09635-4fdf-7e10-8298-efce340a0126",
+        "sessionRef": "b715f86d-ec3a-48ad-9558-ea5bd1a0d012",
+        "state": "CLOSED"
+      }
+    }
+  ],
+  "date": "2026-09-12",
+  "nativeSandbox": "read-only",
+  "nativeToolNetworkAccess": false,
+  "scope": "source-built worker qualification; deployed enrollment unchanged"
+}

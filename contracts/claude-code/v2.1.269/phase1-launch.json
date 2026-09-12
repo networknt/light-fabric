@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "adapterId": "claude-code-v1",
+  "adapterVersion": "2.1.269",
+  "adapterProtocolVersion": "claude-cli-stream-json-v1",
+  "binarySha256": "25e44883f54419569a3d739f38cbbdaebe83b09895da0f343e1b003710a4775b",
+  "status": "prototype-only",
+  "productionQualified": false,
+  "buildFeature": "claude-prototype",
+  "authenticationProfile": "personal-subscription",
+  "permissionSources": ["agent-policy", "claude-cli"],
+  "permissionModes": ["inherit", "dontAsk", "bypassPermissions"],
+  "interactionMode": "unattended",
+  "frameBytes": 1048576,
+  "outputBytes": 8388608,
+  "stderrBytes": 65536,
+  "lifecycle": ["new", "resume", "close", "closeAfterTurn"],
+  "commitBoundary": "trusted core accepts validated artifact; unaccepted proposals remain IN_FLIGHT",
+  "productionActions": []
+}

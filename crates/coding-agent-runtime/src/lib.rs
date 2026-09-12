@@ -1,3 +1,4 @@
+pub mod claude;
 use agent_runtime_protocol::canonical_digest;
 use base64::Engine;
 use execution_security::ProtectedPathPolicy;
@@ -51,6 +52,8 @@ pub const CODING_REVIEWER_ALIAS: &str = "coding-reviewer";
 #[serde(rename_all = "kebab-case")]
 pub enum CodingAdapterQualificationStatus {
     PrototypeOnly,
+    /// Technical qualification for an explicitly configured single-user local worker.
+    LocalQualified,
     Qualified,
     Withdrawn,
 }
@@ -128,6 +131,12 @@ impl CodingAdapterQualification {
         {
             return Err(CodingError::AdapterQualification);
         }
+        if self.status == CodingAdapterQualificationStatus::LocalQualified
+            && (self.evaluated_dimensions != claude::local_dimensions()
+                || self.contract_digest.is_none())
+        {
+            return Err(CodingError::AdapterQualification);
+        }
         if self.status == CodingAdapterQualificationStatus::PrototypeOnly
             && self.contract_digest.is_some()
         {
@@ -176,6 +185,7 @@ pub enum CodingAuthenticationProfile {
 #[serde(rename_all = "kebab-case")]
 pub enum CodingCredentialSource {
     NativeCodexStore,
+    NativeClaudeStore,
     AttemptBroker,
 }
 
@@ -193,7 +203,8 @@ impl CodingAuthenticationEvidence {
         let valid = match (self.profile, self.credential_source) {
             (
                 CodingAuthenticationProfile::PersonalSubscription,
-                CodingCredentialSource::NativeCodexStore,
+                CodingCredentialSource::NativeCodexStore
+                | CodingCredentialSource::NativeClaudeStore,
             ) => self.credential_generation.is_none() && !self.authoritative_usage,
             (CodingAuthenticationProfile::EnterpriseApi, CodingCredentialSource::AttemptBroker) => {
                 self.credential_generation

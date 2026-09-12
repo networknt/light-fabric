@@ -19,6 +19,11 @@ pub(crate) fn result_message(turn_id: uuid::Uuid, state: &str, result: &Value) -
         message["workspace"] = json!({"workspaceId":workspace["workspaceId"],"taskId":workspace["taskId"],
             "checkpointDigest":workspace["checkpointDigest"]});
     }
+    if state == "COMPLETED"
+        && let Some(thread) = output.and_then(|v| v.get("codingThread"))
+    {
+        message["codingThread"] = json!({"sessionRef":thread["sessionRef"],"checkpoint":thread["checkpoint"],"state":thread["state"]});
+    }
     message
 }
 
