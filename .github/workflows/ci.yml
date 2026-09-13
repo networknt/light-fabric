@@ -24,7 +24,20 @@ jobs:
       - name: Install worker test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap
+          sudo apt-get install --yes --no-install-recommends apparmor bubblewrap
+      - name: Allow Bubblewrap user namespaces
+        # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor.
+        # Allow the sandbox launcher on this CI VM and keep the global restriction.
+        run: |
+          sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          include <tunables/global>
+
+          profile bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser --replace /etc/apparmor.d/bwrap
       - name: Verify worker namespace support
         # Worker tests exercise real filesystem and process isolation.
         run: |
