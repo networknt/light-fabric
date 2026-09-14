@@ -68,11 +68,18 @@ impl ReconciliationRetry {
     }
 }
 
+#[async_trait::async_trait]
+pub trait WorkflowJobAuthorizer: Send + Sync {
+    async fn authorized(&self, host: Uuid, job: Uuid) -> Result<bool>;
+}
+
 #[derive(Clone)]
 pub struct AgentRepository {
     pool: PgPool,
     authority: Option<Arc<AgentRuntimeAuthority>>,
     execution: Option<Arc<ExecutionClient>>,
+    workflow_jobs_enabled: bool,
+    workflow_job_authorizer: Option<Arc<dyn WorkflowJobAuthorizer>>,
 }
 
 fn coding_thread_scope(
@@ -576,6 +583,8 @@ impl AgentRepository {
             pool,
             authority: Some(Arc::new(authority)),
             execution: None,
+            workflow_jobs_enabled: true,
+            workflow_job_authorizer: None,
         }
     }
 
@@ -588,6 +597,8 @@ impl AgentRepository {
             pool,
             authority: Some(Arc::new(authority)),
             execution: Some(Arc::new(execution)),
+            workflow_jobs_enabled: true,
+            workflow_job_authorizer: None,
         }
     }
 
@@ -819,7 +830,30 @@ impl AgentRepository {
             pool,
             authority: None,
             execution: None,
+            workflow_jobs_enabled: true,
+            workflow_job_authorizer: None,
         }
+    }
+
+    pub fn with_workflow_job_authorizer(
+        mut self,
+        authorizer: Arc<dyn WorkflowJobAuthorizer>,
+    ) -> Self {
+        self.workflow_job_authorizer = Some(authorizer);
+        self
+    }
+    pub async fn workflow_job_authorized(&self, host: Uuid, job: Uuid) -> Result<bool> {
+        if !self.workflow_jobs_enabled {
+            return Ok(false);
+        }
+        match &self.workflow_job_authorizer {
+            Some(authorizer) => authorizer.authorized(host, job).await,
+            None => Ok(true), // Legacy profile only; A2 startup requires an authorizer.
+        }
+    }
+    pub fn with_workflow_jobs_enabled(mut self, enabled: bool) -> Self {
+        self.workflow_jobs_enabled = enabled;
+        self
     }
 
     pub fn pool(&self) -> PgPool {
@@ -1075,6 +1109,9 @@ impl AgentRepository {
     }
 
     pub async fn reconcile_agent_jobs(&self) -> Result<u64> {
+        if !self.workflow_jobs_enabled {
+            return Ok(0);
+        }
         let authority = self
             .authority
             .as_ref()
@@ -1088,6 +1125,7 @@ impl AgentRepository {
                     FROM expired WHERE t.host_id=expired.host_id AND t.turn_id=expired.turn_id
                       AND t.state NOT IN('COMPLETED','FAILED','CANCELLED','UNKNOWN')")
             .execute(&self.pool).await?.rows_affected();
+        let mut denied_jobs: Vec<Uuid> = Vec::new();
         for _ in 0..100 {
             let mut tx = self.pool.begin().await?;
             let row=sqlx::query("SELECT j.host_id,j.job_id,j.agent_def_id,j.idempotency_key,j.policy_digest,
@@ -1095,11 +1133,11 @@ impl AgentRepository {
                  FROM agent_job_t j
                  WHERE j.state='PENDING' AND j.deadline_ts>now()
                    AND j.host_id=$1 AND j.agent_def_id=$2 AND j.policy_digest=$3
-                   AND j.data_boundary_digest=$4
+                   AND j.data_boundary_digest=$4 AND NOT (j.job_id=ANY($5))
                  ORDER BY j.created_ts,j.job_id
                  LIMIT 1 FOR UPDATE OF j SKIP LOCKED")
                 .bind(authority.host_id).bind(authority.agent_def_id).bind(&authority.policy_digest)
-                .bind(&authority.data_boundary_digest)
+                .bind(&authority.data_boundary_digest).bind(&denied_jobs)
                 .fetch_optional(&mut *tx).await?;
             let Some(row) = row else {
                 tx.commit().await?;
@@ -1107,6 +1145,11 @@ impl AgentRepository {
             };
             let host: Uuid = row.try_get("host_id")?;
             let job: Uuid = row.try_get("job_id")?;
+            if !self.workflow_job_authorized(host, job).await? {
+                denied_jobs.push(job);
+                tx.rollback().await?;
+                continue;
+            }
             let turn = Uuid::now_v7();
             let deadline: DateTime<Utc> = row.try_get("deadline_ts")?;
             sqlx::query(
@@ -1464,6 +1507,9 @@ impl AgentRepository {
     /// profile travels with the row so the dispatcher can authorize the coding profile
     /// against the turn's own policy snapshot, exactly as the interactive path does.
     pub async fn pending_coding_jobs(&self) -> Result<Vec<(Uuid, Uuid, String, Value)>> {
+        if !self.workflow_jobs_enabled {
+            return Ok(Vec::new());
+        }
         let authority = self
             .authority
             .as_ref()
@@ -4354,3 +4400,57 @@ mod tests {
 }
 #[path = "workspace_dispatch.rs"]
 mod workspace_dispatch;
+
+#[cfg(test)]
+mod workflow_origin_tests {
+    #[tokio::test]
+    async fn interactive_repository_does_not_touch_the_job_queue() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://test:test@127.0.0.1:1/unused")
+            .unwrap();
+        let repository = super::AgentRepository::new(pool).with_workflow_jobs_enabled(false);
+        assert_eq!(repository.reconcile_agent_jobs().await.unwrap(), 0);
+        assert!(repository.pending_coding_jobs().await.unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod workflow_job_authorizer_tests {
+    use super::*;
+    struct Denied;
+    #[async_trait::async_trait]
+    impl WorkflowJobAuthorizer for Denied {
+        async fn authorized(&self, _: Uuid, _: Uuid) -> Result<bool> {
+            Ok(false)
+        }
+    }
+    struct Unavailable;
+    #[async_trait::async_trait]
+    impl WorkflowJobAuthorizer for Unavailable {
+        async fn authorized(&self, _: Uuid, _: Uuid) -> Result<bool> {
+            anyhow::bail!("store unavailable")
+        }
+    }
+    #[tokio::test]
+    async fn missing_live_authority_never_falls_back_to_legacy_admission() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://test:test@127.0.0.1:1/unused")
+            .unwrap();
+        let denied =
+            AgentRepository::new(pool.clone()).with_workflow_job_authorizer(Arc::new(Denied));
+        assert!(
+            !denied
+                .workflow_job_authorized(Uuid::now_v7(), Uuid::now_v7())
+                .await
+                .unwrap()
+        );
+        let unavailable =
+            AgentRepository::new(pool).with_workflow_job_authorizer(Arc::new(Unavailable));
+        assert!(
+            unavailable
+                .workflow_job_authorized(Uuid::now_v7(), Uuid::now_v7())
+                .await
+                .is_err()
+        );
+    }
+}

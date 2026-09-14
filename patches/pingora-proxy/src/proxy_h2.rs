@@ -150,6 +150,9 @@ where
         debug!("send END_STREAM on HEADERS: {send_end_stream}");
 
         let req = Box::new(RequestHeader::from(req));
+        if self.inner.upstream_request_write_guard(ctx).is_some() {
+            return (false, Some(Error::explain(pingora_error::ErrorType::InternalError, "guarded dispatch requires qualified HTTP/1 transport")));
+        }
         if let Err(e) = client_session.write_request_header(req, send_header_eos) {
             return (false, Some(e.into_up()));
         }

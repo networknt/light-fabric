@@ -1,3 +1,4 @@
+pub mod action_api;
 pub mod agent_job;
 pub mod approval;
 pub mod artifact_publish;
@@ -6,10 +7,13 @@ pub mod artifact_store;
 pub mod command_template;
 pub mod configuration;
 pub mod consumer;
+pub mod credential_broker;
+pub mod credential_broker_api;
 pub mod events;
 pub mod executor;
 pub mod fixed_action;
 pub mod invocation;
+pub mod job_authorization;
 pub mod lease_reaper;
 pub mod provenance;
 pub mod repositories;
@@ -18,3 +22,5 @@ pub mod rule_api;
 pub mod runner_scheduler;
 pub mod service_runtime;
 pub mod session_reconciler;
+
+pub mod bound_mcp;

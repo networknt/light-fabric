@@ -1,0 +1,33 @@
+host_id,provider_id,client_id,client_name,client_type,client_profile,token_ex_type,client_scope,client_version,binding_version
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZ7MrzXYcz2X8kdd44FPLw,019ecd5f-0a74-7470-bebd-405f453496d6,demo customer profile api cc token,trusted,service,,portal.w portal.r,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019de0f2-ee9a-7cf0-af59-00f5c1ce641f,AI Microgateway Dev,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019d8349-41c6-72ef-95c2-4428a40d0e49,Account Agent 1.0.0 dev,trusted,service,,portal.w portal.r,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019d8348-a61a-7020-b11c-846fc815be1d,Advisor Agent 1.0.0 dev,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019e6235-1966-7322-bbcd-1cb432b5bb88,Customer Profile Dev,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019ece80-9753-7dbe-b93e-a2b33d5565a6,Customer Profile Sidecar Dev Native,trusted,service,,portal.w portal.r,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019ef074-d258-75a5-8273-1384dffa6ac6,Insurance Claim MCP Server,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019ddc15-d819-78ee-9e31-4b01c64b1d14,Light Deployer,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,01a02787-c5a4-72b0-8dcc-7dbe6502d743,Light Knowledge Admin Service 1.0.0,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019ff2f7-e56e-758a-a17b-45b057556326,Light Knowledge Service 1.0.0,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,01a08956-58ab-7c9d-b5c7-fc9b19862e6d,Light Portal BFF Bootstrap,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019e14f9-eb78-74c4-80e7-ec6aa6800b15,Light Portal BFF dev,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,f7d42348-c647-4efb-a52d-4c5787421e72,Light Portal Client,trusted,browser,msal,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019fb8af-81bf-78b5-b798-c50a8df78542,Light Portal Service 1.0.0,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019e623b-fd72-7a43-bbcc-8bba52b15953,Light Workflow Dev,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019d8429-24f7-7de5-a574-d989c9df4663,Market API 1.0.0 dev,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019e623a-1ee9-72ed-b92e-cce2b4832815,Offer Decision,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019df5e3-34d4-740a-a0cd-e45e09a794ed,Petstore API Dev,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019d364f-f64a-7b3e-80f1-5796cdf88961,Petstore OAuth Client,trusted,service,,portal.w portal.r,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019df5e5-c538-725c-9e9f-f0506fd3eb14,Petstore Sidecar Dev,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019e2825-146d-7a00-b0e8-3671158bb32a,Rust AI Gateway Dev,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019ec357-c9ea-740e-8abe-dac2275e9179,Rust Native Gateway Dev,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,01a0979f-344c-7d0f-8fe1-77be2fb0fed2,Support Triage Local Demo,trusted,service,,portal.r portal.w a2a.card.sign,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019d8337-05c6-7b69-9cee-f1f2f917f02b,Tech Support Agent Dev,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,01a07f22-748d-7b4e-b328-7761024f81a4,Tech Support LLM Workload Dev,trusted,service,,portal.r,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,01a07cad-de03-7235-bb70-e6944d174df6,codex-personal-local,trusted,service,,portal.r portal.w execution.invoke,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,01a011d0-b5ec-79b0-8956-24c87456ad30,light-workflow-dev,trusted,service,,portal.w portal.r,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019fd9e3-a128-7e39-b46c-3f04292c4007,llm gateway dev,trusted,service,,portal.w portal.r,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,1c35c48d-3603-48c9-8481-58cf7dbafcc7,mcp379-local-qualification,confidential,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019f6582-ec14-7362-8e9d-4eafd1e57437,portal-bff-demo,trusted,service,,portal.r portal.w,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019f658a-8ccb-7fc8-bb45-4d67f39f9e07,portal-bff-loc,trusted,service,,portal.w portal.r,1,1
+01964b05-552a-7c4b-9184-6857e7f3dc5f,AZZRJE52eXu3t1hseacnGQ,019c9273-2663-7a9e-82f4-94f9f5f79c3a,pylon,trusted,service,ccac,portal.w portal.r,1,1

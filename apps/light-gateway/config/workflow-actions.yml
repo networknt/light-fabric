@@ -1,0 +1,2 @@
+# Restart-required A2 profile. Null preserves the pre-A2 deployment profile.
+authorization: ${gateway.workflowActions:null}

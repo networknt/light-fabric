@@ -305,6 +305,15 @@ impl AxumApp for WorkflowApp {
             &self.compatibility_environment,
         )
         .map_err(|error| Self::runtime_error("workflow configuration", error))?;
+        if workflow_config.action_authorization.is_some()
+            && (workflow_config.credential_broker.is_none()
+                || workflow_config.ignore_user_jwt_expiry)
+        {
+            return Err(Self::runtime_error(
+                "workflow action authorization",
+                "requires a credential broker and enforced user expiry",
+            ));
+        }
         if workflow_config.ignore_user_jwt_expiry {
             warn!(
                 environment = %workflow_config.environment,
@@ -439,6 +448,151 @@ impl AxumApp for WorkflowApp {
         let executor = Arc::new(executor);
         let cancellation = CancellationToken::new();
 
+        let mut credential_routes = axum::Router::new();
+        let mut active_broker = None;
+        if let Some(settings) = &workflow_config.credential_broker {
+            let broker = Arc::new(
+                light_workflow::credential_broker::open(
+                    settings,
+                    &context.runtime_config.config_dir,
+                )
+                .await
+                .map_err(|error| Self::runtime_error("workflow credential broker", error))?,
+            );
+            active_broker = Some(broker.clone());
+            if let Some(settings) = &workflow_config.action_authorization {
+                let outgoing = light_workflow::bound_mcp::Runtime::new(
+                    pool.clone(),
+                    broker.clone(),
+                    &settings.outbound,
+                    &context.runtime_config.config_dir,
+                )
+                .await
+                .map_err(|e| Self::runtime_error("workflow MCP action client", e))?;
+                executor
+                    .bound_mcp
+                    .set(Arc::new(
+                        outgoing.with_agent_services(settings.workflow_agents.clone()),
+                    ))
+                    .map_err(|_| {
+                        Self::runtime_error("workflow MCP action client", "already initialized")
+                    })?;
+
+                let ready:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t WHERE migration_owner='workflow-store' AND schema_name='workflow_ops' AND migration_id='0007_workflow_action_dispatch')")
+                    .fetch_one(&pool).await.map_err(|e|Self::runtime_error("workflow action migration",e))?;
+                if !ready {
+                    return Err(Self::runtime_error(
+                        "workflow action migration",
+                        "install 0007_workflow_action_dispatch before enabling action authorization",
+                    ));
+                }
+                let router =
+                    light_workflow::action_api::router(light_workflow::action_api::ActionApi {
+                        ledger: workflow_action::ledger::Ledger::new(pool.clone()),
+                        broker: broker.clone(),
+                        security: invocation_security.clone(),
+                        policy: settings.policy.clone(),
+                        owners: settings.owners.clone(),
+                        receivers: settings.receivers.clone(),
+                    })
+                    .map_err(|e| Self::runtime_error("workflow action API", e))?;
+                let router = router.merge(
+                    light_workflow::job_authorization::router(
+                        light_workflow::job_authorization::JobApi {
+                            pool: pool.clone(),
+                            broker: broker.clone(),
+                            security: invocation_security.clone(),
+                            policy: settings.policy.clone(),
+                            agents: settings.workflow_agents.clone(),
+                        },
+                    )
+                    .map_err(|e| Self::runtime_error("workflow job API", e))?,
+                );
+                let router = router.merge(
+                    build_rule_api_router(
+                        pool.clone(),
+                        workflow_config.database_url.clone(),
+                        runtime_config.clone(),
+                        invocation_security.clone(),
+                        workflow_config.environment.clone(),
+                        health.clone(),
+                    )
+                    .layer(axum::Extension(broker.clone()))
+                    .layer(axum::Extension(settings.clone())),
+                );
+                let listener = light_axum::mtls::WorkloadListener::bind(
+                    &settings.tls,
+                    &context.runtime_config.config_dir,
+                )
+                .await
+                .map_err(|e| Self::runtime_error("workflow action listener", e))?;
+                self.register_task(
+                    &context,
+                    "light-workflow-action-api",
+                    &cancellation,
+                    &health,
+                    move |shutdown| async move {
+                        axum::serve(
+                            listener,
+                            router.into_make_service_with_connect_info::<light_axum::mtls::Peer>(),
+                        )
+                        .with_graceful_shutdown(shutdown.cancelled_owned())
+                        .await
+                    },
+                )?;
+            }
+            broker
+                .recover()
+                .await
+                .map_err(|error| Self::runtime_error("workflow credential recovery", error))?;
+            credential_routes = light_workflow::credential_broker_api::router(
+                broker.clone(),
+                invocation_security.clone(),
+                settings.callback_uri.clone(),
+                workflow_config.invocation_caller_service_ids.clone(),
+                settings.legacy_long_lived_app_keys.clone(),
+            );
+            if let Some(tls) = &settings.callback_tls {
+                let listener = light_workflow::credential_broker_api::prepare_callback_listener(
+                    tls,
+                    &context.runtime_config.config_dir,
+                    broker.clone(),
+                )
+                .await
+                .map_err(|error| Self::runtime_error("workflow credential callback", error))?;
+                self.register_task(
+                    &context,
+                    "light-workflow-credential-callback",
+                    &cancellation,
+                    &health,
+                    move |shutdown| async move {
+                        tokio::select! {
+                            result = listener => result,
+                            _ = shutdown.cancelled() => Ok(()),
+                        }
+                    },
+                )?;
+            }
+            self.register_task(
+                &context,
+                "light-workflow-credential-recovery",
+                &cancellation,
+                &health,
+                move |shutdown| async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+                    loop {
+                        tokio::select! {
+                            _ = shutdown.cancelled() => break,
+                            _ = interval.tick() => {
+                                broker.recovery_tick().await?;
+                            }
+                        }
+                    }
+                    Ok::<(), light_workflow::credential_broker::BrokerError>(())
+                },
+            )?;
+        }
+
         let metadata_observer = self.operational_metadata.clone();
         let observer_health = health.clone();
         self.register_task(
@@ -572,14 +726,22 @@ impl AxumApp for WorkflowApp {
             maximumParallelism = workflow_config.maximum_parallelism,
             "Light Workflow API lifecycle initialized"
         );
-        Ok(build_rule_api_router(
+        let mut router = build_rule_api_router(
             pool,
             workflow_config.database_url,
             runtime_config,
             invocation_security,
             workflow_config.environment,
             health,
-        ))
+        )
+        .merge(credential_routes);
+        if let Some(broker) = active_broker {
+            router = router.layer(axum::Extension(broker));
+        }
+        if let Some(settings) = workflow_config.action_authorization {
+            router = router.layer(axum::Extension(settings));
+        }
+        Ok(router)
     }
 
     fn control_routes(&self) -> &'static [ControlRoute] {
@@ -681,6 +843,8 @@ mod tests {
 
     fn workflow_configuration() -> WorkflowConfiguration {
         WorkflowConfiguration {
+            credential_broker: None,
+            action_authorization: None,
             environment: "dev".to_string(),
             http_addr: "127.0.0.1:8436".parse().unwrap(),
             database_url: "postgres://workflow".to_string(),

@@ -1,978 +1,882 @@
-# Development Workflow Orchestration
+# Personal Development Workflow Orchestration
 
-Status: proposed target design. The implementation inventory in this document
-was verified against the repository on September 4, 2026.
+Status: proposed personal workflow design, revised September 13, 2026 after
+design review. Codex/Claude workers and the source boundaries listed below exist;
+the complete workflow pilot is not yet end-to-end qualified.
 
-This document defines a durable software-development lifecycle that uses
-`light-agent` for interactive and specialist reasoning, `light-agent-worker`
-for repository-aware coding, and `light-workflow` for process ownership. The
-worker, harness, model-routing, and authentication details are defined in
-[Coding Harness Integration](coding-harness-integration.md).
+This document covers a developer using `codex-personal` and `claude-personal`
+with their own subscriptions on a local machine or dedicated VM. The separate
+[Enterprise Development Workflow Orchestration](development-workflow-orchestration-enterprise.md)
+design covers `codex-enterprise` inside a corporate network with `llm-gateway`.
 
-## Decision
+## Decision And Scope
 
-The companion [Shared Task Workspaces](shared-task-workspaces.md) design defines
-persistent multi-repository task worktrees, workspace-wide agent access, review
-of shared uncommitted changes, indexing, and task PRs targeting `develop` before
-release promotion to `master`. It adds a workspace execution mode alongside the
-immutable bundle path while retaining the lifecycle and trusted-action ownership
-defined here. The [Chat and Workflow Integration design](shared-task-workspaces-chat-workflow.md)
-specifies the shared admission and runner path for interactive workspace jobs and
-workflow-owned implementation/review stages.
+Use Codex for requirements, design, optional planning, implementation, and fixes.
+Use Claude to review the design, plan, and every completed implementation phase.
+After all phases pass, run a Codex final review and then a Claude final review.
+Start each final reviewer fresh once; resume its own conversation for subsequent
+fix verification. Fixed workflow actions publish documents, manage GitHub
+comments, and commit/push accepted implementation changes.
 
-Use a hybrid architecture:
+[User, Application, And Workflow Authorization](../../design/user-application-workflow-authorization.md)
+is the shared issue #374 prerequisite for implementation. Qualify user/app
+identity, unattended renewal, revocation, and action authorization before
+orchestration Phase 1; personal subscriptions do not authorize Portal/API access.
 
-- `light-agent` owns interactive requirement collection and each bounded
-  author, implementer, or reviewer turn;
-- `light-workflow` becomes the lifecycle authority after requirements are
-  frozen and owns stages, loops, retries, waits, budgets, approvals, GitHub
-  coordination, and completion;
-- agent workers produce proposed documents, plans, patches, findings, and test
-  evidence;
-- trusted fixed actions create issues, append comments, accept patches, commit,
-  push, create pull requests, publish, sign, or deploy.
+The pilot uses independently started top-level stage workflows connected by
+accepted artifact references. A parent coordinator and durable child workflows
+come later. The personal pilot does not depend on enterprise sandboxing,
+billing ledgers, new Chat interaction cards, a CLI, or installer conformance.
+Existing Workflow Admin and Worklist surfaces are sufficient for stage starts
+and required human decisions.
 
-Do not implement the complete multi-day lifecycle as one long-running agent
-session. The user may start, inspect, pause, resume, or cancel the workflow
-through an interactive `light-agent`, but the workflow record remains the
-source of truth.
+The first pilot admits one active feature per VM. Shared-runner concurrency and
+coordinated routing across multiple VMs are Phase 4 qualifications; the capacity
+design below is not a claim that the first pilot supports them.
 
-Use logically distinct agent roles. They may share a compatible physical
-`light-agent` service or worker pool, but they have separate immutable
-definitions, permissions, model aliases, budgets, and fresh execution
-contexts. Use separate deployments when credentials, tenant boundaries,
-network zones, or subscription identities cannot safely share a pool.
-
-## Goals
-
-- Preserve the current requirement, design, plan, implementation, review, and
-  finalization practice as a repeatable enterprise process.
-- Record every externally visible author and reviewer response against the
-  appropriate GitHub issue without making GitHub the only state store.
-- Support independent review and repeated remediation without context leakage.
-- Coordinate phase-by-phase changes across multiple repositories.
-- Survive service restarts, timeouts, duplicate delivery, provider failures,
-  and human pauses without losing or duplicating work.
-- Keep common lifecycle and artifact transitions identical across personal-
-  subscription and enterprise-API execution profiles, while treating
-  enterprise-only token/cost gates as profile-specific policy transitions.
-- Enforce explicit completion criteria rather than allowing one model to
-  declare the complete feature finished.
-
-## Non-Goals
-
-- Persisting hidden model reasoning or chain-of-thought in GitHub.
-- Giving an agent reusable GitHub, provider, signing, or deployment
-  credentials.
-- Treating issue comments as authoritative workflow state.
-- Reusing the implementer's mutable conversation as the reviewer's context.
-- Allowing an agent to commit, push, publish, or deploy through arbitrary shell
-  commands.
-- Assuming every logical agent requires a dedicated service deployment.
-- Replacing repository tests, CI, human approval, or release qualification with
-  model review.
+Keep these business contracts compatible with the enterprise profile: accepted
+requirements, optional planning, phase review, finding identity, review coverage,
+publication receipts, and completion criteria. Changing execution profile does
+not waive a lifecycle gate; enterprise authorization/accounting add profile gates.
 
 ## Ownership
 
-| Component | Authority |
+| Component | Responsibility |
 | --- | --- |
-| Interactive `light-agent` | Requirement dialogue, clarification, workflow start/status requests, and human-facing explanations |
-| `light-workflow` | Feature state machine, stage/round counters, dependencies, retries, deadlines, budgets, review closure, and human gates |
-| Specialist `light-agent` | One bounded requirement, design, planning, implementation, remediation, or review job |
-| `light-agent-worker` | Sandboxed repository inspection, edits, verification, and proposed immutable artifacts |
-| `llm-gateway` | Enterprise workload authentication, logical model routing, provider credentials, limits, and accounting |
-| Artifact store | Immutable requirements, documents, plans, patches, findings, logs, and test evidence |
-| GitHub actions | Idempotent issue, comment, link, branch, and pull-request effects |
-| Test executor / CI | Clean-room execution of declared test gates and immutable result evidence; no authority to waive or publish |
-| Fixed publication action | Commit, push, PR, signing, publishing, and deployment over an approved artifact |
+| Developer and Codex requirement session | Agree scope, acceptance criteria, and unresolved decisions |
+| `light-workflow` stage executor and store | Persist `FeatureRun`, atomically claim/start stages, and own feature-slot admission/release, finding ledger, review closure, budgets, artifact handoffs, human gates, and publication intents |
+| `light-workflow` dispatch scheduler | Own the durable ready-work queue and fairness between feature runs |
+| `light-agent` | Admit the selected Agent/turn, persist `agent_job_t` execution/results, and dispatch through Controller |
+| Controller and personal runner | Enforce live capacity, leases, routing, cancellation, and worker isolation |
+| Codex/Claude worker | Execute one bounded author, implementer, or read-only reviewer turn |
+| Workspace manager and fixed test executor | Own task files/checkpoints, diffable candidate snapshots, locks, fixed commands, and validation receipts |
+| Fixed Git/GitHub actions | Commit, push, create PRs, publish summaries, and reconcile retries |
+| `light-workflow` artifact service and store | Export manager-provided snapshot bytes into durable storage; retain immutable requirements, documents, results, snapshot contents/diffs, findings, and validation evidence |
 
-`light-agent` never advances a workflow task. `light-workflow` never launches a
-coding harness directly or mutates an agent session. Handoffs use typed jobs
-with correlation, policy, artifact, deadline, idempotency, and budget bindings.
+The Agent never advances a workflow stage based on conversational text.
+The workflow selects an admitted Agent and sends typed jobs; it does not launch
+the native CLI directly. GitHub and native conversations are not workflow state.
 
-## Local Portal Distributions And Interaction Surfaces
+## Workflow Composition
 
-Local orchestration is one product profile delivered in two forms:
-
-| Distribution | Intended user | Packaging difference |
+| Top-level workflow | Pilot responsibility | Output |
 | --- | --- | --- |
-| `portal-config-loc/all-in-lt` | Platform and service developers | Source-oriented Compose stack with independently launched `portal-view` for UI development |
-| `light-portal-install` | Most local users | Packaged installation of the Portal UI and local orchestration services |
+| `feature-intake` | Normalize an existing issue or agreed Codex requirement draft | Feature issue and accepted requirement version |
+| `feature-design` | Codex authoring, validation, Claude review/fixes, optional human sign-off, document publication | Accepted design, commit permalink, and PR reference |
+| `feature-plan` | Optional detailed plan with the same review/publication loop | Accepted plan and phase manifest |
+| `feature-implement` | Implement and review one selected phase | Accepted phase checkpoint and evidence |
+| `feature-finalize` | Full-feature reviews, bounded remediation, commit/push/PR delivery | Evidence for the selected completion target |
 
-They use the same workflow, agent, gateway, identity, Worklist, Chat, approval,
-artifact, and audit contracts. A workflow definition or agent interaction must
-not behave differently because of the installer. A shared conformance suite
-qualifies both distributions against the same API and user-visible scenarios.
+For the pilot, an operator starts the next top-level stage with the preceding
+stage's accepted output. Start `feature-implement` once for each declared phase,
+in dependency order. Each phase performs its own review/fix loop. No stage
+starts an untracked background workflow, and a stage's acceptance does not
+declare the whole feature complete.
 
-Portal is the primary human interface. A terminal CLI is an optional thin
-client over the same APIs, not a second orchestration implementation.
+Persist a `FeatureRun` record across these stage instances. Inputs include the
+feature/run and issue identity, stage/phase ID, expected previous accepted
+version, applicable artifact digests, workspace/task and repository bases,
+Agent/runner bindings, deadlines, and remaining budgets. Only one stage owns
+mutable task execution at a time. Starting a successor atomically claims the
+expected accepted predecessor/version; duplicate starts return the same instance.
+A deliberate replan or reopened phase gets a new stage execution identity and
+retains the same feature ledger and consumed budgets.
 
-| Surface | Responsibility | Human interaction |
-| --- | --- | --- |
-| Workflow Admin | Define, validate, test, start, inspect, pause, resume, and cancel workflows | Administrative lifecycle operations |
-| Worklist | Durable workflow-assigned tasks | Claim, release, approve, reject, choose, comment, or submit schema-bound data |
-| Agent Chat | Direct conversation, requirement collection, workflow start, and status | Inline structured choices and agent-owned approvals |
-| CLI | Local development, headless operation, scripting, and diagnostics | The same starts, status, Chat, Worklist, and decision APIs |
+A stage returns an immutable `StageResult` containing its input/output digests,
+acceptance status, findings, validation and publication receipts, and native/file
+checkpoints and diffable snapshot references where applicable. The next stage
+validates this result instead of trusting an issue comment or copying an entire
+conversation.
 
-```mermaid
-flowchart LR
-    WA[Workflow Admin] --> API[Portal and gateway APIs]
-    WL[Worklist] --> API
-    CH[Agent Chat] --> API
-    CLI[Optional lightctl CLI] --> API
-    API --> WF[light-workflow]
-    API --> AG[light-agent]
-    AG --> WF
-    WF --> HT[Workflow human-task authority]
-    AG --> AI[Agent interaction and approval authority]
-    HT --> WL
-    AI --> CH
-```
+The pilot still needs bounded stage-local iteration and reliable Agent job
+completion. It can materialize a finite set of review-round task slots; a new
+logical turn uses a distinct durable task/job identity, while a retry keeps its
+identity. The current service-call idempotency key includes process/task IDs,
+so reusing one completed task ID is not a new remediation turn.
 
-Workflow human tasks are durable and assignable. The Worklist owns their
-assignment, claim, expiry, completion, and audit state. Chat may render an
-inline copy or deep link, but it is only a rendering surface: the browser sends
-the human decision directly to the Worklist completion API for the same task
-and `taskAsstId`. `light-agent` does not advance the task or create a second
-approval record.
+Later, `feature-delivery` can automate these handoffs and use `implement-phase`
+children. That extension must add durable child start/wait/result/cancel,
+definition/input pinning, parent budget accounting, and restart recovery.
+`run.workflow` is modeled but currently rejected by the executor; it is not a
+prerequisite for the standalone design pilot.
 
-A direct agent may request `approval`, `confirm`, `choice`, `multiChoice`,
-`text`, or schema-bound `object` input in Chat. Conversational text such as
-"yes" or "go ahead" is not authorization for a side effect. A security-relevant
-decision is a structured `HumanInteractionRequest` bound to an immutable
-`interactionId`, source type and ID, session, turn, exact action and input
-digests, policy digest, allowed responses, approver scope, expiry, and
-idempotency key. Clicking a button invokes a dedicated decision API; approval
-creates a fresh action attempt rather than resuming an old attempt.
+### Enforced Stage Handoffs
 
-If a direct-agent interaction becomes long-running, assignable, transferable,
-or dependent on multiple human steps, the agent starts a workflow. Chat then
-shows workflow status and the authoritative Worklist task.
+Phase 1 implements a `FeatureRun` store in the `light-workflow` operational
+database and a built-in claim-and-start API. This is required even while an
+operator selects and starts each top-level stage. Persist the current feature
+version, accepted artifact/phase versions, active stage owner, consumed budgets,
+immutable `StageResult` references, and stage-claim receipts.
 
-The optional CLI uses the same `HumanInteractionRequest` and decision APIs. A
-future `lightctl` may expose agent Chat, workflow start/status/watch, and
-Worklist list/claim/respond commands, including machine-readable output. It
-must not read orchestration tables directly or invent separate approval
-semantics.
+The start transaction locks the feature record and first checks for an existing
+claim to replay. For a new claim it validates the expected accepted predecessor
+and all current input versions, and checks that the selected stage is an allowed
+successor with no conflicting owner. It atomically records the
+claim, workflow instance/process and initial task, pinned inputs/definition, and
+new stage owner. Reuse the transaction boundary of `invocation.rs`'s
+`accept_invocation`; its existing invocation idempotency does not implement the
+feature-version/ownership check. A claim followed by a separate unprotected
+workflow start is insufficient.
 
-## Enterprise Identity, Delegation, And Cost Attribution
+Give each logical transition a store-owned identity, including the feature,
+predecessor version, and selected stage/phase. A unique claim and normalized
+request digest make concurrent identical starts return the same instance,
+even with different transport request IDs. Changed inputs for an existing claim
+conflict; an unclaimed stale predecessor cannot start. Retrying an older completed
+claim returns its historical receipt and never launches a new stage. A new
+replan/reopen transition must be explicitly recorded by the state machine.
 
-A workflow started from Workflow Admin or Chat is attributable to the verified
-human throughout its lifetime. The design uses two related credentials instead
-of copying one broad bearer token into every process:
-
-1. the ingress `Authorization` JWT proves the initiating user to the first
-   trusted service;
-2. each downstream hop uses a short-lived, audience-bound delegation token
-   that identifies both the end user and the acting workload.
-
-This preserves the user's intent while preventing a reusable portal JWT from
-being stored in workflow state, agent transcripts, worker environments, GitHub
-comments, or artifacts. A synchronous endpoint may validate the user JWT and a
-service scope token together, but long-running work stores only verified
-identity metadata, the authorization-grant reference, claim and policy
-digests, and expiry. It mints a fresh delegated token for each later hop.
-
-```mermaid
-sequenceDiagram
-    actor U as User
-    participant P as portal-view
-    participant E as light-gateway ingress
-    participant W as light-workflow
-    participant A as light-agent
-    participant L as llm-gateway
-    participant M as Model provider
-
-    U->>P: Start workflow or chat with agent
-    P->>E: User JWT and request
-    E->>E: Verify user, host, and route authority
-    alt Workflow Admin
-        E->>W: User identity plus scoped caller token
-    else Chat
-        E->>A: User identity plus scoped caller token
-        A->>W: Start workflow on the user's behalf
-    end
-    W->>A: Work package plus delegated user and workflow identity
-    A->>L: Model request plus audience-bound delegation token
-    L->>L: Verify user, actor, policy, quota, and correlation
-    L->>M: Request with gateway-owned provider credential
-    M-->>L: Response and provider usage
-    L->>L: Reconcile per-user tokens and cost
-    L-->>A: Response plus trusted usage receipt
-```
-
-The delegated token is signed by a trusted token-exchange or credential-broker
-service and contains the minimum required claims:
-
-- issuer, audience, token ID, issued-at, expiry, and tenant or `hostId`;
-- `endUserSubject` for the initiating human and `principalSubject` for the
-  authenticated caller;
-- an actor claim identifying `light-workflow`, `light-agent`, or the leased
-  worker acting on the user's behalf;
-- feature, workflow instance, task, agent definition, session, turn, and action
-  attempt identifiers when applicable;
-- policy, data-boundary, model-route, and caller-claims digests;
-- `billingSubject` and `budgetPolicyId` selected by trusted policy.
-
-The model and prompt cannot select or change the billing subject. For a
-user-started run it defaults to the end user, while an enterprise may bind it
-to a project or cost center. Scheduled or system continuations identify their
-service actor separately and retain the original authorized initiator or an
-explicit service budget.
-
-`llm-gateway` is the authority for actual provider usage. It owns provider API
-keys, resolves logical aliases, reserves the maximum allowed request cost
-before dispatch, enforces per-user concurrency and rolling budget windows, and
-reconciles the reservation from provider-reported usage. Its durable usage
-ledger records normalized input, output, cached-input, and reasoning tokens
-when supplied, charged cost, usage completeness, model alias, physical
-deployment, logical request, provider attempt, and the digested billing
-subject. Incomplete usage follows a configured conservative charge or blocks
-further requests pending reconciliation; it is never silently treated as zero.
-
-`light-agent` and `light-workflow` may enforce narrower turn or feature
-budgets, but they reconcile those budgets from the gateway's signed usage
-receipt. They do not override the gateway's per-user or tenant limits and do
-not trust model- or caller-supplied usage counts.
-
-Long-running workflows can outlive the original user JWT. Continuation then
-requires a live, revocable authorization grant from which short-lived tokens
-can be minted. If the grant expires or is revoked, the workflow pauses in
-`REAUTHORIZATION_REQUIRED`; possession of an old workflow ID is insufficient
-to continue spending.
-
-## Workflow-owned conversation lifecycle
-
-Keep separate implementer and reviewer sessions during a stage's repeated
-implementation/review/remediation rounds. The workflow supplies `new`, `resume`,
-or `close` in each typed coding job and stores successful checkpoint receipts.
-After stage acceptance, close both sessions; the next stage receives new session
-references. An optional final review can deliberately start with fresh context.
-
-This preserves each role's working context without sharing implementer-private
-history with the reviewer. Each reviewer round still receives the current exact
-candidate, requirements, findings, and test evidence. Durable artifacts remain
-the recovery source; missing/uncertain sessions require an explicit workflow
-recovery decision. See [Workflow Coding Thread Lifecycle](../light-agent-worker/workflow-thread-lifecycle.md)
-for the implemented native Codex contract, runner pinning, failure rules, and
-remaining enterprise/Claude adapter qualification work.
-
-## Logical Agent Roles
-
-| Role | Role execution profile | Logical model alias | Workspace authority | Output |
-| --- | --- | --- | --- | --- |
-| Requirement analyst | `requirements-dialog-v1` | `requirements-analyst` | None; optional policy-approved read-only discovery job | `RequirementArtifact` |
-| Design author | `design-author-v1` | `coding-implementer` | Design-document paths only | Document patch and validation evidence |
-| Design reviewer | `design-review-v1` | `coding-reviewer` | Read-only reconstruction plus excluded build scratch | `ReviewResult` |
-| Plan author | `plan-author-v1` | `coding-implementer` | Implementation-plan paths only | Plan patch and phase manifest |
-| Plan reviewer | `plan-review-v1` | `coding-reviewer` | Read-only reconstruction plus excluded build scratch | `ReviewResult` |
-| Phase implementer | `coding-implement-v1` | `coding-implementer` | Approved repository roots | Repository change set and test evidence |
-| Phase reviewer | `coding-review-v1` | `coding-reviewer` | Read-only reconstruction plus excluded build scratch | `ReviewResult` |
-| Final reviewer | `final-review-v1` | `coding-reviewer` | Read-only multi-repository reconstruction plus excluded build scratch | Cross-repository verdict |
-| Publisher | Fixed action, not a model profile | None | Accepted artifacts only | Commits, pushes, PRs, and issue links |
-
-The gateway resolves logical aliases to physical models. A different reviewer
-model provides model diversity without requiring a different harness. A
-separately qualified `claude-code-v1` worker provides harness diversity and is
-a policy escalation for named high-risk change classes, not a prerequisite for
-ordinary review.
-
-The requirement analyst is a plain `light-agent` model turn and never starts a
-coding CLI or receives a repository workspace. In enterprise execution its
-alias resolves through `llm-gateway`. Repository identification or evidence
-collection, when needed, is a separate policy-approved read-only discovery job
-whose result becomes an intake artifact.
+Workflow Admin stage starts use this API. Dispatch and fixed effects require the
+claim bound to their process; a generic workflow start cannot bypass it. Stage
+acceptance verifies durable output/snapshot receipts and current input bindings,
+then atomically records the result and releases ownership for the next stage.
+Document supersession/replan invalidates affected input bindings in this store.
+Unknown worker execution keeps ownership fenced until reconciled. Restart after
+a committed start but lost response recovers the recorded instance; rollback
+leaves neither a claim nor a runnable process. Feature budgets survive handoffs.
 
 ## End-To-End Lifecycle
 
 ```mermaid
-flowchart TB
-    I[Interactive requirement collection] --> F[Freeze RequirementArtifact]
-    F --> DW[Start feature lifecycle workflow]
-
-    DW --> DI[Ensure design issue]
-    DI --> DA[Design author turn]
-    DA --> DV[Validate document]
-    DV --> DR[Fresh reviewer turn]
-    DR --> DC{Review closure gate}
-    DC -- findings --> DA
-    DC -- approved --> II[Ensure implementation-plan issue]
-
-    II --> PA[Plan author turn]
-    PA --> PR[Fresh plan review]
-    PR --> PC{Plan closure gate}
-    PC -- findings --> PA
-    PC -- approved --> PH[Execute phase subworkflows]
-
-    PH --> RI[Ensure repository issues]
-    RI --> IM[Implement and test]
-    IM --> RV[Fresh code review]
-    RV --> RC{Phase closure gate}
-    RC -- findings --> IM
-    RC -- approved --> NP{More phases?}
-    NP -- yes --> PH
-    NP -- no --> FR[Final cross-repository review]
-
-    FR --> FC{Final closure gate}
-    FC -- findings --> PH
-    FC -- approved --> HA{Human publication approval}
-    HA -- rejected --> HR[Human resolution required]
-    HR -- remediate --> PH
-    HR -- cancel --> CANCELLED[Cancelled]
-    HA -- approved --> PV{Pre-publication checks}
-    PV -- failed --> PH
-    PV -- passed --> FX[Fixed commit, push, PR, and link actions]
-    FX --> AT[Automated and environment tests]
-    AT --> DONE[Complete]
+flowchart TD
+    I[Existing issue or Codex requirement dialogue] --> R[Accepted requirements and feature issue]
+    R --> D[Codex design, Claude review, and fixes]
+    D --> S{Design sign-off}
+    S -- disabled or approved --> DP[Publish accepted document revision]
+    S -- changes requested --> D
+    S -- rejected --> H[Human resolution required]
+    DP --> P{Separate plan needed?}
+    P -- yes --> PL[Codex plan, Claude review, fixes, and publication]
+    P -- no --> PH[Start implementation phase]
+    PL --> PH
+    PH --> C[Codex implementation and fixed validation]
+    C --> V[Claude phase review]
+    V -- findings --> C
+    V -- accepted --> N{More phases?}
+    N -- yes --> PH
+    N -- no --> CF[Codex full-feature review]
+    CF -- findings --> CX[Codex fixes and validation]
+    CX --> CV[Resume Codex reviewer to verify changes]
+    CV -- findings --> CX
+    CF -- accepted --> CL[Claude full-feature review]
+    CV -- accepted --> CL
+    CL -- findings --> FX[Codex fixes and validation]
+    FX --> RV[Resume Claude reviewer to verify changes]
+    RV -- findings --> FX
+    CL -- accepted --> G[Review coverage and publication gate]
+    RV -- accepted --> G
+    G -- coverage missing or broad change --> OR[Resume required other final reviewer]
+    OR -- findings --> OF[Codex fixes and validation]
+    OF --> OR
+    OR -- accepted --> G
+    G -- complete coverage --> COMMIT[Commit exact accepted changes]
+    COMMIT --> PUSH[Push GitHub task branches]
+    PUSH --> PR[Create PRs and post delivery links]
+    PR --> DONE[Verify completion target]
 ```
 
-## Feature State Machine
+The stage-to-stage edges are operator handoffs in the pilot. Review loops run
+inside their stage. All loops are bounded. Scope expansion, stale inputs, or
+missing review coverage route to the appropriate additional review or replan
+before publication, as specified below.
 
-`light-workflow` persists one current feature state plus the active stage,
-round, artifact digests, and finding ledger after requirements are frozen.
-Mutable requirement dialogue remains `light-agent` session state. Stage
-completion events are idempotent and may advance only from the expected state
-and version.
+The coverage gate selects every required reviewer of each saved delta, including
+the original reviewer again if an escalated review causes a further broad fix.
+The other-reviewer edge resumes an existing final conversation; it does not
+restart the initial full reviews. Document revisions discovered during phase or
+final work follow the revision loop below before that work can resume.
 
-| State | Meaning | Normal transition |
-| --- | --- | --- |
-| `REQUIREMENTS_FROZEN` | Initial workflow state; an immutable requirement version is accepted | Start -> `DESIGN_ACTIVE` |
-| `DESIGN_ACTIVE` | Design authoring or remediation is running | Validated artifact -> `DESIGN_REVIEW` |
-| `DESIGN_REVIEW` | Fresh review and closure evaluation | Findings -> `DESIGN_ACTIVE`; accepted -> `PLAN_ACTIVE` |
-| `PLAN_ACTIVE` | Implementation-plan authoring or remediation is running | Validated plan -> `PLAN_REVIEW` |
-| `PLAN_REVIEW` | Fresh plan review and closure evaluation | Findings -> `PLAN_ACTIVE`; accepted -> `PHASE_ACTIVE` |
-| `PHASE_ACTIVE` | A declared implementation phase is executing | Evidence complete -> `PHASE_REVIEW` |
-| `PHASE_REVIEW` | Fresh phase review and closure evaluation | Findings -> `PHASE_ACTIVE`; accepted -> next phase or `FINAL_REVIEW` |
-| `FINAL_REVIEW` | Complete multi-repository manifest is reviewed | Findings -> responsible `PHASE_ACTIVE`; accepted -> `PUBLICATION_PENDING` |
-| `PUBLICATION_PENDING` | Required human approval and fixed pre-publication gates run | Approval rejected -> `HUMAN_RESOLUTION_REQUIRED`; check failed -> responsible `PHASE_ACTIVE`; published -> `POST_PUBLICATION_VALIDATION` |
-| `POST_PUBLICATION_VALIDATION` | Required post-publication CI/test gates run | Passed -> `COMPLETED`; failed -> `POST_PUBLICATION_FAILED` |
-| `REPLAN_REQUIRED` | A newer requirement or impact invalidated accepted downstream artifacts | Authorized impact decision -> the earliest affected active state |
-| `HUMAN_RESOLUTION_REQUIRED` | Round, disagreement, waiver, or ambiguity policy needs a person | Decision -> prior active/review state or `CANCELLED` |
-| `REAUTHORIZATION_REQUIRED` | The durable authorization grant cannot fund or authorize more work | Renewed grant -> prior state; rejection -> `CANCELLED` |
-| `BUDGET_EXHAUSTED` | An enterprise token/cost reservation was denied | New budget authorization -> prior state; rejection -> `CANCELLED` |
-| `POST_PUBLICATION_FAILED` | Published output failed a required downstream gate | Remediation -> affected phase; accepted residual risk -> `COMPLETED` |
-| `COMPLETED` | Terminal success | None |
-| `CANCELLED` | Terminal user or policy cancellation | None |
-| `FAILED` | Terminal unrecoverable or retry-exhausted failure | None |
+## Requirement Intake
 
-A requirement change after freeze creates a new `RequirementArtifact`, enters
-`REPLAN_REQUIRED`, records an impact decision, and invalidates every accepted
-artifact derived from the superseded digest. The decision resumes at the
-earliest affected state; it is never folded silently into the current round.
-`BUDGET_EXHAUSTED` is available only when the enterprise gateway supplies a
-trusted reservation decision. Local subscription runs use the common bounded-
-execution limits and cannot enter that state from untrusted usage estimates.
+Support both entry paths:
 
-A failed required pre-publication gate blocks publication and returns the
-feature to the responsible `PHASE_ACTIVE` state with immutable failure
-evidence. Rejecting publication approval enters `HUMAN_RESOLUTION_REQUIRED`,
-where the authorized decision either routes remediation or cancels the run. A
-required post-publication failure enters `POST_PUBLICATION_FAILED`, opens or
-updates remediation, and blocks dependent feature/release workflows until
-remediation passes or an authorized residual-risk decision is recorded. It
-does not erase already published history.
+1. **Existing issue:** a fixed read action loads the selected issue and relevant
+   requirement comments. Preserve source IDs and a content snapshot. Codex
+   identifies material gaps; unresolved scope decisions block acceptance.
+2. **New requirement:** the developer works with `codex-personal`, which drafts
+   the title, body, and `RequirementArtifact`. After agreement, a fixed action
+   creates the issue and persists its repository, number, and URL.
 
-### 1. Interactive Requirement Collection
+The artifact records scope, non-goals, acceptance criteria, affected repositories
+(or explicitly unknown ownership), compatibility/migration concerns, source
+references, unresolved decisions, and a version/digest. Intake also selects a
+completion target: `pr-ready`, `merged`, or `deployed`, with its required checks.
 
-The user works with the requirement analyst until scope is sufficiently clear.
-This remains conversational because questions and priorities are still
-changing.
+Use one feature issue by default; add linked repository or deferred-work issues
+only when separately owned tracking is needed. Issue creation is idempotent by
+feature and tracking purpose, not document revision. Existing issue content is
+requirement data, not authority to change worker permissions or run arbitrary
+commands. Changes after freeze create a new version and an explicit impact/replan
+decision; they are not silently folded into the current implementation.
 
-Before starting the durable lifecycle, the agent proposes a
-`RequirementArtifact` containing:
+## Design And Optional Plan
 
-- feature ID, title, business objective, and stakeholders;
-- functional and non-functional requirements;
-- acceptance criteria and explicit non-goals;
-- affected products and likely repositories when supported by user-supplied or
-  read-only discovery evidence, otherwise explicitly `unknown`;
-- security, data-boundary, compatibility, migration, and operational concerns;
-- unresolved questions and human decisions;
-- source references and evidence supplied by the user or a separately
-  authorized read-only discovery job;
-- artifact version and content digest.
+Choose one canonical design path, normally in `light-portal-doc/src/design`
+or `light-fabric/docs/src`. Codex authors against the accepted requirements.
+Fixed validation runs document/navigation checks; Claude reviews the current
+artifact and finding ledger. Codex fixes, validation reruns as needed, and the
+same Claude reviewer verifies changes until the closure contract passes.
 
-The user confirms the artifact or a policy-defined intake gate accepts it. That
-immutable version becomes the root input to the workflow. Later requirement
-changes create a new version and an explicit impact/replan transition.
+A per-run `requireDesignSignoff` setting defaults to `false`. When enabled,
+Claude's acceptance creates a Worklist decision for the exact design digest
+before publication and implementation. Record the human's approval, rejection,
+or requested changes. A new design digest requires a new sign-off when the
+setting is enabled. Requested changes return to design authoring/review;
+rejection enters `HUMAN_RESOLUTION_REQUIRED` until an explicit revise or cancel
+decision. Routine review rounds do not add other human gates.
 
-### 2. Design Cycle
+Decide once after design acceptance whether a separate plan is necessary.
+Cross-repository work, migrations, contract changes, and several dependent
+phases usually benefit from one. Codex saves it in the implementation repository;
+Claude reviews and verifies fixes using the same stage contract. A small feature
+can use one phase derived directly from the accepted design. A sufficiently
+detailed design can supply several phases without a duplicate plan.
 
-The workflow selects a design repository from a policy-configured set (for
-example, `light-portal-doc` or `light-fabric`) and ensures one design issue
-using an idempotency key derived from feature ID, repository, and design
-version.
+The accepted phase manifest defines scope, owning repositories, dependencies,
+validation commands, and exit criteria. Implementation consumes it; it never
+starts by generating a second plan.
 
-The author receives the frozen requirements, issue reference, repository base,
-allowed documentation paths, documentation conventions, and validation gates.
-It returns a proposed patch and evidence such as `mdbook build`.
+## Document Publication And Revision
 
-The reviewer receives a new turn and clean read-only reconstruction containing
-only the immutable requirements, base, current document/patch, applicable
-standards, earlier finding ledger, and validation evidence. The workflow posts
-the bounded author response and reviewer response to the design issue.
+The pilot uses **a separate immutable publication task and branch for each
+accepted document revision**, with a PR targeting that repository's `develop`
+branch. This works with the existing absent-or-identical-ref push rule and does
+not depend on implementing updates to an already-published ref.
 
-Blocking findings produce another author turn followed by another fresh review.
-The design closes only through the review closure contract below.
+For example, a feature may publish design v1 and v2 through distinct tasks/refs
+derived from `featureRunId + documentId + revision`. The actual ref uses the
+manager's task-branch naming convention; the revision identity is durable and
+is not regenerated on retry.
 
-### 3. Implementation-Plan Cycle
+For each accepted design or plan revision:
 
-After design approval, the workflow ensures a separate issue in the
-`implementation` repository. The plan author converts the approved design into:
+1. Freeze the accepted files, including any navigation changes, with validation
+   and review evidence and optional design sign-off.
+2. A fixed action creates a dedicated publication task on a recorded base,
+   materializes only that accepted document file set, verifies it, and commits it.
+3. Push its unique task ref and create a document PR. Persist the commit SHA,
+   ref, PR number/URL, and file permalink. The feature issue links to the commit,
+   not just a local path or moving branch.
+4. Retain the revision ref/commit for the feature's artifact-retention period.
+   Record acceptance and supersession in the ledger/status comment. Publishing
+   a document does not automatically merge its PR or close its feature issue.
 
-- ordered phases and dependency edges;
-- owning and affected repositories for each phase;
-- exact contracts, schemas, configuration, and migration work;
-- security and compatibility requirements;
-- phase-specific tests and numeric exit gates;
-- rollback, rollout, and qualification steps;
-- unresolved decisions that block implementation.
+Later implementation discoveries use the same path: propose a new document
+version, assess its effect on requirements/plans/accepted phases, run the
+applicable author/reviewer/sign-off cycle, then publish a **new revision task,
+ref, and PR**. No old commit, review record, or permalink is rewritten.
+If an old revision already merged, base the replacement on the current recorded
+integration revision; if it has not merged, the new snapshot must contain the
+complete desired document state. Mark the old unmerged PR as superseded in the
+feature ledger; closing it is a fixed action under the run's configured grant.
 
-The plan uses the same author/reviewer/remediation loop. A plan cannot close
-while it has an unowned repository, an untestable exit criterion, or a blocking
-review finding.
+The latest accepted document revision is authoritative for subsequent stages.
+Canonical design/plan paths are delivered by their document PRs; implementation
+PRs must not carry competing edits to those paths. If implementation edits one,
+route the new contents through document acceptance/publication and reconcile
+the implementation candidate before final review. Declare the latest document
+PRs in the final delivery manifest. A `pr-ready` target may leave them open;
+`merged`/`deployed` require their integration as declared by the feature.
+Base changes caused by merging documents receive the same impact/validation
+treatment as other integration changes.
 
-### 4. Phase Implementation
+This revision-publication path and its receipts are pilot work, not a claim
+that the current manager already automates document snapshots or supersession.
+Reusing distinct manager tasks avoids its existing one-push/one-PR-per-task
+receipt conflict without weakening that constraint.
 
-Each approved phase runs as a child workflow. Before editing, it freezes a
-`PhaseWorkPackage` and ensures an issue in every repository the phase may
-change. One repository is selected as the phase's main repository; its issue
-indexes the phase responses and links all child issues.
-
-Each mutable agent session receives one exclusively leased multi-repository
-`WorkspaceSet` as defined by Coding Harness Integration. No second user or
-session shares its writable checkouts, Git metadata, build outputs, or scratch.
-Repositories are materialized lazily from the approved work-package manifest;
-the session cannot discover and add ambient sibling repositories on its own.
-
-For each repository, the implementer receives:
-
-- repository identity and immutable base revision;
-- issue and parent-issue references;
-- approved design and plan artifact digests;
-- phase scope, allowed paths, protected paths, and dependency constraints;
-- active findings and applicable acceptance gates;
-- workspace, tool, network, credential, time, token, and cost policy.
-
-The worker emits a canonical patch, changed-path list, commands run, test
-results, and bounded logs or artifact references. The reviewer receives a new
-read-only repository reconstruction plus a writable ephemeral build scratch
-excluded from the canonical patch, and cannot use the implementer's mutable
-workspace or private model context. The reviewer primarily evaluates immutable
-implementer evidence and may reproduce allowed checks in scratch; the
-independent test/CI authority re-executes required pre-publication gates in a
-clean environment.
-
-The phase closes only when all repository work packages pass review and tests,
-cross-repository contracts are consistent, and any required human gate is
-satisfied.
-
-### 5. Final Review
-
-After all phases close, the workflow creates a complete immutable manifest of
-repositories, base revisions, accepted patches or commits, issue references,
-finding ledgers, and test evidence. The final reviewer assesses the complete
-feature rather than reviewing only the last phase.
-
-A final finding is routed to the smallest responsible phase/repository child
-workflow. After remediation, the final review restarts in a new reviewer turn
-over a newly digested manifest.
-
-### 6. Publication And Testing
-
-After final model review and any required human approval, trusted fixed actions:
-
-1. apply the accepted patch to a clean verified base;
-2. rerun required pre-publication checks;
-3. create commits with issue references;
-4. push or create pull requests using scoped credentials;
-5. link repository issues and PRs to the implementation issue;
-6. link the implementation issue to the design issue;
-7. record immutable result identifiers and URLs.
-
-Broader automated, integration, environment, performance, and release tests may
-continue as workflow stages. A failed post-publication gate opens or updates a
-tracked remediation item; it does not rewrite earlier evidence.
-
-## Review Closure Contract
-
-Models report evidence; the workflow evaluates completion.
-
-Each reviewer returns schema-bound output:
-
-```json
-{
-  "reviewId": "019...",
-  "artifactDigest": "sha256:...",
-  "verdict": "changes-required",
-  "findings": [
-    {
-      "findingId": "DESIGN-003",
-      "severity": "high",
-      "repository": "networknt/light-fabric",
-      "location": "docs/src/product/light-agent/example.md",
-      "summary": "Cancellation ownership is undefined",
-      "evidence": "The failure transition has no durable owner.",
-      "requiredResolution": "Define owner, deadline, and terminal state."
-    }
-  ],
-  "validationGaps": []
-}
+```mermaid
+flowchart TD
+    W[Phase or final work discovers a document change] --> R[Record REPLAN_REQUIRED and affected input versions]
+    R --> D[Re-enter affected design or plan stage]
+    D --> A[Author, validate, review, and fix revision]
+    A --> S{Required design sign-off}
+    S -- changes requested --> A
+    S -- rejected --> H[Human resolution required]
+    S -- disabled or approved --> P[Publish new revision task, ref, and PR]
+    P --> B[Supersede prior revision and reconcile implementation]
+    B --> C[Claim affected stage with current inputs and retained budgets]
+    C --> W2[Resume work and required review coverage]
 ```
 
-An author or implementer returns a structured remediation result mapping every
-accepted finding ID to changed artifacts and verification evidence. It may
-dispute a finding with evidence, but cannot mark it waived.
-
-The workflow closes a review stage only when:
-
-1. the current reviewer verdict is `approved`;
-2. no blocking finding remains open;
-3. every earlier finding is resolved or explicitly waived by an authorized
-   human with a reason;
-4. all required validation gates pass against the reviewed artifact digest;
-5. repository bases and policy digests have not changed incompatibly;
-6. round, deadline, and turn limits have not been exceeded, plus token/cost
-   limits when the authentication profile supplies trusted gateway accounting;
-7. any risk-based human approval is recorded.
-
-Configure a maximum review-round count. Exhaustion moves the stage to
-`HUMAN_RESOLUTION_REQUIRED`; it never converts automatically to approval.
-
-## Context Transfer
-
-Pass typed work packages, not an ever-growing transcript.
-
-Every agent job receives the minimum required subset of:
-
-- `RequirementArtifact` reference and digest;
-- design or plan artifact reference and digest;
-- repository name, base revision, and candidate patch digest;
-- issue hierarchy and current stage/round identifiers;
-- active and historical finding ledger;
-- test and validation evidence;
-- initiating user, principal, actor, billing-subject, and authorization-grant
-  references, with claim digests rather than reusable bearer tokens;
-- immutable policy, tool, model-route, and budget bindings.
-
-The implementer may receive accepted reviewer findings. The reviewer must not
-receive hidden reasoning, scratchpad state, ambient credentials, or the
-implementer's mutable harness thread. Conversation history is not an artifact
-contract.
-
-## GitHub Issue And Comment Contract
-
-GitHub is the collaborative history and navigation surface. The workflow and
-artifact store remain authoritative because comments can be edited, deleted,
-reordered, rate-limited, or temporarily unavailable.
-
-Use typed, idempotent actions such as:
-
-- `github.issue.ensure-v1`;
-- `github.comment.append-v1`;
-- `github.issue.link-v1`;
-- `github.pull-request.create-v1`;
-- `git.commit.accepted-artifact-v1`;
-- `git.push-approved-ref-v1`.
-
-The model may propose inputs, but a trusted action validates repository,
-organization, issue, ref, artifact digest, caller authority, and approval. The
-action receives a short-lived credential scoped to the exact effect.
-
-Every issue comment part is bound to an idempotency key such as:
-
-```text
-feature-id : stage-id : round : role : response-digest : part-index
-```
-
-The rendered comment includes a machine marker so retry can find the existing
-comment instead of duplicating it:
-
-```html
-<!-- light-run:feature-123:design-review:2:design-reviewer:sha256-abc123:0 -->
-```
-
-The response digest is calculated from the immutable stored response artifact.
-An append retry replays that artifact and therefore uses the same key. Asking a
-model to generate another response creates a new round and artifact rather than
-retrying the append. `part-index` is zero for an unsplit comment and a stable,
-zero-based index for deterministic splits. The `role` segment is the logical
-workflow role, such as `design-reviewer`, not an execution-profile or model-
-alias identifier.
-
-A response comment should identify:
-
-- feature, workflow, stage, round, agent role, and logical model alias;
-- issue, repository, base revision, and reviewed artifact digest;
-- the agent's final bounded response;
-- finding IDs introduced, resolved, disputed, or human-waived;
-- validation commands, results, and artifact links;
-- the next workflow transition.
-
-"All model responses" means final externally visible responses and structured
-results. Hidden chain-of-thought is neither requested nor stored. Before
-publication, content passes secret scanning, redaction, data-boundary, size,
-and repository-visibility policy. Oversized responses are stored as immutable
-artifacts with a bounded GitHub summary and link, or split deterministically
-when policy explicitly permits full issue publication.
-
-## Issue Hierarchy
-
-```text
-featureId
-  designIssue
-    design author/review comments
-  implementationIssue
-    plan author/review comments
-    phase 0 main issue
-      repository child issues
-    phase 1 main issue
-      repository child issues
-    ...
-    final review comments
-    publication and test results
-```
-
-Each relation is stored internally and mirrored by reciprocal GitHub links.
-The workflow must validate that a configured main issue belongs either to one
-of the phase repositories or to the policy-approved implementation tracking
-repository declared in the manifest; a prompt cannot redirect publication to
-another repository.
-
-## Multi-Repository Work Package
-
-```yaml
-schemaVersion: 1
-featureId: feature-123
-phaseId: phase-3
-trackingRepository: networknt/implementation
-mainIssue: networknt/implementation#123
-designArtifactDigest: sha256:...
-planArtifactDigest: sha256:...
-repositories:
-  - repository: networknt/light-fabric
-    issue: networknt/light-fabric#456
-    baseRevision: 0123456789abcdef0123456789abcdef01234567
-    patchDigest: sha256:...
-    validationEvidenceDigest: sha256:...
-  - repository: lightapi/portal-view
-    issue: lightapi/portal-view#789
-    baseRevision: 89abcdef0123456789abcdef0123456789abcdef
-    patchDigest: sha256:...
-    validationEvidenceDigest: sha256:...
-```
-
-Repository status and diffs are inspected independently. A clean result in one
-repository cannot close another repository's work package, and an environment-
-skipped integration test is recorded as unqualified rather than passed.
-
-## Authentication Profiles
-
-The workflow definition and artifact contracts are identical across execution
-environments. Authentication and placement are immutable profile inputs.
-
-| Concern | Local Portal with native subscription | Enterprise API |
-| --- | --- | --- |
-| Distribution | `portal-config-loc/all-in-lt` or `light-portal-install` | Managed enterprise deployment |
-| Worker placement | User's local machine | Pooled or dedicated enterprise workers |
-| Portal identity | Local Portal user JWT, or an explicit loopback-only local principal normalized to the same identity contract | Enterprise user JWT and delegated workload identity |
-| Codex | Native harness uses its existing local login; Light passes no vendor credential | Attempt-scoped Light credential to a custom Responses provider |
-| Claude | Native harness uses its existing local login; Light passes no vendor credential | Anthropic API, Bedrock, or another qualified route |
-| Model routing | Direct native vendor harness | Logical aliases through `llm-gateway` |
-| Credential owner | Native harness and its local credential store | Enterprise secret/workload identity system |
-| Gateway | Not a subscription proxy | Required for governed provider routing |
-| User attribution | Verified local Portal principal for API, Worklist, and approval activity | End-user plus workload actor in delegated token |
-| Usage authority | Native vendor account; no normalized trusted Light token/cost ledger | `llm-gateway` per-user token and cost ledger |
-| Enforced Light budgets | Round, turn/model-call, wall-clock, process, and resource limits | Local limits plus gateway token and cost reservations |
-
-The local profile separates two credential classes. Codex or Claude Code
-resolves its own existing subscription login from its native local credential
-store; Light does not read, persist, broker, refresh, or inject that vendor
-credential. Portal identity is different: Workflow Admin, Chat, Worklist, and
-approval calls still identify the human actor so assignment, authorization,
-and audit semantics match the enterprise product.
-
-Browser access normally uses the local Portal login and JWT. A strictly
-loopback or Unix-socket CLI may use an explicitly configured operating-system
-user mapping, but the gateway normalizes it into the same verified principal
-contract and never permits an anonymous approval. Shared or remotely reachable
-CLI access uses normal Portal authentication and delegation. Personal vendor
-credentials never become shared enterprise provider credentials.
-
-The profiles share business artifacts and all lifecycle transitions that do not
-depend on gateway accounting. A local run may retain native-harness usage as
-advisory evidence, but Light does not use it to enforce cost or normalized-token
-budgets and does not enter `BUDGET_EXHAUSTED` from that signal. Enterprise runs
-may enter that state from a signed gateway reservation or receipt. Cross-profile
-conformance therefore excludes token/cost-exhaustion transitions while testing
-the same round, turn, wall-clock, cancellation, review, and publication rules.
-
-## Failure, Retry, And Recovery
-
-- Every external action has a stable idempotency key and persisted request and
-  result digest.
-- Provider, agent, GitHub, and test retries are bounded and classified by
-  recoverability; visible output is never silently replaced by another model.
-- A missing GitHub comment does not lose the agent response. The workflow
-  retries publication from the immutable response artifact.
-- An existing GitHub comment with the same marker is treated as the completed
-  result of a replayed append action.
-- Repository-base movement pauses the affected work package for rebase and
-  re-review; it does not apply a stale patch.
-- Cancellation terminates worker process trees, revokes active tool and
-  enterprise model grants, and preserves already committed evidence. A local
-  subscription run has no model broker grant to revoke; invalidating its Light
-  lease and killing the native harness prevent further calls without revoking
-  the user's vendor login.
-- A model timeout or malformed response fails the current attempt, not the
-  whole feature, unless retry policy is exhausted.
-- Workflow restart performs indexed catch-up over pending agent jobs, external
-  actions, approvals, tests, and issue-publication results.
-- An expired or revoked user authorization grant pauses new model and tool
-  spending for reauthorization; a cached JWT is never used to bypass expiry.
-- In the enterprise profile, gateway reservations and provider attempts are
-  idempotently reconciled so a retry is auditable and neither loses usage nor
-  double-charges one attempt.
-- Cyclic agent/workflow delegation and unbounded review loops are rejected.
-
-## Current Implementation Inventory
-
-### Present In The Repository
-
-- `light-workflow` supports durable workflow tasks including `ask`, `assert`,
-  `switch`, loops, waits, HTTP/MCP calls, and native schema-bound agent calls.
-- `AgentCallMode::Service` is represented in `workflow-core`.
-- Service-mode execution creates a durable `agent_job_t` row with workflow and
-  task correlation, idempotency, input/output schema, policy and data-boundary
-  digests, deadline, token/cost budgets, delegation depth, and isolated memory.
-- `light-agent` reconciles matching pending jobs into bankless agent sessions
-  and turns, handles cancellation and expiry, and mirrors terminal turn state
-  back to the job.
-- The coding runtime, pinned Codex App Server worker, immutable implement/review
-  role profiles, worker protocol, Cube backend, structured review and
-  remediation validation, fixed publication closure gate, and `llm-gateway`
-  Responses surface provide the coding-loop foundation.
-- Workflow invocation already verifies a user bearer and a gateway scope token,
-  checks caller and end-user identity headers against the verified JWT, and
-  preserves invocation identity for downstream work.
-- Agent delegation claims already carry caller, end-user, actor, workflow,
-  session, turn, action, policy, and budget bindings with short expiry.
-- `llm-gateway` already admits a principal context, applies per-principal
-  concurrency control, and audits a principal digest, charged cost, and usage
-  completeness.
-- `portal-view` already provides a workflow Worklist and Human Task surface
-  with inbox summaries, user/role assignments, claim/release, completion,
-  comments, and approval, confirmation, choice, multi-choice, text, and object
-  response modes.
-- The canonical `portal-config-loc/all-in-lt` stack contains the local workflow,
-  gateway, controller, configuration, and agent services; its development UI
-  is currently launched from the `portal-view` source checkout.
-
-### Not Yet Implemented Or End-To-End Qualified
-
-- Complete unattended service-agent job execution from workflow input through
-  a coding worker to schema-validated workflow output. Persistence and
-  reconciliation exist, but this full path is not yet demonstrated by the
-  checked implementation.
-- A production Claude Code worker adapter.
-- The feature-level work-package, durable finding-ledger,
-  repository-manifest, and response-publication contracts defined here. The
-  repository-level `CodingReviewResult` and immutable remediation handoff are
-  implemented by the coding harness.
-- First-class fixed GitHub issue, comment, link, branch, and pull-request
-  actions. The repository contains GitHub webhook and authentication support,
-  but not this outbound SDLC action set.
-- Durable author/reviewer remediation loops and final cross-repository review.
-- A complete local-native-subscription and enterprise-API qualification matrix.
-- End-to-end propagation of the verified end user into every agent model call;
-  the checked agent gateway client currently authenticates with its service
-  token, while the gateway derives its principal from the authenticated token.
-- A durable normalized per-user token ledger, cost-window reservations,
-  billing-subject policy, trusted usage receipts, and long-running delegated
-  authorization refresh or reauthorization flow. Current LLM audit events are
-  cost-oriented and do not persist normalized token counts.
-- A shared structured human-interaction protocol for workflow and direct-agent
-  sources. Current Agent Chat transports text, session, execution-accepted, and
-  error messages but does not render or submit typed interaction requests.
-- Direct-agent decision APIs and Chat cards bound to the existing durable agent
-  approval state, plus an optional thin CLI over the same contracts.
-- Cross-distribution conformance proving that `portal-config-loc/all-in-lt` and
-  `light-portal-install` expose identical local orchestration behavior.
-
-The existing
-[Native Agent Call](../light-workflow/native-agent-call.md) page still describes
-service-agent invocation as future work even though service-mode model and
-persistence pieces now exist. That page must be reconciled with implementation
-as part of delivery; neither the prose nor the partial persistence path alone
-is evidence of end-to-end readiness.
-
-## Delivery Plan
-
-### Phase 0: Contracts And Ledger
-
-- Define `FeatureRun`, `RequirementArtifact`, `StageRun`, `AgentWorkPackage`,
-  `ReviewResult`, `ReviewFinding`, `RemediationResult`, `RepositoryChangeSet`,
-  `ValidationEvidence`, and `PublicationResult` schemas.
-- Define stable stage, round, finding, artifact, repository, and external-action
-  identities.
-- Define the complete feature-state and transition contract above, including
-  terminal, replan, reauthorization, budget, human-resolution, and post-
-  publication failure behavior.
-- Define `HumanInteractionRequest` and `HumanInteractionDecision` with workflow
-  task and agent turn source bindings, typed response modes, exact digests,
-  approver scope, expiry, and idempotency.
-- Implement review closure, maximum-round, budget, waiver, and stale-artifact
-  rules with deterministic fixtures.
-
-Exit gate: replaying the same author/reviewer results produces the same ledger
-and exactly one transition.
-
-### Phase 1: Enterprise Identity And Usage Accounting
-
-- Define the initiating-user, workload-actor, authorization-grant,
-  billing-subject, quota-policy, and correlation claims shared by portal,
-  workflow, agent, worker, and LLM gateway.
-- Add audience-bound token exchange for synchronous and resumed work without
-  persisting the original user JWT.
-- Add per-user token and cost reservation, provider-attempt reconciliation,
-  normalized usage storage, and signed usage receipts in `llm-gateway`.
-- Bind each agent model request to its verified end user, actor, workflow,
-  session, turn, and budget rather than attributing pooled traffic only to the
-  agent service identity.
-
-Exit gate: Workflow Admin and Chat starts produce the same end-user attribution;
-cross-user, cross-tenant, expired-grant, replay, quota, and incomplete-usage
-tests fail closed, while provider API keys remain confined to `llm-gateway`.
-
-### Phase 2: GitHub Fixed Actions
-
-- Implement ensure-issue, append-comment, link-issue, create-PR, and approved-ref
-  actions with short-lived scoped credentials.
-- Add idempotency-marker lookup, redaction, size limits, rate-limit retry,
-  reconciliation, and immutable audit evidence.
-
-Exit gate: lost responses and retries cannot duplicate an issue or comment, and
-credentials/secrets are absent from inputs, logs, comments, and artifacts.
-
-### Phase 3: Service-Agent Completion
-
-- Complete and qualify `call: agent` service-mode execution, cancellation,
-  timeout, output-schema validation, and workflow reconciliation.
-- Route coding roles through runner-managed `light-agent-worker` adapters.
-- Extend Agent Chat and its server protocol with structured interaction cards
-  and dedicated decision APIs; never infer side-effect approval from free text.
-- Allow Chat to render a workflow task only as a view of the authoritative
-  Worklist record and completion API.
-- Update `native-agent-call.md` to distinguish verified native and service
-  behavior.
-
-Exit gate: a restarted workflow and restarted agent complete exactly one
-schema-valid specialist job without duplicated model or GitHub effects.
-
-### Phase 4: Design And Plan Workflows
-
-- Implement requirement freeze, design issue, design review, remediation,
-  implementation issue, plan review, replan, and human-resolution states.
-- Route ordinary reviews through the gateway-resolved `coding-reviewer` alias;
-  require a separately qualified harness only for policy-named high-risk work.
-- Add documentation and implementation-plan validation profiles.
-
-Exit gate: a seeded blocking finding prevents closure, its remediation is
-traceable to a new artifact digest, and a fresh approving review advances the
-workflow.
-
-### Phase 5: Repository Phase Workflows
-
-- Add repository issue fan-out, clean-base materialization, implementation,
-  tests, independent review, remediation, and phase aggregation.
-- Add exclusively leased multi-repository workspace sets with lazy repository
-  materialization and separate reviewer reconstruction.
-- Detect base movement and cross-repository contract inconsistency.
-
-Exit gate: no phase closes until every declared repository work package and
-cross-repository gate is accepted.
-
-### Phase 6: Final Review And Publication
-
-- Add immutable final manifests, cross-repository review, human publication
-  approval, fixed commit/push/PR actions, reciprocal issue links, and automated
-  post-publication tests.
-- Integrate a distinct test/CI executor and enforce the pre-publication block
-  and `POST_PUBLICATION_FAILED` transition defined by the state machine.
-
-Exit gate: only the approved manifest is published, every resulting commit/PR
-is linked, and replay performs no duplicate external effect.
-
-### Phase 7: Authentication Profiles
-
-- Qualify both `portal-config-loc/all-in-lt` and `light-portal-install` as the
-  same local Portal profile, including Workflow Admin, Worklist, Agent Chat,
-  platform identity, and native Codex/Claude login discovery.
-- Qualify enterprise gateway-backed workers with delegated user/workload
-  identity against the same workflow fixtures.
-- Prove that switching authentication profile changes no common lifecycle
-  transition or artifact schema. Test gateway token/cost-exhaustion transitions
-  only in the enterprise matrix and prove local runs cannot synthesize them.
-
-Exit gate: cross-user, cross-tenant, expired/revoked credential, subscription-
-proxy, and enterprise-secret-exposure tests fail closed.
-
-## Acceptance Criteria
-
-- A user can collect requirements interactively, approve a frozen artifact,
-  and start or resume the durable lifecycle through `light-agent`.
-- `portal-config-loc/all-in-lt` and `light-portal-install` pass the same local
-  orchestration conformance suite and expose the same APIs and user behavior.
-- A local native harness uses its own existing Codex or Claude login without
-  Light passing vendor credentials; Portal and service identity remain
-  available for API authorization, assignment, approval, and audit.
-- Workflow human tasks appear in the assigned Worklist and support claim,
-  release, typed response, comment, expiry, and exactly-once completion.
-- Direct-agent Chat renders structured choices and approvals, but free text
-  cannot authorize a side effect. Any workflow task rendered in Chat completes
-  the same authoritative Worklist record.
-- An optional CLI, when delivered, consumes the same APIs and interaction
-  contracts and cannot bypass identity, assignment, digest, or approval rules.
-- Starts from Workflow Admin and Chat preserve one verified initiating-user
-  identity across workflow, agent, worker, LLM usage, artifacts, and audit
-  records while recording each acting workload separately.
-- The original portal JWT, provider API keys, and reusable gateway credentials
-  never enter durable workflow state, agent transcripts, worker workspaces,
-  GitHub comments, logs, or artifacts.
-- `llm-gateway` enforces the selected per-user or cost-center budget before
-  provider dispatch and durably reconciles normalized token counts and cost for
-  every enterprise attempt, including retry, fallback, and incomplete-usage
-  cases. Local subscription runs enforce only the documented non-cost limits
-  and produce no normalized Light usage ledger.
-- A workflow that outlives the user's grant pauses for reauthorization rather
-  than continuing with an expired token or an unattributed service identity.
-- One design issue and one implementation-plan issue are created despite
-  retries or service restarts.
-- Every author and reviewer final response is durably stored and published to
-  the correct issue exactly once, subject to redaction and size policy.
-- Every review runs in a fresh context over the exact artifact digest it names.
-- A stage cannot close with an open blocking finding, failed required gate,
-  stale base, missing repository issue, or absent required approval.
-- Review-loop exhaustion pauses for human resolution rather than approving or
-  looping forever.
-- Every implementation phase creates or resolves the declared repository work
-  packages and records actual test evidence.
-- Every mutable agent session receives a separate workspace set; concurrent
-  users or sessions never share writable repository or Git state.
-- The final reviewer sees the complete multi-repository manifest and all active
-  cross-repository findings.
-- Commit, push, PR, publish, sign, and deploy operations accept only approved
-  immutable artifacts through fixed actions.
-- GitHub remains reconstructable from internal records, while deletion or
-  editing of a comment cannot corrupt workflow state.
-- The same common-transition conformance workflow passes under personal-
-  subscription and enterprise-API profiles; enterprise-only token/cost gates
-  are covered by a separate profile-specific matrix.
+Record the revision request and reconcile any active worker before handing off
+the stage owner. Resume the earliest invalidated phase or final stage selected
+by the impact decision; publication of a new document alone does not restore
+invalidated implementation acceptance.
+
+## Diffable Candidate Snapshots
+
+The current `checkpoint::capture` in `crates/task-workspace/src/checkpoint.rs`
+records file hashes/modes, HEAD, and index/status hashes. It retains no prior
+file contents. `workspace.checkpointDigest` detects change; it cannot supply
+historical review content or a diff after later edits overwrite those files.
+
+Phase 1 adds manager-owned `CandidateSnapshot` receipts. Capture the initial
+stage baseline, every candidate submitted for review, and every resulting fix
+candidate before another edit can overwrite it. Accepted phase checkpoints
+retain their snapshot references. This applies to design/plan fix rounds as
+well as implementation and final review; saving accepted phases alone is too
+late to verify intermediate fixes.
+
+Under the task's exclusive lock, the manager writes a Git tree from a temporary
+private index containing the checkpoint's complete admitted file set. Preserve
+exact bytes, executable modes, additions, and deletions, including non-ignored
+untracked files; do not apply content-changing Git filters. Keep the current
+checkpoint restrictions on symlinks and submodules. An unsupported or out-of-scope
+change blocks acceptance instead of silently disappearing from the diff.
+Verify the captured bytes against the checkpoint manifest and recheck the
+workspace before completing the receipt. Drift produces no accepted snapshot.
+
+Pin each per-repository tree in a unique manager-only local ref, such as
+`refs/light-workflow/<featureRunId>/snapshots/<snapshotId>`, without changing HEAD,
+the task branch, or the real index. These are local tree snapshots, not feature
+commits; fixed push actions never include the private refs. The receipt binds
+the feature/stage/task, repository bases, file checkpoint digest, per-repository
+tree IDs, and content-manifest digest. Native conversation checkpoints remain
+separate. `light-workflow` exports the contents and manifest supplied by a fixed
+manager read into the immutable artifact store before a review or stage result
+can depend on them, so recovery does not depend on a surviving local Git object
+database. The storage and transfer requirements are defined below.
+
+The manager derives each complete delta from the saved before/after trees;
+`light-workflow` persists its artifact/digest with both snapshot references.
+Retain binary contents and mode/deletion evidence as well as the textual diff;
+reviewer tools must be
+able to read either saved version. This is a fixed read operation, not native
+shell access or a model-authored patch. Workflow impact routing consumes this
+evidence. Missing snapshots, failed reconstruction, or digest mismatch block
+review/publication rather than falling back to an implementer summary.
+
+Retain all baseline and transition snapshots referenced by `StageResult` or
+`ReviewCoverage` for the feature's evidence-retention period. Garbage collection
+cannot prune referenced trees/content. Final commit verification compares the
+delivered file contents with the accepted snapshot; these snapshots do not move
+implementation commit/push ahead of final closure.
+
+### Personal Artifact Storage And Export
+
+The personal pilot uses a **filesystem-backed durable artifact store owned by
+`light-workflow`**. Phase 1 must add this backend to `DurableArtifactStore`;
+the current constructor supports only S3 and returns `None` without a bucket.
+The existing `workflow.fixedActions.artifactRoot` directory does not enable that
+store or its publication/recovery contract.
+
+Proposed settings are `workflow.artifact.backend: filesystem` and
+`workflow.artifact.filesystemRoot: /var/lib/light-workflow/evidence`, alongside
+the existing artifact prefix/retention settings. These keys are new Phase 1
+work, not currently accepted configuration. Add the template and published
+workflow properties, and mount a dedicated persistent volume at this root in
+`portal-config-loc/all-in-lt` and the personal stack in `light-portal-install`.
+Only the Workflow service mounts this volume; it is separate from runner task
+worktrees, fixed-action scratch, and the container's writable layer.
+
+The workspace manager produces a snapshot package and its manifest through a
+fixed authenticated read operation. `light-workflow` retrieves bounded chunks
+bound to the feature/task/snapshot identity, checks lengths and digests, and
+publishes the contents through its artifact service. Implement and qualify this
+transfer path in Phase 1; a local runner pathname is not a transferable artifact.
+The runner and native agents receive neither store credentials nor write access
+to the artifact volume. Review/recovery reads use fixed authorized operations
+against the stored artifact identity and digest.
+
+The filesystem backend preserves content-addressed, tenant-scoped references
+and the existing stage/metadata/promote/verified-binding contract. Use durable
+temporary writes and atomic promotion, verify any existing destination on retry,
+and recover interrupted promotion before binding a receipt. Clean abandoned
+staging files and apply retention without deleting referenced evidence. A
+receipt is usable only after the complete package is durably stored and verified.
+Feature admission checks that the configured store is available and writable;
+a disabled store, full volume, or failed export blocks dependent review/stage
+acceptance without replaying the author turn.
+
+Qualification must recreate the Workflow container and recover after removing
+the runner's snapshot refs/object cache. The persistent artifact volume and
+Workflow database must survive that exercise. Recovery from loss of the volume
+itself requires a backup of both evidence and metadata; this personal backend
+does not provide automatic replication or VM failover. The enterprise profile
+selects its own qualified store while preserving the same evidence contracts.
+
+## Phase Implementation And Review
+
+Run each phase before its dependent successor. **Codex starts a fresh implementer
+conversation for every phase.** This is intentional: each `feature-implement`
+run consumes the accepted requirements/design/plan, phase manifest, prior phase
+results and snapshots, finding ledger, and validation evidence. It does not
+depend on the phase-1 conversation surviving into phase 2. Resume the same
+implementer and reviewer conversations within that phase's fix loop.
+
+1. Codex implements the declared scope and returns a summary. The manager
+   captures the candidate checkpoint/snapshot, and fixed validation operations
+   run the phase's required checks. A check that changes deliverable files
+   requires a new snapshot and validation bound to that candidate.
+2. Claude reviews the manager-derived delta from the previous accepted phase
+   snapshot (the recorded implementation baseline for phase 1), with
+   access to the accumulated candidate, requirements, design/plan, ledger, and
+   actual test evidence.
+3. Codex addresses findings and returns a mapping from canonical finding IDs to
+   changes and evidence. Rerun affected checks and resume Claude to verify the
+   updated candidate.
+4. When closure passes, record the accepted checkpoint/snapshot and next-stage
+   inputs. Publish the concise round summary and update feature status.
+
+**Claude reviews every completed phase.** Do not wait until all implementation
+and Codex final review are finished before involving Claude. Judge each phase
+against its declared exit criteria; deliberately scheduled later-phase work is
+not a current-phase omission. It cannot excuse a failed current-phase check.
+
+Acceptance requires all declared repository checks and cross-repository contracts.
+An environment-skipped required test is unqualified, not passed. Phase acceptance
+records a checkpoint; implementation commit/push happens after final closure.
+Shared-workspace native tools provide file operations: tests/commands run through
+fixed manager/test operations, not unsupported native shell access.
+
+## Final Review And Fix Verification
+
+Create a complete immutable candidate manifest covering original repository
+bases, accumulated changes, accepted requirements/design/plan versions, phase
+results, and validation evidence. Final review checks full-feature behavior,
+integration, migrations, documentation, and requirements coverage.
+
+1. Start a fresh **Codex final-review conversation**, separate from its
+   implementer. Review the whole candidate once. Codex implementation turns fix
+   its findings; the same Codex reviewer resumes with the before/after snapshot
+   references/digests, manager-derived complete diff, finding IDs, and validation
+   evidence until accepted.
+2. Start a fresh **Claude final-review conversation** over the resulting whole
+   candidate. Codex implementation turns address its findings. Resume that
+   Claude reviewer to verify the changed content and close the cited findings.
+3. Routine final fixes remain inside `feature-finalize`. Run affected phase and
+   integration checks, but do not automatically reopen a phase workflow or
+   repeat a separate Claude phase review for a fix Claude is already verifying.
+4. Evaluate the review coverage contract below before commit/push.
+
+Each resumed reviewer focuses on the delta and finding closure while retaining
+access to the whole current candidate. It may report a new evidenced regression;
+“delta review” does not mean ignoring an effect outside the changed lines.
+
+Reinvoke the other final reviewer when a change crosses the recorded scope of
+the active fix, affects multiple phases or cross-repository contracts, changes
+requirements/design/acceptance criteria, alters security/authorization,
+migrations or public APIs, or cannot be shown to preserve earlier coverage.
+The workflow owns this routing decision using declared phase/path/contract
+mapping, saved snapshot deltas, required-check results, and the active reviewer's
+scope assessment. Codex's fix summary alone cannot declare its own change harmless.
+Uncertain impact requires the broader review. Reuse the other reviewer's session
+when its binding remains valid; a new session is for changed binding, missing
+history, explicit recovery, or a deliberately restarted design scope.
+
+The publication gate consumes a `ReviewCoverage` record:
+
+- retain original full-review verdicts and their exact candidate digests;
+- record each subsequent candidate transition, its before/after snapshot
+  references and full delta artifact/digest, canonical finding closures, impact
+  decision, checks, and reviewing role;
+- explicitly carry forward coverage only for unchanged/unaffected scope;
+- require an unbroken accepted transition chain to the current manifest and no
+  open actionable findings without an authorized disposition.
+
+For example, Codex accepts A; Claude fully reviews A and finds F; Codex fixes F
+to produce B; Claude resumes and accepts A-to-B with the required tests and a
+confirmed local scope. Publication may accept B using that recorded coverage
+chain. It must not relabel Codex's original verdict as a review of B. A broad
+A-to-B change also requires resumed Codex review before closure.
+
+The chain itself is a proposed higher-level contract. Existing fixed publication
+validators must be explicitly integrated and qualified to consume it; never
+reuse an old verdict with a forged current digest to bypass an existing
+exact-candidate check.
+
+Keep the first final reviews sequential. The current workspace manager takes
+an exclusive task lock even for read-only review. Parallel final reviews would
+require independently frozen read-only copies or qualified shared-reader access,
+plus findings reconciliation; that optimization is outside the pilot.
+
+## Finding Identity And Closure
+
+`light-workflow` owns canonical finding IDs. The reviewer owns the semantic
+assessment of whether an observation is new, an existing finding, or a regression
+of a previously closed finding. Do not rely on model-generated `DESIGN-003`
+labels or automatic fuzzy text matching for identity.
+
+Allocate the review ID before dispatch and bind it to one logical review turn;
+retries keep that ID. Canonical finding IDs remain unique for the feature run
+across stage instances and reopened phases. The model cannot choose a new review
+identity to evade an existing result or finding mapping.
+
+Every reviewer receives the active ledger and a compact closed-finding history
+with access to full records. Its schema separates:
+
+- `existingFindingId`: a reference to a canonical ID supplied in that ledger,
+  with disposition/evidence such as still-open, verified-resolved, or reopened;
+- `newFindings`: turn-local IDs, repository/location, severity, concrete failure,
+  evidence, and required resolution;
+- proposed `duplicateOf` references with an explanation when two observations
+  describe the same failure.
+
+The workflow validates scope, referenced IDs, and required fields. It assigns a
+canonical ID once for each admitted new item and persists the mapping keyed by
+`featureRunId + reviewId + localFindingId`; replay returns the same mapping.
+A validated duplicate relation preserves the old canonical ID and an alias/audit
+record rather than deleting history. A cross-feature ID, conflicting disposition,
+or ambiguous duplicate claim cannot silently close a finding: return it to the
+reviewer for clarification, then use human resolution if disagreement persists.
+
+Codex remediation references canonical IDs and records changed paths/evidence.
+It may dispute a finding with evidence but cannot waive or self-close it.
+The reviewing role verifies fixes; an authorized human records waivers/deferrals
+with reasons and tracking references. A reviewer must explicitly cite a closed
+ID to reopen the same failure with new evidence.
+
+Stage closure requires a schema-valid accepted verdict/coverage, no unresolved
+actionable finding without an authorized disposition, required checks passing
+on the relevant candidate, valid input/policy/base bindings, and any required
+sign-off. Keep advisory suggestions separate. Empty native text, transport success,
+or malformed structured output never means “no findings.”
+
+Use three remediation rounds after the initial review as the default, plus
+configurable turn and wall-clock limits. Count validation-fix and output-repair
+turns against those limits. Budgets count dispatched logical work, not the number
+of unique findings: rewording or duplicating a finding cannot reset a budget.
+Final remediation consumption survives reopened phases, new stage instances, and
+reviewer replacement. Deterministic non-progress indicators include repeated
+still-open canonical IDs with no accepted resolution; semantic disputes remain
+explicit decisions. Exhaustion or unresolved disagreement enters
+`HUMAN_RESOLUTION_REQUIRED`, never automatic approval.
+
+## Conversations, Tasks, And Recovery
+
+Codex and Claude for a feature use the same `workspaceId` and task ID, with
+different `thread.sessionRef` values. The workflow controls `new`, `resume`,
+and `close`. Persist the native `codingThread.checkpoint` independently of
+the file `workspace.checkpointDigest`; neither authorizes the other.
+
+Keep role conversations through their stage's fix loop. Close them on stage
+completion and verify the close receipt; `closeAfterTurn` alone is not proof of
+closure. The next top-level stage, including the next implementation phase,
+uses new conversation identities and consumes accepted artifacts and snapshots.
+A review has read-only access to the exact expected candidate and saved delta
+versions, and must reread changed files on resume.
+
+A task has one workflow-stage owner and one active manager turn. Stale checkpoints
+or changed runner/policy/task bindings are rejected. Missing history requires
+explicit replacement from accepted artifacts. Uncertain native execution stays
+fenced until reconciliation; changing a request ID, stage, or VM is not permission
+to replay edits. Completed execution with invalid output needs a bounded
+output-repair/recovery step against saved state, not a blind rerun.
+
+## GitHub Actions And Comment Volume
+
+Codex/Claude write content; fixed workflow actions own GitHub effects. Reuse the
+workspace manager's `gh` delivery boundary. Pass structured arguments and body
+files/stdin; do not interpolate model text into shell source. The current
+`run.shell` path disables network and credentials, and shared-workspace workers
+do not receive arbitrary host `gh` access.
+
+Persist immutable author/reviewer/remediation results before publication. Default
+to **one status comment per feature run, edited in place**, plus **one short
+comment per completed review round**. The status points to the current stage,
+candidate, open finding IDs, latest design/plan PRs, delivery state, and full
+artifacts. A round comment summarizes implementation or fixes, validation,
+review disposition, and links to full results. Limit its prose, for example to
+200 words plus links; large finding sets stay in the artifact store.
+
+This preserves each response in durable artifacts and represents it in the issue
+without pasting full responses repeatedly. Update status after completed author,
+review, and remediation events; append the compact round comment when the round
+is complete. Design acceptance and final delivery also publish explicit links.
+The developer can choose a more verbose comment policy per run.
+
+The workflow owns serialized GitHub action intents and their remote IDs:
+
+- status identity: `featureRunId + status`, with monotonically increasing version;
+- round identity: `featureRunId + stageExecutionId + round`, bound to its immutable
+  summary digest;
+- document/delivery identity: feature, artifact/revision, repository, and action.
+
+Edits target the stored comment ID, never “edit my last comment.” Serialize
+updates so an older retry cannot overwrite newer status. Record intended body
+digest/version and reconcile uncertain results by fetching the known ID or
+enumerating matching markers. Markers aid recovery; they do not replace an atomic
+local effect claim. A failed comment retries the saved content without another
+model turn. Required publications must complete before the corresponding stage
+or feature is declared delivered. GitHub deletion/editing cannot change the
+internal acceptance ledger.
+
+## Commit, Push, PRs, And Completion
+
+After final review coverage and required checks pass, fixed actions:
+
+1. Freeze and verify the accepted manifest, authorized repositories/bases/refs,
+   review coverage chain, and required publication authority. Unexpected changes
+   return to review; a model's completion text is not publication authority.
+2. Run declared pre-publication checks. Any deliverable modification from checks
+   or hooks creates a new candidate transition requiring review.
+3. Commit exactly the accepted files in each changed repository, including
+   intended new files/deletions. Verify the tree and record SHA/parent; no-change
+   repositories are explicit. Exclude unrelated changes, caches, and credentials.
+4. Push each recorded SHA to its unique GitHub task branch and verify the remote
+   ref. The normal integration target is a PR to `develop`; no direct feature
+   push to `develop` or `master`.
+5. Create the required PRs and verify head SHAs/target branches. Include the
+   latest accepted document PRs in the delivery manifest. Update the feature
+   issue with per-repository commit, branch, PR, and validation links.
+6. Complete the declared CI/integration gates. `pr-ready` requires the intended
+   PRs and checks; `merged`/`deployed` also require their authorized integration
+   and runtime verification. Opening a PR alone does not close the feature issue.
+
+Record per-repository commit/push/PR/comment receipts. Multi-repository delivery
+is not atomic: retain successful effects and reconcile only incomplete actions.
+A lost push response requires checking the remote SHA, not rerunning Codex or
+creating another commit. Do not overwrite a conflicting remote ref.
+
+For the pilot, a revised published implementation candidate uses a new immutable
+publication task/ref/version, just as documents do; record which prior PRs it
+supersedes and require current review coverage. Transparent advancement of an
+already-published task ref can be added later with reviewed ref-update handling.
+It is not required to publish design v2 or to recover a post-publication fix.
+
+## Concurrent Instances And VM Placement
+
+The Phase 4 target allows independent features to remain active concurrently;
+their phases remain sequential. Each feature gets separate worktrees, branch
+names, conversations, findings, and budgets even when it changes the same
+repositories.
+
+The current personal workspace runner requires `maximumConcurrency: 1`.
+With one Codex runner and one Claude runner, Codex can implement feature B while
+Claude reviews feature A. **`light-workflow` owns fairness**: its dispatch
+scheduler persists ready turn intents and chooses eligible feature runs in
+round-robin order per required runner, FIFO within a run, with bounded admission.
+Persist queue order and the last-served run so restart cannot favor one feature.
+
+`agent_job_t` is the downstream execution/result record, not a second feature
+fairness queue. Controller and runner remain authoritative for actual capacity.
+The workflow releases its dispatch reservation only after a terminal/reconciled
+execution receipt; a confirmed pre-execution capacity rejection returns work to
+the ready queue. A lost admission response requires reconciliation before release.
+Waiting for capacity or human input consumes no remediation round, while the
+configured overall deadline still applies. Fairness is among workflow-owned
+turns; unrelated interactive traffic still competes for real runner capacity.
+
+A second VM can host another independently enrolled Codex/Claude Agent set and
+private workspace store. Both agents on one VM share that VM's store; matching
+workspace names across VMs do not share files. Pin runs to their admitted
+Agent/runner/store bindings. Moving an uncertain run is explicit recovery after
+fencing, never copying live native state. Separate installed control stacks must
+avoid assigning the same issue to competing owners.
+
+Use globally distinct task refs, explicit inter-feature dependencies, and
+separate test resources (or serialized access to shared resources). Local locks
+cannot coordinate remote merges across VMs. Recheck target-base movement and
+revalidate/review affected changes before integration. Another VM provides
+execution capacity; it does not remove integration or upstream account limits.
+
+The first pilot enforces one active feature per VM through a `light-workflow`
+admission reservation retained across stage handoffs and uncertain execution.
+Another separately operated VM can host its own pilot and Agent set, but shared
+scheduling, coordinated multi-VM routing, and automatic failover are not qualified
+by that arrangement.
+They remain later milestones, not reasons to postpone the standalone design loop.
+
+### Pilot VM Slot Release
+
+`light-workflow` persists the reservation's VM/runner binding, feature owner,
+generation, acquisition time, and release status. Workflow Admin shows the
+holder with its issue, stage/state, waiting reason, outstanding execution, and
+available resume/cancel actions. `READY_FOR_NEXT_STAGE` and
+`HUMAN_RESOLUTION_REQUIRED` retain the slot until the operator resumes or cancels
+the feature; they cannot hide an indefinite reservation from the operator.
+
+On feature `COMPLETED`, `CANCELLED`, or `FAILED`, release the slot idempotently
+once all admitted turns/fixed effects have terminal or confirmed fencing
+receipts. Record the release against the same owner/generation in the feature
+store. Completing an individual stage does not release it. A timeout, missing
+heartbeat, or terminal stage/process label alone is insufficient proof that the
+VM is safe to reuse.
+
+Provide an authorized **Cancel and release VM** action for a stalled feature,
+bound to its expected feature version and reservation generation. It blocks new
+dispatch and successor claims, cancels queued work, requests cancellation of
+active work, and fences outstanding worker/effect generations. Wait for
+Controller/runner/manager confirmation that old execution cannot continue, and
+reconcile already-issued external effects before completing cancellation and
+releasing the slot. Clearing a database owner field alone is not fencing.
+If confirmation is unavailable, show
+`VM_RELEASE_PENDING` and the unresolved execution; the VM remains unavailable
+until an authorized stop/reconciliation supplies the missing evidence.
+
+Persist the action intent and release receipt so a lost response can be retried
+without freeing a newer owner's reservation. Late old-generation dispatches,
+results, and publication actions cannot reacquire the slot or advance the
+cancelled feature. Retain its artifacts, findings, budgets, and publication
+receipts; any later explicit reopen must reacquire a slot and stage claim.
+
+## State And Evidence
+
+| State or substate | Required transition evidence |
+| --- | --- |
+| `REQUIREMENTS_FROZEN` / `ISSUE_PENDING` | Accepted requirement version and persisted issue reference |
+| `DESIGN_ACTIVE` / `PLAN_ACTIVE` / `PHASE_ACTIVE` | Candidate, validation, review, and bounded remediation receipts |
+| `DESIGN_SIGNOFF_PENDING` | Exact-digest human decision when enabled |
+| `DOCUMENT_PUBLICATION_PENDING` | Accepted revision task, commit, ref, PR, and permalink receipts |
+| `READY_FOR_NEXT_STAGE` | Durable accepted `StageResult` and snapshots; successor claim/start transaction validates the current feature/input versions |
+| `FINAL_REVIEW` | Primary/independent reviewer substate, finding ledger, and current review coverage chain |
+| `COMMIT_PENDING` / `PUSH_PENDING` / `PR_PENDING` | Verified per-repository publication receipts |
+| `POST_PUBLICATION_VALIDATION` | Required completion-target checks |
+| `REPLAN_REQUIRED` | Revised inputs, affected-scope decision, and explicit acceptance invalidation |
+| `HUMAN_RESOLUTION_REQUIRED` | Dispute, exhausted budget, sign-off rejection, or ambiguous recovery decision |
+| `REAUTHORIZATION_REQUIRED` | Renewed applicable Portal/action grant |
+| `VM_RELEASE_PENDING` | Cancellation/release intent and outstanding stop/fencing receipts; reservation remains held |
+| `COMPLETED` / `CANCELLED` / `FAILED` | Terminal feature result; a successful stage alone is not `COMPLETED` |
+
+The workflow and artifact store retain feature versions/owners and claim receipts,
+input versions, snapshot contents/deltas, finding mappings, review coverage,
+tests, budgets, sessions, VM reservation/release receipts, queue state, and
+external receipts. Restart resumes this state. Post-publication failures retain
+the published history and require a tracked remediation/version; they do not
+rewrite old acceptance or reset the feature budget.
+
+## Current Implementation Boundary
+
+Source checked September 13, 2026; the recorded live prerequisite below is from
+September 12 and has not been rechecked against the running database here.
+Stack statements describe checked-in configuration, not a live config-server query.
+
+| Capability | Current boundary |
+| --- | --- |
+| Personal Codex/Claude turns | Shared task inspect/implement/read-only review and native session control exist; see the shared-session qualification record |
+| Workflow Agent jobs | Service calls persist `agent_job_t` and Agent dispatch handles typed workspace jobs; complete local workflow invocation remains to qualify |
+| Cross-database bridge | `contracts/claude-code/v2.1.269/review-fixes-workflow-prerequisites.json` records missing Agent catalog/job relations for the Workflow operational role |
+| Shell | `command_template.rs` and runner admission forbid network/credentials for `run.shell` |
+| GitHub delivery | `crates/task-workspace/src/delivery.rs` supplies issue/PR actions and absent-or-identical-ref push; workflow comments and revision-task publication need integration |
+| Locking/capacity | `tool_session.rs` locks the task for readers and writers; personal workspace configuration enforces one execution per runner |
+| Historical file contents | `checkpoint.rs` captures hashes/modes and HEAD/index/status evidence, not diffable contents; retained candidate trees, artifacts, and delta reads are Phase 1 work |
+| Artifact storage/export | `artifact_store.rs` supports S3 only and disables the store when no bucket is set; `workflow.yml` defaults `workflow.artifact.s3Bucket` to empty. Checked-in local/installer stacks do not provision S3. The personal filesystem backend, persistent volume, published settings, and Workflow-owned fixed export/read path are Phase 1 prerequisites |
+| Stage claims | `invocation.rs::accept_invocation` transactionally persists an idempotent invocation/process/initial task; `FeatureRun` persistence, predecessor validation, and atomic stage claims are Phase 1 work |
+| Pilot VM slots | Feature reservations, Workflow Admin holder/release controls, and fenced terminal/cancellation release are Phase 1 work; runner concurrency limits alone do not implement them |
+| Child workflows | `executor.rs` rejects `run.workflow`; parent/child orchestration is deferred |
+| Feature contracts | Finding ledger, review coverage, standalone handoffs, fair dispatch, and stage loops are proposed orchestration work |
+
+## Delivery Plan And Acceptance Gates
+
+### Phase 0: Contracts And Deterministic Review Rules
+
+Define `FeatureRun`, stage-claim identity/version rules, `StageResult`,
+`CandidateSnapshot`/delta receipts, finding/remediation schemas, review coverage,
+budgets, VM reservation/release receipts, document/publication revisions, and
+comment intent identities.
+
+Exit gate: fixtures prove that replay preserves canonical finding IDs; reworded
+findings citing an existing ID retain identity; invalid/ambiguous duplicate
+references cannot close a finding; disputed findings require reviewer/human
+disposition; and reopened phases/new instances retain consumed budgets.
+Also prove a local final fix can close with resumed review and current coverage,
+while a broad change or missing transition cannot publish. Test optional design
+sign-off and stale sign-off rejection. Define fixtures for duplicate/stale
+handoffs and missing snapshot evidence; Phase 1 must enforce these contracts in
+the stores and start path. These gates require no model calls.
+
+### Phase 1: Standalone Stage Execution And Fixed Actions
+
+Prerequisite: the shared [authorization foundation](../../design/user-application-workflow-authorization.md#implementation-order-and-exit-gates)
+has passed its selected-stack qualification gates.
+
+Resolve/live-qualify the Workflow-to-Agent operational catalog/job bridge and
+exact workflow Agent bindings. Each separate workflow Agent instance needs its
+own service ID in `codingProfile.workspaceBindings[].agents` and the matching
+runner-local `RunnerWorkspaceConfig.bindings[].agents`. Publish and install the
+same complete binding, including its authorization/membership revisions,
+subjects, intents, runner, host, and environment: the runner compares the full
+binding for equality. Grant the workflow instance explicitly; do not reuse the
+interactive Agent's identity or weaken that comparison. Implement:
+
+- the durable `FeatureRun`/`StageResult` store and atomic claim-and-start API,
+  including version/owner checks, dispatch enforcement, and acceptance/replan
+  transitions; wire operator starts to this API;
+- manager-owned candidate trees, private retention refs, immutable content
+  artifacts, and fixed delta/version reads tied to checkpoint receipts;
+- the personal filesystem artifact backend, persistent volume and published
+  settings in `portal-config-loc/all-in-lt` and `light-portal-install`, readiness
+  checks, and Workflow-owned export/recovery through fixed manager reads;
+- bounded stage-local round slots, schema validation, native/file checkpoints,
+  cancellation, and restart recovery;
+- fixed tests, issue creation, status/round comments, and immutable document
+  publication tasks/PRs;
+- one active feature per pilot VM, Workflow Admin holder visibility, terminal
+  release, and authorized cancel/release with confirmed execution fencing.
+
+Do not implement `run.workflow` for this gate. Exit gates:
+
+- Each workflow Agent service ID succeeds with matching published and runner-local
+  workspace bindings. Missing IDs on either side, mismatched binding revisions,
+  and an unauthorized interactive Agent identity are rejected before a native
+  turn starts. Qualify the separate instances using their actual service IDs.
+- A top-level design stage performs Codex authoring, fixed validation, Claude
+  review, and a resumed fix round using a manager-derived before/after delta.
+  After later edits and a restart, the earlier contents still reconstruct
+  exactly, including new/deleted/binary files and executable modes. Exercise
+  artifact recovery without the local snapshot refs. Missing/corrupt evidence
+  blocks review/acceptance; the real index, HEAD, and task branch stay unchanged.
+- Each personal stack variant publishes and restores evidence with its configured
+  filesystem store after Workflow container recreation and removal of the local
+  snapshot refs/object cache. Test disabled/unwritable/full storage, interrupted
+  export and promotion, and retry without duplicate artifacts or another author turn.
+  The runner receives no artifact-store credentials or writable store mount.
+- Transactional store/start tests prove simultaneous identical successor starts
+  return one instance; changed inputs conflict; stale/superseded inputs and
+  unclaimed dispatch cannot run; commit followed by a lost response replays the
+  same instance; rollback leaves no orphan claim or runnable process. Acceptance
+  enables the next valid stage and preserves feature budgets and recovery fences.
+- Completing a feature frees its VM slot. Cancelling a stalled feature in
+  `READY_FOR_NEXT_STAGE` or `HUMAN_RESOLUTION_REQUIRED` frees the slot for another
+  feature. An uncertain turn keeps release pending until confirmed fencing;
+  afterwards a new feature can claim the slot. A replayed release or late old
+  execution cannot free the new reservation or publish old results.
+- Restart or lost result delivery repeats neither an uncertain model turn nor
+  a GitHub effect. Durable handoffs are enforced, not left to operator discipline.
+
+### Phase 2: Personal Design Pilot
+
+Exercise both intake paths and operator handoff to standalone `feature-design`.
+Publish accepted design v1, then revise it through the same review/sign-off
+contract and publish v2 on a new task/ref/PR with an updated issue link.
+
+Exit gate: both immutable permalinks remain valid, the ledger selects v2, no
+existing remote ref is overwritten, and the Phase 1 claim API rejects a new
+next-stage start with stale v1 inputs.
+Status edits cannot regress on retry; round comments stay concise and link to
+all stored author/reviewer/remediation results. This is the first complete pilot.
+
+### Phase 3: Optional Plan, Phase Work, And Final Delivery
+
+Add the optional plan and repeat standalone implementation by phase. Implement
+initial full final reviews plus resumed fix verification, explicit review
+escalation, commit/push/PR delivery, and completion checks.
+
+Exit gate: implementation phase 2 cannot start before phase 1 passes and starts
+with a fresh Codex conversation reconstructed from accepted artifacts/snapshots;
+the no-plan path creates no duplicate plan; a Claude final finding is fixed and
+verified without unconditionally restarting both reviews; a broad fix invokes
+the other reviewer.
+A multi-repository partial push failure reconciles receipts without duplicate
+commits/PRs. Latest document revisions and code PRs agree on delivered content.
+
+### Phase 4: Shared Capacity, VMs, And Optional Parent Coordinator
+
+Qualify workflow-owned fairness and two independently enrolled VM agent sets.
+Then add `feature-delivery` and durable child orchestration if automated
+composition is needed, preserving the standalone contracts.
+
+Exit gate: two features retain isolated results and refs; capacity waiting and
+restart preserve fairness; cancellation affects only its feature. Parent/child
+start, result, cancellation, and recovery are qualified separately and do not
+change review closure or budget semantics.
 
 ## References
 
+- [Enterprise Development Workflow Orchestration](development-workflow-orchestration-enterprise.md)
+- [Shared Native Coding Sessions](shared-native-coding-sessions.md)
+- [Shared Task Workspaces](shared-task-workspaces.md)
+- [Chat And Workflow Integration](shared-task-workspaces-chat-workflow.md)
+- [Workflow Coding Thread Lifecycle](../light-agent-worker/workflow-thread-lifecycle.md)
 - [Coding Harness Integration](coding-harness-integration.md)
-- [Light-Agent Execution](../../design/light-agent-execution.md)
-- [Native Agent Call](../light-workflow/native-agent-call.md)
-- [Centralized Agent Skills](../../design/centralized-agent-skills.md)
-- [LLM Gateway API](../light-gateway/llm-gateway-api.md)

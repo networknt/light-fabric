@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+http.workspace = true
+uuid.workspace = true
+oauth-workflow-contract = { path = "../oauth-workflow-contract" }
+base64 = "0.22"
 jsonwebtoken = "9.3"
 light-client = { path = "../light-client" }
 light-runtime = { path = "../light-runtime" }

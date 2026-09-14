@@ -3,10 +3,12 @@ members = [
     "crates/*",
     "frameworks/*",
     "apps/*",
+    "patches/pingora-core",
 ]
 resolver = "2"
 
 [patch.crates-io]
+pingora-core = { path = "patches/pingora-core" }
 pingora-proxy = { path = "patches/pingora-proxy" }
 
 [workspace.package]

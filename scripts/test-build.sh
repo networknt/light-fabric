@@ -37,6 +37,16 @@ grep -Fxq '!target/release/light-knowledge-admin' "${REPO_ROOT}/.dockerignore" |
   exit 1
 }
 
+KNOWLEDGE_ADMIN_DOCKERFILE="${REPO_ROOT}/apps/light-knowledge-admin/docker/Dockerfile"
+grep -Eq '^FROM rust:[^ ]+-bookworm AS builder$' "$KNOWLEDGE_ADMIN_DOCKERFILE" || {
+  echo "FAIL: light-knowledge-admin must compile in a pinned Bookworm builder" >&2
+  exit 1
+}
+grep -Fq 'COPY --from=builder /usr/src/app/target/release/light-knowledge-admin /usr/local/bin/light-knowledge-admin' "$KNOWLEDGE_ADMIN_DOCKERFILE" || {
+  echo "FAIL: light-knowledge-admin runtime image copied a host-built binary" >&2
+  exit 1
+}
+
 APPS=(
   "light-a2a"
   "light-agent"

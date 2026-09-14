@@ -83,6 +83,13 @@ pub(super) fn spawn(state: Arc<AgentState>) {
 
 async fn dispatch(state: &AgentState) -> Result<()> {
     for (job, turn, product_profile_digest, input) in state.domain.pending_coding_jobs().await? {
+        if !state
+            .domain
+            .workflow_job_authorized(state.host_id, job)
+            .await?
+        {
+            continue;
+        }
         let result: Result<()> = async {
             let message: ClientMessage = serde_json::from_value(input)?;
             if message.edge_action.is_some()

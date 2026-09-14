@@ -1,0 +1,31 @@
+{
+  "appliedAtUtc": "2026-09-13T23:41:49.323294+00:00",
+  "target": "local all-in-lt / postgres container",
+  "issuer": {
+    "database": "configserver",
+    "schema": "configserver",
+    "tablesVerified": 7,
+    "cascadeValidation": "passed"
+  },
+  "credentialStore": {
+    "database": "workflow_credentials",
+    "schema": "workflow_secret",
+    "tablesVerified": 5,
+    "owner": "workflow_broker_owner",
+    "runtimeRole": "workflow_broker_runtime",
+    "runtimeAuthentication": "passed",
+    "runtimeMemberships": 0,
+    "runtimeCanCreateSchema": false,
+    "notSentConstraint": "verified"
+  },
+  "prerequisiteRepairs": [
+    "Corrected three A2A policy schema references from public to configserver",
+    "Installed four missing canonical gateway cascade policies with verified live FK names"
+  ],
+  "migrationSha256": {
+    "portal-db/postgres/patch_20260913_01_workflow_broker.sql": "e066343b53d5d4076580aa8d0ced9792dfbf1dfab8e4c3f3192d15da9260c330",
+    "light-fabric/apps/light-workflow/migrations/credential_broker.sql": "95f6bf07d05dbaad2e177ada76756e35808fedfbe01fe006376dc09b15f572ea"
+  },
+  "activation": "not performed; images and services unchanged",
+  "credentialUrlFile": "portal-config-loc/all-in-lt/postgres-db/secrets/workflow-broker-database-url (ignored, mode 0600; not copied into artifacts)"
+}

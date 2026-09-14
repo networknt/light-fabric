@@ -5,6 +5,7 @@ edition.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
+workflow-action = { path = "../../crates/workflow-action" }
 a2a-core = { path = "../../crates/a2a-core" }
 agent-delegation = { path = "../../crates/agent-delegation" }
 light-client = { path = "../../crates/light-client" }

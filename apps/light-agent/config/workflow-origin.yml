@@ -1,0 +1,3 @@
+# A2 is enabled only with separate interactive/workflow instances and qualified
+# Gateway peer mappings. The normal listener cannot supply verified client peers.
+authorization: ${agent.workflowOrigin:null}

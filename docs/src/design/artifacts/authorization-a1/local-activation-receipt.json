@@ -1,0 +1,60 @@
+{
+  "profile": "local-workflow-user-v1",
+  "authHostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+  "tenantId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+  "providerId": "AZZRJE52eXu3t1hseacnGQ",
+  "clientId": "01a09c88-7df1-7928-b6b5-a9e697fded3b",
+  "ownerId": "15ca57dd-11fb-4b46-829d-d8a8fde248e7",
+  "scope": "portal.r portal.w",
+  "maximumGrantSeconds": 86400,
+  "sanUri": "spiffe://lightapi.local/workflow/credential-broker",
+  "authorizationBaseUrl": "https://localhost:6881",
+  "brokerBaseUrl": "https://light-oauth:7443",
+  "callbackUri": "https://localhost:8447/workflow/credentials/callback",
+  "issuer": "urn:com:networknt:oauth2:v1",
+  "audience": "urn:com.networknt",
+  "workflowServiceId": "com.networknt.workflow-1.0.0",
+  "workflowInstanceId": "01a011cf-03d6-73fc-ac30-6b592cc86a80",
+  "environment": "dev",
+  "legacyLongLivedAppKeys": [
+    {
+      "issuer": "urn:com:networknt:oauth2:v1",
+      "kid": "AZp02MCucruZfFJbyyFwug"
+    }
+  ],
+  "certificateSha256": "775a0bbfeca1849647a63a215c7070d9a742f819eecfbce124aa016f6ae4030e",
+  "tokenUse": {
+    "user": "user",
+    "app": "app"
+  },
+  "allowedGrants": [
+    "authorization_code",
+    "refresh_token"
+  ],
+  "tokenEndpointAuthMethod": "tls_client_auth",
+  "tokenLifetimeSeconds": 600,
+  "migration": "patch_20260913_01_workflow_broker.sql",
+  "status": "activated; browser consent and scheduled/hours-long qualification pending",
+  "runtimeMountOwners": {
+    "issuer": "999:999",
+    "workflow": "999:999"
+  },
+  "activatedAtUtc": "2026-09-14T00:31:46.822547+00:00",
+  "workflowSnapshotId": "04c798da-c95b-499f-9167-a86bd248a145",
+  "previousWorkflowSnapshotId": "312beb46-7325-49d9-a804-2391864d9037",
+  "images": {
+    "light-oauth": "sha256:ec9cc72197189ca09b94f3abc50fcec2f0782b65c3f60f9bebd1e9911cbad045",
+    "light-workflow": "sha256:0384ea2d6cf9d868680b704c0a0c21b9f873782d041c9a43c13cd186bb5b7eb4"
+  },
+  "jwksUrl": "https://light-oauth:6881/oauth2/AZZRJE52eXu3t1hseacnGQ/keys",
+  "checks": {
+    "services": "healthy, zero restarts",
+    "registeredMtlsStatus": "400 invalid_grant for nonexistent grant, after successful client authentication",
+    "noClientCertificate": "TLS rejected",
+    "wrongClient": "401",
+    "secretOnlyFallback": "401",
+    "internalJwks": "200",
+    "callbackTls": "400 without required state/code",
+    "grantsCreated": 0
+  }
+}

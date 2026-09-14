@@ -7,11 +7,11 @@ use std::time::{Duration as StdDuration, Instant};
 
 use agent_delegation::{DelegationKind, DelegationVerifier};
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Extension, Path, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Json, Router, middleware::Next};
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use knowledge_core::{
@@ -19,7 +19,11 @@ use knowledge_core::{
     KnowledgeError, KnowledgeSearchResponse, MultiKnowledgeBaseResponse, RetrievalResponse,
     RetrieveRequest, fuse_knowledge_base_results, retrieve_resolved_generation_with_gate,
 };
-use light_runtime::{RuntimeConfig, RuntimeError};
+use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
+use light_security::{
+    AuthPrincipal, SecurityRuntime,
+    dual_identity::{self, Origin, RoutePolicy},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -263,6 +267,85 @@ impl KnowledgeConfig {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowKnowledgeConfig {
+    pub tls: light_axum::mtls::Config,
+    pub incoming: RoutePolicy,
+    pub workflow: light_client::workflow_receivers::Config,
+    pub bindings: BTreeMap<Uuid, WorkflowKnowledgeBinding>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowKnowledgeFile {
+    authorization: Option<WorkflowKnowledgeConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowKnowledgeBinding {
+    pub agent_def_id: Uuid,
+    pub environment: String,
+    pub policy_digest: String,
+    pub data_boundary_digest: String,
+    pub contract_digest: String,
+    pub operations: Vec<DelegationKind>,
+}
+
+impl WorkflowKnowledgeConfig {
+    fn validate(&self) -> Result<(), RuntimeError> {
+        self.incoming
+            .validate()
+            .map_err(|_| RuntimeError::Config("invalid Knowledge Gateway policy".into()))?;
+        if self
+            .incoming
+            .apps
+            .values()
+            .any(|app| app.origin != Origin::Gateway)
+            || self.bindings.is_empty()
+            || self.bindings.iter().any(|(tool, binding)| {
+                tool.is_nil()
+                    || binding.agent_def_id.is_nil()
+                    || binding.environment.trim().is_empty()
+                    || !workflow_action::is_digest(&binding.policy_digest)
+                    || !workflow_action::is_digest(&binding.data_boundary_digest)
+                    || !workflow_action::is_digest(&binding.contract_digest)
+                    || binding.operations.is_empty()
+                    || binding.operations.iter().any(|kind| {
+                        !matches!(
+                            kind,
+                            DelegationKind::KnowledgeRetrieve | DelegationKind::KnowledgeUpload
+                        )
+                    })
+                    || binding
+                        .operations
+                        .iter()
+                        .enumerate()
+                        .any(|(index, kind)| binding.operations[..index].contains(kind))
+            })
+        {
+            return Err(RuntimeError::Config(
+                "Knowledge workflow authorization must bind Gateway peers and exact tool contracts"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+struct WorkflowKnowledgeRuntime {
+    config: WorkflowKnowledgeConfig,
+    security: Arc<SecurityRuntime>,
+    workflow: light_client::workflow_receivers::Client,
+}
+
+#[derive(Clone)]
+struct WorkflowKnowledgeIdentity {
+    principal: Arc<AuthPrincipal>,
+    binding: WorkflowKnowledgeBinding,
+}
+
 pub struct KnowledgeState {
     pool: PgPool,
     delegation_verifier: DelegationVerifier,
@@ -271,6 +354,7 @@ pub struct KnowledgeState {
     metrics_cache: Mutex<Option<MetricsCacheEntry>>,
     embedding_client: reqwest::Client,
     config: KnowledgeConfig,
+    workflow_authorization: Option<Arc<WorkflowKnowledgeRuntime>>,
 }
 
 struct QueryEmbeddingCacheEntry {
@@ -293,6 +377,12 @@ struct MetricsCacheEntry {
 impl KnowledgeState {
     pub fn database_pool(&self) -> PgPool {
         self.pool.clone()
+    }
+
+    pub fn workflow_tls(&self) -> Option<light_axum::mtls::Config> {
+        self.workflow_authorization
+            .as_ref()
+            .map(|runtime| runtime.config.tls.clone())
     }
 
     pub async fn build(
@@ -366,7 +456,7 @@ impl KnowledgeState {
             .map_err(|error| {
                 RuntimeError::Config(format!("Knowledge embedding client: {error}"))
             })?;
-        let _ = runtime_config;
+        let workflow_authorization = load_workflow_authorization(runtime_config).await?;
         Ok(Self {
             pool,
             delegation_verifier,
@@ -375,8 +465,57 @@ impl KnowledgeState {
             metrics_cache: Mutex::new(None),
             embedding_client,
             config,
+            workflow_authorization,
         })
     }
+}
+
+async fn load_workflow_authorization(
+    runtime: &RuntimeConfig,
+) -> Result<Option<Arc<WorkflowKnowledgeRuntime>>, RuntimeError> {
+    let file = match runtime
+        .module_registry
+        .load_config::<WorkflowKnowledgeFile>(runtime, "workflow-authorization.yml")
+    {
+        Ok(file) => file,
+        Err(RuntimeError::MissingConfig(_)) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    runtime.module_registry.register_loaded_config(
+        "light-knowledge/workflow-authorization",
+        "workflow-authorization",
+        ModuleKind::Application,
+        &file,
+        [],
+        true,
+        Some(file.authorization.is_some()),
+        false,
+    )?;
+    let Some(config) = file.authorization else {
+        return Ok(None);
+    };
+    config.validate()?;
+    let security = light_security::load_security_runtime(runtime, true)?
+        .ok_or_else(|| RuntimeError::Config("Knowledge A2 security is required".into()))?;
+    if security.config.ignore_jwt_expiry
+        || security.config.enable_mock_jwt
+        || !security.config.enable_verify_jwt
+    {
+        return Err(RuntimeError::Config(
+            "Knowledge A2 requires strict JWT verification".into(),
+        ));
+    }
+    let workflow =
+        light_client::workflow_receivers::Client::new(&config.workflow, &runtime.config_dir)
+            .await
+            .map_err(|error| {
+                RuntimeError::Config(format!("Knowledge Workflow receiver: {error}"))
+            })?;
+    Ok(Some(Arc::new(WorkflowKnowledgeRuntime {
+        config,
+        security: Arc::new(security),
+        workflow,
+    })))
 }
 
 fn read_secret_file(path: &std::path::Path) -> Result<String, String> {
@@ -458,7 +597,8 @@ fn secret_environment_names(path: &std::path::Path) -> &'static [&'static str] {
 }
 
 pub fn knowledge_router(state: Arc<KnowledgeState>) -> Router {
-    Router::new()
+    let workflow_authorization = state.workflow_authorization.clone();
+    let router = Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/metrics", get(metrics))
@@ -474,7 +614,73 @@ pub fn knowledge_router(state: Arc<KnowledgeState>) -> Router {
             get(passage_anchor_handler),
         )
         .layer(DefaultBodyLimit::max(state.config.maximum_request_bytes))
-        .with_state(state)
+        .with_state(state);
+    if let Some(workflow_authorization) = workflow_authorization {
+        router.layer(axum::middleware::from_fn_with_state(
+            workflow_authorization,
+            workflow_knowledge_authorization,
+        ))
+    } else {
+        router
+    }
+}
+
+async fn workflow_knowledge_authorization(
+    State(runtime): State<Arc<WorkflowKnowledgeRuntime>>,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    if request.method() == axum::http::Method::GET
+        && matches!(request.uri().path(), "/health" | "/ready" | "/metrics")
+    {
+        return Ok(next.run(request).await);
+    }
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<light_axum::mtls::Peer>>()
+        .map(|peer| peer.0.fingerprint.as_str());
+    let identity = dual_identity::authenticate(
+        &runtime.security,
+        &runtime.config.incoming,
+        request.headers(),
+        peer,
+    )
+    .await
+    .map_err(|_| StatusCode::FORBIDDEN)?;
+    let action_id = identity.action_reference.ok_or(StatusCode::FORBIDDEN)?;
+    if identity.origin != Origin::Gateway {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let user_authorization = format!(
+        "Bearer {}",
+        dual_identity::bearer(request.headers(), "authorization")
+            .map_err(|_| StatusCode::FORBIDDEN)?
+    );
+    let workflow_binding = runtime
+        .workflow
+        .authorize(
+            runtime.config.incoming.host_id,
+            action_id,
+            &user_authorization,
+        )
+        .await
+        .map_err(|_| StatusCode::FORBIDDEN)?;
+    let binding = runtime
+        .config
+        .bindings
+        .get(&workflow_binding.tool_ref)
+        .filter(|binding| {
+            binding.contract_digest == workflow_binding.contract_digest
+                && binding.policy_digest == workflow_binding.policy_digest
+                && binding.data_boundary_digest == workflow_binding.disclosure_digest
+        })
+        .cloned()
+        .ok_or(StatusCode::FORBIDDEN)?;
+    request.extensions_mut().insert(WorkflowKnowledgeIdentity {
+        principal: Arc::new(identity.user),
+        binding,
+    });
+    Ok(next.run(request).await)
 }
 
 #[derive(Debug, Serialize)]
@@ -487,6 +693,7 @@ struct UploadAcceptedResponse {
 
 async fn upload_handler(
     State(state): State<Arc<KnowledgeState>>,
+    workflow_identity: Option<Extension<WorkflowKnowledgeIdentity>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, Json<UploadAcceptedResponse>), ApiError> {
@@ -496,8 +703,13 @@ async fn upload_handler(
             "KNOWLEDGE_INVALID_REQUEST",
         ));
     }
-    let authenticated =
-        authenticated_context(&headers, &state, DelegationKind::KnowledgeUpload).await?;
+    let authenticated = authenticated_context(
+        &headers,
+        &state,
+        DelegationKind::KnowledgeUpload,
+        workflow_identity.as_ref().map(|identity| &identity.0),
+    )
+    .await?;
     let knowledge_base_id = required_uuid_header(&headers, "x-knowledge-base-id")?;
     let source_id = required_uuid_header(&headers, "x-knowledge-source-id")?;
     preauthorize_request(
@@ -673,6 +885,7 @@ struct McpRequest {
 
 async fn mcp_handler(
     State(state): State<Arc<KnowledgeState>>,
+    workflow_identity: Option<Extension<WorkflowKnowledgeIdentity>>,
     headers: HeaderMap,
     Json(message): Json<McpRequest>,
 ) -> Result<Json<Value>, ApiError> {
@@ -720,8 +933,13 @@ async fn mcp_handler(
             }
         ]}),
         "tools/call" => {
-            let authenticated =
-                authenticated_context(&headers, &state, DelegationKind::KnowledgeRetrieve).await?;
+            let authenticated = authenticated_context(
+                &headers,
+                &state,
+                DelegationKind::KnowledgeRetrieve,
+                workflow_identity.as_ref().map(|identity| &identity.0),
+            )
+            .await?;
             let name = message
                 .params
                 .get("name")
@@ -1045,7 +1263,56 @@ async fn authenticated_context(
     headers: &HeaderMap,
     state: &KnowledgeState,
     expected_kind: DelegationKind,
+    workflow_identity: Option<&WorkflowKnowledgeIdentity>,
 ) -> Result<AuthenticatedKnowledgeRequest, ApiError> {
+    if let Some(identity) = workflow_identity {
+        if !identity.binding.operations.contains(&expected_kind) {
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "KNOWLEDGE_WORKFLOW_OPERATION_DENIED",
+            ));
+        }
+        let subject_id = identity
+            .principal
+            .user_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| ApiError::new(StatusCode::FORBIDDEN, "KNOWLEDGE_USER_CLAIM_REQUIRED"))?
+            .to_owned();
+        return Ok(AuthenticatedKnowledgeRequest {
+            host_id: state
+                .workflow_authorization
+                .as_ref()
+                .map(|runtime| runtime.config.incoming.host_id)
+                .ok_or_else(|| {
+                    ApiError::new(
+                        StatusCode::FORBIDDEN,
+                        "KNOWLEDGE_WORKFLOW_AUTHORIZATION_REQUIRED",
+                    )
+                })?,
+            agent_def_id: identity.binding.agent_def_id,
+            environment: identity.binding.environment.clone(),
+            policy_digest: identity.binding.policy_digest.clone(),
+            data_boundary_digest: identity.binding.data_boundary_digest.clone(),
+            subject_id,
+            subject_type: "USER".into(),
+            groups: normalized_claim_values(
+                &identity.principal.claims,
+                &["groups", "group", "grp"],
+            ),
+            organizations: normalized_claim_values(
+                &identity.principal.claims,
+                &["organizations", "organization", "orgs", "org"],
+            ),
+            normalized_claims_present: true,
+        });
+    }
+    if state.workflow_authorization.is_some() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "KNOWLEDGE_WORKFLOW_AUTHORIZATION_REQUIRED",
+        ));
+    }
     let authorization = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -1112,13 +1379,41 @@ async fn authenticated_context(
     })
 }
 
+fn normalized_claim_values(claims: &Value, names: &[&str]) -> Vec<String> {
+    let Some(value) = names.iter().find_map(|name| claims.get(*name)) else {
+        return Vec::new();
+    };
+    let mut values = match value {
+        Value::Array(values) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        Value::String(value) => value
+            .split(|character: char| character.is_whitespace() || character == ',')
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    };
+    values.sort_unstable();
+    values.dedup();
+    values
+}
+
 async fn retrieve_handler(
     State(state): State<Arc<KnowledgeState>>,
+    workflow_identity: Option<Extension<WorkflowKnowledgeIdentity>>,
     headers: HeaderMap,
     Json(mut request): Json<RetrieveRequest>,
 ) -> Result<Json<KnowledgeSearchResponse>, ApiError> {
-    let authenticated =
-        authenticated_context(&headers, &state, DelegationKind::KnowledgeRetrieve).await?;
+    let authenticated = authenticated_context(
+        &headers,
+        &state,
+        DelegationKind::KnowledgeRetrieve,
+        workflow_identity.as_ref().map(|identity| &identity.0),
+    )
+    .await?;
     validate_retrieve_request(&state.config, &request)?;
     request.environment = authenticated.environment.clone();
     let request_id = required_text_header(&headers, "x-request-id")?;
@@ -2744,10 +3039,16 @@ struct PassageAnchorResponse {
 async fn passage_anchor_handler(
     State(state): State<Arc<KnowledgeState>>,
     Path((document_id, passage_anchor_id)): Path<(Uuid, Uuid)>,
+    workflow_identity: Option<Extension<WorkflowKnowledgeIdentity>>,
     headers: HeaderMap,
 ) -> Result<Json<PassageAnchorResponse>, ApiError> {
-    let authenticated =
-        authenticated_context(&headers, &state, DelegationKind::KnowledgeRetrieve).await?;
+    let authenticated = authenticated_context(
+        &headers,
+        &state,
+        DelegationKind::KnowledgeRetrieve,
+        workflow_identity.as_ref().map(|identity| &identity.0),
+    )
+    .await?;
     let knowledge_base_id = required_uuid_header(&headers, "x-knowledge-base-id")?;
     let mut transaction = state.pool.begin().await.map_err(ApiError::database)?;
     load_authorization(
@@ -2819,10 +3120,16 @@ async fn passage_anchor_handler(
 async fn document_version_handler(
     State(state): State<Arc<KnowledgeState>>,
     Path((document_id, document_version_id)): Path<(Uuid, Uuid)>,
+    workflow_identity: Option<Extension<WorkflowKnowledgeIdentity>>,
     headers: HeaderMap,
 ) -> Result<Json<DocumentVersionResponse>, ApiError> {
-    let authenticated =
-        authenticated_context(&headers, &state, DelegationKind::KnowledgeRetrieve).await?;
+    let authenticated = authenticated_context(
+        &headers,
+        &state,
+        DelegationKind::KnowledgeRetrieve,
+        workflow_identity.as_ref().map(|identity| &identity.0),
+    )
+    .await?;
     let knowledge_base_id = required_uuid_header(&headers, "x-knowledge-base-id")?;
     Ok(Json(
         load_document_version(
@@ -2994,6 +3301,62 @@ mod tests {
         let expected = b"\x00 leading and trailing \xff\n";
         fs::write(&secret, expected).unwrap();
         assert_eq!(read_secret_bytes(&secret).unwrap(), expected);
+    }
+
+    #[test]
+    fn workflow_receiver_profile_requires_gateway_origin_and_exact_contracts() {
+        use light_security::dual_identity::AppProfile;
+        let tool = Uuid::now_v7();
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let mut config = WorkflowKnowledgeConfig {
+            tls: light_axum::mtls::Config {
+                address: "127.0.0.1:0".into(),
+                certificate_file: "server.pem".into(),
+                private_key_file: "server.key".into(),
+                client_ca_file: "ca.pem".into(),
+            },
+            incoming: RoutePolicy {
+                issuer: "issuer".into(),
+                audience: "audience".into(),
+                host_id: Uuid::now_v7(),
+                apps: BTreeMap::from([(
+                    "gateway".into(),
+                    AppProfile {
+                        origin: Origin::Gateway,
+                        peer_sha256: vec!["b".repeat(64)],
+                    },
+                )]),
+                legacy_long_lived_app_keys: Vec::new(),
+            },
+            workflow: light_client::workflow_receivers::Config {
+                base_url: "https://workflow/".into(),
+                client_identity_file: "receiver.pem".into(),
+                ca_file: "ca.pem".into(),
+                scope_token_file: "receiver-token".into(),
+            },
+            bindings: BTreeMap::from([(
+                tool,
+                WorkflowKnowledgeBinding {
+                    agent_def_id: Uuid::now_v7(),
+                    environment: "loc".into(),
+                    policy_digest: digest.clone(),
+                    data_boundary_digest: digest.clone(),
+                    contract_digest: digest,
+                    operations: vec![DelegationKind::KnowledgeRetrieve],
+                },
+            )]),
+        };
+        assert!(config.validate().is_ok());
+        config.incoming.apps.get_mut("gateway").unwrap().origin = Origin::Receiver;
+        assert!(config.validate().is_err());
+        config.incoming.apps.get_mut("gateway").unwrap().origin = Origin::Gateway;
+        config
+            .bindings
+            .get_mut(&tool)
+            .unwrap()
+            .operations
+            .push(DelegationKind::KnowledgeRetrieve);
+        assert!(config.validate().is_err());
     }
 
     fn test_authenticated_request(
@@ -3285,6 +3648,7 @@ mod tests {
             metrics_cache: Mutex::new(None),
             embedding_client: reqwest::Client::new(),
             config,
+            workflow_authorization: None,
         };
         let first = query_embedding(
             &state,

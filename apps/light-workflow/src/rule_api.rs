@@ -356,7 +356,41 @@ pub fn build_rule_api_router(
             "/v1/workflow-event-quarantine/{quarantine_id}/repair",
             post(repair_quarantined_event),
         )
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            enforce_action_receiver,
+        ))
         .with_state(state)
+}
+
+async fn enforce_action_receiver(
+    State(state): State<RuleApiState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if request.uri().path().starts_with("/v1/workflow-invocations") {
+        if let Some(settings) = request
+            .extensions()
+            .get::<crate::action_api::ActionSettings>()
+        {
+            let peer = request
+                .extensions()
+                .get::<axum::extract::ConnectInfo<light_axum::mtls::Peer>>();
+            if light_security::dual_identity::authenticate(
+                &state.invocation_security,
+                &settings.policy,
+                request.headers(),
+                peer.map(|p| p.0.fingerprint.as_str()),
+            )
+            .await
+            .is_err()
+            {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+        }
+    }
+    next.run(request).await
 }
 
 async fn liveness() -> (StatusCode, Json<Value>) {
@@ -432,10 +466,95 @@ async fn repair_quarantined_event(
 
 async fn start_invocation(
     State(state): State<RuleApiState>,
+    broker: Option<axum::Extension<Arc<crate::credential_broker::CredentialBroker>>>,
+    peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
+    policy: Option<axum::Extension<crate::action_api::ActionSettings>>,
     headers: HeaderMap,
     Json(request): Json<StartInvocationRequest>,
 ) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
     let (identity, generation) = authenticate(&state, &headers).await?;
+    let mut parent_binding = None;
+    if let Some(policy) = policy.as_ref() {
+        let peer = peer
+            .as_ref()
+            .ok_or_else(|| ApiError::unauthorized("verified workflow caller peer required"))?;
+        let caller = light_security::dual_identity::authenticate(
+            &state.invocation_security,
+            &policy.policy,
+            &headers,
+            Some(&peer.0.0.fingerprint),
+        )
+        .await
+        .map_err(|_| ApiError::unauthorized("workflow caller identity rejected"))?;
+        match request.parent_action_id {
+            Some(parent_action) => {
+                if caller.origin != light_security::dual_identity::Origin::Gateway
+                    || caller.action_reference != Some(parent_action)
+                    || request.renewable_grant_id.is_some()
+                {
+                    return Err(ApiError::unauthorized(
+                        "nested workflow action reference rejected",
+                    ));
+                }
+                let parent = workflow_action::ledger::Ledger::new(state.pool.clone())
+                    .receiver_parent(
+                        identity.host_id,
+                        parent_action,
+                        &peer.0.0.fingerprint,
+                        &caller.service_id,
+                    )
+                    .await
+                    .map_err(|_| ApiError::unauthorized("parent workflow action rejected"))?;
+                let user = identity
+                    .end_user_subject
+                    .parse::<Uuid>()
+                    .map_err(|_| ApiError::unauthorized("workflow user identity is invalid"))?;
+                let claims_digest = workflow_invocation_contract::canonical_sha256(
+                    &workflow_invocation_contract::stable_subject_claims(&caller.user.claims),
+                )
+                .map_err(|_| ApiError::unauthorized("workflow user claims are invalid"))?;
+                let parent_class = match parent.execution_class {
+                    workflow_action::ExecutionClass::Interactive => {
+                        workflow_invocation_contract::ExecutionClass::Interactive
+                    }
+                    workflow_action::ExecutionClass::Standard => {
+                        workflow_invocation_contract::ExecutionClass::Standard
+                    }
+                    workflow_action::ExecutionClass::Batch => {
+                        workflow_invocation_contract::ExecutionClass::Batch
+                    }
+                };
+                if parent.user_id != user
+                    || parent.tool_ref != request.stable_tool_ref
+                    || parent.claims_digest != claims_digest
+                    || request.permit_depth != parent.depth.saturating_add(1)
+                    || request.permit_depth > parent.maximum_depth
+                    || request.budget.maximum_delegation_depth > parent.maximum_depth
+                    || request.execution_class != parent_class
+                    || request.deadline_ts > parent.deadline
+                {
+                    return Err(ApiError::unauthorized(
+                        "nested workflow authority widens its parent",
+                    ));
+                }
+                parent_binding = Some(parent);
+            }
+            None => {
+                if caller.origin != light_security::dual_identity::Origin::Gateway
+                    || caller.action_reference.is_some()
+                    || request.renewable_grant_id.is_none()
+                {
+                    return Err(ApiError::unauthorized(
+                        "root workflow renewable grant required",
+                    ));
+                }
+            }
+        }
+    } else if request.renewable_grant_id.is_some() || request.parent_action_id.is_some() {
+        return Err(ApiError::unauthorized(
+            "workflow action authorization is not enabled",
+        ));
+    }
     request
         .validate(Utc::now())
         .map_err(|error| ApiError::bad_request(error.to_string()))?;
@@ -559,6 +678,74 @@ async fn start_invocation(
     let outcome = accept_invocation(&mut tx, &auth, &request, &prepared)
         .await
         .map_err(ApiError::accept)?;
+    let accepted_run = match &outcome {
+        AcceptOutcome::Accepted {
+            workflow_instance_id,
+        }
+        | AcceptOutcome::Replay {
+            workflow_instance_id,
+            ..
+        } => *workflow_instance_id,
+    };
+    if let Some(parent) = parent_binding {
+        let broker = broker
+            .as_ref()
+            .ok_or_else(|| ApiError::unauthorized("credential broker unavailable"))?;
+        let user = identity
+            .end_user_subject
+            .parse::<Uuid>()
+            .map_err(|_| ApiError::unauthorized("workflow user identity is invalid"))?;
+        broker
+            .0
+            .inherit_run(
+                parent.run_id,
+                accepted_run,
+                identity.host_id,
+                user,
+                request.deadline_ts,
+            )
+            .await
+            .map_err(|_| ApiError::unauthorized("parent workflow grant rejected"))?;
+        workflow_action::ledger::Ledger::admit_child_run_in(
+            &mut tx,
+            identity.host_id,
+            accepted_run,
+            user,
+            parent.action_id,
+        )
+        .await
+        .map_err(|_| ApiError::unauthorized("child workflow authority rejected"))?;
+    } else if let Some(grant) = request.renewable_grant_id {
+        let broker = broker
+            .as_ref()
+            .ok_or_else(|| ApiError::unauthorized("credential broker unavailable"))?;
+        let user = identity
+            .end_user_subject
+            .parse::<Uuid>()
+            .map_err(|_| ApiError::unauthorized("workflow user identity is invalid"))?;
+        let binding = serde_json::json!({"profile":"workflow-action-v1","workflowDefinitionId":request.workflow_definition_id,"definitionDigest":request.definition_digest,"policyDigest":request.policy_digest,"responsePolicyDigest":request.response_policy_digest});
+        broker
+            .0
+            .bind_run(
+                accepted_run,
+                grant,
+                identity.host_id,
+                user,
+                &binding,
+                request.deadline_ts,
+            )
+            .await
+            .map_err(|_| ApiError::unauthorized("workflow grant binding rejected"))?;
+        workflow_action::ledger::Ledger::admit_run_in(
+            &mut tx,
+            identity.host_id,
+            accepted_run,
+            grant,
+            user,
+        )
+        .await
+        .map_err(|_| ApiError::unauthorized("workflow run authority rejected"))?;
+    }
     tx.commit().await.map_err(ApiError::database)?;
     let workflow_instance_id = match outcome {
         AcceptOutcome::Accepted {

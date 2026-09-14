@@ -1,5 +1,5 @@
 {
-  "bundleVersion": "2.1.0",
+  "bundleVersion": "2.2.0",
   "contractGeneration": 2,
   "postgresMinimumVersion": "17",
   "postgresMaximumTestedVersion": "17",
@@ -179,6 +179,14 @@
       "migrationId": "0002_prefixed_policy_digests",
       "path": "crates/execution-store/migrations/execution-postgres/0002_prefixed_policy_digests.sql",
       "sha256": "30ec81e366d7024249866cc3dd3ae2148443c7e7f31c51a9507e9c50661635a6"
+    },
+    {
+      "order": 23,
+      "owner": "workflow-store",
+      "schema": "workflow_ops",
+      "migrationId": "0007_workflow_action_dispatch",
+      "path": "crates/workflow-store/migrations/workflow-postgres/0007_workflow_action_dispatch.sql",
+      "sha256": "57ec62295e78400237360d89294abc5e1c6d0b6317b9a1e39f0b10f406b5e588"
     }
   ],
   "roleProfileVersion": 1,

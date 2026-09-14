@@ -576,6 +576,12 @@ pub trait ProxyHttp {
         false
     }
 
+    /// Optional one-shot transport guard. Returning Some requires an HTTP/1
+    /// final-write hook and prohibits automatic retries after any send attempt.
+    fn upstream_request_write_guard(&self, _ctx: &Self::CTX) -> Option<std::sync::Arc<dyn pingora_core::protocols::http::v1::client::RequestWriteGuard>> {
+        None
+    }
+
     /// This filter is called when there is an error **after** a connection is established (or reused)
     /// to the upstream.
     fn error_while_proxy(
@@ -583,13 +589,13 @@ pub trait ProxyHttp {
         peer: &HttpPeer,
         session: &mut Session,
         e: Box<Error>,
-        _ctx: &mut Self::CTX,
+        ctx: &mut Self::CTX,
         client_reused: bool,
     ) -> Box<Error> {
         let mut e = e.more_context(format!("Peer: {}", peer));
         // only reused client connections where retry buffer is not truncated
         e.retry
-            .decide_reuse(client_reused && !session.as_ref().retry_buffer_truncated());
+            .decide_reuse(self.upstream_request_write_guard(ctx).is_none() && client_reused && !session.as_ref().retry_buffer_truncated());
         e
     }
 

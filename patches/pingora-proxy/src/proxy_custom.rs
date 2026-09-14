@@ -104,6 +104,9 @@ where
         session.upstream_compression.request_filter(&req);
         let body_empty = session.as_mut().is_body_empty();
 
+        if self.inner.upstream_request_write_guard(ctx).is_some() {
+            return (false, Some(Error::explain(pingora_error::ErrorType::InternalError, "guarded dispatch requires qualified HTTP/1 transport")));
+        }
         debug!("Request to custom: {req:?}");
 
         let req = Box::new(req);

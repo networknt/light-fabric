@@ -83,9 +83,9 @@ where
 
         session.upstream_compression.request_filter(&req);
 
-        debug!("Sending header to upstream {:?}", req);
-
-        match client_session.write_request_header(Box::new(req)).await {
+        let write_guard = self.inner.upstream_request_write_guard(ctx);
+        if write_guard.is_none() { debug!("Sending header to upstream {:?}", req); }
+        match client_session.write_request_header_guarded(Box::new(req), write_guard).await {
             Ok(_) => { /* Continue */ }
             Err(e) => {
                 return (false, false, Some(e.into_up()));

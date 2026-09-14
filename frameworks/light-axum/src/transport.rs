@@ -636,3 +636,19 @@ mod tests {
         assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
     }
 }
+
+/// Dedicated verified-workload listeners must use the same admission/body
+/// lifetime accounting as the application's primary listener.
+pub(crate) fn with_admission(
+    router: Router,
+    admission: AdmissionGate,
+    control_routes: &'static [ControlRoute],
+) -> Router {
+    router.layer(middleware::from_fn_with_state(
+        AdmissionState {
+            admission,
+            control_routes,
+        },
+        admission_middleware,
+    ))
+}

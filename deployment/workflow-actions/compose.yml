@@ -1,0 +1,74 @@
+# Opt-in overlay activated by workflow-actions/.runtime/enabled.
+services:
+  light-workflow:
+    volumes:
+      - ${WORKFLOW_ACTIONS_DIR:?prepare A2}/workflow:/run/workflow-actions:ro,z
+    environment:
+      WORKFLOW_ACTIONAUTHORIZATION: ${WORKFLOW_ACTION_AUTHORIZATION:?prepare A2}
+      SECURITY_ENABLEVERIFYJWT: "true"
+      SECURITY_ENABLEMOCKJWT: "false"
+      SECURITY_IGNOREJWTEXPIRY: "false"
+  light-gateway:
+    volumes:
+      - ${WORKFLOW_ACTIONS_DIR:?prepare A2}/gateway/workflow-actions.yml:/config/workflow-actions.yml:ro,z
+      - ${WORKFLOW_ACTIONS_DIR:?prepare A2}/gateway/pki:/run/workflow-actions:ro,z
+    environment:
+      SECURITY_ENABLEVERIFYJWT: "true"
+      SECURITY_ENABLEMOCKJWT: "false"
+      SECURITY_IGNOREJWTEXPIRY: "false"
+  light-agent-codex-personal-workflow:
+    image: ${LIGHT_AGENT_CODEX_PERSONAL_IMAGE:-networknt/light-agent:2.3.5-dev.20260909.2338}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        export LIGHT_PORTAL_AUTHORIZATION="$$(cat /run/workflow-actions/scope-token)"
+        exec /app/light-agent
+    volumes:
+      - ./light-agent-codex-personal-rust/config:/config:ro,Z
+      - ${WORKFLOW_ACTIONS_DIR:?prepare A2}/codex/workflow-origin.yml:/config/workflow-origin.yml:ro,z
+      - ${WORKFLOW_ACTIONS_DIR:?prepare A2}/codex/pki:/run/workflow-actions:ro,z
+      - ./light-controller-rust/ca.pem:/keystore/ca.pem:ro,z
+      - agent-runtime-secrets:/run/secrets:ro
+    environment:
+      LIGHT_RS_CONFIG_DIR: /config
+      LIGHT_AGENT_SERVICE_ID: com.networknt.agent.codex-personal-workflow-1.0.0
+      SERVER_SERVICEID: com.networknt.agent.codex-personal-workflow-1.0.0
+      LIGHT_AGENT_ADVERTISED_ADDRESS: light-agent-codex-personal-workflow
+      LIGHT_AGENT_STARTUP_HOST: dev.lightapi.net
+      LIGHT_AGENT_HTTP_PORT: "8083"
+      SECURITY_ENABLEVERIFYJWT: "true"
+      SECURITY_ENABLEMOCKJWT: "false"
+      SECURITY_IGNOREJWTEXPIRY: "false"
+    hostname: light-agent-codex-personal-workflow
+    container_name: light-agent-codex-personal-workflow
+    depends_on:
+      light-workflow:
+        condition: service_healthy
+  light-agent-claude-personal-workflow:
+    image: ${LIGHT_AGENT_CLAUDE_PERSONAL_IMAGE:-networknt/light-agent:claude-phase3-local}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        export LIGHT_PORTAL_AUTHORIZATION="$$(cat /run/workflow-actions/scope-token)"
+        exec /app/light-agent
+    volumes:
+      - ./light-agent-claude-personal-rust/config:/config:ro,Z
+      - ${WORKFLOW_ACTIONS_DIR:?prepare A2}/claude/workflow-origin.yml:/config/workflow-origin.yml:ro,z
+      - ${WORKFLOW_ACTIONS_DIR:?prepare A2}/claude/pki:/run/workflow-actions:ro,z
+      - ./light-controller-rust/ca.pem:/keystore/ca.pem:ro,z
+      - agent-runtime-secrets:/run/secrets:ro
+    environment:
+      LIGHT_RS_CONFIG_DIR: /config
+      LIGHT_AGENT_SERVICE_ID: com.networknt.agent.claude-personal-workflow-1.0.0
+      SERVER_SERVICEID: com.networknt.agent.claude-personal-workflow-1.0.0
+      LIGHT_AGENT_ADVERTISED_ADDRESS: light-agent-claude-personal-workflow
+      LIGHT_AGENT_STARTUP_HOST: dev.lightapi.net
+      LIGHT_AGENT_HTTP_PORT: "8083"
+      SECURITY_ENABLEVERIFYJWT: "true"
+      SECURITY_ENABLEMOCKJWT: "false"
+      SECURITY_IGNOREJWTEXPIRY: "false"
+    hostname: light-agent-claude-personal-workflow
+    container_name: light-agent-claude-personal-workflow
+    depends_on:
+      light-workflow:
+        condition: service_healthy

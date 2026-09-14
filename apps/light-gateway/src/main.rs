@@ -384,6 +384,7 @@ impl RegistryHandler for HmacReplayRegistryHandler {
 }
 
 struct GatewayProxy {
+    workflow_actions: Option<Arc<light_pingora::action_gateway::Runtime>>,
     admission: AdmissionGate,
     workflow_delegation: Option<Arc<DelegationVerifier>>,
     agent_delegation_replay: Option<Arc<dyn DelegationReplayStore>>,
@@ -1522,7 +1523,14 @@ impl GatewayProxy {
             None
         };
 
+        let workflow_actions = light_pingora::action_gateway::load(config)?
+            .map(|settings| {
+                light_pingora::action_gateway::Runtime::new(settings, &config.config_dir)
+                    .map(Arc::new)
+            })
+            .transpose()?;
         Ok(Self {
+            workflow_actions,
             admission,
             workflow_delegation,
             agent_delegation_replay,
@@ -4920,6 +4928,44 @@ impl ProxyHttp for GatewayProxy {
                         ctx.record_handler_duration(&handler_id, started.elapsed());
                         return self.write_mcp_response(session, ctx, response).await;
                     };
+                    let action = if let Some(actions) = &self.workflow_actions {
+                        let snapshot = self.security_execution.load();
+                        let Some(security) = snapshot.security.as_ref().as_ref() else {
+                            return self
+                                .write_rejection_response(
+                                    session,
+                                    ctx,
+                                    HandlerRejection::forbidden("workflow security unavailable"),
+                                )
+                                .await;
+                        };
+                        let peer = session
+                            .digest()
+                            .and_then(|d| d.ssl_digest.as_ref())
+                            .map(|d| hex::encode(&d.cert_digest));
+                        match actions
+                            .context(
+                                security,
+                                &session.req_header().headers,
+                                peer.as_deref(),
+                                Bytes::copy_from_slice(&body),
+                            )
+                            .await
+                        {
+                            Ok(context) => context,
+                            Err(_) => {
+                                return self
+                                    .write_rejection_response(
+                                        session,
+                                        ctx,
+                                        HandlerRejection::forbidden("workflow caller denied"),
+                                    )
+                                    .await;
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     let request = McpHttpRequest {
                         method: method.clone(),
                         path: path_with_query,
@@ -4930,6 +4976,9 @@ impl ProxyHttp for GatewayProxy {
                         .handle_request_with_context(
                             request,
                             McpRequestContext {
+                                renewable_grant_id: request_header(session, "x-workflow-grant")
+                                    .and_then(|v| v.parse::<uuid::Uuid>().ok()),
+                                action,
                                 auth: ctx.auth.clone(),
                                 authorization: request_header(session, "authorization"),
                                 correlation_id: ctx.correlation.correlation_id.clone(),
@@ -12177,6 +12226,8 @@ tools:
         let mcp = proxy.current_mcp_router();
         let mcp = mcp.as_ref().as_ref().expect("mcp runtime");
         let request_context = || light_pingora::McpRequestContext {
+            action: None,
+            renewable_grant_id: None,
             anonymous_binding: Some("test-peer:192.0.2.1".to_string()),
             ..light_pingora::McpRequestContext::default()
         };

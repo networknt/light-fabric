@@ -1,16 +1,24 @@
 # light-fabric Pingora proxy patch
 
 This directory vendors `pingora-proxy` 0.8.1 from crates.io under its original
-Apache-2.0 license. The workspace `[patch.crates-io]` entry selects it while all
-other Pingora crates remain pinned to 0.8.1.
+Apache-2.0 license. The workspace also patches `pingora-core` 0.8.1 for the
+opt-in A2 socket write guard; other Pingora crates remain pinned to 0.8.1.
 
-The light-fabric delta is intentionally limited to one optional
-`ProxyHttp::prebuffered_request_body` callback and its HTTP/1.1 and HTTP/2 call
-sites. The callback lets an application return a fully consumed, bounded body
-after pre-upstream authentication. The bytes still pass through the normal
-`request_body_filter` and can be replayed for an upstream retry. Existing proxy
-implementations receive the default `None` behavior.
+`ProxyHttp::prebuffered_request_body` lets an application return a fully consumed,
+bounded body after pre-upstream authentication. It still passes through the
+normal `request_body_filter`. Ordinary routes retain their existing retry
+behavior and the callback defaults to `None`.
 
-When upgrading Pingora, compare the vendored source with the matching upstream
-release, reapply only this callback if upstream still lacks an equivalent, and
-run `scripts/run-hmac-phase0-gates.sh` before changing the workspace patch.
+`ProxyHttp::upstream_request_write_guard` optionally supplies a one-shot action
+guard. HTTP/1 passes it into the patched core's guarded header operation. The
+core enforces the guard at the TCP socket beneath TLS/buffering. Guarded HTTP/2
+and custom-protocol dispatch fail before operation headers are sent. The default
+`error_while_proxy` does not enable reused-connection retries for guarded routes.
+Applications must keep the same guard across all retries; their own retry hooks
+must not enable another action initiation. Gateway integration and its effective
+retry settings still require separate A2 qualification.
+
+When upgrading Pingora, compare both vendored crates with upstream and rerun
+`scripts/run-hmac-phase0-gates.sh`, the core `request_write_guard` tests, and the
+light-pingora `guarded_http` tests. Review any changed TLS/buffering/write path;
+a high-level send callback is not an equivalent replacement for the socket hook.

@@ -25,6 +25,7 @@ pub struct WorkloadCredentials {
     host: String,
     environment: String,
     cache: Mutex<Cache>,
+    expected_service: Option<String>,
 }
 
 pub fn check_claims(
@@ -69,7 +70,12 @@ impl WorkloadCredentials {
             host,
             environment,
             cache: Mutex::new(Cache::default()),
+            expected_service: None,
         }
+    }
+    pub fn with_expected_service(mut self, service: String) -> Self {
+        self.expected_service = Some(service);
+        self
     }
     async fn acquire(&self) -> anyhow::Result<Token> {
         // Reopen the mounted file on every grant to support atomic secret rotation.
@@ -123,6 +129,19 @@ impl WorkloadCredentials {
         let principal = verify_jwt_token(&self.security, value, JwtExpiryMode::Enforce)
             .await
             .map_err(|_| GatewayCredentialError::WorkloadUnavailable)?;
+        if let Some(service) = &self.expected_service {
+            light_security::token_purpose::validate_verified_purpose(
+                value,
+                &principal,
+                light_security::token_purpose::TokenUse::App,
+                &[],
+            )
+            .map_err(|_| GatewayCredentialError::WorkloadUnavailable)?;
+            anyhow::ensure!(
+                principal.claims.get("sid").and_then(|v| v.as_str()) == Some(service.as_str()),
+                "workload identity invalid"
+            );
+        }
         let expires_at = self.validate_workload(&principal, chrono::Utc::now().timestamp())?;
         Ok(Token {
             value: value.to_owned(),
@@ -222,6 +241,24 @@ impl WorkloadCredentials {
         let token = authorization
             .strip_prefix("Bearer ")
             .ok_or(GatewayCredentialError::AuthenticationRequired)?;
+        if self.expected_service.is_some() {
+            // The principal used to obtain `claims` was verified from this exact
+            // token by the request boundary. The A2 profile additionally pins
+            // its issuer-owned purpose before retaining it for the turn.
+            let payload = token
+                .split('.')
+                .nth(1)
+                .ok_or(GatewayCredentialError::AuthenticationRequired)?;
+            use base64::Engine as _;
+            let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(payload)
+                .map_err(|_| GatewayCredentialError::AuthenticationRequired)?;
+            if oauth_workflow_contract::verified_payload_purpose(&payload).ok()
+                != Some(Some(oauth_workflow_contract::TokenUse::User))
+            {
+                return Err(GatewayCredentialError::AuthenticationRequired.into());
+            }
+        }
         Ok(Arc::new(TurnAuthority {
             user: Token {
                 value: token.into(),

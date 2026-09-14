@@ -1,0 +1,19 @@
+{
+  "profile": "local-workflow-user-v1",
+  "authHostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+  "tenantId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+  "providerId": "AZZRJE52eXu3t1hseacnGQ",
+  "clientId": "01a09c88-7df1-7928-b6b5-a9e697fded3b",
+  "ownerId": "15ca57dd-11fb-4b46-829d-d8a8fde248e7",
+  "scope": "portal.r portal.w",
+  "maximumGrantSeconds": 86400,
+  "sanUri": "spiffe://lightapi.local/workflow/credential-broker",
+  "authorizationBaseUrl": "https://localhost:6881",
+  "brokerBaseUrl": "https://light-oauth:7443",
+  "callbackUri": "https://localhost:8447/workflow/credentials/callback",
+  "issuer": "urn:com:networknt:oauth2:v1",
+  "audience": "urn:com.networknt",
+  "workflowServiceId": "com.networknt.workflow-1.0.0",
+  "workflowInstanceId": "01a011cf-03d6-73fc-ac30-6b592cc86a80",
+  "environment": "dev"
+}

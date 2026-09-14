@@ -1,0 +1,16 @@
+# Opt-in overlay: docker compose -f docker-compose.yml -f workflow-broker/compose.yml ...
+# WORKFLOW_BROKER_DIR is the absolute, private output directory from prepare.py.
+services:
+  light-oauth:
+    volumes:
+      - ${WORKFLOW_BROKER_DIR:?prepare the A1 profile}/issuer:/run/workflow-broker:ro,z
+      - ${WORKFLOW_BROKER_DIR:?prepare the A1 profile}/issuer/server.yml:/config/server.yml:ro,z
+    expose:
+      - "7443"
+  light-workflow:
+    volumes:
+      - ${WORKFLOW_BROKER_DIR:?prepare the A1 profile}/workflow:/run/workflow-broker:ro,z
+    ports:
+      - "127.0.0.1:8447:8447"
+    environment:
+      WORKFLOW_IGNORE_USER_JWT_EXPIRY: "false"

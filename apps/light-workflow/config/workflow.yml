@@ -1,3 +1,5 @@
+actionAuthorization: ${workflow.actionAuthorization:null}
+credentialBroker: ${workflow.credentialBroker:null}
 invocation:
   allowedCallerServiceIds: ${workflow.invocation.allowedCallerServiceIds:[com.networknt.portal.gateway-1.0.0]}
   waitListenerConnections: ${workflow.invocation.waitListenerConnections:8}

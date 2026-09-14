@@ -16,6 +16,9 @@ knowledge-core = { path = "../../crates/knowledge-core" }
 light-axum = { path = "../../frameworks/light-axum" }
 light-knowledge-worker = { path = "../light-knowledge-worker" }
 light-runtime = { path = "../../crates/light-runtime" }
+light-client = { path = "../../crates/light-client" }
+light-security = { path = "../../crates/light-security" }
+workflow-action = { path = "../../crates/workflow-action" }
 portal-registry = { path = "../../crates/portal-registry" }
 reqwest.workspace = true
 serde.workspace = true

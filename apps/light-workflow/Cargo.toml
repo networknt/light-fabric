@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+workflow-action = { path = "../../crates/workflow-action" }
+aes-gcm = "0.10"
+light-client = { path = "../../crates/light-client" }
+oauth-workflow-contract = { path = "../../crates/oauth-workflow-contract" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 agent-delegation = { path = "../../crates/agent-delegation" }
@@ -12,6 +16,7 @@ base64 = "0.22"
 hex = { workspace = true }
 sha2 = { workspace = true }
 axum = { workspace = true }
+axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
 chrono = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }

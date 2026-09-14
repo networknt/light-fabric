@@ -1,0 +1,12 @@
+{
+  "deployment/workflow-broker/README.md": "c9a767b1947be3803692768e42387d4aa877cb5c09fd4a6baaf773a31e91b61b",
+  "deployment/workflow-broker/compose.yml": "53f7db87819a517d32938ef4e256cce2ee9bedc03eaf2e52dc4eb4df387f5cad",
+  "deployment/workflow-broker/credential_broker.sql": "5819d1c545a6366837105f30eefc384fc168188dda3e710c770b122cd241cf59",
+  "deployment/workflow-broker/issuer-server.yml": "f990e67c1c1b614b94eaa06d74c30c8c32b530e7c4b8578f8761038a5b3a8667",
+  "deployment/workflow-broker/local-profile.json": "20e5c62b0e568f15348fc63a1c973bfd7f1dffc5efcffa4fc75fbceb97ccb254",
+  "deployment/workflow-broker/prepare.py": "aa918939b82f45a8cb8f88ccda9175a731268b81c2fc2a4bb8282017266478dd",
+  "deployment/workflow-broker/refresh-claims-preflight.sql": "0f95b19f3f0c739ebd9b4c89a9900cfd138bc380294ca437725589d2c3c7051f",
+  "deployment/workflow-broker/set-ownership.py": "12de00c1ce1907c99e5a55a7cfc74c7cade0843ea44801d54b139d907b96db47",
+  "deployment/workflow-broker/sync.py": "c74e37439629ba061e7943d9c506134512c60aec02abba6411dc2fd32a2dc5c3",
+  "deployment/workflow-broker/test_prepare.py": "831c4702f16910998cbf514935a48294928dc9c34cb9d52e3b562ff380b26d10"
+}

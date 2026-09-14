@@ -37,7 +37,8 @@ impl AxumApp for KnowledgeApp {
             &self.knowledge_config_file,
         )
         .map_err(RuntimeError::Config)?;
-        let state = KnowledgeState::build(&context.runtime_config, config).await?;
+        let state = Arc::new(KnowledgeState::build(&context.runtime_config, config).await?);
+        let workload_tls = state.workflow_tls();
         context
             .lifecycle
             .register(Arc::new(KnowledgeDatabase(state.database_pool())))?;
@@ -52,7 +53,23 @@ impl AxumApp for KnowledgeApp {
         context
             .lifecycle
             .register(Arc::new(KnowledgeBackground(background)))?;
-        Ok(knowledge_router(Arc::new(state)))
+        let router = knowledge_router(state);
+        if let Some(tls) = workload_tls {
+            let listener =
+                light_axum::mtls::WorkloadListener::bind(&tls, &context.runtime_config.config_dir)
+                    .await
+                    .map_err(|error| {
+                        RuntimeError::Config(format!("Knowledge workload listener: {error}"))
+                    })?;
+            light_axum::mtls::serve_managed(
+                "light-knowledge-workload-listener",
+                listener,
+                router.clone(),
+                &context,
+                self.control_routes(),
+            )?;
+        }
+        Ok(router)
     }
 
     fn control_routes(&self) -> &'static [ControlRoute] {

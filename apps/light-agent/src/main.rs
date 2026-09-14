@@ -3,6 +3,7 @@ use claude_admission::admit_native_selection;
 mod chat_execution;
 mod coding_jobs;
 mod gateway_credentials;
+mod workflow_origin;
 mod workspace_chat;
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
@@ -591,6 +592,7 @@ impl MemoryStore for EmbeddedMemoryStore {
 }
 
 struct AgentState {
+    workflow_origin: Option<workflow_origin::Config>,
     agent_config: AgentConfig,
     system_prompt: String,
     llm_gateway_token: String,
@@ -943,7 +945,23 @@ impl AxumApp for AgentApp {
             &context.lifecycle,
         )
         .await?;
-        Ok(agent_router(state))
+        let router = agent_router(state.clone());
+        if let Some(origin) = &state.workflow_origin {
+            let listener = light_axum::mtls::WorkloadListener::bind(
+                &origin.tls,
+                &context.runtime_config.config_dir,
+            )
+            .await
+            .map_err(|error| RuntimeError::Config(format!("Agent workload listener: {error}")))?;
+            light_axum::mtls::serve_managed(
+                "light-agent-workload-listener",
+                listener,
+                router.clone(),
+                &context,
+                self.control_routes(),
+            )?;
+        }
+        Ok(router)
     }
 
     fn control_routes(&self) -> &'static [ControlRoute] {
@@ -977,7 +995,14 @@ impl LifecycleParticipant for AgentDatabase {
 }
 
 fn agent_router(state: Arc<AgentState>) -> Router {
-    Router::new()
+    let receiver = state
+        .workflow_origin
+        .clone()
+        .map(|config| workflow_origin::Receiver {
+            config,
+            security: state.security.clone(),
+        });
+    let router = Router::new()
         .route("/health", get(health))
         .route("/diagnostics/tools", get(tool_diagnostics))
         .route(
@@ -995,7 +1020,14 @@ fn agent_router(state: Arc<AgentState>) -> Router {
             get(native_a2a_card),
         )
         .fallback_service(ServeDir::new("public").append_index_html_on_directories(true))
-        .with_state(state)
+        .with_state(state);
+    match receiver {
+        Some(receiver) => router.layer(axum::middleware::from_fn_with_state(
+            receiver,
+            workflow_origin::enforce,
+        )),
+        None => router,
+    }
 }
 
 async fn health() -> &'static str {
@@ -2403,6 +2435,14 @@ async fn authenticate_request(
     }
     let token = bearer_token(headers)?;
     let principal = verify_jwt_token(&state.security, token, JwtExpiryMode::Enforce).await?;
+    if state.workflow_origin.is_some() {
+        light_security::token_purpose::validate_verified_purpose(
+            token,
+            &principal,
+            light_security::token_purpose::TokenUse::User,
+            &[],
+        )?;
+    }
     if let Some(policy) = &state
         .agent_config
         .agent_policy
@@ -5579,6 +5619,7 @@ async fn build_agent_state(
     catalog_cache: AgentCatalogCache,
     lifecycle: &light_runtime::LifecycleRegistrar,
 ) -> Result<Arc<AgentState>, RuntimeError> {
+    let workflow_origin = workflow_origin::load(runtime_config)?;
     let agent_config: AgentConfig = load_agent_registered_config(
         runtime_config,
         AGENT_CONFIG_FILE,
@@ -5641,6 +5682,11 @@ async fn build_agent_state(
 
     let llm_gateway_client = build_agent_http_client(
         ca_cert.as_deref(),
+        workflow_origin
+            .as_ref()
+            .and_then(|origin| origin.job_authorization.as_ref())
+            .map(|client| runtime_config.config_dir.join(&client.client_identity_file))
+            .as_deref(),
         verify_hostname,
         Duration::from_secs(300),
     )?;
@@ -5812,6 +5858,7 @@ async fn build_agent_state(
             authorization_key: Arc::new(key),
             client: build_agent_http_client(
                 ca_cert.as_deref(),
+                None,
                 verify_hostname,
                 Duration::from_secs(120),
             )?,
@@ -6001,6 +6048,43 @@ async fn build_agent_state(
         },
         execution_client,
     );
+    if let Some(origin) = &workflow_origin {
+        origin.validate(
+            &runtime_config.service_identity.service_id,
+            agent_def_id,
+            host_id,
+        )?;
+    }
+    if let Some(origin) = &workflow_origin {
+        origin.check_history(&domain.pool()).await?;
+    }
+    let mut domain = domain.with_workflow_jobs_enabled(
+        workflow_origin
+            .as_ref()
+            .is_none_or(|origin| origin.mode == workflow_origin::Mode::Workflow),
+    );
+    if let Some(job_config) = workflow_origin
+        .as_ref()
+        .and_then(|origin| origin.job_authorization.as_ref())
+    {
+        let client =
+            light_client::workflow_jobs::Client::new(job_config, &runtime_config.config_dir)
+                .await
+                .map_err(|_| {
+                    RuntimeError::Config("invalid Workflow job authorization client".into())
+                })?;
+        domain =
+            domain.with_workflow_job_authorizer(Arc::new(workflow_origin::JobAuthorizer(client)));
+    }
+    if workflow_origin.is_some()
+        && (!security.config.enable_verify_jwt
+            || security.config.enable_mock_jwt
+            || security.config.ignore_jwt_expiry)
+    {
+        return Err(RuntimeError::Config(
+            "A2 Agent requires strict JWT verification and expiry".into(),
+        ));
+    }
     let turn_dispatch = TurnDispatchCoordinator::new(domain.clone());
     turn_dispatch.spawn(host_id);
     let security = Arc::new(security);
@@ -6013,17 +6097,31 @@ async fn build_agent_state(
                 "dual-token inference requires verified TLS and real JWT verification".into(),
             ));
         }
-        Some(Arc::new(gateway_credentials::WorkloadCredentials::new(
+        let credentials = gateway_credentials::WorkloadCredentials::new(
             policy.clone(),
-            build_agent_http_client(ca_cert.as_deref(), true, Duration::from_secs(15))?,
+            build_agent_http_client(
+                ca_cert.as_deref(),
+                workflow_origin
+                    .as_ref()
+                    .and_then(|origin| origin.job_authorization.as_ref())
+                    .map(|client| runtime_config.config_dir.join(&client.client_identity_file))
+                    .as_deref(),
+                true,
+                Duration::from_secs(15),
+            )?,
             security.clone(),
             host_id.to_string(),
             agent_config.runtime_policy.env_tag.clone(),
-        )))
+        );
+        Some(Arc::new(match &workflow_origin {
+            Some(origin) => credentials.with_expected_service(origin.service_id.clone()),
+            None => credentials,
+        }))
     } else {
         None
     };
     let state = Arc::new(AgentState {
+        workflow_origin,
         policy_snapshot: agent_config.agent_policy.policy_snapshot.clone(),
         system_prompt: agent_config.compiled_system_prompt(),
         agent_config,
@@ -6085,6 +6183,7 @@ fn read_agent_ca_cert_bundle(
 
 fn build_agent_http_client(
     ca_cert_pem: Option<&[u8]>,
+    identity_path: Option<&std::path::Path>,
     verify_hostname: bool,
     timeout: Duration,
 ) -> Result<reqwest::Client, RuntimeError> {
@@ -6099,6 +6198,26 @@ fn build_agent_http_client(
         for certificate in certificates {
             builder = builder.add_root_certificate(certificate);
         }
+    }
+    if let Some(path) = identity_path {
+        let metadata = std::fs::symlink_metadata(path).map_err(RuntimeError::Io)?;
+        #[cfg(unix)]
+        let private = {
+            use std::os::unix::fs::PermissionsExt;
+            metadata.permissions().mode() & 0o037 == 0
+        };
+        #[cfg(not(unix))]
+        let private = true;
+        if metadata.file_type().is_symlink() || !metadata.is_file() || !private {
+            return Err(RuntimeError::Config(
+                "Agent workload identity must be a private regular non-symlink file".into(),
+            ));
+        }
+        let pem = std::fs::read(path).map_err(RuntimeError::Io)?;
+        builder = builder.identity(
+            reqwest::Identity::from_pem(&pem)
+                .map_err(|_| RuntimeError::Config("Agent workload identity is invalid".into()))?,
+        );
     }
     if !verify_hostname {
         builder = builder.danger_accept_invalid_hostnames(true);

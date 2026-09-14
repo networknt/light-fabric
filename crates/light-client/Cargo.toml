@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+workflow-action = { path = "../workflow-action" }
+oauth-workflow-contract = { path = "../oauth-workflow-contract" }
+jsonwebtoken = "9.3"
+base64 = "0.22"
+uuid = { workspace = true }
 reqwest = { workspace = true }
 rustls-pemfile = "2"
 serde = { workspace = true }

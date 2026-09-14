@@ -1,0 +1,91 @@
+{
+  "profile": "local-workflow-user-v1",
+  "status": "source implementation complete; live activation not performed",
+  "qualification": "isolated real PostgreSQL and HTTPS/mTLS",
+  "baseRevisions": {
+    "portal-service": "82895c28bcf41c9a0c65c54596d8cc5d8b20041c",
+    "light-fabric": "3a13e20fd7a522d73a6d64a02e6e735ad681af73"
+  },
+  "workingTreeSources": "source-sha256.json",
+  "checks": {
+    "oauthUnit": {
+      "passed": 21,
+      "separatelyInvokedDatabaseTests": 2
+    },
+    "workflowUnit": {
+      "passed": 80
+    },
+    "securityUnit": {
+      "passed": 17
+    },
+    "purposeContract": {
+      "passed": 2
+    },
+    "postgresLiveAuthority": "passed",
+    "workloadCompatibility": "passed",
+    "browserConsentPkceCallback": "passed over actual production TLS callback listener",
+    "brokerRecoveryFailureMatrix": "passed including rejection of unbound stores with existing records",
+    "postgresSchema": "PostgreSQL 17.10 fresh, upgrade, replay, cascade, documentation and deterministic regeneration passed",
+    "credentialDatabase": "installation/replay, separate runtime role without schema creation/owner membership passed",
+    "registration": "replay and retired certificate rejection passed",
+    "distributionMounts": "both Compose overlays and non-root read access passed",
+    "oauthImageStartup": "passed against isolated canonical schema, with ordinary HTTPS, mTLS client binding and legacy rejection"
+  },
+  "images": {
+    "oauth": {
+      "tag": "networknt/light-oauth:a1-qualification-20260913",
+      "localImageId": "sha256:cc8e0359ca875313af3564370a5fa06a08cb3e17735d7370132a4afc2a9779fe"
+    },
+    "workflow": {
+      "tag": "networknt/light-workflow:a1-qualification-20260913",
+      "localImageId": "sha256:aab2c53fdee6b9b41c0a02fe10c2381e15e412dfb7adf546009223e944f9a001"
+    }
+  },
+  "soak": {
+    "status": "stopped at user request; two-hour qualification deferred to manual testing",
+    "requiredSeconds": 7200,
+    "lastObservedElapsedSeconds": 3301,
+    "observedAttempts": 6,
+    "observedRotations": 6,
+    "completed": false
+  },
+  "notPerformed": [
+    "live application database migration",
+    "Portal event import and snapshot activation",
+    "live stack end-to-end acceptance",
+    "remote GitHub CI",
+    "A2/A3 receiver and dispatch qualification"
+  ],
+  "availabilityReview": {
+    "status": "short gates passed; deployed-stack A1 exit gate still pending",
+    "workingTreeSources": "availability-source-sha256.json",
+    "idleConnections": "authenticated mTLS request completes with four earlier silent TCP peers",
+    "poolContention": "12 concurrent redemptions then 12 concurrent renewals and ordinary issuance pass with a one-connection pool",
+    "quickGates": "21 OAuth unit tests plus explicit live-authority, workload-compatibility and full broker integration gates passed",
+    "images": "recorded images predate these fixes; rebuild and requalify before deployment",
+    "soak": "not rerun"
+  },
+  "fabricReview": {
+    "status": "short gates passed; selected-stack A1 exit gate pending",
+    "workingTreeSources": "fabric-review-source-sha256.json",
+    "checks": [
+      "periodic recovery survives store failure and resumes",
+      "connection refusal, TLS failure and pre-request JWKS outage leave grant ACTIVE with NOT_SENT receipt",
+      "warm JWKS cache tolerates outage; unknown kid refetches once",
+      "failed verification after rotation and lost responses still revoke",
+      "canceled run denied; sibling uses saved rotation",
+      "real enrollment API accepts configured legacy app key only in X-Scope-Token"
+    ],
+    "tests": {
+      "oauthUnit": 21,
+      "workflowLibrary": 80,
+      "lightClient": 20,
+      "lightSecurity": 17,
+      "purposeContract": 2,
+      "isolatedIntegration": "passed",
+      "deploymentPreparation": 2
+    },
+    "images": "previous images predate fixes; rebuild and qualify before deployment",
+    "soak": "not rerun"
+  }
+}

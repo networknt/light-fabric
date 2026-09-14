@@ -26,6 +26,8 @@ const SERVICE_ID: &str = "com.networknt.workflow-1.0.0";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowConfiguration {
+    pub credential_broker: Option<crate::credential_broker::BrokerSettings>,
+    pub action_authorization: Option<crate::action_api::ActionSettings>,
     pub environment: String,
     pub http_addr: SocketAddr,
     pub database_url: String,
@@ -103,6 +105,10 @@ pub struct FixedActionSettings {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WorkflowFile {
+    #[serde(default)]
+    credential_broker: Option<crate::credential_broker::BrokerSettings>,
+    #[serde(default)]
+    action_authorization: Option<crate::action_api::ActionSettings>,
     invocation: InvocationFile,
     execution: ExecutionFile,
     operational_store: OperationalStoreProjection,
@@ -545,6 +551,8 @@ impl WorkflowConfiguration {
         }
 
         Ok(Self {
+            credential_broker: workflow.credential_broker,
+            action_authorization: workflow.action_authorization,
             environment,
             http_addr: http_addr.expect("validated socket address"),
             database_url: database_url.expect("validated database secret"),
@@ -757,6 +765,12 @@ pub fn restart_required_differences_from_baseline(
     candidate: &WorkflowConfiguration,
 ) -> Vec<String> {
     let mut differences = BTreeSet::new();
+    if active.action_authorization != candidate.action_authorization {
+        differences.insert("workflow.actionAuthorization".to_string());
+    }
+    if active.credential_broker != candidate.credential_broker {
+        differences.insert("workflow.credentialBroker".to_string());
+    }
     if active_runtime.bootstrap
         != serde_json::to_value(&candidate_runtime.bootstrap)
             .expect("bootstrap configuration serializes")
@@ -1187,6 +1201,8 @@ mod tests {
 
     fn workflow_configuration() -> WorkflowConfiguration {
         WorkflowConfiguration {
+            credential_broker: None,
+            action_authorization: None,
             environment: "dev".to_string(),
             http_addr: "0.0.0.0:8436".parse().unwrap(),
             database_url: "postgres://workflow".to_string(),

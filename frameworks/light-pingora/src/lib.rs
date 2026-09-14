@@ -1,11 +1,13 @@
 mod a2a;
 mod access_control;
+pub mod action_gateway;
 mod apikey;
 mod basic_auth;
 mod config_util;
 mod correlation;
 mod cors;
 mod direct_registry;
+pub mod guarded_http;
 mod handler;
 mod header;
 mod hmac;
@@ -292,6 +294,24 @@ where
             validate_https_listener_tls(&cert_path, &key_path)?;
             let mut tls = TlsSettings::intermediate(&cert_path, &key_path)
                 .map_err(|e| RuntimeError::Unsupported(format!("invalid TLS config: {e}")))?;
+            if let Some(settings) = action_gateway::load(config)? {
+                let bytes =
+                    std::fs::read(config.config_dir.join(&settings.incoming_client_ca_file))?;
+                let mut roots = rustls::RootCertStore::empty();
+                for cert in rustls_pemfile::certs(&mut std::io::Cursor::new(bytes)) {
+                    roots
+                        .add(cert?)
+                        .map_err(|_| RuntimeError::Config("invalid workflow client CA".into()))?;
+                }
+                let verifier =
+                    rustls::server::WebPkiClientVerifier::builder(std::sync::Arc::new(roots))
+                        .allow_unauthenticated()
+                        .build()
+                        .map_err(|_| RuntimeError::Config("invalid workflow client CA".into()))?;
+                // Public browser routes may have no certificate. A2 route policy
+                // requires a verified approved peer and never trusts a header.
+                tls.set_client_cert_verifier(verifier);
+            }
             tls.enable_h2();
             service.add_tls_with_settings(
                 &listen_addr(config, config.server.https_port)?,

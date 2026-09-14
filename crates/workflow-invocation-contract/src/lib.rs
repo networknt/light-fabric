@@ -267,6 +267,12 @@ pub struct IdempotencyBinding {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartInvocationRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renewable_grant_id: Option<Uuid>,
+    /// Present only for a child admitted from a live Workflow action. It is an
+    /// opaque selector; Workflow derives all inherited authority from storage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_action_id: Option<Uuid>,
     pub contract_version: u16,
     pub workflow_instance_id: Uuid,
     pub stable_tool_ref: Uuid,
@@ -319,6 +325,11 @@ impl StartInvocationRequest {
             return Err(ContractError::InvalidReplayWindow);
         }
         if self.permit_depth > self.budget.maximum_delegation_depth {
+            return Err(ContractError::DelegationDepth);
+        }
+        if self.parent_action_id.is_some_and(|id| id.is_nil())
+            || (self.parent_action_id.is_some() && self.permit_depth == 0)
+        {
             return Err(ContractError::DelegationDepth);
         }
         if self.mode == InvocationMode::Sync && self.execution_class != ExecutionClass::Interactive
@@ -808,7 +819,9 @@ mod tests {
         let now = Utc::now();
         let input = json!({"customerId":"C-1","count":1});
         let input_digest = canonical_sha256(&input).unwrap();
-        let request = StartInvocationRequest {
+        let mut request = StartInvocationRequest {
+            renewable_grant_id: None,
+            parent_action_id: None,
             contract_version: CONTRACT_VERSION,
             workflow_instance_id: Uuid::now_v7(),
             stable_tool_ref: Uuid::now_v7(),
@@ -847,5 +860,17 @@ mod tests {
             correlation_id: "corr-1".into(),
         };
         assert!(request.validate(now).is_ok());
+        request.parent_action_id = Some(Uuid::now_v7());
+        assert!(matches!(
+            request.validate(now),
+            Err(ContractError::DelegationDepth)
+        ));
+        request.permit_depth = 1;
+        assert!(request.validate(now).is_ok());
+        request.parent_action_id = Some(Uuid::nil());
+        assert!(matches!(
+            request.validate(now),
+            Err(ContractError::DelegationDepth)
+        ));
     }
 }

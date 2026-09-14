@@ -2,6 +2,10 @@ pub mod config;
 pub mod http;
 pub mod oauth;
 pub mod provider;
+pub mod unattended;
+pub mod workflow_actions;
+pub mod workflow_jobs;
+pub mod workflow_receivers;
 
 pub use config::{
     AuthServerConfig, ClientConfig, ClientOauthConfig, ClientRequestConfig, ClientTlsConfig,

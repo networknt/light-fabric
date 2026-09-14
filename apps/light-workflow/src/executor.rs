@@ -190,6 +190,7 @@ struct AgentCatalog {
 }
 
 pub struct TaskExecutor {
+    pub bound_mcp: std::sync::OnceLock<Arc<crate::bound_mcp::Runtime>>,
     pool: PgPool,
     http_client: reqwest::Client,
     rule_executor: Arc<MultiThreadRuleExecutor>,
@@ -335,6 +336,7 @@ impl TaskExecutor {
             .build()
             .expect("failed to build reqwest HTTP client with timeouts and redirects disabled");
         Self {
+            bound_mcp: std::sync::OnceLock::new(),
             pool,
             http_client,
             rule_executor,
@@ -1273,6 +1275,16 @@ impl TaskExecutor {
                 )
             })?;
 
+        if self.bound_mcp.get().is_some()
+            && matches!(task_def,TaskDefinition::Call(call) if !matches!(call,CallTaskDefinition::Mcp(_) | CallTaskDefinition::Agent(_)))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "A2 external action transport is not yet qualified for this task type",
+            )
+            .into());
+        }
+
         match task_def {
             TaskDefinition::Ask(ask_task) => {
                 let mut ask = serde_json::to_value(&ask_task.ask)?;
@@ -1947,6 +1959,31 @@ impl TaskExecutor {
                 .flatten()
         });
 
+        if let Some(runtime) = self.bound_mcp.get() {
+            let alias = tool_alias.as_deref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "A2 requires a pinned MCP tool action",
+                )
+            })?;
+            let params = self.resolve_json_value(&params, context);
+            let result = runtime
+                .call(
+                    claimed.task.host_id,
+                    claimed.task.process_id,
+                    claimed.task.task_id,
+                    alias,
+                    params,
+                )
+                .await?;
+            return Ok(TaskExecutionResult {
+                status_code: "C",
+                task_output: result,
+                next_task: None,
+                context_data: None,
+            });
+        }
+
         let mut delegation_headers = None;
         let mut budget_reservation = None;
         if let Some(tool_alias) = tool_alias.as_deref() {
@@ -2274,6 +2311,24 @@ impl TaskExecutor {
             .map(|input| self.resolve_json_value(input, context))
             .unwrap_or_else(|| context.clone());
         let output_schema = self.resolve_agent_output_schema(args, raw_definition)?;
+        let inherited = if let Some(runtime) = self.bound_mcp.get() {
+            if args.mode != workflow_core::models::task::AgentCallMode::Service
+                || !(task_input.get("workspace").is_some() || task_input.get("coding").is_some())
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "A2 Agent calls require a bound coding service job",
+                )
+                .into());
+            }
+            Some(
+                runtime
+                    .authorize_agent(*host_id, process_id, catalog.agent.agent_def_id)
+                    .await?,
+            )
+        } else {
+            None
+        };
         if args.mode == workflow_core::models::task::AgentCallMode::Service {
             let deadline: Option<chrono::DateTime<Utc>> = sqlx::query_scalar(
                 "SELECT deadline_ts FROM task_info_t WHERE host_id=$1 AND task_id=$2",
@@ -2282,7 +2337,25 @@ impl TaskExecutor {
             .bind(task_id)
             .fetch_one(&self.pool)
             .await?;
-            let deadline = deadline.unwrap_or_else(|| Utc::now() + chrono::Duration::minutes(10));
+            let mut deadline =
+                deadline.unwrap_or_else(|| Utc::now() + chrono::Duration::minutes(10));
+            let (depth, maximum_depth) = match inherited {
+                Some((run_deadline, depth, maximum_depth)) => {
+                    deadline = deadline.min(run_deadline);
+                    (
+                        depth,
+                        maximum_depth.min(i32::from(args.maximum_delegation_depth.unwrap_or(4))),
+                    )
+                }
+                None => (0, i32::from(args.maximum_delegation_depth.unwrap_or(4))),
+            };
+            if depth > maximum_depth {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Agent job exceeds inherited depth",
+                )
+                .into());
+            }
             let input_schema_digest = execution_runner_protocol::canonical_sha256(&task_input)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
             let output_schema = output_schema.unwrap_or_else(|| json!({"type":"object"}));
@@ -2297,7 +2370,7 @@ impl TaskExecutor {
                    agent_def_id,idempotency_key,input,input_schema_digest,output_schema,policy_digest,
                    data_boundary_digest,deadline_ts,token_budget,cost_budget_micros,delegation_depth,
                    maximum_delegation_depth,memory_mode,state)
-                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,0,$15,'ISOLATED','PENDING')
+                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$16,$15,'ISOLATED','PENDING')
                  ON CONFLICT(host_id,idempotency_key) DO UPDATE SET updated_ts=agent_job_t.updated_ts
                  RETURNING job_id",
             ).bind(host_id).bind(job_id).bind(process_id).bind(task_id)
@@ -2305,7 +2378,7 @@ impl TaskExecutor {
              .bind(task_input).bind(input_schema_digest).bind(output_schema).bind(policy_digest)
              .bind(data_boundary_digest).bind(deadline).bind(args.token_budget.unwrap_or(65_536) as i64)
              .bind(args.cost_budget_micros.unwrap_or(0) as i64)
-             .bind(args.maximum_delegation_depth.unwrap_or(4) as i32).fetch_one(&self.pool).await?;
+             .bind(maximum_depth).bind(depth).fetch_one(&self.pool).await?;
             return Ok(TaskExecutionResult {
                 status_code: "W",
                 task_output: json!({"agentJobId":inserted,"state":"PENDING"}),

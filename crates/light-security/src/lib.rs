@@ -21,6 +21,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 pub const SECURITY_FILE: &str = "security.yml";
+pub mod dual_identity;
+pub mod token_purpose;
 pub const SECURITY_MODULE_ID: &str = "light-pingora/security";
 pub const SECURITY_CONFIG_NAME: &str = "security";
 

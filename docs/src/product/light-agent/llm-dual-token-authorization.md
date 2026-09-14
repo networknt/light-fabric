@@ -61,9 +61,10 @@ endpoints when they support agent-mediated requests.
 
 Existing direct-user inference and separately authorized workloads, such as
 Knowledge embeddings, retain explicitly defined admission profiles. Background
-jobs and A2A invocations without an original user access token require a
-separate delegation design; they must not fabricate a user identity or fall
-back to presenting the service token as the user.
+jobs and A2A invocations without an original user access token use the proposed
+[User, Application, And Workflow Authorization](../../design/user-application-workflow-authorization.md)
+design. They must not fabricate a user identity or fall back to presenting the
+service token as the user; unattended grants require separate qualification.
 
 ## Current implementation and gaps
 

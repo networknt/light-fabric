@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+  "gatewayServiceId": "com.networknt.portal.gateway-1.0.0",
+  "workflowServiceId": "com.networknt.workflow-1.0.0",
+  "gatewayReplicaId": "01a09df4-0885-72fa-8531-6c39baf1702c",
+  "codex": {
+    "serviceId": "com.networknt.agent.codex-personal-workflow-1.0.0",
+    "agentDefId": "01a09deb-0a7d-7e47-966b-7608d2f584ca",
+    "instanceId": "01a09deb-0a7d-71cb-b0b8-ccc958bc1ffa"
+  },
+  "claude": {
+    "serviceId": "com.networknt.agent.claude-personal-workflow-1.0.0",
+    "agentDefId": "01a09deb-0a7d-734f-9310-66c6b4e065ad",
+    "instanceId": "01a09deb-0a7d-71b8-a9e3-7ead7e56de78"
+  }
+}

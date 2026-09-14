@@ -11,7 +11,8 @@ external coding harness the enterprise policy authority.
 
 The durable requirement, design, implementation-plan, review, multi-repository,
 and GitHub issue lifecycle built on these workers is defined in
-[Development Workflow Orchestration](development-workflow-orchestration.md).
+[Personal Development Workflow Orchestration](development-workflow-orchestration.md)
+and [Enterprise Development Workflow Orchestration](development-workflow-orchestration-enterprise.md).
 
 For the opt-in locally qualified Claude subscription adapter, integration alternatives,
 and qualification plan, see [Claude Personal Worker](claude-personal-worker.md).
@@ -704,8 +705,9 @@ shipping claim.
   physical provider.
 - Durable normalized per-user token accounting, budget-window reservation,
   receipt emission/storage, and reauthorization for workflows that outlive
-  the initiating JWT remain owned by Development Workflow Orchestration Phase
-  1. Existing gateway audit persistence records cost and usage completeness
+  the initiating JWT remain owned by
+  [Enterprise Workflow Phase E1](development-workflow-orchestration-enterprise.md#phase-e1-identity-and-usage-services).
+  Existing gateway audit persistence records cost and usage completeness
   but not normalized token counts.
 
 The existing `CodexJsonl` enum value validates a deprecated generic structured
@@ -779,7 +781,7 @@ initialize/account lifecycle smoke test.
 
 ### Phase 2: Enterprise Gateway Routing
 
-- Treat Development Workflow Orchestration Phase 1 as the prerequisite and
+- Treat [Enterprise Workflow Phase E1](development-workflow-orchestration-enterprise.md#phase-e1-identity-and-usage-services) as the prerequisite and
   single delivery owner for audience-bound delegation, reservations, normalized
   usage storage, reconciliation, and signed receipts in `llm-gateway`.
 - Add trusted custom-provider configuration and an attempt-scoped credential
@@ -804,9 +806,10 @@ tool events, cancellation, usage, errors, route pinning, provider eligibility,
 and signed receipt tamper detection. `scripts/run-coding-harness-phase2-gates.sh`
 composes these checks with the complete Phase 1 gate.
 
-Production enablement remains conditional on the separately owned Development
-Workflow Orchestration Phase 1 ledger, receipt persistence/emission, token
-exchange, and reauthorization services. A physical provider/model is suitable
+Production enablement remains conditional on the separately owned
+[Enterprise Workflow Phase E1](development-workflow-orchestration-enterprise.md#phase-e1-identity-and-usage-services)
+ledger, receipt persistence/emission, token exchange, and reauthorization services.
+A physical provider/model is suitable
 for a coding worker only after its current conformance evidence satisfies the
 alias; unsupported Responses transformations remain ineligible rather than
 being routed optimistically.
@@ -876,7 +879,8 @@ delivery, enabling pre-delivery rotation, and rejects zero-generation,
 future-issued, expired, overlong, mismatched, or revoked credentials. Process
 cancellation still terminates credential use; durable token minting and gateway
 revocation remain owned by the enterprise token-exchange service described in
-Development Workflow Orchestration Phase 1. Local distribution conformance is
+[Enterprise Workflow Phase E1](development-workflow-orchestration-enterprise.md#phase-e1-identity-and-usage-services).
+Local distribution conformance is
 expressed against the same Portal/workflow/agent contract for both
 `portal-config-loc/all-in-lt` and `light-portal-install`; their packaging and
 browser qualification remain distribution release gates rather than a second
@@ -1009,7 +1013,8 @@ Internal:
 
 - [Light-Agent](../light-agent.md)
 - [Light-Agent Execution](../../design/light-agent-execution.md)
-- [Development Workflow Orchestration](development-workflow-orchestration.md)
+- [Personal Development Workflow Orchestration](development-workflow-orchestration.md)
+- [Enterprise Development Workflow Orchestration](development-workflow-orchestration-enterprise.md)
 - [Centralized Agent Skills](../../design/centralized-agent-skills.md)
 - [LLM Gateway API](../light-gateway/llm-gateway-api.md)
 
