@@ -1,12 +1,11 @@
 # Authorization A2 Implementation Progress
 
 Status: **the A2 source foundation and selected personal coding paths are
-implemented, and the required base services pass local runtime qualification;
-selected-stack A2 acceptance has not passed.** The separately published
-workflow-only Agent services still fail Config Server lookup, so their A2
-credential and job paths are not qualified. The A1 scheduled and hours-long
-renewal tests remain deferred at the user's request. Nothing in this report
-admits personal orchestration Phase 1.
+implemented, and all selected services, including both workflow-only Agents,
+pass local runtime qualification; selected-stack A2 acceptance has not passed.**
+The remaining authorize/begin/send/complete, renewal, revocation, receiver and
+recovery matrix is still required. Nothing in this report admits personal
+orchestration Phase 1.
 
 ## Implemented foundation
 
@@ -60,7 +59,7 @@ These are source/foundation checks, not deployed-stack acceptance:
 | Disposable PostgreSQL action-ledger test | 1 passed, executed against PostgreSQL |
 | `light-security` unit tests | 19 passed |
 | Real mTLS listener test | 1 passed |
-| `light-workflow --lib` | 80 passed |
+| `light-workflow --lib` | 81 passed |
 | `light-agent --lib` | 21 passed, 4 database tests ignored by their existing environment gates |
 | `light-agent --bin light-agent` | 44 passed |
 | `light-knowledge --lib` | 8 passed |
@@ -149,7 +148,7 @@ This pass adds real call-site wiring, but does **not** complete A2.
 
 The PostgreSQL test now installs the real Workflow schema and constraints, seeds
 an actual invocation/budget, and tests real cancellation, reservations and boot
-replacement. It passed. Workflow's 80 tests, invocation-contract's 4 tests, and
+replacement. It passed. Workflow's 81 tests, invocation-contract's 4 tests, and
 proxy-framework's 448 tests passed (5 existing proxy tests ignored). The core
 socket guard now has 5 passing tests. Combined Workflow/Gateway compilation
 passed. These checks do not constitute an end-to-end A2 deployment test.
@@ -196,21 +195,19 @@ PostgreSQL, Config Server, Workflow, Gateway, Knowledge Admin, and the ordinary
 interactive Agents were running; Gateway loaded its authorization policy and
 registered with Controller.
 
-This is not the A2 exit gate. The separately published
-`com.networknt.agent.codex-personal-workflow-1.0.0` and
-`com.networknt.agent.claude-personal-workflow-1.0.0` services received `404` from
-Config Server for their `dev` snapshots and exited while parsing the incomplete
-local fallback configuration. They were orphaned from the final qualified
-Compose invocation and were not included in its required-service result. No
-end-to-end authorize/begin/send/complete, renewal, revocation, receiver receipt,
-or recovery matrix was completed in that run.
+On a subsequent 2026-09-14 run, both workflow-only snapshots were published,
+their app credentials gained the required `execution.invoke` scope, and both
+services registered with Controller without execution-result authorization
+errors. The deployment qualification contract now includes both services when
+the A2 profile is active. This is still not the A2 exit gate: no complete
+authorize/begin/send/complete, renewal, revocation, receiver receipt, or recovery
+matrix was completed in that run.
 
 ## Required work before A2 acceptance
 
-1. Publish/import and activate the two workflow-only Agent Config Server
-   snapshots, include those services in the selected A2 Compose topology, and
-   qualify their distinct credentials and Workflow job paths. The required base
-   services now start, but that does not qualify the A2 workflow-only identities.
+1. Exercise the two workflow-only Agents through real Workflow job admission,
+   coding dispatch, cancellation and result reconciliation. Startup and
+   Controller registration alone do not qualify those paths.
 2. Connect any asynchronous effect receiver that needs automatic recovery to the
    qualified `complete` receipt contract. Synchronous Knowledge responses and
    durable Workflow acceptance have immediate receipt policies; other unknown
@@ -233,10 +230,9 @@ workspace bindings use authorization revision 3 and grant both interactive and
 workflow-only identities. The local distribution has an enabled, ignored A2
 runtime package containing marked app credentials, mTLS identities and exact peer
 mappings; the installer contains the matching non-secret provisioning assets.
-The rebuilt required base services pass local runtime qualification, but the
-workflow-only services do not yet have retrievable Config Server snapshots and
-their A2 paths remain unqualified. Existing unrelated working-tree changes are
-preserved. No commit or push was performed.
+The rebuilt selected services pass local runtime qualification, including the
+workflow-only identities. Their full A2 action and job paths remain unqualified.
+No commit or push was performed.
 
 The 2026-09-13 local inventory confirms that the published Codex and Claude
 coding profiles and the owner workspace grant the existing

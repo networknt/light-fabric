@@ -27,6 +27,7 @@
 - [Authorization A0: Contracts And Issuer Profiles](design/user-application-workflow-authorization-a0.md)
 - [Authorization A1: Implementation And Qualification](design/artifacts/user-application-workflow-authorization-a1-progress.md)
 - [Authorization A2: Implementation Progress](design/artifacts/user-application-workflow-authorization-a2-progress.md)
+- [Authorization A3: Migration and Removal Progress](design/artifacts/user-application-workflow-authorization-a3-progress.md)
 - [Agent Engine Pattern](design/agent-engine-pattern.md)
 - [Light-Agent Execution](design/light-agent-execution.md)
 - [Database Design](design/database-design.md)

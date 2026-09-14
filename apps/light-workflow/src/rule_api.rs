@@ -666,13 +666,15 @@ async fn start_invocation(
         task_policy_digest: request.policy_digest.trim_start_matches("sha256:"),
         public_output_schema,
     };
+    let (stored_user_authorization, stored_user_authorization_exp) =
+        invocation_authorization_for_storage(policy.is_some(), &identity);
     let auth = AuthenticatedInvocationContext {
         host_id: identity.host_id,
         principal_subject: &identity.principal_subject,
         end_user_subject: &identity.end_user_subject,
         update_user: "light-workflow-invocation",
-        user_authorization: &identity.user_authorization,
-        user_authorization_exp: identity.user_authorization_exp,
+        user_authorization: stored_user_authorization,
+        user_authorization_exp: stored_user_authorization_exp,
     };
     let mut tx = state.pool.begin().await.map_err(ApiError::database)?;
     let outcome = accept_invocation(&mut tx, &auth, &request, &prepared)
@@ -1321,6 +1323,7 @@ async fn load_status(
         .map_err(ApiError::database)?;
     let mut refreshed_updated_ts: Option<DateTime<Utc>> = None;
     if !state.is_terminal()
+        && stored_authorization.is_some()
         && stored_authorization.as_deref() != Some(identity.user_authorization.as_str())
         && stored_authorization_exp.is_none_or(|exp| identity.user_authorization_exp > exp)
     {
@@ -1457,6 +1460,20 @@ fn invocation_identity(
         user_authorization: format!("Bearer {user_token}"),
         user_authorization_exp,
     })
+}
+
+fn invocation_authorization_for_storage<'a>(
+    grant_backed: bool,
+    identity: &'a InvocationIdentity,
+) -> (Option<&'a str>, Option<i64>) {
+    if grant_backed {
+        (None, None)
+    } else {
+        (
+            Some(identity.user_authorization.as_str()),
+            Some(identity.user_authorization_exp),
+        )
+    }
 }
 
 fn bearer_token<'a>(value: &'a str, error: &'static str) -> Result<&'a str, ApiError> {
@@ -2391,6 +2408,27 @@ fork:
         )
         .unwrap();
         assert_eq!(identity.user_authorization, "Bearer current-user-jwt");
+    }
+
+    #[test]
+    fn grant_backed_invocation_never_persists_reusable_user_token() {
+        let identity = InvocationIdentity {
+            host_id: Uuid::nil(),
+            principal_subject: "portal-ui".into(),
+            end_user_subject: Uuid::nil().to_string(),
+            caller_claims_digest: "sha256:claims".into(),
+            user_authorization: "Bearer current-user-jwt".into(),
+            user_authorization_exp: 2_000_000_000,
+        };
+
+        assert_eq!(
+            invocation_authorization_for_storage(true, &identity),
+            (None, None)
+        );
+        assert_eq!(
+            invocation_authorization_for_storage(false, &identity),
+            (Some("Bearer current-user-jwt"), Some(2_000_000_000))
+        );
     }
 
     #[test]

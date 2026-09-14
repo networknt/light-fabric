@@ -17,8 +17,8 @@ pub struct AuthenticatedInvocationContext<'a> {
     pub principal_subject: &'a str,
     pub end_user_subject: &'a str,
     pub update_user: &'a str,
-    pub user_authorization: &'a str,
-    pub user_authorization_exp: i64,
+    pub user_authorization: Option<&'a str>,
+    pub user_authorization_exp: Option<i64>,
 }
 
 #[derive(Debug)]
