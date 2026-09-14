@@ -466,6 +466,8 @@ yamlProperties:
   - {file: client.yml, path: request.poolWarmUpSize, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
   - {file: client.yml, path: request.healthCheckEnabled, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
   - {file: client.yml, path: request.healthCheckIntervalMs, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: workflow.yml, path: actionAuthorization, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: credentialBroker, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: invocation.allowedCallerServiceIds, finalAuthority: configServer, reloadClass: reloadable, sensitivity: internal}
   - {file: workflow.yml, path: invocation.waitListenerConnections, finalAuthority: configServer, reloadClass: reloadable, sensitivity: public}
   - {file: workflow.yml, path: invocation.ignoreUserJwtExpiry, finalAuthority: configServer, reloadClass: reloadable, sensitivity: internal}

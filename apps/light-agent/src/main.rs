@@ -5868,21 +5868,6 @@ async fn build_agent_state(
         None
     };
     lifecycle.register(Arc::new(AgentDatabase(pool.clone())))?;
-    // Gateway calls forward the caller's original access token unchanged. Only
-    // Knowledge access still mints a delegation; see light-fabric#373.
-    let delegation_signer = match std::env::var("LIGHT_AGENT_DELEGATION_SECRET") {
-        Ok(secret) if !secret.trim().is_empty() => Some(Arc::new(
-            DelegationSigner::new(secret.as_bytes(), "light-agent").map_err(|e| {
-                RuntimeError::Config(format!("invalid delegation configuration: {e}"))
-            })?,
-        )),
-        _ => {
-            return Err(RuntimeError::Config(
-                "LIGHT_AGENT_DELEGATION_SECRET is required for Knowledge delegation".into(),
-            ));
-        }
-    };
-
     let host_id = agent_config.operational_store.host_id;
     let agent_def_id = agent_config.agent_policy.agent_def_id;
     let definition_version = agent_config.agent_policy.definition_version;
@@ -5968,6 +5953,27 @@ async fn build_agent_state(
         .map_err(|error| {
             RuntimeError::Config(format!("failed to build Knowledge client: {error}"))
         })?;
+    // Gateway calls forward the caller's original access token unchanged. Only
+    // a configured direct Knowledge client still mints a legacy delegation
+    // during the A3 drain. Agents without a Knowledge endpoint must not depend
+    // on the legacy signer or its secret.
+    let delegation_signer = if knowledge_client.is_some() {
+        match std::env::var("LIGHT_AGENT_DELEGATION_SECRET") {
+            Ok(secret) if !secret.trim().is_empty() => Some(Arc::new(
+                DelegationSigner::new(secret.as_bytes(), "light-agent").map_err(|e| {
+                    RuntimeError::Config(format!("invalid delegation configuration: {e}"))
+                })?,
+            )),
+            _ => {
+                return Err(RuntimeError::Config(
+                    "LIGHT_AGENT_DELEGATION_SECRET is required for configured Knowledge access"
+                        .into(),
+                ));
+            }
+        }
+    } else {
+        None
+    };
 
     let configured_catalog = agent_config
         .agent_policy

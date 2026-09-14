@@ -417,7 +417,21 @@ fn phase0_source_characterizes_current_manual_lifecycle() {
     }
     assert!(service_runtime.contains("async fn quiesce"));
     assert!(service_runtime.contains("self.cancellation.cancel();"));
-    assert!(!main.contains("axum::serve"));
+    // The dedicated mTLS action listener uses Axum directly, but must remain
+    // registered with the shared lifecycle and drain on its shutdown signal.
+    let action_listener = Regex::new(
+        r#"(?s)self\.register_task\(\s*&context,\s*"light-workflow-action-api",\s*&cancellation,\s*&health,\s*move \|shutdown\| async move \{(.*?)\},\s*\)\?;"#,
+    )
+    .unwrap();
+    let captures = action_listener
+        .captures(&main)
+        .expect("action listener must be registered as a managed workflow task");
+    let serve = &captures[1];
+    assert!(serve.contains("axum::serve("));
+    assert!(serve.contains(".with_graceful_shutdown(shutdown.cancelled_owned())"));
+    assert!(serve.contains(".await"));
+    // Preserve the guard against direct serving outside this managed listener.
+    assert!(!action_listener.replace(&main, "").contains("axum::serve"));
     assert!(!main.contains("timeout_at(deadline, &mut tasks)"));
     assert!(main.contains("legacy_event_source_available"));
     assert!(main.contains("workflow.legacy_event_consumer.disabled"));
