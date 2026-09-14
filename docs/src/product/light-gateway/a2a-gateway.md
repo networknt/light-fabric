@@ -791,8 +791,6 @@ runtimePolicy:
   schemaVersion: ${runtimePolicy.schemaVersion:1}
   createdAt: ${runtimePolicy.createdAt:}
   validFrom: ${runtimePolicy.validFrom:}
-  refreshAfter: ${runtimePolicy.refreshAfter:}
-  expiresAt: ${runtimePolicy.expiresAt:}
   revocationEpoch: ${runtimePolicy.revocationEpoch:0}
   compatibilityGeneration: ${runtimePolicy.compatibilityGeneration:1}
 
@@ -1157,7 +1155,7 @@ For a Portal-published card:
    binding, its generated `card` policy endpoint, and disclosure class.
 2. Authenticate before extended-card disclosure.
 3. Authorize coarse card access using that generated policy endpoint, then
-   verify the publication generation is active and not expired or revoked.
+   verify the publication generation is active and not revoked or replaced.
 4. Select the immutable card whose final public URL, optional fields, digest,
    and `light-oauth` signature were accepted with the active publication.
 5. Authorize disclosure before conditional-request evaluation, then attach an
@@ -1561,7 +1559,7 @@ checks:
 - host, service ID, and environment tag match the running target service;
 - schema version and compatibility generation are supported;
 - content digest and publication digest match canonical content;
-- validity, refresh, expiry, and revocation constraints pass;
+- activation-time, generation, and revocation constraints pass;
 - every profile is single-generation, each 0.3 profile carries no extension
   configuration, and each 1.0 profile's advertised, inbound, outbound, and
   required extension sets match the accepted card and registry digests with
@@ -1574,10 +1572,13 @@ endpoint, or a route's policy endpoint is not owned by its declared
 `instanceApiId`. Route resolution supplies these trusted identities to access
 control; request headers, query parameters, and bodies cannot override them.
 
-Publication failure retains the last-known-good generation only within its
-validity window. An expired or revoked publication fails closed even if it was
-previously last known good. Runtime request handling does not query Portal
-authoring or projection tables.
+Activated runtime policy remains valid until explicitly revoked or replaced by
+an activated publication. Publication failure retains the last-known-good
+generation; elapsed time does not expire it. Legacy `refreshAfter` and `expiresAt`
+fields are accepted and ignored, and new runtime envelopes omit them. Revocation,
+identity, digest and generation checks still apply. Request tokens, invocation
+deadlines and independently reviewed outbound credentials retain their own expiry
+rules. Runtime request handling does not query Portal authoring or projection tables.
 
 ## Agent Card And Portal Skill Mapping
 
@@ -2102,7 +2103,7 @@ distinguish:
 - request or response size/depth limit exceeded;
 - backend unavailable, timeout, protocol violation, or invalid agent response;
 - access-control denial and response-filter denial; and
-- stale, expired, or revoked publication.
+- replaced or revoked publication.
 
 Do not translate a JSON-RPC error returned with HTTP 200 into success telemetry.
 Conversely, do not expose internal topology, database state, policy expressions,
@@ -2156,7 +2157,7 @@ unbounded metric labels.
   compatible adjacent generations, explicit reload, per-target
   acknowledgement, and exact-generation rollback.
 - Keep the previous valid generation when a refresh is malformed.
-- Fail closed when a publication is expired or revoked.
+- Fail closed when a publication is revoked; do not expire activated runtime policy.
 - Cache final public cards by publication digest, disclosure class,
   authorization-policy digest, and revocation epoch.
 - Cache each pinned signing-profile JWKS only for its bounded cache lifetime.
@@ -2269,7 +2270,7 @@ Deliver:
   sets in every production profile, and compile-time rejection of extension
   configuration in the 0.3 profile;
 - immutable `light-a2a` projection loading, validation, last-known-good reload,
-  expiry, and revocation;
+  replacement, and revocation;
 - streaming pass-through; and
 - A2A telemetry.
 

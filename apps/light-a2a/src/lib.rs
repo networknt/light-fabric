@@ -87,10 +87,28 @@ pub struct RuntimePolicy {
     pub schema_version: u64,
     pub created_at: String,
     pub valid_from: String,
+    /// Legacy fields are accepted but cannot expire activated configuration.
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "ignore_legacy_policy_time"
+    )]
     pub refresh_after: String,
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "ignore_legacy_policy_time"
+    )]
     pub expires_at: String,
     pub revocation_epoch: u64,
     pub compatibility_generation: u64,
+}
+
+fn ignore_legacy_policy_time<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    let _ = serde::de::IgnoredAny::deserialize(deserializer)?;
+    Ok(String::new())
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -329,18 +347,8 @@ impl A2aConfig {
         }
         let created_at = parse_time("runtimePolicy.createdAt", &self.runtime_policy.created_at)?;
         let valid_from = parse_time("runtimePolicy.validFrom", &self.runtime_policy.valid_from)?;
-        let refresh_after = parse_time(
-            "runtimePolicy.refreshAfter",
-            &self.runtime_policy.refresh_after,
-        )?;
-        let expires_at = parse_time("runtimePolicy.expiresAt", &self.runtime_policy.expires_at)?;
-        let now = Utc::now();
-        if created_at > valid_from
-            || valid_from > now
-            || expires_at <= now
-            || !(valid_from < refresh_after && refresh_after < expires_at)
-        {
-            return Err("runtimePolicy validity window is invalid or expired".into());
+        if created_at > valid_from || valid_from > Utc::now() {
+            return Err("runtimePolicy activation time is invalid or in the future".into());
         }
         let mut aliases = BTreeMap::new();
         for binding in &self.bindings {
@@ -645,7 +653,6 @@ struct A2aRuntimeProjection {
     remote_credentials: BTreeMap<Uuid, Arc<String>>,
     push_profiles: BTreeMap<Uuid, PushRuntime>,
     maximum_response_bytes: usize,
-    expires_at: DateTime<Utc>,
     revocation_epoch: u64,
 }
 
@@ -1187,7 +1194,6 @@ fn runtime_projection(config: &A2aConfig) -> Result<A2aRuntimeProjection, String
         remote_credentials,
         push_profiles,
         maximum_response_bytes: config.maximum_response_bytes,
-        expires_at: parse_time("runtimePolicy.expiresAt", &config.runtime_policy.expires_at)?,
         revocation_epoch: config.runtime_policy.revocation_epoch,
     })
 }
@@ -1324,7 +1330,6 @@ async fn phase7_readiness(State(state): State<Arc<A2aState>>) -> Response<Body> 
         .max()
         .unwrap_or(30);
     if let Some(reason) = phase7_not_ready_reason(
-        projection.expires_at,
         !projection.push_profiles.is_empty(),
         state.push_worker_started.load(Ordering::Acquire),
         state.push_last_success_epoch.load(Ordering::Acquire),
@@ -1341,16 +1346,12 @@ async fn phase7_readiness(State(state): State<Arc<A2aState>>) -> Response<Body> 
 }
 
 fn phase7_not_ready_reason(
-    expires_at: DateTime<Utc>,
     push_enabled: bool,
     worker_started: bool,
     last_success_epoch: i64,
     maximum_lease_seconds: i64,
     now: DateTime<Utc>,
 ) -> Option<&'static str> {
-    if expires_at <= now {
-        return Some("projection-expired");
-    }
     if push_enabled
         && (!worker_started
             || last_success_epoch == 0
@@ -1385,9 +1386,6 @@ async fn agent_card(
     headers: HeaderMap,
 ) -> Response<Body> {
     let projection = state.projection.load();
-    if projection.expires_at <= Utc::now() {
-        return rpc_error(Value::Null, -32003, "A2A publication is expired");
-    }
     let Some(binding) = projection.bindings.get(&agent_ref) else {
         return rpc_error(Value::Null, -32004, "Agent binding not found");
     };
@@ -1452,9 +1450,6 @@ async fn handle(
     direction: Direction,
 ) -> Response<Body> {
     let projection = state.projection.load();
-    if projection.expires_at <= Utc::now() {
-        return rpc_error(Value::Null, -32003, "A2A publication is expired");
-    }
     let Some(binding) = projection.bindings.get(&agent_ref) else {
         return rpc_error(Value::Null, -32004, "Agent binding not found");
     };
@@ -3616,32 +3611,39 @@ mod tests {
     }
 
     #[test]
+    fn activated_policy_outlives_legacy_timestamps() {
+        let mut config = valid_config(7);
+        config.runtime_policy.refresh_after = "2000-01-01T00:00:00Z".into();
+        config.runtime_policy.expires_at = "2000-01-02T00:00:00Z".into();
+        let check = |c: &A2aConfig| {
+            c.validate(
+                &c.runtime_policy.host,
+                &c.runtime_policy.service_id,
+                &c.runtime_policy.env_tag,
+            )
+        };
+        check(&config).unwrap();
+        let projection = runtime_projection(&config).unwrap();
+        assert_eq!(projection.revocation_epoch, 7);
+        let mut wire = serde_json::to_value(&config).unwrap();
+        assert!(wire["runtimePolicy"].get("expiresAt").is_none());
+        wire["runtimePolicy"]["expiresAt"] = json!(null);
+        wire["runtimePolicy"]["refreshAfter"] = json!("");
+        check(&serde_json::from_value::<A2aConfig>(wire).unwrap()).unwrap();
+        config.runtime_policy.content_digest = "invalid".into();
+        assert!(check(&config).is_err());
+    }
+
+    #[test]
     fn phase7_readiness_fails_for_expired_authority_or_stale_push_worker() {
         let now = Utc::now();
+        assert_eq!(phase7_not_ready_reason(false, false, 0, 30, now), None);
         assert_eq!(
-            phase7_not_ready_reason(now, false, false, 0, 30, now),
-            Some("projection-expired")
-        );
-        assert_eq!(
-            phase7_not_ready_reason(
-                now + chrono::Duration::minutes(5),
-                true,
-                true,
-                now.timestamp() - 36,
-                30,
-                now,
-            ),
+            phase7_not_ready_reason(true, true, now.timestamp() - 36, 30, now,),
             Some("push-worker-stale")
         );
         assert_eq!(
-            phase7_not_ready_reason(
-                now + chrono::Duration::minutes(5),
-                true,
-                true,
-                now.timestamp(),
-                30,
-                now,
-            ),
+            phase7_not_ready_reason(true, true, now.timestamp(), 30, now,),
             None
         );
     }
