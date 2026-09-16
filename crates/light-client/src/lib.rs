@@ -4,6 +4,7 @@ pub mod oauth;
 pub mod provider;
 pub mod unattended;
 pub mod workflow_actions;
+pub mod workflow_job_transport;
 pub mod workflow_jobs;
 pub mod workflow_receivers;
 

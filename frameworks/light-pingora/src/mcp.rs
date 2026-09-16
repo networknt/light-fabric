@@ -1674,6 +1674,7 @@ pub struct McpRouterRuntime {
 }
 
 struct WorkflowDispatchRuntime {
+    client: reqwest::Client,
     invocation_url: String,
     scope_authorization: Option<String>,
     permit_pools: Vec<Arc<Semaphore>>,
@@ -1949,6 +1950,7 @@ impl McpRouterRuntime {
         {
             match workflow_scope_authorization(config.workflow.scope_token_env.as_deref()) {
                 Ok(scope_authorization) => Some(Arc::new(WorkflowDispatchRuntime {
+                    client: private_target_client.clone(),
                     invocation_url: config
                         .workflow
                         .invocation_url
@@ -4014,7 +4016,7 @@ impl McpRouterRuntime {
             self.execute_workflow_tool(tool, &masked_arguments, context, action_binding.as_ref())
                 .await
         } else if tool.execution_placement == McpExecutionPlacement::WorkflowLifecycle {
-            self.execute_workflow_lifecycle_tool(tool, &masked_arguments, context)
+            self.execute_workflow_lifecycle_tool(tool, &masked_arguments, context, policy_headers)
                 .await
         } else {
             match tool.api_type {
@@ -4478,10 +4480,28 @@ impl McpRouterRuntime {
             deadline_ts = deadline_ts.min(parent.deadline);
         }
         let workflow_instance_id = Uuid::now_v7();
+        let mut renewable_grant_id = context.renewable_grant_id;
+        if parent_action.is_none()
+            && context.action.is_none()
+            && renewable_grant_id.is_none()
+            && runtime.invocation_url.starts_with("https://")
+        {
+            renewable_grant_id = Some(
+                acquire_workflow_grant(
+                    runtime,
+                    &user_authorization,
+                    scope_authorization,
+                    &auth.claims,
+                    binding,
+                    deadline_ts,
+                )
+                .await?,
+            );
+        }
         let request = StartInvocationRequest {
             renewable_grant_id: parent_action
                 .is_none()
-                .then_some(context.renewable_grant_id)
+                .then_some(renewable_grant_id)
                 .flatten(),
             parent_action_id: parent_action.map(|parent| parent.action_id),
             contract_version: WORKFLOW_CONTRACT_VERSION,
@@ -4551,8 +4571,8 @@ impl McpRouterRuntime {
                     .await
                     .map(|response| (response.header.status, response.body))
             } else {
-                match self
-                    .private_target_client
+                match runtime
+                    .client
                     .post(&start_url)
                     .header("authorization", &user_authorization)
                     .header("x-scope-token", scope_authorization)
@@ -4704,8 +4724,8 @@ impl McpRouterRuntime {
                 "{}/v1/workflow-invocations/{accepted_instance_id}/wait",
                 runtime.invocation_url
             );
-            let response = self
-                .private_target_client
+            let response = runtime
+                .client
                 .post(wait_url)
                 .header("authorization", &user_authorization)
                 .header("x-scope-token", scope_authorization)
@@ -4814,8 +4834,8 @@ impl McpRouterRuntime {
             "{}/v1/workflow-invocations/{workflow_instance_id}",
             runtime.invocation_url
         );
-        let response = self
-            .private_target_client
+        let response = runtime
+            .client
             .get(url)
             .header("authorization", user_authorization)
             .header("x-scope-token", scope_authorization)
@@ -4837,6 +4857,7 @@ impl McpRouterRuntime {
         tool: &McpToolConfig,
         arguments: &JsonValue,
         context: &McpRequestContext,
+        _policy_headers: &[(String, String)],
     ) -> Result<JsonValue, McpExecutionError> {
         let error_result = |code: ErrorCode, message: String| {
             workflow_mcp_error_result(code, message, context.correlation_id.as_deref())
@@ -4848,15 +4869,14 @@ impl McpRouterRuntime {
                     .to_string(),
             ));
         };
-        let workflow_instance_id = arguments
-            .get("workflowInstanceId")
-            .and_then(JsonValue::as_str)
-            .and_then(|value| Uuid::parse_str(value).ok());
-        let Some(workflow_instance_id) = workflow_instance_id else {
-            return Ok(error_result(
-                ErrorCode::WorkflowInputInvalid,
-                "WORKFLOW_INPUT_INVALID: workflowInstanceId must be a UUID".to_string(),
-            ));
+        let (method, route, body) = match workflow_lifecycle_route(&tool.name, arguments) {
+            Ok(route) => route,
+            Err(message) => {
+                return Ok(error_result(
+                    ErrorCode::WorkflowInputInvalid,
+                    message.into(),
+                ));
+            }
         };
         let Some(auth) = context.auth.as_ref() else {
             return Ok(error_result(
@@ -4919,21 +4939,12 @@ impl McpRouterRuntime {
         };
         let caller_claims_digest = canonical_sha256(&stable_subject_claims(&auth.claims))
             .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
-        let base_url = format!(
-            "{}/v1/workflow-invocations/{workflow_instance_id}",
-            runtime.invocation_url
-        );
-        let request = match tool.name.as_str() {
-            "workflow_get_status" => self.private_target_client.get(&base_url),
-            "workflow_get_result" => self.private_target_client.get(format!("{base_url}/result")),
-            "workflow_cancel" => self.private_target_client.delete(&base_url),
-            _ => {
-                return Ok(error_result(
-                    ErrorCode::WorkflowInputInvalid,
-                    "WORKFLOW_INPUT_INVALID: unknown workflow lifecycle operation".to_string(),
-                ));
-            }
-        };
+        let mut request = runtime
+            .client
+            .request(method, format!("{}{route}", runtime.invocation_url));
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
         let response = request
             .header("authorization", user_authorization)
             .header("x-scope-token", scope_authorization)
@@ -6821,16 +6832,84 @@ pub fn load_mcp_router_runtime(
         Err(error) => return Err(error),
     };
     let backend_credentials = load_token_runtime(runtime_config, true)?;
-    Ok(Some(
-        McpRouterRuntime::new_with_discovery_policy_direct_registry_and_client_config(
-            config,
-            discovery_resolver(runtime_config.registry_client.clone()),
-            policy,
-            runtime_config.direct_registry.clone(),
-            client_config,
-        )?
-        .with_backend_credentials(backend_credentials),
-    ))
+    let mut router = McpRouterRuntime::new_with_discovery_policy_direct_registry_and_client_config(
+        config,
+        discovery_resolver(runtime_config.registry_client.clone()),
+        policy,
+        runtime_config.direct_registry.clone(),
+        client_config,
+    )?
+    .with_backend_credentials(backend_credentials);
+    // A2's fixed control endpoint is the authenticated Workflow receiver. Never
+    // attach its identity to general private/public Tool HTTP clients.
+    if let Some(actions) = crate::action_gateway::load(runtime_config)? {
+        router.workflow_dispatch = Some(Arc::new(workflow_action_dispatch(
+            &actions.control,
+            &runtime_config.config_dir,
+            &router.config.workflow.permit_pools,
+        )?));
+    }
+    Ok(Some(router))
+}
+
+#[cfg(test)]
+#[path = "workflow_mcp_transport_tests.rs"]
+mod workflow_mcp_transport_tests;
+
+fn workflow_action_dispatch(
+    config: &light_client::workflow_actions::Config,
+    directory: &std::path::Path,
+    permits: &[usize],
+) -> Result<WorkflowDispatchRuntime, RuntimeError> {
+    let invalid = || RuntimeError::Config("invalid MCP Workflow mTLS transport".into());
+    let url = Url::parse(&config.base_url).map_err(|_| invalid())?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || !matches!(url.path(), "" | "/")
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(invalid());
+    }
+    let identity =
+        std::fs::read(directory.join(&config.client_identity_file)).map_err(|_| invalid())?;
+    let ca = std::fs::read(directory.join(&config.ca_file)).map_err(|_| invalid())?;
+    let scope =
+        std::fs::read_to_string(directory.join(&config.scope_token_file)).map_err(|_| invalid())?;
+    let scope = scope.trim();
+    if !scope.starts_with("Bearer ")
+        || scope.contains(['\r', '\n'])
+        || service_bearer_header(scope).is_none()
+    {
+        return Err(invalid());
+    }
+    let roots = reqwest::Certificate::from_pem_bundle(&ca).map_err(|_| invalid())?;
+    if roots.is_empty() {
+        return Err(invalid());
+    }
+    let mut builder = reqwest::Client::builder()
+        .https_only(true)
+        .no_proxy()
+        .tls_built_in_root_certs(false)
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(35))
+        .identity(reqwest::Identity::from_pem(&identity).map_err(|_| invalid())?);
+    for root in roots {
+        builder = builder.add_root_certificate(root);
+    }
+    Ok(WorkflowDispatchRuntime {
+        client: builder.build().map_err(|_| invalid())?,
+        invocation_url: config.base_url.trim_end_matches('/').to_owned(),
+        scope_authorization: Some(scope.to_owned()),
+        permit_pools: permits
+            .iter()
+            .map(|n| Arc::new(Semaphore::new(*n)))
+            .collect(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -9409,7 +9488,197 @@ fn default_object() -> JsonValue {
     json!({})
 }
 
-const WORKFLOW_LIFECYCLE_TOOLS: [(&str, &str, bool); 3] = [
+/// Internal acquisition only: no browser-facing authorization Tool or redirect.
+async fn acquire_workflow_grant(
+    runtime: &WorkflowDispatchRuntime,
+    user_authorization: &str,
+    app_authorization: &str,
+    claims: &JsonValue,
+    binding: &McpWorkflowBindingConfig,
+    expires: chrono::DateTime<chrono::Utc>,
+) -> Result<Uuid, McpExecutionError> {
+    let denied = || {
+        McpExecutionError::execution_failed("Workflow credential acquisition unavailable or denied")
+    };
+    let scope = claims
+        .get("scope")
+        .and_then(JsonValue::as_str)
+        .filter(|s| !s.trim().is_empty() && s.len() <= 1024 && !s.chars().any(char::is_control))
+        .ok_or_else(denied)?;
+    let mut response = runtime
+        .client
+        .post(format!(
+            "{}/workflow/credentials/enroll",
+            runtime.invocation_url
+        ))
+        .header("authorization", user_authorization)
+        .header("x-scope-token", app_authorization)
+        .json(&json!({"scope":scope,"expiresAt":expires,"binding":{
+            "profile":"workflow-action-v1","workflowDefinitionId":binding.workflow_definition_id,
+            "definitionDigest":binding.definition_digest,"policyDigest":binding.policy_digest,
+            "responsePolicyDigest":binding.response_policy_digest
+        }}))
+        .send()
+        .await
+        .map_err(|_| denied())?;
+    if !response.status().is_success() {
+        return Err(denied());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| denied())? {
+        if bytes.len() + chunk.len() > 4096 {
+            return Err(denied());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let result: JsonValue = serde_json::from_slice(&bytes).map_err(|_| denied())?;
+    result
+        .get("grantId")
+        .and_then(JsonValue::as_str)
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or_else(denied)
+}
+
+fn workflow_lifecycle_route(
+    name: &str,
+    arguments: &JsonValue,
+) -> Result<(reqwest::Method, String, Option<JsonValue>), &'static str> {
+    let feature_operation = matches!(
+        name,
+        "workflow_get_feature"
+            | "workflow_accept_stage"
+            | "workflow_publish_slot"
+            | "workflow_finalize_design"
+            | "workflow_cancel_feature"
+    );
+    let field = if feature_operation {
+        "featureRunId"
+    } else {
+        "workflowInstanceId"
+    };
+    let id = arguments
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .filter(|id| !id.is_nil())
+        .ok_or("WORKFLOW_INPUT_INVALID: lifecycle identity must be a non-nil UUID")?;
+    let base = "/v1/workflow-invocations";
+    Ok(match name {
+        "workflow_get_status" => (reqwest::Method::GET, format!("{base}/{id}"), None),
+        "workflow_get_result" => (reqwest::Method::GET, format!("{base}/{id}/result"), None),
+        "workflow_cancel" => (reqwest::Method::DELETE, format!("{base}/{id}"), None),
+        "workflow_get_feature" => (
+            reqwest::Method::GET,
+            format!("{base}/development-features/{id}"),
+            None,
+        ),
+        "workflow_publish_slot" => {
+            let slot = arguments
+                .get("slot")
+                .and_then(JsonValue::as_str)
+                .filter(|v| !v.is_empty() && v.len() <= 128)
+                .ok_or("WORKFLOW_INPUT_INVALID: pinned publication slot required")?;
+            (
+                reqwest::Method::POST,
+                format!("{base}/development-features/{id}/publication"),
+                Some(json!({"slot":slot})),
+            )
+        }
+        "workflow_finalize_design" => {
+            let version = arguments
+                .get("expectedVersion")
+                .and_then(JsonValue::as_u64)
+                .filter(|v| *v > 0)
+                .ok_or("WORKFLOW_INPUT_INVALID: expectedVersion required")?;
+            let operation = arguments
+                .get("operationId")
+                .and_then(JsonValue::as_str)
+                .and_then(|v| Uuid::parse_str(v).ok())
+                .filter(|v| !v.is_nil())
+                .ok_or("WORKFLOW_INPUT_INVALID: operationId required")?;
+            (
+                reqwest::Method::POST,
+                format!("{base}/development-features/{id}/finalize-design"),
+                Some(json!({"expectedVersion":version,"operationId":operation})),
+            )
+        }
+        "workflow_cancel_feature" => {
+            let version = arguments
+                .get("expectedVersion")
+                .and_then(JsonValue::as_u64)
+                .filter(|v| *v > 0)
+                .ok_or("WORKFLOW_INPUT_INVALID: expectedVersion required")?;
+            (
+                reqwest::Method::DELETE,
+                format!("{base}/development-features/{id}"),
+                Some(json!({"expectedVersion":version})),
+            )
+        }
+        "workflow_accept_stage" => {
+            let body = arguments
+                .get("acceptance")
+                .filter(|v| v.is_object())
+                .ok_or("WORKFLOW_INPUT_INVALID: acceptance object required")?;
+            if body
+                .pointer("/result/featureRunId")
+                .and_then(JsonValue::as_str)
+                != Some(id.to_string().as_str())
+                || serde_json::to_vec(body)
+                    .map_err(|_| "WORKFLOW_INPUT_INVALID")?
+                    .len()
+                    > 65536
+            {
+                return Err("WORKFLOW_INPUT_INVALID: acceptance identity or size rejected");
+            }
+            (
+                reqwest::Method::POST,
+                format!("{base}/development-features/{id}/accept"),
+                Some(body.clone()),
+            )
+        }
+        _ => return Err("WORKFLOW_INPUT_INVALID: unknown workflow lifecycle operation"),
+    })
+}
+
+fn workflow_lifecycle_schema(name: &str) -> JsonValue {
+    match name {
+        "workflow_publish_slot" => {
+            json!({"type":"object","properties":{"featureRunId":{"type":"string","format":"uuid"},"slot":{"type":"string","minLength":1,"maxLength":128}},"required":["featureRunId","slot"],"additionalProperties":false})
+        }
+        "workflow_finalize_design" => {
+            json!({"type":"object","properties":{"featureRunId":{"type":"string","format":"uuid"},"expectedVersion":{"type":"integer","minimum":1},"operationId":{"type":"string","format":"uuid"}},"required":["featureRunId","expectedVersion","operationId"],"additionalProperties":false})
+        }
+        "workflow_cancel_feature" => {
+            json!({"type":"object","properties":{"featureRunId":{"type":"string","format":"uuid"},"expectedVersion":{"type":"integer","minimum":1}},"required":["featureRunId","expectedVersion"],"additionalProperties":false})
+        }
+        "workflow_get_feature" => {
+            json!({"type":"object","properties":{"featureRunId":{"type":"string","format":"uuid"}},"required":["featureRunId"],"additionalProperties":false})
+        }
+        "workflow_accept_stage" => {
+            json!({"type":"object","properties":{"featureRunId":{"type":"string","format":"uuid"},"acceptance":{"type":"object","properties":{"operationId":{"type":"string","format":"uuid"},"expectedVersion":{"type":"integer","minimum":1},"result":{"type":"object"},"nextStage":{"type":["object","null"]}},"required":["operationId","expectedVersion","result","nextStage"],"additionalProperties":false}},"required":["featureRunId","acceptance"],"additionalProperties":false})
+        }
+        _ => {
+            json!({"type":"object","properties":{"workflowInstanceId":{"type":"string","format":"uuid"}},"required":["workflowInstanceId"],"additionalProperties":false})
+        }
+    }
+}
+
+const WORKFLOW_LIFECYCLE_TOOLS: [(&str, &str, bool); 8] = [
+    (
+        "workflow_publish_slot",
+        "Publish an owned feature's pinned accepted document slot",
+        false,
+    ),
+    (
+        "workflow_finalize_design",
+        "Verify fixed design finalization and release the owned VM reservation",
+        false,
+    ),
+    (
+        "workflow_cancel_feature",
+        "Cancel an owned feature with confirmed execution cleanup",
+        false,
+    ),
     (
         "workflow_get_status",
         "Get the current status of an asynchronous workflow invocation",
@@ -9423,6 +9692,16 @@ const WORKFLOW_LIFECYCLE_TOOLS: [(&str, &str, bool); 3] = [
     (
         "workflow_cancel",
         "Request cancellation of an asynchronous workflow invocation",
+        false,
+    ),
+    (
+        "workflow_get_feature",
+        "Inspect an owned development feature and its durable stage handoff state",
+        true,
+    ),
+    (
+        "workflow_accept_stage",
+        "Accept an owned development stage using verified evidence and a pinned successor; replay requires the same operationId",
         false,
     ),
 ];
@@ -9462,12 +9741,7 @@ fn ensure_workflow_lifecycle_tools(config: &mut McpRouterConfig) -> Result<(), R
             session_independent: true,
             backend_credential_mode: None,
             backend_resource: None,
-            input_schema: json!({
-                "type":"object",
-                "properties":{"workflowInstanceId":{"type":"string","format":"uuid"}},
-                "required":["workflowInstanceId"],
-                "additionalProperties":false
-            }),
+            input_schema: workflow_lifecycle_schema(name),
             output_schema: None,
             input_schema_configured: true,
             tool_metadata: json!({
@@ -17895,15 +18169,91 @@ tools:
         assert_eq!(
             lifecycle,
             vec![
+                "workflow_publish_slot",
+                "workflow_finalize_design",
+                "workflow_cancel_feature",
                 "workflow_get_status",
                 "workflow_get_result",
-                "workflow_cancel"
+                "workflow_cancel",
+                "workflow_get_feature",
+                "workflow_accept_stage"
             ]
         );
         assert!(config.tools.iter().all(|tool| {
             tool.execution_placement != McpExecutionPlacement::WorkflowLifecycle
                 || tool.endpoint.as_deref() == Some(&format!("{}@call", tool.name))
         }));
+    }
+
+    #[test]
+    fn development_lifecycle_routes_bind_feature_and_bound_acceptance() {
+        let id = "01964b05-552a-7c4b-9184-6857e7f3dc5f";
+        let request = json!({"featureRunId":id,"acceptance":{"operationId":id,"expectedVersion":2,
+            "result":{"featureRunId":id},"nextStage":{"kind":"design"}}});
+        let (method, route, body) =
+            workflow_lifecycle_route("workflow_accept_stage", &request).unwrap();
+        assert_eq!(method, reqwest::Method::POST);
+        assert_eq!(
+            route,
+            format!("/v1/workflow-invocations/development-features/{id}/accept")
+        );
+        assert_eq!(body, Some(request["acceptance"].clone()));
+        let (method, _, body) =
+            workflow_lifecycle_route("workflow_get_feature", &json!({"featureRunId":id})).unwrap();
+        assert_eq!(method, reqwest::Method::GET);
+        assert!(body.is_none());
+        for (name, args, suffix, expected_method, expected_body) in [
+            (
+                "workflow_publish_slot",
+                json!({"featureRunId":id,"slot":"design-document"}),
+                "/publication",
+                reqwest::Method::POST,
+                json!({"slot":"design-document"}),
+            ),
+            (
+                "workflow_finalize_design",
+                json!({"featureRunId":id,"expectedVersion":3,"operationId":id}),
+                "/finalize-design",
+                reqwest::Method::POST,
+                json!({"expectedVersion":3,"operationId":id}),
+            ),
+            (
+                "workflow_cancel_feature",
+                json!({"featureRunId":id,"expectedVersion":3}),
+                "",
+                reqwest::Method::DELETE,
+                json!({"expectedVersion":3}),
+            ),
+        ] {
+            let (method, route, body) = workflow_lifecycle_route(name, &args).unwrap();
+            assert_eq!(method, expected_method);
+            assert_eq!(
+                route,
+                format!("/v1/workflow-invocations/development-features/{id}{suffix}")
+            );
+            assert_eq!(body, Some(expected_body));
+            let validator = jsonschema::validator_for(&workflow_lifecycle_schema(name)).unwrap();
+            assert!(validator.is_valid(&args));
+            let mut unexpected = args.clone();
+            unexpected["unexpected"] = json!(true);
+            assert!(!validator.is_valid(&unexpected));
+            let mut bad = args;
+            bad["featureRunId"] = json!("../../other");
+            assert!(workflow_lifecycle_route(name, &bad).is_err());
+        }
+        for bad in [
+            json!({"featureRunId":"../../other","acceptance":{}}),
+            json!({"featureRunId":id}),
+            json!({"featureRunId":id,"acceptance":{"result":{"featureRunId":"other"}}}),
+            json!({"featureRunId":id,"acceptance":{"result":{"featureRunId":id},"large":"x".repeat(65536)}}),
+        ] {
+            assert!(workflow_lifecycle_route("workflow_accept_stage", &bad).is_err());
+        }
+        assert!(workflow_lifecycle_route("unknown", &json!({"workflowInstanceId":id})).is_err());
+        for name in ["workflow_get_feature", "workflow_accept_stage"] {
+            let validator = jsonschema::validator_for(&workflow_lifecycle_schema(name)).unwrap();
+            assert!(!validator.is_valid(&json!({"workflowInstanceId":id})));
+        }
     }
 
     #[test]

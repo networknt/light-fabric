@@ -33,6 +33,8 @@ runner:
   executionApiUrl: ${workflow.runner.executionApiUrl:https://controller:8438/}
   executionApiCaCertFile: ${workflow.runner.executionApiCaCertFile:}
 artifact:
+  backend: ${workflow.artifact.backend:s3}
+  filesystemRoot: ${workflow.artifact.filesystemRoot:}
   s3Bucket: ${workflow.artifact.s3Bucket:}
   s3Endpoint: ${workflow.artifact.s3Endpoint:}
   allowHttp: ${workflow.artifact.allowHttp:false}

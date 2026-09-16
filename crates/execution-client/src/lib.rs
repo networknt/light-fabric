@@ -52,6 +52,29 @@ struct CleanupAccepted {
 }
 
 impl ExecutionClient {
+    pub async fn cancel_request(
+        &self,
+        request: Uuid,
+    ) -> Result<execution_runner_protocol::RequestCancellation, ClientError> {
+        let response = self
+            .client
+            .post(
+                self.endpoint
+                    .join(&format!("internal/execution/requests/{request}/cancel"))?,
+            )
+            .bearer_auth(self.token()?)
+            .send()
+            .await?;
+        let body = successful_body(response).await?;
+        let receipt: execution_runner_protocol::RequestCancellation =
+            serde_json::from_slice(&body)?;
+        if receipt.request_id != request {
+            return Err(ClientError::Credential(
+                "cancellation request identity mismatch".into(),
+            ));
+        }
+        Ok(receipt)
+    }
     pub fn new(
         endpoint: &str,
         token_file: impl Into<PathBuf>,

@@ -33,6 +33,9 @@ use std::{
     time::Duration,
 };
 use tokio::sync::Mutex;
+mod publication;
+#[cfg(test)]
+mod publication_tests;
 
 #[derive(Clone)]
 struct AppState {
@@ -44,6 +47,7 @@ struct AppState {
     repositories: Arc<BTreeMap<String, Repository>>,
     branch_prefix: Arc<String>,
     work_root: Arc<PathBuf>,
+    publication_policy: Option<Arc<development_workflow_contract::publication::PublicationPolicy>>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -85,6 +89,7 @@ async fn main() -> Result<()> {
     db.pragma_update(None, "journal_mode", "WAL")?;
     db.pragma_update(None, "synchronous", "FULL")?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS operation_journal(idempotency_key TEXT PRIMARY KEY,operation TEXT NOT NULL,request_json TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN('IN_FLIGHT','SUCCEEDED','FAILED')),receipt_json TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);")?;
+    publication::initialize(&db)?;
     let service_secret = String::from_utf8(read_secret(&env::var(
         "GITHUB_ACTION_PROVIDER_SERVICE_TOKEN_FILE",
     )?)?)?
@@ -138,8 +143,14 @@ async fn main() -> Result<()> {
             env::var("GITHUB_ACTION_PROVIDER_BRANCH_PREFIX").unwrap_or_else(|_| "agent/".into()),
         ),
         work_root: Arc::new(work_root),
+        publication_policy: env::var("GITHUB_ACTION_PROVIDER_PUBLICATION_POLICY")
+            .ok()
+            .map(|value| serde_json::from_str(&value).map(Arc::new))
+            .transpose()?,
     };
     let app = Router::new()
+        .route("/v1/publications", post(publication::execute))
+        .route("/v1/publications/status", post(publication::inspect))
         .route("/v1/fixed-actions/{operation}", post(execute))
         .route("/v1/fixed-actions/status", get(status))
         .layer(DefaultBodyLimit::max(17 * 1024 * 1024))
@@ -961,6 +972,7 @@ mod tests {
             )])),
             branch_prefix: Arc::new("agent/".into()),
             work_root: Arc::new(work_root),
+            publication_policy: None,
         };
         let patch_digest = format!("sha256:{}", hex::encode(Sha256::digest(patch.as_bytes())));
         let implementation = CodingImplementationArtifact {

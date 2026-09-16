@@ -1,5 +1,5 @@
 //! Enrollment returns references only. Runtime token acquisition is internal.
-use crate::credential_broker::{CredentialBroker, EnrollmentChallenge};
+use crate::credential_broker::CredentialBroker;
 use axum::{
     Json, Router,
     extract::State,
@@ -104,6 +104,59 @@ struct Revoke {
     grant_id: Uuid,
 }
 
+/// The internal listener additionally binds the app credential to its TLS peer.
+/// The public OAuth callback remains on the separate callback listener.
+pub fn mtls_router(
+    broker: Arc<CredentialBroker>,
+    security: Arc<SecurityRuntime>,
+    callback: String,
+    callers: Vec<String>,
+    legacy_app_keys: Vec<light_security::token_purpose::LegacyLongLivedAppKey>,
+    policy: light_security::dual_identity::RoutePolicy,
+) -> Router {
+    Router::new()
+        .route("/workflow/credentials/enroll", post(enroll))
+        .route("/workflow/credentials/complete", post(complete))
+        .route("/workflow/credentials/revoke", post(revoke))
+        .with_state(ApiState {
+            broker,
+            security: security.clone(),
+            callback,
+            callers,
+            legacy_app_keys,
+        })
+        .route_layer(axum::middleware::from_fn_with_state(
+            (security, policy),
+            require_peer,
+        ))
+}
+
+async fn require_peer(
+    State((security, policy)): State<(
+        Arc<SecurityRuntime>,
+        light_security::dual_identity::RoutePolicy,
+    )>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<light_axum::mtls::Peer>>();
+    if light_security::dual_identity::authenticate(
+        &security,
+        &policy,
+        request.headers(),
+        peer.map(|p| p.0.fingerprint.as_str()),
+    )
+    .await
+    .is_err()
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    next.run(request).await
+}
+
 async fn revoke(
     State(state): State<ApiState>,
     headers: HeaderMap,
@@ -177,11 +230,11 @@ async fn enroll(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Json(request): Json<Enrollment>,
-) -> Result<Json<EnrollmentChallenge>, StatusCode> {
+) -> Result<Json<serde_json::Value>, StatusCode> {
     let (authorization, host, user) = identity(&state, &headers).await?;
     state
         .broker
-        .begin_enrollment(
+        .acquire_for_user(
             &authorization,
             host,
             user,
@@ -191,7 +244,7 @@ async fn enroll(
             request.expires_at,
         )
         .await
-        .map(Json)
+        .map(|grant| Json(serde_json::json!({"grantId":grant})))
         .map_err(|_| StatusCode::CONFLICT)
 }
 

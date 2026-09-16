@@ -45,6 +45,85 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
+    pub async fn native_cleanup_receipt(
+        &self,
+        lease: &LeaseContext,
+    ) -> Result<Option<execution_runner_protocol::LeaseCleanupCompleted>, String> {
+        if self.active.contains_key(&lease.execution_id) {
+            return Ok(None);
+        }
+        let record = self
+            .journal
+            .find(lease.execution_id)?
+            .ok_or("cleanup execution is not journaled")?;
+        validate_lease_identity(&record.lease_context, lease, "cleanup receipt")?;
+        let operation = format!("agent-worker:{}", lease.execution_id);
+        if record.backend_operation_id.as_deref() != Some(operation.as_str()) {
+            return Ok(None);
+        }
+        self.cleanup_native_execution(lease).await?;
+        #[cfg(target_os = "linux")]
+        let evidence_reference = self
+            .journal
+            .operator_fence_evidence(lease)?
+            .map(|evidence| evidence.reference())
+            .transpose()?
+            .unwrap_or_else(|| format!("native-containment-empty:{}", lease.execution_id));
+        #[cfg(not(target_os = "linux"))]
+        let evidence_reference = format!("native-containment-empty:{}", lease.execution_id);
+        Ok(Some(execution_runner_protocol::LeaseCleanupCompleted {
+            lease: lease.clone(),
+            backend_operation_id: operation,
+            evidence_reference,
+        }))
+    }
+
+    async fn cleanup_native_execution(&self, lease: &LeaseContext) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(evidence) = self.journal.operator_fence_evidence(lease)? {
+                let membership = std::fs::read_to_string("/proc/self/cgroup")
+                    .map_err(|_| "runner cgroup unavailable")?;
+                if !membership
+                    .lines()
+                    .any(|line| line == format!("0::{}", evidence.parent))
+                {
+                    return Err("operator fence belongs to another runner scope".into());
+                }
+                self.stager.cleanup(lease.execution_id)?;
+                return Ok(());
+            }
+            let identity = self
+                .journal
+                .native_process_identity(lease)?
+                .ok_or("native cleanup has no durable process evidence")?;
+            let containment = identity
+                .containment
+                .ok_or("native cleanup has no durable containment evidence")?;
+            containment.cleanup(lease.execution_id).await?;
+            self.stager.cleanup(lease.execution_id)?;
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err("native cgroup recovery requires Linux".into())
+    }
+
+    async fn cleanup_recovery_record(
+        &self,
+        record: &JournalRecord,
+        operation: &str,
+    ) -> Result<(), String> {
+        if operation == format!("agent-worker:{}", record.execution_id) {
+            self.cleanup_native_execution(&record.lease_context).await
+        } else if operation.starts_with("agent-worker:") {
+            Err("native cleanup operation identity mismatch".into())
+        } else {
+            self.cleanup_with_retry(operation)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+    }
     pub fn new(
         backend: Arc<dyn ExecutionBackend>,
         journal: Journal,
@@ -336,6 +415,33 @@ impl Supervisor {
             .cleanup_request_id
             .ok_or_else(|| "cleanup session directive lacks cleanupRequestId".to_string())?;
         let evidence = match directive.backend_operation_id.as_deref() {
+            Some(operation) if operation.starts_with("agent-worker:") => {
+                let execution_id: ExecutionId = operation["agent-worker:".len()..]
+                    .parse()
+                    .map_err(|_| "invalid native cleanup execution identity")?;
+                let record = self
+                    .journal
+                    .find(execution_id)?
+                    .ok_or("native cleanup execution is not journaled")?;
+                if record.backend_operation_id.as_deref() != Some(operation) {
+                    return Err("native cleanup operation differs from journal".into());
+                }
+                self.cleanup_recovery_record(&record, operation).await?;
+                #[cfg(target_os = "linux")]
+                let evidence_reference = self
+                    .journal
+                    .operator_fence_evidence(&record.lease_context)?
+                    .map(|evidence| evidence.reference())
+                    .transpose()?
+                    .unwrap_or_else(|| format!("native-containment-empty:{execution_id}"));
+                #[cfg(not(target_os = "linux"))]
+                let evidence_reference = format!("native-containment-empty:{execution_id}");
+                execution_backend::CleanupEvidence {
+                    backend_operation_id: operation.into(),
+                    cleaned_at: Utc::now(),
+                    evidence_reference,
+                }
+            }
             Some(operation) => self
                 .cleanup_with_retry(operation)
                 .await
@@ -663,23 +769,61 @@ impl Supervisor {
         lease: ExecuteLease,
         outbound: mpsc::Sender<RunnerToController>,
     ) -> Result<(), String> {
-        let config = self
-            .agent_worker
-            .clone()
-            .ok_or_else(|| "agent worker execution is disabled on this runner".to_string())?;
-        if lease.lease.origin.service_id != config.origin_service_id {
-            return Err("agent lease origin is not admitted by this runner".into());
-        }
-        if !self
-            .allowed_template_digests
-            .contains(&lease.command_template_digest)
-        {
-            return Err("agent worker template digest is not admitted by the runner".into());
-        }
-        let mut spec = serde_json::from_value::<agent_runtime_protocol::AgentWorkerExecutionSpec>(
-            lease.command.clone(),
-        )
-        .map_err(|error| format!("invalid agent worker execution spec: {error}"))?;
+        let admission = (|| {
+            let config = self
+                .agent_worker
+                .clone()
+                .ok_or_else(|| "agent worker execution is disabled on this runner".to_string())?;
+            // Revalidate mutable CLI paths before staging inputs or acknowledging
+            // execution. A CLI updater can remove a pinned version after runner
+            // startup; this is a durable admission rejection, not an uncertain
+            // native execution requiring a process identity that never existed.
+            // Keep the validation inside run_worker_process too: a later race
+            // must still fail closed and must not be inferred safe from its text.
+            config.validate()?;
+            if !config.admits_origin(&lease.lease.origin.service_id) {
+                return Err("agent lease origin is not admitted by this runner".into());
+            }
+            if !self
+                .allowed_template_digests
+                .contains(&lease.command_template_digest)
+            {
+                return Err("agent worker template digest is not admitted by the runner".into());
+            }
+            let spec = serde_json::from_value::<agent_runtime_protocol::AgentWorkerExecutionSpec>(
+                lease.command.clone(),
+            )
+            .map_err(|error| format!("invalid agent worker execution spec: {error}"))?;
+            Ok((config, spec))
+        })();
+        let (config, mut spec) = match admission {
+            Ok(admitted) => admitted,
+            Err(reason) => {
+                // Acknowledge receipt, not execution authority. No input staging or
+                // worker launch has happened, so cleanup is genuinely not required.
+                // Persist first so reconnect/restart can replay the exact failure.
+                self.journal.record_intent(&lease)?;
+                let mut result = from_backend_error(
+                    &lease,
+                    format!("runner-rejected:{}", lease.lease.execution_id),
+                    Utc::now(),
+                    &BackendError::InvalidRequest(reason),
+                );
+                result.cleanup_state = CleanupState::NotRequired;
+                let terminal = TerminalLeaseResult {
+                    lease: lease.lease.clone(),
+                    result,
+                };
+                self.journal.set_terminal(&terminal)?;
+                self.pending_results
+                    .insert(lease.lease.execution_id, terminal.clone());
+                outbound
+                    .send(RunnerToController::RunnerLeaseAccepted(lease.lease.clone()))
+                    .await
+                    .map_err(|_| "controller outbound channel closed".to_string())?;
+                return send_terminal(&outbound, terminal).await;
+            }
+        };
         let staged_inputs = self.stager.stage(&lease)?;
         let operation_id = format!("agent-worker:{}", lease.lease.execution_id);
         let setup = async {
@@ -741,7 +885,14 @@ impl Supervisor {
             let started_at = Utc::now();
             let execution =
                 run_worker_process(&lease, &spec, &config, &supervisor.journal, cancellation).await;
-            let cleanup_error = supervisor.stager.cleanup(lease.lease.execution_id).err();
+            let cleanup_error = if config.native_cgroup == Some(true) {
+                supervisor
+                    .cleanup_native_execution(&lease.lease)
+                    .await
+                    .err()
+            } else {
+                supervisor.stager.cleanup(lease.lease.execution_id).err()
+            };
             let finished_at = Utc::now();
             let worker_error = execution.as_ref().err().cloned();
             let mut result = match execution {
@@ -891,13 +1042,52 @@ impl Supervisor {
         {
             return Err("controller terminal acknowledgement is stale or conflicting".to_string());
         }
-        drop(result);
-        self.journal
-            .set_state(accepted.execution_id, JournalState::TerminalReported, None)?;
+        if !matches!(
+            result.result.cleanup_state,
+            CleanupState::Confirmed | CleanupState::NotRequired
+        ) {
+            let lease = result.lease.clone();
+            drop(result);
+            let record = self
+                .journal
+                .find(accepted.execution_id)?
+                .ok_or("acknowledged execution is not journaled")?;
+            if record.backend_operation_id.as_deref()
+                != Some(&format!("agent-worker:{}", accepted.execution_id))
+            {
+                return Err(
+                    "controller acknowledgement is not cleanup evidence; cleanup remains pending"
+                        .into(),
+                );
+            }
+            // The acknowledgement proves receipt only. Obtain fresh containment
+            // proof before discarding the unchanged failed terminal payload.
+            // Controller session cleanup still requires CleanupCompleted.
+            self.cleanup_native_execution(&lease).await?;
+        } else {
+            drop(result);
+        }
+        // Reclamation must succeed before the durable result is discarded.
+        // A failed cleanup leaves the exact terminal result available for replay.
+        self.stager.cleanup(accepted.execution_id)?;
+        let record = self
+            .journal
+            .find(accepted.execution_id)?
+            .ok_or("accepted execution missing")?;
+        #[cfg(target_os = "linux")]
+        let preserve_operator_terminal = self
+            .journal
+            .operator_fence_evidence(&record.lease_context)?
+            .is_some();
+        #[cfg(not(target_os = "linux"))]
+        let preserve_operator_terminal = false;
+        if !preserve_operator_terminal {
+            self.journal
+                .set_state(accepted.execution_id, JournalState::TerminalReported, None)?;
+        }
         self.journal
             .set_state(accepted.execution_id, JournalState::CleanupConfirmed, None)?;
         self.pending_results.remove(&accepted.execution_id);
-        self.stager.cleanup(accepted.execution_id)?;
         Ok(())
     }
 
@@ -1021,7 +1211,7 @@ impl Supervisor {
             // local reclamation, not invent and send a new UNKNOWN outcome.
             if record.state == JournalState::TerminalReported {
                 if let Some(operation_id) = &record.backend_operation_id {
-                    self.cleanup_with_retry(operation_id)
+                    self.cleanup_recovery_record(&record, operation_id)
                         .await
                         .map_err(|error| format!("recover terminal cleanup: {error}"))?;
                 }
@@ -1046,7 +1236,17 @@ impl Supervisor {
                     }
                     Ok(_) | Err(_) => {}
                 }
-                let _ = self.cleanup_with_retry(operation_id).await;
+                // An operation ID is not cleanup evidence. Preserve a durable
+                // pending record and abort recovery if fencing cannot be proven;
+                // the next connection/restart may retry cleanup, never execution.
+                self.journal.set_state(
+                    record.execution_id,
+                    JournalState::CleanupRequired,
+                    Some(operation_id),
+                )?;
+                self.cleanup_recovery_record(&record, operation_id)
+                    .await
+                    .map_err(|error| format!("recover unfinished cleanup: {error}"))?;
             }
             let mut result = from_backend_error(
                 &lease,
@@ -1347,7 +1547,9 @@ mod tests {
         let (supervisor, root) = supervisor(MockBehavior::default());
         let base = supervisor.backend_capability();
         let mut worker = WorkerProcessConfig {
+            native_cgroup: None,
             origin_service_id: "agent".into(),
+            additional_origin_service_ids: Default::default(),
             executable: "/worker".into(),
             binary_digest: format!("sha256:{}", "a".repeat(64)),
             capability_digest: format!("sha256:{}", "b".repeat(64)),
@@ -1497,6 +1699,109 @@ mod tests {
             ),
             root,
         )
+    }
+
+    #[tokio::test]
+    async fn missing_native_cli_is_rejected_without_start_or_cleanup_evidence() {
+        let (mut runner, root) = supervisor(MockBehavior::default());
+        let mut request = lease();
+        request.lease.origin.kind = OriginKind::Agent;
+        request.command =
+            serde_json::json!({"expectedCapabilityDigest":format!("sha256:{}", "b".repeat(64))});
+        Arc::get_mut(&mut runner).unwrap().agent_worker = Some(WorkerProcessConfig {
+            native_cgroup: Some(true),
+            origin_service_id: request.lease.origin.service_id.clone(),
+            additional_origin_service_ids: Default::default(),
+            executable: "/usr/bin/true".into(),
+            binary_digest: format!("sha256:{}", "a".repeat(64)),
+            capability_digest: format!("sha256:{}", "b".repeat(64)),
+            sandbox_launcher: None,
+            codex_home: None,
+            codex_executable: None,
+            claude_home: Some(root.clone()),
+            claude_executable: Some(root.join("removed-cli-version")),
+            workspace_config: None,
+            broker: None,
+        });
+        let (outbound, mut messages) = mpsc::channel(4);
+        runner
+            .accept_execute(request.clone(), outbound)
+            .await
+            .unwrap();
+        assert!(matches!(
+            messages.recv().await.unwrap(),
+            RunnerToController::RunnerLeaseAccepted(_)
+        ));
+        let terminal = match messages.recv().await.unwrap() {
+            RunnerToController::RunnerLeaseFailed(result) => result,
+            other => panic!("unexpected admission result: {other:?}"),
+        };
+        assert_eq!(terminal.result.cleanup_state, CleanupState::NotRequired);
+        assert_eq!(terminal.result.state, AttemptState::Failed);
+        assert!(
+            runner
+                .journal
+                .native_process_identity(&request.lease)
+                .unwrap()
+                .is_none()
+        );
+        assert!(runner.active.is_empty());
+        assert_eq!(runner.available_capacity(), 1);
+        assert!(messages.try_recv().is_err());
+        drop(runner);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn pre_start_agent_rejection_survives_response_loss_and_restart() {
+        let (first, root) = supervisor(MockBehavior::default());
+        let mut lease = lease();
+        lease.lease.origin.kind = OriginKind::Agent;
+        lease.command = serde_json::json!({"expectedCapabilityDigest":"not-admitted"});
+        let (outbound, messages) = mpsc::channel(2);
+        drop(messages);
+        assert!(first.accept_execute(lease.clone(), outbound).await.is_err());
+        let original = first
+            .journal
+            .find(lease.lease.execution_id)
+            .unwrap()
+            .unwrap()
+            .terminal_result
+            .unwrap();
+        assert_eq!(original.result.state, AttemptState::Failed);
+        assert_eq!(original.result.cleanup_state, CleanupState::NotRequired);
+        assert!(first.active.is_empty());
+        assert_eq!(first.available_capacity(), 1);
+        drop(first);
+        let restarted = Supervisor::new(
+            Arc::new(MockExecutionBackend::new("compat", MockBehavior::default())),
+            Journal::open(&root.join("journal.sqlite")).unwrap(),
+            InputStager::new(root.join("staging"), 1024).unwrap(),
+            BTreeSet::from(["template".to_string()]),
+            1,
+            None,
+        );
+        let (outbound, mut messages) = mpsc::channel(4);
+        restarted.recover(&outbound).await.unwrap();
+        match messages.recv().await.unwrap() {
+            RunnerToController::RunnerLeaseFailed(result) => assert_eq!(result, original),
+            other => panic!("unexpected recovery: {other:?}"),
+        }
+        restarted
+            .accept_execute(lease.clone(), outbound)
+            .await
+            .unwrap();
+        assert!(matches!(
+            messages.recv().await.unwrap(),
+            RunnerToController::RunnerLeaseAccepted(_)
+        ));
+        match messages.recv().await.unwrap() {
+            RunnerToController::RunnerLeaseFailed(result) => assert_eq!(result, original),
+            other => panic!("unexpected replay: {other:?}"),
+        }
+        assert!(restarted.active.is_empty());
+        drop(restarted);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
@@ -1721,6 +2026,271 @@ mod tests {
         assert_eq!(replayed, original);
         assert_eq!(restarted.cleanup_backlog(), 1);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn acknowledgement_cannot_erase_failed_cleanup_evidence() {
+        let (runner, root) = supervisor(MockBehavior {
+            cleanup_fails: true,
+            ..MockBehavior::default()
+        });
+        let lease = lease();
+        let (outbound, mut messages) = mpsc::channel(8);
+        runner
+            .accept_execute(lease.clone(), outbound)
+            .await
+            .unwrap();
+        let _ = messages.recv().await;
+        let _ = messages.recv().await;
+        let _ = messages.recv().await;
+        let terminal = runner
+            .pending_results
+            .get(&lease.lease.execution_id)
+            .unwrap()
+            .clone();
+        assert_eq!(terminal.result.cleanup_state, CleanupState::Failed);
+        let ack = LeaseResultAccepted {
+            execution_id: lease.lease.execution_id,
+            lease_id: lease.lease.lease_id,
+            fencing_token: lease.lease.fencing_token,
+            state: terminal.result.state,
+        };
+        assert!(runner.result_accepted(&ack).await.is_err());
+        let record = runner
+            .journal
+            .find(lease.lease.execution_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.terminal_result, Some(terminal));
+        assert_eq!(record.state, JournalState::TerminalPending);
+        assert_eq!(runner.cleanup_backlog(), 1);
+        assert!(
+            runner
+                .pending_results
+                .contains_key(&lease.lease.execution_id)
+        );
+        drop(runner);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn native_failed_cleanup_requires_identity_then_reclaims_without_changing_result() {
+        let (runner, root) = supervisor(MockBehavior::default());
+        let lease = lease();
+        let id = lease.lease.execution_id;
+        let operation = format!("agent-worker:{id}");
+        runner.journal.record_intent(&lease).unwrap();
+        runner
+            .journal
+            .set_state(id, JournalState::Executing, Some(&operation))
+            .unwrap();
+        let mut result = from_backend_error(
+            &lease,
+            operation.clone(),
+            Utc::now(),
+            &BackendError::Unknown("interrupted".into()),
+        );
+        result.cleanup_state = CleanupState::Failed;
+        let terminal = TerminalLeaseResult {
+            lease: lease.lease.clone(),
+            result,
+        };
+        runner.journal.set_terminal(&terminal).unwrap();
+        runner.pending_results.insert(id, terminal.clone());
+        let ack = LeaseResultAccepted {
+            execution_id: id,
+            lease_id: lease.lease.lease_id,
+            fencing_token: lease.lease.fencing_token,
+            state: terminal.result.state,
+        };
+        let mut directive = SessionDirective {
+            execution_session_id: execution_runner_protocol::ExecutionSessionId::new(),
+            cleanup_request_id: Some(execution_runner_protocol::CleanupRequestId::new()),
+            session_version: 1,
+            session_fence: 1,
+            compatibility_digest: "compat".into(),
+            backend_operation_id: Some(operation),
+            checkpoint_handle: None,
+            checkpoint_digest: None,
+            reason: "cancel".into(),
+            deadline: Utc::now() + ChronoDuration::minutes(1),
+        };
+        assert!(runner.cleanup_session(&directive).await.is_err());
+        assert!(runner.result_accepted(&ack).await.is_err());
+        assert_eq!(
+            runner.journal.find(id).unwrap().unwrap().terminal_result,
+            Some(terminal.clone())
+        );
+        let mut identity =
+            crate::native_process::NativeProcessIdentity::capture(std::process::id()).unwrap();
+        let membership = fs::read_to_string("/proc/self/cgroup").unwrap();
+        identity.containment = Some(crate::native_containment::NativeContainment {
+            execution_id: id,
+            parent: membership
+                .lines()
+                .find_map(|s| s.strip_prefix("0::"))
+                .unwrap()
+                .into(),
+            inode: 0,
+            boot_id: fs::read_to_string("/proc/sys/kernel/random/boot_id")
+                .unwrap()
+                .trim()
+                .into(),
+            cgroup_namespace: fs::read_link("/proc/self/ns/cgroup")
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        });
+        // An absent exact execution scope in the same boot/namespace is positive
+        // kernel absence evidence. Populated-scope killing has a delegated live gate.
+        runner
+            .journal
+            .record_native_process(&lease.lease, &identity)
+            .unwrap();
+        let completed = runner.cleanup_session(&directive).await.unwrap();
+        assert_eq!(completed.cleanup_state, CleanupState::Confirmed);
+        assert_eq!(
+            runner.journal.find(id).unwrap().unwrap().terminal_result,
+            Some(terminal)
+        );
+        let mut stale = ack.clone();
+        stale.fencing_token += 1;
+        assert!(runner.result_accepted(&stale).await.is_err());
+        runner.result_accepted(&ack).await.unwrap();
+        assert_eq!(runner.cleanup_backlog(), 0);
+        // Cleanup can be redelivered after terminal reclamation.
+        assert!(runner.cleanup_session(&directive).await.is_ok());
+        directive.backend_operation_id = Some(format!("agent-worker:{}", ExecutionId::new()));
+        assert!(runner.cleanup_session(&directive).await.is_err());
+        drop(runner);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn recovery_cleanup_failure_never_claims_confirmation_and_can_retry() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(MockExecutionBackend::new(
+            "compat",
+            MockBehavior {
+                cleanup_failures: 3,
+                ..MockBehavior::default()
+            },
+        ));
+        let lease = lease();
+        let prepared = backend.prepare(&lease, &[]).await.unwrap();
+        let journal = Journal::open(&root.path().join("journal.sqlite")).unwrap();
+        journal.record_intent(&lease).unwrap();
+        journal
+            .set_state(
+                lease.lease.execution_id,
+                JournalState::CleanupRequired,
+                Some(&prepared.backend_operation_id),
+            )
+            .unwrap();
+        drop(journal);
+        let open = || {
+            Supervisor::new(
+                backend.clone(),
+                Journal::open(&root.path().join("journal.sqlite")).unwrap(),
+                InputStager::new(root.path().join("staging"), 1024).unwrap(),
+                BTreeSet::from(["template".to_string()]),
+                1,
+                None,
+            )
+        };
+        let first = open();
+        let (outbound, mut messages) = mpsc::channel(8);
+        assert!(first.recover(&outbound).await.is_err());
+        assert!(
+            messages.try_recv().is_err(),
+            "failed cleanup must not publish confirmation"
+        );
+        let record = first
+            .journal
+            .find(lease.lease.execution_id)
+            .unwrap()
+            .unwrap();
+        assert!(record.terminal_result.is_none());
+        assert_eq!(record.state, JournalState::CleanupRequired);
+        assert_eq!(first.cleanup_backlog(), 1);
+        drop(first);
+        let restarted = open();
+        restarted.recover(&outbound).await.unwrap();
+        let terminal = restarted
+            .pending_results
+            .get(&lease.lease.execution_id)
+            .unwrap()
+            .clone();
+        assert_eq!(terminal.result.state, AttemptState::Unknown);
+        assert_eq!(terminal.result.cleanup_state, CleanupState::Confirmed);
+        assert_eq!(terminal.lease, lease.lease);
+        assert!(matches!(
+            backend
+                .inspect(&prepared.backend_operation_id)
+                .await
+                .unwrap()
+                .state,
+            BackendOperationState::Cleaned
+        ));
+    }
+
+    #[tokio::test]
+    async fn killed_process_retains_unfinished_cleanup_without_false_confirmation() {
+        const CHILD_ROOT: &str = "LIGHT_RUNNER_CLEANUP_CRASH_TEST_ROOT";
+        if let Ok(root) = std::env::var(CHILD_ROOT) {
+            let root = std::path::PathBuf::from(root);
+            let journal = Journal::open(&root.join("journal.sqlite")).unwrap();
+            let lease = lease();
+            journal.record_intent(&lease).unwrap();
+            journal
+                .set_state(
+                    lease.lease.execution_id,
+                    JournalState::CleanupRequired,
+                    Some("interrupted-operation"),
+                )
+                .unwrap();
+            fs::write(root.join("ready"), "durable cleanup pending").unwrap();
+            // Parent forcibly kills this process; no destructors or graceful
+            // shutdown can turn this pending record into positive evidence.
+            std::future::pending::<()>().await;
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "supervisor::tests::killed_process_retains_unfinished_cleanup_without_false_confirmation"])
+            .env(CHILD_ROOT, root.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn().unwrap();
+        let ready = tokio::time::timeout(Duration::from_secs(10), async {
+            while !root.path().join("ready").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok();
+        child.kill().unwrap();
+        assert!(!child.wait().unwrap().success());
+        assert!(ready, "child did not persist its cleanup boundary");
+        let restarted = Supervisor::new(
+            Arc::new(MockExecutionBackend::new("compat", MockBehavior::default())),
+            Journal::open(&root.path().join("journal.sqlite")).unwrap(),
+            InputStager::new(root.path().join("staging"), 1024).unwrap(),
+            BTreeSet::from(["template".to_string()]),
+            1,
+            None,
+        );
+        let (outbound, mut messages) = mpsc::channel(8);
+        assert!(restarted.recover(&outbound).await.is_err());
+        assert!(messages.try_recv().is_err());
+        let records = restarted.journal.unfinished().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].state, JournalState::CleanupRequired);
+        assert!(records[0].terminal_result.is_none());
+        assert_eq!(restarted.cleanup_backlog(), 1);
+        // This exercises real process death/SQLite recovery with an injected
+        // unavailable backend; it is not a Controller/VM native E2E gate.
     }
 
     #[tokio::test]

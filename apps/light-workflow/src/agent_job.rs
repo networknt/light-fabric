@@ -84,10 +84,16 @@ impl AgentJobReconciler {
             if shutdown.is_cancelled() {
                 return Ok(());
             }
-            let jobs:Vec<(Uuid,Uuid)>=sqlx::query_as("SELECT host_id,job_id FROM agent_job_t
-                WHERE state IN('SUCCEEDED','FAILED','CANCELLED','UNKNOWN') ORDER BY updated_ts LIMIT 100")
-                .fetch_all(&self.pool).await?;
+            let jobs: Vec<(Uuid, Uuid)> = sqlx::query_as(
+                "SELECT j.host_id,j.job_id FROM workflow_agent_job_t j
+                JOIN task_info_t t ON t.host_id=j.host_id AND t.task_id=j.workflow_task_id
+                WHERE j.state IN('SUCCEEDED','FAILED','CANCELLED','UNKNOWN') AND t.status_code='W'
+                ORDER BY j.updated_ts LIMIT 100",
+            )
+            .fetch_all(&self.pool)
+            .await?;
             let mut progressed = false;
+            progressed |= crate::development_cancel::reconcile(&self.pool).await? > 0;
             for (host, job) in jobs {
                 progressed |= self.executor.reconcile_agent_job(host, job).await?;
             }

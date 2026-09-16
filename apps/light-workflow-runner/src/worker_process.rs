@@ -18,7 +18,11 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkerProcessConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_cgroup: Option<bool>,
     pub origin_service_id: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub additional_origin_service_ids: std::collections::BTreeSet<String>,
     pub executable: std::path::PathBuf,
     pub binary_digest: String,
     pub capability_digest: String,
@@ -53,6 +57,10 @@ pub struct WorkerSandboxLauncherConfig {
 }
 
 impl WorkerProcessConfig {
+    pub fn admits_origin(&self, service: &str) -> bool {
+        self.origin_service_id == service || self.additional_origin_service_ids.contains(service)
+    }
+
     pub fn has_restricted_model_egress(&self) -> bool {
         self.sandbox_launcher
             .as_ref()
@@ -64,6 +72,20 @@ impl WorkerProcessConfig {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self.additional_origin_service_ids.len() > 16
+            || self
+                .additional_origin_service_ids
+                .contains(&self.origin_service_id)
+            || self.additional_origin_service_ids.iter().any(|id| {
+                id.is_empty()
+                    || id.len() > 255
+                    || !id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+            })
+        {
+            return Err("agent worker additionalOriginServiceIds is invalid".into());
+        }
         if self.origin_service_id.is_empty()
             || !self
                 .origin_service_id
@@ -347,6 +369,31 @@ pub async fn run_worker_process(
     let mut child = command
         .spawn()
         .map_err(|e| format!("spawn agent worker: {e}"))?;
+    #[cfg(target_os = "linux")]
+    {
+        let persisted = child
+            .id()
+            .ok_or_else(|| "native worker pid unavailable".to_string())
+            .and_then(|pid| {
+                let containment = if config.native_cgroup == Some(true) {
+                    let scope = crate::native_containment::NativeContainment::create(
+                        lease.lease.execution_id,
+                    )?;
+                    scope.attach(pid)?;
+                    Some(scope)
+                } else {
+                    None
+                };
+                let mut identity = crate::native_process::NativeProcessIdentity::capture(pid)?;
+                identity.containment = containment;
+                Ok(identity)
+            })
+            .and_then(|identity| journal.record_native_process(&lease.lease, &identity));
+        if let Err(error) = persisted {
+            kill_tree(&mut child).await;
+            return Err(error);
+        }
+    }
     let (broker_shutdown, broker_task) = if let Some(broker) = broker {
         let expected_pid = child.id().ok_or("spawned worker has no process id")?;
         let (shutdown, receiver) = watch::channel(false);
@@ -494,7 +541,7 @@ pub async fn run_worker_process(
                         crate::workspace_result::validate(&workspace,output.as_ref().ok_or("workspace worker omitted its result")?)?;
                         let result=output.as_ref().unwrap();
                         let claude=spec.input.pointer("/adapterContract/adapterId").and_then(serde_json::Value::as_str)==Some(coding_agent_runtime::claude::ADAPTER_ID);
-                        if (result.pointer("/authentication/credentialSource").and_then(serde_json::Value::as_str)==Some("native-claude-store")) != claude {return Err("workspace credential source mismatch".into());}
+                        if workspace.manager_snapshot.is_none() && (result.pointer("/authentication/credentialSource").and_then(serde_json::Value::as_str)==Some("native-claude-store")) != claude {return Err("workspace credential source mismatch".into());}
                         if let Some(thread)=&workspace.request.thread { validate_thread_receipt(thread,result.get("codingThread").ok_or("workspace conversation receipt missing")?)?; }
                     }
 
@@ -875,6 +922,34 @@ async fn kill_tree(child: &mut tokio::process::Child) {
 
 #[cfg(all(test, unix))]
 mod tests {
+    #[test]
+    fn worker_origin_allowlist_is_explicit_and_bounded() {
+        let mut worker: super::WorkerProcessConfig = serde_json::from_value(serde_json::json!({
+            "originServiceId":"agent-interactive", "executable":"/bin/true",
+            "binaryDigest":format!("sha256:{}", "1".repeat(64)),
+            "capabilityDigest":format!("sha256:{}", "2".repeat(64))
+        }))
+        .unwrap();
+        assert!(worker.validate().is_ok());
+        assert!(worker.admits_origin("agent-interactive"));
+        assert!(!worker.admits_origin("agent-workflow"));
+        worker
+            .additional_origin_service_ids
+            .insert("agent-workflow".into());
+        assert!(worker.validate().is_ok());
+        assert!(worker.admits_origin("agent-workflow"));
+        assert!(!worker.admits_origin("unapproved-agent"));
+        for invalid in ["", "*", "agent/workflow", "agent-interactive"] {
+            let mut changed = worker.clone();
+            changed.additional_origin_service_ids.insert(invalid.into());
+            assert!(changed.validate().is_err());
+        }
+        worker
+            .additional_origin_service_ids
+            .extend((0..17).map(|i| format!("agent-{i}")));
+        assert!(worker.validate().is_err());
+    }
+
     use super::*;
     use agent_core::{AgentActionAttemptId, AgentSessionId, AgentTurnId};
     use agent_runtime_protocol::{
@@ -978,7 +1053,9 @@ sys.stdin.readline()
             hex::encode(Sha256::digest(std::fs::read(&executable).unwrap()))
         );
         WorkerProcessConfig {
+            native_cgroup: None,
             origin_service_id: "light-agent".into(),
+            additional_origin_service_ids: Default::default(),
             executable,
             binary_digest: digest,
             capability_digest,
@@ -1200,7 +1277,9 @@ event(2,{{"type":"terminal","class":"success","output":{{"budget":budget}},"erro
         std::fs::write(&executable, &source).unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
         WorkerProcessConfig {
+            native_cgroup: None,
             origin_service_id: "light-agent".into(),
+            additional_origin_service_ids: Default::default(),
             executable,
             binary_digest: format!("sha256:{}", hex::encode(Sha256::digest(&source))),
             capability_digest,
@@ -1493,6 +1572,23 @@ event(2,{{"type":"terminal","class":"success","output":{{"budget":budget}},"erro
 
         assert_eq!(error, "worker event exceeds admitted limit");
     }
+    #[test]
+    fn removed_claude_cli_is_rejected_by_repeated_admission_validation() {
+        use coding_agent_runtime::claude as c;
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = fixture(dir.path(), &c::capabilities(), false);
+        let home = dir.path().join("claude-home");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let executable = dir.path().join("pinned-claude");
+        std::fs::copy(std::fs::canonicalize("/usr/bin/true").unwrap(), &executable).unwrap();
+        config.claude_home = Some(home);
+        config.claude_executable = Some(executable.clone());
+        config.validate().unwrap();
+        std::fs::remove_file(executable).unwrap();
+        assert!(config.validate().is_err());
+    }
+
     #[test]
     fn claude_native_admission_rejects_cross_pool_policy_and_model_confusion() {
         use coding_agent_runtime::claude as c;

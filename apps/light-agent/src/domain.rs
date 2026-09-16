@@ -70,7 +70,16 @@ impl ReconciliationRetry {
 
 #[async_trait::async_trait]
 pub trait WorkflowJobAuthorizer: Send + Sync {
+    fn transport_enabled(&self) -> bool {
+        false
+    }
     async fn authorized(&self, host: Uuid, job: Uuid) -> Result<bool>;
+    async fn pending(&self, _host: Uuid) -> Result<Vec<light_client::workflow_job_transport::Job>> {
+        Ok(Vec::new())
+    }
+    async fn report(&self, _report: &light_client::workflow_job_transport::Report) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -578,6 +587,108 @@ fn token_cost_micros(tokens: i64, rate_micros_per_million: i64) -> i64 {
 }
 
 impl AgentRepository {
+    async fn sync_workflow_job_transport(&self) -> Result<()> {
+        let Some(bridge) = &self.workflow_job_authorizer else {
+            return Ok(());
+        };
+        if !bridge.transport_enabled() {
+            return Ok(());
+        }
+        let a = self
+            .authority
+            .as_ref()
+            .context("missing Agent publication")?;
+        let terminal = sqlx::query("SELECT j.job_id,j.state,j.public_output,j.error,t.scheduling_request_id FROM agent_job_t j LEFT JOIN agent_turn_t t ON t.host_id=j.host_id AND t.turn_id=j.turn_id WHERE j.host_id=$1 AND j.agent_def_id=$2 AND j.workflow_reported_ts IS NULL AND j.state IN('SUCCEEDED','FAILED','CANCELLED','UNKNOWN') ORDER BY j.updated_ts LIMIT 32")
+            .bind(a.host_id).bind(a.agent_def_id).fetch_all(&self.pool).await?;
+        for row in terminal {
+            let job: Uuid = row.get("job_id");
+            let state: String = row.get("state");
+            let cleanup = if state != "SUCCEEDED" {
+                if let Some(request) = row.get::<Option<Uuid>, _>("scheduling_request_id") {
+                    let Some(execution) = &self.execution else {
+                        continue;
+                    };
+                    let receipt = match execution.cancel_request(request).await {
+                        Ok(receipt) if receipt.confirmed => receipt,
+                        _ => continue, // Not registered, disconnected or still cleaning: hold the VM.
+                    };
+                    anyhow::ensure!(
+                        receipt.host_id == a.host_id
+                            && receipt.origin_service_id == a.service_id
+                            && matches!(receipt.subject,execution_runner_protocol::ExecutionSubject::AgentTurn{session_id,..} if session_id==job),
+                        "Controller cancellation belongs to another job"
+                    );
+                    Some(json!({"kind":"controller","receipt":receipt}))
+                } else {
+                    Some(json!({"kind":"not-dispatched","jobId":job}))
+                }
+            } else {
+                None
+            };
+            bridge
+                .report(&light_client::workflow_job_transport::Report {
+                    host_id: a.host_id,
+                    job_id: job,
+                    state: row.get("state"),
+                    output: row.get("public_output"),
+                    error: row.get("error"),
+                    cleanup,
+                })
+                .await?;
+            sqlx::query(
+                "UPDATE agent_job_t SET workflow_reported_ts=now() WHERE host_id=$1 AND job_id=$2",
+            )
+            .bind(a.host_id)
+            .bind(job)
+            .execute(&self.pool)
+            .await?;
+        }
+        let active:Vec<Uuid>=sqlx::query_scalar("SELECT job_id FROM agent_job_t WHERE host_id=$1 AND agent_def_id=$2 AND state IN('PENDING','TURN_CREATED','RUNNING') AND cancellation_requested_ts IS NULL ORDER BY created_ts LIMIT 32")
+            .bind(a.host_id).bind(a.agent_def_id).fetch_all(&self.pool).await?;
+        for job in active {
+            if !bridge.authorized(a.host_id, job).await? {
+                self.request_job_cancellation(a.host_id, job).await?;
+            }
+        }
+        for job in bridge.pending(a.host_id).await? {
+            job.validate()?;
+            anyhow::ensure!(
+                job.host_id == a.host_id && job.agent_def_id == a.agent_def_id,
+                "Workflow job belongs to another Agent"
+            );
+            anyhow::ensure!(
+                canonical_sha256(&job.input)? == job.input_digest.trim_start_matches("sha256:"),
+                "Workflow input digest mismatch"
+            );
+            let deadline = DateTime::parse_from_rfc3339(&job.deadline)?.with_timezone(&Utc);
+            anyhow::ensure!(
+                job.cancellation_requested || deadline > Utc::now(),
+                "Workflow job expired before admission"
+            );
+            let mut tx = self.pool.begin().await?;
+            sqlx::query("INSERT INTO agent_job_t(host_id,job_id,workflow_process_id,workflow_task_id,agent_def_id,idempotency_key,input,input_schema_digest,output_schema,policy_digest,data_boundary_digest,deadline_ts,token_budget,cost_budget_micros,delegation_depth,maximum_delegation_depth,end_user_subject,memory_mode,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'ISOLATED','PENDING') ON CONFLICT(host_id,job_id) DO NOTHING")
+                .bind(a.host_id).bind(job.job_id).bind(job.process_id).bind(job.task_id).bind(a.agent_def_id)
+                .bind(format!("workflow:{}:{}",job.process_id,job.task_id)).bind(&job.input).bind(&job.input_digest)
+                .bind(&job.output_schema).bind(&a.policy_digest).bind(&a.data_boundary_digest).bind(deadline)
+                .bind(job.token_budget).bind(job.cost_budget_micros).bind(job.depth).bind(job.maximum_depth)
+                .bind(&job.end_user_subject)
+                .execute(&mut *tx).await?;
+            let same:bool=sqlx::query_scalar("SELECT workflow_process_id=$3 AND workflow_task_id=$4 AND agent_def_id=$5 AND input=$6 AND input_schema_digest=$7 AND output_schema=$8 AND deadline_ts=$9 AND token_budget=$10 AND cost_budget_micros=$11 AND delegation_depth=$12 AND maximum_delegation_depth=$13 AND end_user_subject IS NOT DISTINCT FROM $14 FROM agent_job_t WHERE host_id=$1 AND job_id=$2")
+                .bind(a.host_id).bind(job.job_id).bind(job.process_id).bind(job.task_id).bind(a.agent_def_id)
+                .bind(&job.input).bind(&job.input_digest).bind(&job.output_schema).bind(deadline).bind(job.token_budget)
+                .bind(job.cost_budget_micros).bind(job.depth).bind(job.maximum_depth).bind(&job.end_user_subject).fetch_one(&mut *tx).await?;
+            anyhow::ensure!(same, "Workflow job replay changed immutable admission");
+            if job.cancellation_requested {
+                // Fence the newly inserted job in the same transaction. For a
+                // previously admitted job, retain its turn and Controller ID
+                // so normal cancellation obtains real cleanup evidence.
+                sqlx::query("UPDATE agent_job_t SET cancellation_requested_ts=COALESCE(cancellation_requested_ts,now()),updated_ts=now() WHERE host_id=$1 AND job_id=$2 AND state IN('PENDING','TURN_CREATED','RUNNING')")
+                    .bind(a.host_id).bind(job.job_id).execute(&mut *tx).await?;
+            }
+            tx.commit().await?;
+        }
+        Ok(())
+    }
     pub fn with_authority(pool: PgPool, authority: AgentRuntimeAuthority) -> Self {
         Self {
             pool,
@@ -1108,10 +1219,48 @@ impl AgentRepository {
         Ok(changed.rows_affected() == 1)
     }
 
+    /// Workflow jobs can be the first session on a dedicated Agent instance.
+    /// Persist only the accepted Config Server policy before admitting those jobs;
+    /// never depend on an interactive session having installed it first.
+    pub async fn initialize_workflow_policy(&self, policy: &PolicySnapshot) -> Result<()> {
+        let authority = self
+            .authority
+            .as_ref()
+            .context("workflow policy requires immutable projection authority")?;
+        if authority.policy_snapshot_id != policy.snapshot_id
+            || authority.policy_digest != policy_document_digest(policy)?
+            || authority.definition_digest != policy.definition_digest
+            || authority.data_boundary_digest != policy.data_boundary_digest
+        {
+            bail!("workflow policy does not match accepted Agent authority");
+        }
+        let mut tx = self.pool.begin().await?;
+        persist_runtime_scope(&mut tx, authority).await?;
+        persist_policy(&mut tx, authority, policy).await?;
+        // Workflow-only Agents may never create an interactive session. Pin the
+        // accepted version at startup so a later publication can prove a forward
+        // transition without depending on incidental interactive traffic.
+        pin_reference_evidence(
+            &mut tx,
+            authority,
+            "agent_policy_snapshot_t",
+            policy.snapshot_id,
+            "AGENT_POLICY",
+            policy.snapshot_id,
+            Some(authority.policy_version),
+            Some(authority.publication_id),
+            &authority.content_digest,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn reconcile_agent_jobs(&self) -> Result<u64> {
         if !self.workflow_jobs_enabled {
             return Ok(0);
         }
+        self.sync_workflow_job_transport().await?;
         let authority = self
             .authority
             .as_ref()
@@ -1129,9 +1278,9 @@ impl AgentRepository {
         for _ in 0..100 {
             let mut tx = self.pool.begin().await?;
             let row=sqlx::query("SELECT j.host_id,j.job_id,j.agent_def_id,j.idempotency_key,j.policy_digest,
-                    j.data_boundary_digest,j.deadline_ts,j.token_budget,j.cost_budget_micros,j.delegation_depth,(j.input ? 'workspace') AS workspace_job
+                    j.data_boundary_digest,j.deadline_ts,j.token_budget,j.cost_budget_micros,j.delegation_depth,j.end_user_subject,(j.input ? 'workspace') AS workspace_job
                  FROM agent_job_t j
-                 WHERE j.state='PENDING' AND j.deadline_ts>now()
+                 WHERE j.state='PENDING' AND j.deadline_ts>now() AND j.cancellation_requested_ts IS NULL
                    AND j.host_id=$1 AND j.agent_def_id=$2 AND j.policy_digest=$3
                    AND j.data_boundary_digest=$4 AND NOT (j.job_id=ANY($5))
                  ORDER BY j.created_ts,j.job_id
@@ -1163,7 +1312,8 @@ impl AgentRepository {
             .bind(host)
             .bind(job)
             .bind(if row.try_get::<bool, _>("workspace_job")? {
-                format!("workflow-agent:{}", authority.agent_def_id)
+                row.try_get::<Option<String>, _>("end_user_subject")?
+                    .context("workspace job has no authenticated owner")?
             } else {
                 format!("workflow-job:{job}")
             })
@@ -1225,6 +1375,7 @@ impl AgentRepository {
              FROM agent_job_t j JOIN agent_session_t s
                ON s.host_id=j.host_id AND s.session_id=j.job_id
              WHERE j.cancellation_requested_ts IS NOT NULL
+               AND NOT EXISTS(SELECT 1 FROM agent_turn_t t WHERE t.host_id=j.host_id AND t.turn_id=j.turn_id AND t.scheduling_request_id IS NOT NULL)
                AND s.execution_session_id IS NOT NULL
                AND s.cleanup_state IN('NOT_REQUIRED','CLEANUP_REQUESTED')
              ORDER BY j.created_ts,j.job_id LIMIT 100",
@@ -1521,7 +1672,7 @@ impl AgentRepository {
               AND j.data_boundary_digest=$4
               AND j.state IN ('TURN_CREATED','RUNNING') AND t.state='RECEIVED' AND j.deadline_ts>now()
               AND j.cancellation_requested_ts IS NULL
-              AND (j.input->>'profile'='coding' OR j.input ? 'coding')
+              AND (j.input->>'profile'='coding' OR j.input ? 'coding' OR j.input ? 'workspace')
             ORDER BY j.created_ts LIMIT 100")
             .bind(authority.host_id).bind(authority.agent_def_id).bind(&authority.policy_digest)
             .bind(&authority.data_boundary_digest).fetch_all(&self.pool).await?)
@@ -3041,7 +3192,7 @@ async fn persist_runtime_scope(
                             AND e.source_service=runtime_operational_scope_t.service_id
                             AND e.publication_id=runtime_operational_scope_t.publication_id
                             AND e.reference_kind='AGENT_POLICY'
-                            AND e.source_table='agent_session_t'
+                            AND e.source_table IN ('agent_session_t','agent_policy_snapshot_t')
                             AND e.audience='agent'
                             AND e.issuer=runtime_operational_scope_t.service_id
                          HAVING bool_and(e.state='ACCEPTED' AND e.target_version IS NOT NULL AND e.target_version>0)
@@ -3581,6 +3732,163 @@ mod tests {
         ));
     }
 
+    async fn qualify_workflow_owner_transport(
+        pool: &PgPool,
+        authority: &AgentRuntimeAuthority,
+        policy: &PolicySnapshot,
+    ) {
+        struct Bridge(std::sync::Mutex<light_client::workflow_job_transport::Job>);
+        #[async_trait::async_trait]
+        impl WorkflowJobAuthorizer for Bridge {
+            fn transport_enabled(&self) -> bool {
+                true
+            }
+            async fn authorized(&self, _: Uuid, _: Uuid) -> Result<bool> {
+                Ok(true)
+            }
+            async fn pending(
+                &self,
+                _: Uuid,
+            ) -> Result<Vec<light_client::workflow_job_transport::Job>> {
+                Ok(vec![self.0.lock().unwrap().clone()])
+            }
+        }
+        let owner = Uuid::now_v7().to_string();
+        let id = Uuid::now_v7();
+        let input = json!({"workspace": {}});
+        let bridge = Arc::new(Bridge(std::sync::Mutex::new(
+            light_client::workflow_job_transport::Job {
+                host_id: authority.host_id,
+                job_id: id,
+                process_id: Uuid::now_v7(),
+                task_id: id,
+                agent_def_id: authority.agent_def_id,
+                end_user_subject: owner.clone(),
+                input_digest: canonical_sha256(&input).unwrap(),
+                input,
+                output_schema: json!({"type":"object"}),
+                deadline: (Utc::now() + Duration::minutes(5)).to_rfc3339(),
+                token_budget: 100,
+                cost_budget_micros: 0,
+                depth: 0,
+                maximum_depth: 1,
+                cancellation_requested: false,
+            },
+        )));
+        let repository = AgentRepository::with_authority(pool.clone(), authority.clone())
+            .with_workflow_job_authorizer(bridge.clone());
+        // This precedes every interactive session: Workflow startup must persist
+        // its accepted policy itself, including on an exact startup replay.
+        repository.initialize_workflow_policy(policy).await.unwrap();
+        repository.initialize_workflow_policy(policy).await.unwrap();
+        let upgrade_authority = AgentRuntimeAuthority {
+            service_id: "workflow-upgrade-test".into(),
+            instance_id: Uuid::now_v7(),
+            ..authority.clone()
+        };
+        let initial = AgentRepository::with_authority(pool.clone(), upgrade_authority.clone());
+        initial.initialize_workflow_policy(policy).await.unwrap();
+        let mut next_policy = policy.clone();
+        next_policy.snapshot_id = Uuid::now_v7();
+        let next_authority = AgentRuntimeAuthority {
+            publication_id: Uuid::now_v7(),
+            content_digest: sha256_digest(b"workflow upgraded content"),
+            policy_snapshot_id: next_policy.snapshot_id,
+            policy_version: upgrade_authority.policy_version + 1,
+            policy_digest: policy_document_digest(&next_policy).unwrap(),
+            ..upgrade_authority
+        };
+        let upgraded = AgentRepository::with_authority(pool.clone(), next_authority);
+        upgraded
+            .initialize_workflow_policy(&next_policy)
+            .await
+            .unwrap();
+        upgraded
+            .initialize_workflow_policy(&next_policy)
+            .await
+            .unwrap();
+        assert!(
+            initial.initialize_workflow_policy(policy).await.is_err(),
+            "startup evidence must not permit a policy downgrade"
+        );
+        let mut wrong = policy.clone();
+        wrong.data_boundary_digest = sha256_digest(b"wrong boundary");
+        assert!(repository.initialize_workflow_policy(&wrong).await.is_err());
+        repository.sync_workflow_job_transport().await.unwrap();
+        repository.sync_workflow_job_transport().await.unwrap();
+        bridge.0.lock().unwrap().end_user_subject = Uuid::now_v7().to_string();
+        assert!(repository.sync_workflow_job_transport().await.is_err());
+        bridge.0.lock().unwrap().end_user_subject = owner.clone();
+        repository.reconcile_agent_jobs().await.unwrap();
+        let actual: String = sqlx::query_scalar(
+            "SELECT principal_id FROM agent_session_t WHERE host_id=$1 AND session_id=$2",
+        )
+        .bind(authority.host_id)
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(actual, owner);
+        repository
+            .activate_next_turn(authority.host_id, AgentSessionId(id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(repository.pending_coding_jobs().await.unwrap()[0].0, id);
+        bridge.0.lock().unwrap().cancellation_requested = true;
+        repository.sync_workflow_job_transport().await.unwrap();
+        let fenced: bool = sqlx::query_scalar("SELECT cancellation_requested_ts IS NOT NULL AND turn_id IS NOT NULL FROM agent_job_t WHERE host_id=$1 AND job_id=$2")
+            .bind(authority.host_id).bind(id).fetch_one(pool).await.unwrap();
+        assert!(
+            fenced,
+            "late cleanup must preserve the existing turn identity"
+        );
+        // Only this fixture's job/session; no operational or user data is reset.
+        sqlx::query("DELETE FROM agent_job_t WHERE host_id=$1 AND job_id=$2")
+            .bind(authority.host_id)
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM agent_session_t WHERE host_id=$1 AND session_id=$2")
+            .bind(authority.host_id)
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+        // Cleanup-only deliveries arriving before admission (including after
+        // deadline) must create no session/turn and must be safe to replay.
+        for expired in [false, true] {
+            let cleanup_id = Uuid::now_v7();
+            {
+                let mut delivery = bridge.0.lock().unwrap();
+                delivery.job_id = cleanup_id;
+                delivery.task_id = cleanup_id;
+                delivery.deadline = (Utc::now()
+                    + if expired {
+                        Duration::minutes(-1)
+                    } else {
+                        Duration::minutes(5)
+                    })
+                .to_rfc3339();
+            }
+            repository.reconcile_agent_jobs().await.unwrap();
+            repository.reconcile_agent_jobs().await.unwrap();
+            let safe: bool = sqlx::query_scalar("SELECT j.turn_id IS NULL AND j.state IN('CANCELLED','FAILED') AND j.workflow_reported_ts IS NOT NULL AND NOT EXISTS(SELECT 1 FROM agent_session_t s WHERE s.host_id=j.host_id AND s.session_id=j.job_id) FROM agent_job_t j WHERE j.host_id=$1 AND j.job_id=$2")
+                .bind(authority.host_id).bind(cleanup_id).fetch_one(pool).await.unwrap();
+            assert!(
+                safe,
+                "cleanup-only job must report without native admission"
+            );
+            sqlx::query("DELETE FROM agent_job_t WHERE host_id=$1 AND job_id=$2")
+                .bind(authority.host_id)
+                .bind(cleanup_id)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+    }
+
     #[ignore = "requires LIGHT_AGENT_TEST_DATABASE_URL"]
     #[tokio::test]
     async fn durable_admission_is_idempotent_fifo_and_projection_rebuildable() {
@@ -3685,6 +3993,7 @@ mod tests {
             edge_runner_bindings: vec![],
         };
         let repository = AgentRepository::with_authority(pool.clone(), authority.clone());
+        qualify_workflow_owner_transport(&pool, &authority, &policy).await;
         let wrong_policy_repository = AgentRepository::with_authority(
             pool.clone(),
             AgentRuntimeAuthority {

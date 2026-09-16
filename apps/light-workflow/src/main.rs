@@ -426,6 +426,7 @@ impl AxumApp for WorkflowApp {
         let artifact_store = DurableArtifactStore::from_configuration(&workflow_config.artifact)
             .map_err(|error| Self::runtime_error("workflow artifact store", error))?;
         let executor = TaskExecutor::new(pool.clone())
+            .with_review_artifacts(artifact_store.clone())
             .with_runtime_configuration(
                 workflow_config.database_url.clone(),
                 workflow_config.host_executor_concurrency,
@@ -504,6 +505,7 @@ impl AxumApp for WorkflowApp {
                             security: invocation_security.clone(),
                             policy: settings.policy.clone(),
                             agents: settings.workflow_agents.clone(),
+                            artifacts: artifact_store.clone(),
                         },
                     )
                     .map_err(|e| Self::runtime_error("workflow job API", e))?,
@@ -517,9 +519,36 @@ impl AxumApp for WorkflowApp {
                         workflow_config.environment.clone(),
                         health.clone(),
                     )
+                    .layer(axum::Extension(
+                        light_workflow::artifact_store::DevelopmentArtifactAccess(
+                            artifact_store.clone(),
+                        ),
+                    ))
                     .layer(axum::Extension(broker.clone()))
+                    .layer(axum::Extension(light_workflow::publication_dispatch::PublicationProviderAccess(
+                        light_workflow::publication_dispatch::PublicationProvider::from_environment()
+                            .map_err(|e| Self::runtime_error("publication provider",e))?
+                    )))
                     .layer(axum::Extension(settings.clone())),
                 );
+                let router = router.merge(light_workflow::credential_broker_api::mtls_router(
+                    broker.clone(),
+                    invocation_security.clone(),
+                    workflow_config
+                        .credential_broker
+                        .as_ref()
+                        .expect("broker configured")
+                        .callback_uri
+                        .clone(),
+                    workflow_config.invocation_caller_service_ids.clone(),
+                    workflow_config
+                        .credential_broker
+                        .as_ref()
+                        .expect("broker configured")
+                        .legacy_long_lived_app_keys
+                        .clone(),
+                    settings.policy.clone(),
+                ));
                 let listener = light_axum::mtls::WorkloadListener::bind(
                     &settings.tls,
                     &context.runtime_config.config_dir,
@@ -649,16 +678,20 @@ impl AxumApp for WorkflowApp {
             },
         )?;
 
-        if runner_config.enabled {
-            let agent_job_reconciler = AgentJobReconciler::new(pool.clone(), Arc::clone(&executor));
-            self.register_task(
-                &context,
-                "light-workflow-agent-job-reconciler",
-                &cancellation,
-                &health,
-                move |shutdown| async move { agent_job_reconciler.run(shutdown).await },
-            )?;
+        // Agent-owned native execution returns over the authenticated job API,
+        // independently of Workflow's direct runner/shell scheduling profile.
+        // This loop also settles fenced feature cancellations in host-only mode.
+        let agent_job_reconciler = AgentJobReconciler::new(pool.clone(), Arc::clone(&executor));
+        self.register_task(
+            &context,
+            "light-workflow-agent-job-reconciler",
+            &cancellation,
+            &health,
+            move |shutdown| async move { agent_job_reconciler.run(shutdown).await },
+        )?;
+        info!("Agent job and development cancellation reconciliation enabled");
 
+        if runner_config.enabled {
             let scheduler = RunnerScheduler::new(
                 pool.clone(),
                 runner_config.clone(),
@@ -703,7 +736,7 @@ impl AxumApp for WorkflowApp {
                 ));
             }
 
-            if let Some(store) = artifact_store {
+            if let Some(store) = artifact_store.clone() {
                 let retention = ArtifactRetentionReconciler::new(pool.clone(), store, 100);
                 self.register_task(
                     &context,
@@ -734,6 +767,9 @@ impl AxumApp for WorkflowApp {
             workflow_config.environment,
             health,
         )
+        .layer(axum::Extension(
+            light_workflow::artifact_store::DevelopmentArtifactAccess(artifact_store),
+        ))
         .merge(credential_routes);
         if let Some(broker) = active_broker {
             router = router.layer(axum::Extension(broker));
@@ -741,6 +777,12 @@ impl AxumApp for WorkflowApp {
         if let Some(settings) = workflow_config.action_authorization {
             router = router.layer(axum::Extension(settings));
         }
+        router = router.layer(axum::Extension(
+            light_workflow::publication_dispatch::PublicationProviderAccess(
+                light_workflow::publication_dispatch::PublicationProvider::from_environment()
+                    .map_err(|e| Self::runtime_error("publication provider", e))?,
+            ),
+        ));
         Ok(router)
     }
 
@@ -882,6 +924,8 @@ mod tests {
                 execution_api_ca_cert_file: None,
             },
             artifact: ArtifactSettings {
+                backend: "s3".into(),
+                filesystem_root: None,
                 bucket: None,
                 endpoint: None,
                 allow_http: false,

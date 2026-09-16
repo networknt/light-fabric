@@ -1,8 +1,9 @@
 # Personal Development Workflow Orchestration
 
-Status: proposed personal workflow design, revised September 13, 2026 after
-design review. Codex/Claude workers and the source boundaries listed below exist;
-the complete workflow pilot is not yet end-to-end qualified.
+Status: Phase 0 contracts and deterministic rules implemented September 14, 2026.
+See the [Phase 0 qualification record](development-workflow-orchestration-phase0.md).
+The complete workflow pilot is not yet end-to-end qualified; stage execution and
+store integration begin in Phase 1.
 
 This document covers a developer using `codex-personal` and `claude-personal`
 with their own subscriptions on a local machine or dedicated VM. The separate
@@ -371,7 +372,9 @@ Only the Workflow service mounts this volume; it is separate from runner task
 worktrees, fixed-action scratch, and the container's writable layer.
 
 The workspace manager produces a snapshot package and its manifest through a
-fixed authenticated read operation. `light-workflow` retrieves bounded chunks
+fixed authenticated runner job. Transfer follows runner → Controller execution
+results → Workflow's result reconciler; it requires no inbound manager listener.
+`light-workflow` retrieves bounded chunks
 bound to the feature/task/snapshot identity, checks lengths and digests, and
 publishes the contents through its artifact service. Implement and qualify this
 transfer path in Phase 1; a local runner pathname is not a transferable artifact.
@@ -738,7 +741,8 @@ rewrite old acceptance or reset the feature budget.
 
 ## Current Implementation Boundary
 
-Source checked September 13, 2026; the recorded live prerequisite below is from
+The Phase 0 contract row was updated September 14, 2026. Other source boundaries
+were checked September 13, 2026; the recorded live prerequisite below is from
 September 12 and has not been rechecked against the running database here.
 Stack statements describe checked-in configuration, not a live config-server query.
 
@@ -755,11 +759,16 @@ Stack statements describe checked-in configuration, not a live config-server que
 | Stage claims | `invocation.rs::accept_invocation` transactionally persists an idempotent invocation/process/initial task; `FeatureRun` persistence, predecessor validation, and atomic stage claims are Phase 1 work |
 | Pilot VM slots | Feature reservations, Workflow Admin holder/release controls, and fenced terminal/cancellation release are Phase 1 work; runner concurrency limits alone do not implement them |
 | Child workflows | `executor.rs` rejects `run.workflow`; parent/child orchestration is deferred |
-| Feature contracts | Finding ledger, review coverage, standalone handoffs, fair dispatch, and stage loops are proposed orchestration work |
+| Feature contracts | `crates/development-workflow-contract` supplies Phase 0 typed contracts, finding/budget reducers and review/handoff/publication rules. Persistence, authorized dispatch, fair scheduling and stage loops remain later-phase work |
 
 ## Delivery Plan And Acceptance Gates
 
 ### Phase 0: Contracts And Deterministic Review Rules
+
+Implemented and qualified by `bash scripts/run-development-workflow-phase0-gates.sh`.
+Wire fixtures and worker JSON Schemas live in `contracts/development-workflow/v1`.
+See the [qualification record](development-workflow-orchestration-phase0.md) for
+the exact boundary between pure rules and Phase 1 runtime enforcement.
 
 Define `FeatureRun`, stage-claim identity/version rules, `StageResult`,
 `CandidateSnapshot`/delta receipts, finding/remediation schemas, review coverage,
@@ -777,6 +786,9 @@ handoffs and missing snapshot evidence; Phase 1 must enforce these contracts in
 the stores and start path. These gates require no model calls.
 
 ### Phase 1: Standalone Stage Execution And Fixed Actions
+
+See the [Phase 1 implementation progress](development-workflow-orchestration-phase1.md)
+for verified slices and remaining runtime gates. Phase 1 is not yet complete.
 
 Prerequisite: the shared [authorization foundation](../../design/user-application-workflow-authorization.md#implementation-order-and-exit-gates)
 has passed its selected-stack qualification gates.

@@ -13,6 +13,29 @@ pub const A2A_BINDING_MIGRATION_ID: &str = "0002_governed_a2a_outbound";
 pub const CONSUMER_OFFSETS_MIGRATION_ID: &str = "0004_workflow_consumer_offsets";
 pub const CATALOG_PROJECTION_MIGRATION_ID: &str = "0005_workflow_catalog_projection";
 pub const ENDPOINT_RESOLUTION_MIGRATION_ID: &str = "0006_workflow_endpoint_resolution";
+pub const DEVELOPMENT_MIGRATION_ID: &str = "0008_development_workflow";
+pub const AGENT_DISPATCH_MIGRATION_ID: &str = "0009_workflow_agent_dispatch";
+pub const ACTION_PRIVILEGES_MIGRATION_ID: &str = "0010_workflow_action_runtime_privileges";
+pub const ACTION_TABLES: &[&str] = &[
+    "workflow_action_authority_t",
+    "workflow_action_permit_t",
+    "workflow_action_dispatch_t",
+    "workflow_action_audit_t",
+    "workflow_gateway_owner_t",
+    "workflow_gateway_boot_t",
+];
+pub const AGENT_DISPATCH_MIGRATION_SQL: &str =
+    include_str!("../migrations/workflow-postgres/0009_workflow_agent_dispatch.sql");
+pub const DEVELOPMENT_MIGRATION_SQL: &str =
+    include_str!("../migrations/workflow-postgres/0008_development_workflow.sql");
+pub const DEVELOPMENT_TABLES: &[&str] = &[
+    "development_vm_t",
+    "development_feature_t",
+    "development_stage_t",
+    "development_turn_t",
+    "development_execution_fence_t",
+    "development_transition_t",
+];
 pub const MIGRATION_SQL: &str =
     include_str!("../migrations/workflow-postgres/0001_workflow_runtime.sql");
 pub const A2A_BINDING_MIGRATION_SQL: &str =
@@ -135,6 +158,8 @@ pub async fn validate(
     let required = AUTHORITY_TABLES
         .iter()
         .chain(PROJECTION_TABLES)
+        .chain(DEVELOPMENT_TABLES)
+        .chain(ACTION_TABLES)
         .copied()
         .collect::<Vec<_>>();
     let missing: Vec<String> = sqlx::query_scalar(
@@ -210,6 +235,46 @@ pub async fn validate(
             "Workflow endpoint-resolution migration ledger entry is missing".into(),
         ));
     }
+    let development_ready: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t
+          WHERE migration_owner='workflow-store' AND schema_name='workflow_ops' AND migration_id=$1)",
+    ).bind(DEVELOPMENT_MIGRATION_ID).fetch_one(pool).await?;
+    if !development_ready {
+        return Err(ValidationError::Scope(
+            "Workflow development migration ledger entry is missing".into(),
+        ));
+    }
+    let dispatch_ready: bool = sqlx::query_scalar(
+        "SELECT to_regclass('workflow_ops.workflow_agent_job_t') IS NOT NULL AND EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t WHERE migration_owner='workflow-store' AND schema_name='workflow_ops' AND migration_id=$1)",
+    ).bind(AGENT_DISPATCH_MIGRATION_ID).fetch_one(pool).await?;
+    if !dispatch_ready {
+        return Err(ValidationError::Scope(
+            "Workflow Agent dispatch migration is missing".into(),
+        ));
+    }
+    let action_ready: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t WHERE migration_owner='workflow-store' AND schema_name='workflow_ops' AND migration_id=$1)",
+    ).bind(ACTION_PRIVILEGES_MIGRATION_ID).fetch_one(pool).await?;
+    if !action_ready {
+        return Err(ValidationError::Scope(
+            "Workflow action runtime privilege migration is missing".into(),
+        ));
+    }
+    let denied: Vec<String> = sqlx::query_scalar(
+        "SELECT t FROM unnest($1::text[]) AS t WHERE NOT (
+            has_table_privilege(current_user,'workflow_ops.' || t,'SELECT') AND
+            has_table_privilege(current_user,'workflow_ops.' || t,'INSERT') AND
+            has_table_privilege(current_user,'workflow_ops.' || t,'UPDATE'))",
+    )
+    .bind(ACTION_TABLES)
+    .fetch_all(pool)
+    .await?;
+    if !denied.is_empty() {
+        return Err(ValidationError::Scope(format!(
+            "Workflow action runtime privileges missing: {}",
+            denied.join(",")
+        )));
+    }
     Ok(())
 }
 
@@ -235,5 +300,11 @@ mod tests {
         assert!(CONSUMER_OFFSETS_MIGRATION_SQL.contains("workflow_ops.consumer_offsets"));
         assert!(CATALOG_PROJECTION_MIGRATION_SQL.contains("tool_name"));
         assert!(ENDPOINT_RESOLUTION_MIGRATION_SQL.contains("resolution_document"));
+        for table in DEVELOPMENT_TABLES {
+            assert!(
+                DEVELOPMENT_MIGRATION_SQL.contains(&format!("CREATE TABLE workflow_ops.{table}"))
+            );
+        }
+        assert!(!DEVELOPMENT_MIGRATION_SQL.contains("configserver."));
     }
 }

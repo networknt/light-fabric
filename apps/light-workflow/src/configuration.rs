@@ -84,6 +84,8 @@ pub struct RunnerSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactSettings {
+    pub backend: String,
+    pub filesystem_root: Option<PathBuf>,
     pub bucket: Option<String>,
     pub endpoint: Option<String>,
     pub allow_http: bool,
@@ -155,11 +157,19 @@ struct RunnerFile {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ArtifactFile {
+    #[serde(default = "default_artifact_backend")]
+    backend: String,
+    #[serde(default)]
+    filesystem_root: String,
     s3_bucket: String,
     s3_endpoint: String,
     allow_http: bool,
     prefix: String,
     retention_days: i64,
+}
+
+fn default_artifact_backend() -> String {
+    "s3".into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -450,6 +460,26 @@ impl WorkflowConfiguration {
             &workflow.artifact.prefix,
             &mut violations,
         );
+        if !matches!(
+            workflow.artifact.backend.as_str(),
+            "s3" | "filesystem" | "disabled"
+        ) {
+            violations
+                .push("workflow.artifact.backend: expected s3, filesystem or disabled".into());
+        }
+        if workflow.artifact.backend == "filesystem" {
+            validate_absolute_path(
+                "workflow.artifact.filesystemRoot",
+                Path::new(&workflow.artifact.filesystem_root),
+                &mut violations,
+            );
+            if !workflow.artifact.s3_bucket.is_empty() || !workflow.artifact.s3_endpoint.is_empty()
+            {
+                violations.push(
+                    "workflow.artifact: filesystem backend cannot include S3 settings".into(),
+                );
+            }
+        }
         range(
             "workflow.artifact.retentionDays",
             workflow.artifact.retention_days,
@@ -576,6 +606,8 @@ impl WorkflowConfiguration {
                     .map(PathBuf::from),
             },
             artifact: ArtifactSettings {
+                backend: workflow.artifact.backend,
+                filesystem_root: non_empty(&workflow.artifact.filesystem_root).map(PathBuf::from),
                 bucket: non_empty(&workflow.artifact.s3_bucket),
                 endpoint: non_empty(&workflow.artifact.s3_endpoint),
                 allow_http: workflow.artifact.allow_http,
@@ -1240,6 +1272,8 @@ mod tests {
                 execution_api_ca_cert_file: None,
             },
             artifact: ArtifactSettings {
+                backend: "s3".into(),
+                filesystem_root: None,
                 bucket: None,
                 endpoint: None,
                 allow_http: false,

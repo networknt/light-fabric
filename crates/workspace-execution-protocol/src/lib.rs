@@ -276,6 +276,38 @@ pub struct WorkspaceExecutionSpec {
     pub binding: WorkspaceAccessPolicy,
     pub subject: String,
     pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manager_snapshot: Option<ManagerSnapshotRead>,
+}
+
+/// Fixed Workflow-only manager operation, never a native-model tool argument.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagerSnapshotRead {
+    pub feature_id: String,
+    pub stage_id: String,
+    pub snapshot_id: String,
+    pub checkpoint_digest: String,
+    /// Absent only for the first chunk; later chunks pin the returned receipt.
+    pub package_digest: Option<String>,
+    pub offset: u64,
+}
+
+impl ManagerSnapshotRead {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if ![&self.feature_id, &self.stage_id, &self.snapshot_id]
+            .into_iter()
+            .all(|v| identifier(v))
+            || !digest(&self.checkpoint_digest)
+            || self.package_digest.as_ref().is_some_and(|d| !digest(d))
+            || (self.offset > 0 && self.package_digest.is_none())
+            || self.offset > 32 * 1024 * 1024
+            || self.offset % (128 * 1024) != 0
+        {
+            return Err(ContractError::Field("managerSnapshot"));
+        }
+        Ok(())
+    }
 }
 impl WorkspaceExecutionSpec {
     pub fn context(&self) -> AdmissionContext {
@@ -289,6 +321,21 @@ impl WorkspaceExecutionSpec {
         }
     }
     pub fn validate(&self) -> Result<(), ContractError> {
+        if let Some(read) = &self.manager_snapshot {
+            read.validate()?;
+            // Workflow dispatch supplies the authenticated owner, not a synthetic
+            // service principal. Authority comes from the binding checked below;
+            // a principal-name prefix is neither necessary nor sufficient.
+            if self.request.intent != WorkspaceIntent::Review
+                || !matches!(self.request.task, TaskSelection::Existing { .. })
+                || self.request.thread.is_some()
+                || self.request.native_model.is_some()
+                || self.request.expected_checkpoint_digest.as_deref()
+                    != Some(read.checkpoint_digest.as_str())
+            {
+                return Err(ContractError::Unauthorized);
+            }
+        }
         self.binding
             .authorize(&self.request, &self.context(), &standalone_intents())
     }
@@ -324,6 +371,63 @@ pub fn sha256(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn manager_snapshot_requires_bound_owner_and_snapshot_only_request() {
+        let (mut request, context, mut binding) = fixture();
+        request.intent = WorkspaceIntent::Review;
+        request.task = TaskSelection::Existing {
+            task_id: "task-1".into(),
+        };
+        request.expected_checkpoint_digest = Some(sha256(b"checkpoint"));
+        binding.intents.insert(WorkspaceIntent::Review);
+        let spec = WorkspaceExecutionSpec {
+            request,
+            binding,
+            subject: context.subject,
+            agent_id: context.agent_id,
+            manager_snapshot: Some(ManagerSnapshotRead {
+                feature_id: "feature-1".into(),
+                stage_id: "stage-1".into(),
+                snapshot_id: "snapshot-1".into(),
+                checkpoint_digest: sha256(b"checkpoint"),
+                package_digest: None,
+                offset: 0,
+            }),
+        };
+        assert!(spec.validate().is_ok());
+        for subject in ["other-owner", "workflow-agent:forged", ""] {
+            let mut bad = spec.clone();
+            bad.subject = subject.into();
+            assert!(bad.validate().is_err());
+        }
+        for field in [
+            "agent",
+            "workspace",
+            "membership",
+            "intent",
+            "task",
+            "checkpoint",
+            "missing-checkpoint",
+            "thread",
+            "model",
+            "offset",
+        ] {
+            let mut bad = spec.clone();
+            match field {
+                "agent" => bad.agent_id = "other-agent".into(),
+                "workspace" => bad.request.workspace_id = "other-workspace".into(),
+                "membership" => bad.request.expected_membership_revision = sha256(b"other"),
+                "intent" => bad.request.intent = WorkspaceIntent::Inspect,
+                "task" => bad.request.task = TaskSelection::New { description: "new".into() },
+                "checkpoint" => bad.request.expected_checkpoint_digest = Some(sha256(b"other")),
+                "missing-checkpoint" => bad.request.expected_checkpoint_digest = None,
+                "model" => bad.request.native_model = Some("model".into()),
+                "thread" => bad.request.thread = Some(serde_json::from_value(serde_json::json!({"runnerId":"runner","sessionRef":"01964b05-5532-7c79-8cde-191dcbd421b8","stageId":"stage","mode":"new","closeAfterTurn":true})).unwrap()),
+                _ => bad.manager_snapshot.as_mut().unwrap().offset = 128 * 1024,
+            }
+            assert!(bad.validate().is_err(), "accepted invalid {field}");
+        }
+    }
     fn fixture() -> (WorkspaceRequest, AdmissionContext, WorkspaceAccessPolicy) {
         let request = WorkspaceRequest {
             schema_version: VERSION,

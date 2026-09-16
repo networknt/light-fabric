@@ -1,0 +1,24 @@
+{
+  "featureRunId": "feature-1",
+  "transitionId": "design-first",
+  "predecessorVersion": 1,
+  "stage": {
+    "kind": "design",
+    "phaseId": null
+  },
+  "inputs": {
+    "requirements": {
+      "id": "artifact:requirements-v1",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "definition": {
+    "id": "artifact:requirements-v1",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "workspaceBinding": {
+    "id": "artifact:requirements-v1",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "deadlineEpochSeconds": 900
+}

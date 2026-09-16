@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "featureRunId": "feature-1",
+  "issue": {
+    "repository": "networknt/light-fabric",
+    "number": 392,
+    "url": "https://github.com/networknt/light-fabric/issues/392"
+  },
+  "version": 1,
+  "state": "ready-for-next-stage",
+  "transitionId": "design-first",
+  "allowedStage": {
+    "kind": "design",
+    "phaseId": null
+  },
+  "acceptedInputs": {
+    "requirements": {
+      "id": "artifact:requirements-v1",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "activeClaim": null,
+  "claims": {},
+  "acceptedResults": [],
+  "budgets": {
+    "maximumTurns": 20,
+    "maximumRemediationRounds": 3,
+    "deadlineEpochSeconds": 1000,
+    "charges": {}
+  },
+  "vm": {
+    "vmId": "personal-vm",
+    "runnerBinding": {
+      "id": "artifact:requirements-v1",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "featureRunId": "feature-1",
+    "generation": 1,
+    "acquiredEpochSeconds": 0,
+    "releasePending": false,
+    "released": false
+  }
+}

@@ -58,6 +58,340 @@ fn setup() -> (TempDir, WorkspaceStore, Workspace) {
     store.register(&workspace).unwrap();
     (temp, store, workspace)
 }
+
+#[test]
+fn fixed_manager_snapshot_read_is_scoped_and_replayable() {
+    use workspace_execution_protocol::*;
+    let (_temp, store, _) = setup();
+    store
+        .create_task("portal", "manager-read", "codex-personal")
+        .unwrap();
+    let cp = store
+        .files("portal", "manager-read", "claude-personal")
+        .unwrap();
+    let subject = "01964b05-5532-7c79-8cde-191dcbd421b8".to_string();
+    let mut spec = WorkspaceExecutionSpec {
+        request: WorkspaceRequest {
+            schema_version: 1,
+            request_id: "read-1".into(),
+            workspace_id: "portal".into(),
+            expected_membership_revision: format!("sha256:{}", "a".repeat(64)),
+            task: TaskSelection::Existing {
+                task_id: "manager-read".into(),
+            },
+            intent: WorkspaceIntent::Review,
+            expected_checkpoint_digest: Some(cp.digest.clone()),
+            instruction: "snapshot".into(),
+            thread: None,
+            native_model: None,
+        },
+        binding: WorkspaceAccessPolicy {
+            schema_version: 1,
+            workspace_id: "portal".into(),
+            host_id: "host".into(),
+            environment: "local".into(),
+            runner_id: "runner".into(),
+            membership_revision: format!("sha256:{}", "a".repeat(64)),
+            authorization_revision: 1,
+            subjects: BTreeSet::from([subject.clone()]),
+            agents: BTreeSet::from(["claude-personal".into()]),
+            intents: BTreeSet::from([WorkspaceIntent::Review]),
+        },
+        subject,
+        agent_id: "claude-personal".into(),
+        manager_snapshot: Some(ManagerSnapshotRead {
+            feature_id: "feature".into(),
+            stage_id: "design".into(),
+            snapshot_id: "candidate".into(),
+            checkpoint_digest: cp.digest,
+            package_digest: None,
+            offset: 0,
+        }),
+    };
+    let first = store.read_manager_snapshot(&spec).unwrap();
+    assert_eq!(first, store.read_manager_snapshot(&spec).unwrap());
+    spec.subject = "interactive-user".into();
+    assert!(store.read_manager_snapshot(&spec).is_err());
+    spec.subject = "01964b05-5532-7c79-8cde-191dcbd421b8".into();
+    spec.manager_snapshot.as_mut().unwrap().package_digest =
+        Some(format!("sha256:{}", "f".repeat(64)));
+    assert!(store.read_manager_snapshot(&spec).is_err());
+}
+
+#[test]
+fn snapshot_capture_retries_after_ref_pin_and_recovery_preserves_conflicts() {
+    let (temp, store, _) = setup();
+    let task = store
+        .create_task("portal", "retry", "codex-personal")
+        .unwrap();
+    let checkpoint = store.files("portal", "retry", "claude-personal").unwrap();
+    let receipt = store
+        .capture_snapshot(
+            "portal",
+            "retry",
+            "claude-personal",
+            "feature",
+            "design",
+            "retry",
+            &checkpoint.digest,
+        )
+        .unwrap();
+    let bytes = store
+        .snapshot_chunk(
+            "portal",
+            "retry",
+            "claude-personal",
+            "retry",
+            &receipt.package_digest,
+            0,
+        )
+        .unwrap()
+        .bytes;
+    let record = temp
+        .path()
+        .join("managed/portal/tasks/retry/snapshots/retry.json");
+    // Simulate interruption between ref retention and durable package rename.
+    fs::remove_file(&record).unwrap();
+    assert_eq!(
+        store
+            .capture_snapshot(
+                "portal",
+                "retry",
+                "claude-personal",
+                "feature",
+                "design",
+                "retry",
+                &checkpoint.digest
+            )
+            .unwrap(),
+        receipt
+    );
+    assert_eq!(
+        store
+            .restore_snapshot(
+                "portal",
+                "retry",
+                "claude-personal",
+                &bytes,
+                &receipt.package_digest
+            )
+            .unwrap(),
+        receipt
+    );
+    let checkout = &task.checkouts[0];
+    let reference = "refs/light-workflow/feature/snapshots/retry";
+    let head = git(&checkout.path, &["rev-parse", "HEAD"]);
+    git(&checkout.path, &["update-ref", reference, &head]);
+    assert!(
+        store
+            .restore_snapshot(
+                "portal",
+                "retry",
+                "claude-personal",
+                &bytes,
+                &receipt.package_digest
+            )
+            .is_err()
+    );
+    assert_eq!(git(&checkout.path, &["rev-parse", reference]), head);
+    assert_eq!(
+        serde_json::from_slice::<task_workspace::SnapshotPackage>(&fs::read(record).unwrap())
+            .unwrap(),
+        serde_json::from_slice::<task_workspace::SnapshotPackage>(&bytes).unwrap()
+    );
+}
+
+#[test]
+fn retained_snapshots_preserve_binary_modes_deletions_and_recover_without_local_refs() {
+    use std::os::unix::fs::PermissionsExt;
+    let (temp, store, _) = setup();
+    let task = store
+        .create_task("portal", "snapshots", "codex-personal")
+        .unwrap();
+    let checkout = &task.checkouts[0];
+    let frozen = store
+        .freeze("portal", "snapshots", "claude-personal")
+        .unwrap();
+    let first = store
+        .capture_snapshot(
+            "portal",
+            "snapshots",
+            "claude-personal",
+            "feature",
+            "design",
+            "A",
+            &frozen.checkpoint.as_ref().unwrap().digest,
+        )
+        .unwrap();
+    let original_head = git(&checkout.path, &["rev-parse", "HEAD"]);
+    let original_index = git(&checkout.path, &["ls-files", "--stage"]);
+    fs::remove_file(checkout.path.join("README.md")).unwrap();
+    fs::write(checkout.path.join("binary.dat"), [0, 255, 1, 128]).unwrap();
+    fs::write(checkout.path.join("script.sh"), b"#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(
+        checkout.path.join("script.sh"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    // Explicitly reopen/freeze through the existing manager lifecycle.
+    store
+        .review(
+            "portal",
+            "snapshots",
+            "claude-personal",
+            &first.checkpoint_digest,
+            false,
+            "fix".into(),
+        )
+        .unwrap_err();
+    // Capture precondition comes from a manager checkpoint, not a model summary.
+    let current = store
+        .files("portal", "snapshots", "claude-personal")
+        .unwrap();
+    let second = store
+        .capture_snapshot(
+            "portal",
+            "snapshots",
+            "claude-personal",
+            "feature",
+            "design",
+            "B",
+            &current.digest,
+        )
+        .unwrap();
+    let changes = store
+        .snapshot_delta("portal", "snapshots", "claude-personal", &first, &second)
+        .unwrap();
+    let diff = String::from_utf8_lossy(&changes[&checkout.repository]);
+    assert!(diff.contains("deleted file mode"));
+    assert!(diff.contains("new file mode 100755"));
+    assert!(diff.contains("GIT binary patch"));
+    fs::write(checkout.path.join("binary.dat"), b"later content").unwrap();
+    let retained = store
+        .snapshot_chunk(
+            "portal",
+            "snapshots",
+            "claude-personal",
+            "B",
+            &second.package_digest,
+            0,
+        )
+        .unwrap();
+    let saved: task_workspace::SnapshotPackage = serde_json::from_slice(&retained.bytes).unwrap();
+    assert_eq!(saved.verified_receipt().unwrap(), second);
+    let mut corrupted = saved.clone();
+    corrupted
+        .repositories
+        .get_mut(&checkout.repository)
+        .unwrap()
+        .files
+        .get_mut("binary.dat")
+        .unwrap()
+        .bytes
+        .push(42);
+    assert!(corrupted.verified_receipt().is_err());
+    assert_eq!(
+        saved.repositories[&checkout.repository].files["binary.dat"].bytes,
+        [0, 255, 1, 128]
+    );
+    assert_eq!(git(&checkout.path, &["rev-parse", "HEAD"]), original_head);
+    assert_eq!(
+        git(&checkout.path, &["ls-files", "--stage"]),
+        original_index
+    );
+    let chunk = store
+        .snapshot_chunk(
+            "portal",
+            "snapshots",
+            "claude-personal",
+            "A",
+            &first.package_digest,
+            0,
+        )
+        .unwrap();
+    assert_eq!(chunk.bytes.len() as u64, chunk.total_bytes);
+    let before: task_workspace::SnapshotPackage = serde_json::from_slice(&chunk.bytes).unwrap();
+    assert_eq!(
+        before
+            .verified_delta(&saved, &first.package_digest, &second.package_digest)
+            .unwrap(),
+        changes
+    );
+    assert!(
+        before
+            .verified_delta(&corrupted, &first.package_digest, &second.package_digest)
+            .is_err()
+    );
+    assert!(
+        before
+            .verified_delta(&saved, &second.package_digest, &first.package_digest)
+            .is_err()
+    );
+    let mut wrong_scope = saved.clone();
+    wrong_scope.feature_id = "another-feature".into();
+    let wrong_digest = wrong_scope.verified_receipt().unwrap().package_digest;
+    assert!(
+        before
+            .verified_delta(&wrong_scope, &first.package_digest, &wrong_digest)
+            .is_err()
+    );
+    for repo in &task.checkouts {
+        git(
+            &repo.path,
+            &[
+                "update-ref",
+                "-d",
+                "refs/light-workflow/feature/snapshots/A",
+            ],
+        );
+    }
+    fs::remove_file(
+        temp.path()
+            .join("managed/portal/tasks/snapshots/snapshots/A.json"),
+    )
+    .unwrap();
+    // The exported packages still derive exactly the same review delta with
+    // the before-snapshot ref and local package cache absent.
+    assert_eq!(
+        before
+            .verified_delta(&saved, &first.package_digest, &second.package_digest)
+            .unwrap(),
+        changes
+    );
+    assert_eq!(git(&checkout.path, &["rev-parse", "HEAD"]), original_head);
+    assert_eq!(
+        git(&checkout.path, &["ls-files", "--stage"]),
+        original_index
+    );
+    let recovered = store
+        .restore_snapshot(
+            "portal",
+            "snapshots",
+            "claude-personal",
+            &chunk.bytes,
+            &first.package_digest,
+        )
+        .unwrap();
+    assert_eq!(first, recovered);
+    let mut corrupt = chunk.bytes.clone();
+    corrupt[0] ^= 1;
+    assert!(
+        store
+            .restore_snapshot(
+                "portal",
+                "snapshots",
+                "claude-personal",
+                &corrupt,
+                &first.package_digest
+            )
+            .is_err()
+    );
+    let package: task_workspace::SnapshotPackage = serde_json::from_slice(&chunk.bytes).unwrap();
+    assert_eq!(
+        package.repositories[&checkout.repository].files["README.md"].bytes,
+        b"base\n"
+    );
+}
 #[test]
 fn parallel_tasks_have_all_repositories_and_independent_branches() {
     let (_temp, store, _) = setup();
@@ -1402,6 +1736,121 @@ fn existing_task_reopens_offline_without_refreshing_pinned_revisions() {
             .create_task("portal", "offline", "codex-personal")
             .unwrap(),
         task
+    );
+}
+
+#[test]
+fn fresh_task_admission_uses_live_checkpoint_and_rejects_stale_files() {
+    use workspace_execution_protocol::*;
+    let (_temp, store, workspace) = setup();
+    let task = store
+        .create_task("portal", "fresh", "codex-personal")
+        .unwrap();
+    assert!(task.checkpoint.is_none());
+    let checkpoint = store.files("portal", "fresh", "codex-personal").unwrap();
+    let context = AdmissionContext {
+        host_id: "host".into(),
+        environment: "dev".into(),
+        subject: "owner".into(),
+        agent_id: "codex-personal".into(),
+        runner_id: "runner".into(),
+        coding_turn_authorized: true,
+    };
+    let policy = WorkspaceAccessPolicy {
+        schema_version: VERSION,
+        workspace_id: "portal".into(),
+        host_id: "host".into(),
+        environment: "dev".into(),
+        runner_id: "runner".into(),
+        membership_revision: task_workspace::membership_revision(&workspace).unwrap(),
+        authorization_revision: 1,
+        subjects: BTreeSet::from(["owner".into()]),
+        agents: workspace.agents.clone(),
+        intents: BTreeSet::from([WorkspaceIntent::Implement]),
+    };
+    let mut request = WorkspaceRequest {
+        schema_version: VERSION,
+        request_id: "fresh-author".into(),
+        workspace_id: "portal".into(),
+        expected_membership_revision: policy.membership_revision.clone(),
+        task: TaskSelection::Existing {
+            task_id: "fresh".into(),
+        },
+        intent: WorkspaceIntent::Implement,
+        expected_checkpoint_digest: Some(checkpoint.digest.clone()),
+        instruction: "author".into(),
+        thread: None,
+        native_model: None,
+    };
+    let job = store
+        .admit_job(&request, &context, &policy, &policy.intents)
+        .unwrap();
+    // Exercise the full fresh-task preflight, not admission alone.
+    let ready = store
+        .provision_job("portal", &job.job_id, &context, &policy, &policy.intents)
+        .unwrap();
+    assert_eq!(ready.state, task_workspace::WorkspaceJobState::Ready);
+    assert!(
+        store
+            .status("portal", "fresh", "codex-personal")
+            .unwrap()
+            .checkpoint
+            .is_none()
+    );
+    let session = store
+        .begin_tool_session(
+            "portal",
+            "fresh",
+            "codex-personal",
+            true,
+            Some(&checkpoint.digest),
+        )
+        .unwrap();
+    assert_eq!(session.finish().unwrap().digest, checkpoint.digest);
+    request.request_id = "before-change".into();
+    let queued = store
+        .admit_job(&request, &context, &policy, &policy.intents)
+        .unwrap();
+    // An external change must invalidate even a saved checkpoint that still
+    // equals the supplied digest. Admission must inspect actual files.
+    store.freeze("portal", "fresh", "codex-personal").unwrap();
+    fs::write(
+        task.checkouts[0].path.join("README.md"),
+        "changed externally\n",
+    )
+    .unwrap();
+    request.request_id = "stale-author".into();
+    assert!(
+        store
+            .provision_job("portal", &queued.job_id, &context, &policy, &policy.intents)
+            .unwrap_err()
+            .to_string()
+            .contains("checkpoint changed before provisioning completed")
+    );
+    assert!(
+        store
+            .provision_job("portal", &ready.job_id, &context, &policy, &policy.intents)
+            .unwrap_err()
+            .to_string()
+            .contains("checkpoint changed after provisioning")
+    );
+    assert!(
+        store
+            .admit_job(&request, &context, &policy, &policy.intents)
+            .unwrap_err()
+            .to_string()
+            .contains("checkpoint precondition failed")
+    );
+    assert!(
+        store
+            .begin_tool_session(
+                "portal",
+                "fresh",
+                "codex-personal",
+                false,
+                Some(&checkpoint.digest)
+            )
+            .is_err()
     );
 }
 

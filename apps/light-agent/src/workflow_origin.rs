@@ -291,6 +291,21 @@ mod tests {
 pub struct JobAuthorizer(pub light_client::workflow_jobs::Client);
 #[async_trait::async_trait]
 impl light_agent::domain::WorkflowJobAuthorizer for JobAuthorizer {
+    fn transport_enabled(&self) -> bool {
+        true
+    }
+    async fn pending(
+        &self,
+        host: Uuid,
+    ) -> anyhow::Result<Vec<light_client::workflow_job_transport::Job>> {
+        self.0.pending(host).await
+    }
+    async fn report(
+        &self,
+        report: &light_client::workflow_job_transport::Report,
+    ) -> anyhow::Result<()> {
+        self.0.report(report).await
+    }
     async fn authorized(&self, host: Uuid, job: Uuid) -> anyhow::Result<bool> {
         self.0.authorized(host, job).await
     }

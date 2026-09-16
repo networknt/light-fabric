@@ -10,6 +10,11 @@ use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Workspace feature unification can enable both Rustls providers. Select one
+    // before spawning the WebSocket transport instead of relying on inference.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|_| std::io::Error::other("runner TLS provider was already installed"))?;
     let mut watcher = ShutdownWatcher::install()?;
     tracing_subscriber::fmt::init();
     let config = Arc::new(RunnerConfig::load().map_err(std::io::Error::other)?);

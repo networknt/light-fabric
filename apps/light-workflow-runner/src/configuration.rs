@@ -408,11 +408,15 @@ impl RunnerConfig {
             "allowedSubjectKinds": [SubjectKind::WorkflowTask]
         })];
         if let Some(worker) = &self.agent_worker {
-            origins.push(serde_json::json!({
-                "kind": OriginKind::Agent,
-                "serviceId": worker.origin_service_id,
-                "allowedSubjectKinds": [SubjectKind::AgentTurn, SubjectKind::AgentAction]
-            }));
+            for service in std::iter::once(&worker.origin_service_id)
+                .chain(worker.additional_origin_service_ids.iter())
+            {
+                origins.push(serde_json::json!({
+                    "kind": OriginKind::Agent,
+                    "serviceId": service,
+                    "allowedSubjectKinds": [SubjectKind::AgentTurn, SubjectKind::AgentAction]
+                }));
+            }
         }
         Ok(serde_json::json!({
             "version": 1,
@@ -630,7 +634,9 @@ allowedCommandTemplateDigests: [sha256:template-digest]
         assert_eq!(enrollment["backends"][0]["maximumSlots"], 2);
 
         config.agent_worker = Some(WorkerProcessConfig {
+            native_cgroup: None,
             origin_service_id: "light-agent".into(),
+            additional_origin_service_ids: Default::default(),
             executable: "/usr/local/bin/light-agent-worker".into(),
             binary_digest: format!("sha256:{}", "1".repeat(64)),
             capability_digest: format!("sha256:{}", "2".repeat(64)),
@@ -662,6 +668,25 @@ allowedCommandTemplateDigests: [sha256:template-digest]
         );
         assert_eq!(
             document["origins"][1]["allowedSubjectKinds"],
+            serde_json::json!(["agent-turn", "agent-action"])
+        );
+
+        assert_eq!(document["origins"].as_array().unwrap().len(), 2);
+        config
+            .agent_worker
+            .as_mut()
+            .unwrap()
+            .additional_origin_service_ids
+            .insert("light-agent-workflow".into());
+        let document = config
+            .admission_document("runner-subject", "light-workflow")
+            .unwrap();
+        assert_eq!(document["origins"].as_array().unwrap().len(), 3);
+        assert_eq!(document["origins"][1]["serviceId"], "light-agent");
+        assert_eq!(document["origins"][2]["serviceId"], "light-agent-workflow");
+        assert_eq!(document["origins"][2]["kind"], "agent");
+        assert_eq!(
+            document["origins"][2]["allowedSubjectKinds"],
             serde_json::json!(["agent-turn", "agent-action"])
         );
 

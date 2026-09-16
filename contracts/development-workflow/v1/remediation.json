@@ -1,0 +1,13 @@
+{
+  "turnId": "fix-1",
+  "candidate": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "findingId": "workflow-assigned-canonical-id",
+  "changedPaths": [
+    "repo/src/lib.rs"
+  ],
+  "evidence": {
+    "id": "artifact:review",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "dispute": false
+}

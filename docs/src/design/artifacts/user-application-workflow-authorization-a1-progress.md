@@ -1,6 +1,52 @@
 # A1 Implementation And Qualification Status
 
-Status: **A1 source implementation complete; selected-stack acceptance pending**.
+Status: **A1 source implementation complete; scope-consent reuse correction qualified in the short integration suite and deployed locally.**
+
+## Acceptance amendment (2026-09-14)
+
+The user requires only the existing Portal `portal.r` / `portal.w` scope consent.
+There must be no additional workflow-specific consent screen or second login.
+Workflow identity, policy binding, credential ceilings, expiry and revocation
+remain backend enforcement requirements; existing scope consent is not permission
+to skip issuer provenance validation.
+
+The user waived scheduled and hours-long renewal qualification after the original
+user token expires. Record these tests as **waived / not run**, not passed; they
+are no longer A1 acceptance blockers. Historical requirements below describe the
+previous baseline and are superseded by this amendment.
+
+The extra Portal enrollment prompt and generated Gateway `workflow_authorize`
+tool remain removed. Root HTTPS Workflow invocation without a supplied grant now
+acquires one internally through `/workflow/credentials/enroll`. Workflow uses
+the issuer's mTLS `/oauth2/{provider}/workflow/enrollments/acquire` endpoint,
+then redeems the returned one-time PKCE code server-to-server. Only a grant UUID
+is returned to Gateway; no redirect, password or second consent is involved.
+
+The issuer records SHA-256 access-token fingerprints in ordinary authorization-code
+and refresh issuance audits. Acquisition requires exact issuance evidence tied
+to an active authorization-code session, matching user/Host/client/provider and
+scope ceilings. Tokens issued before this change need a normal Portal refresh
+to obtain this evidence; unsigned claims, app tokens and unrecorded user tokens
+cannot bootstrap renewal. Acquired grants retain the source-session relationship;
+revocation, scope removal or missing provenance blocks renewal. Legacy browser
+grants require their original login evidence and remain only for compatibility.
+
+Short real-HTTPS/mTLS integration passed: initial acquisition, acquisition after
+normal Portal refresh, direct broker renewal, scope-expansion rejection, wrong
+Host rejection, unrecorded-token rejection, missing-provenance rejection and
+source-session revocation. OAuth unit tests: 22 passed, 2 ignored. Workflow library:
+86 passed. MCP module: 175 passed, 3 ignored. Scheduled/hours-long tests remain
+waived, not passed. No live personal/native workflow was launched for this change.
+
+The updated OAuth, Workflow and Gateway binaries are running locally with zero
+restarts; the live unauthenticated enrollment probe returned 403. Deployment is
+container-layer qualification, not a rebuilt release image, and is lost on
+container recreation until the normal image build is performed. Rollback binaries
+are under `/tmp/phase1-backend-acquisition.4FBLYy/`. Snapshot
+`01a0a222-a6dc-7288-9845-f709ead64d8e` remains current. The editable instance property
+still contains the historical enrollment ACL assignment; reconcile it before
+capturing a new snapshot. Application databases were not wiped. A separate
+`oauth_a1_qualification` database contains schema-only fixtures and test evidence.
 
 The implementation follows the frozen [A0 baseline](../user-application-workflow-authorization-a0.md).
 It does not admit personal orchestration Phase 1: production receiver enforcement

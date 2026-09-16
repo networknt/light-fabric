@@ -176,6 +176,40 @@ impl UnattendedProvider {
         .await
     }
 
+    /// Obtain a one-time PKCE code over the registered mTLS connection using
+    /// existing issuer-recorded user authorization. Never redirect a browser.
+    pub async fn acquire_code(
+        &self,
+        authorization: &str,
+        request: &Value,
+    ) -> Result<String, ProviderFailure> {
+        let response = self
+            .client
+            .post(format!(
+                "{}/acquire",
+                self.config.enrollment_url.trim_end_matches('/')
+            ))
+            .header(reqwest::header::AUTHORIZATION, authorization)
+            .json(request)
+            .send()
+            .await
+            .map_err(|_| ProviderFailure::Uncertain)?;
+        let body = bounded_body(checked(response).await?).await?;
+        let response: Value =
+            serde_json::from_slice(&body).map_err(|_| ProviderFailure::Uncertain)?;
+        if response.get("enrollmentId") != request.get("enrollmentId") {
+            return Err(ProviderFailure::Uncertain);
+        }
+        response
+            .get("authorizationCode")
+            .and_then(Value::as_str)
+            .filter(|code| {
+                !code.is_empty() && code.len() <= 256 && !code.chars().any(char::is_control)
+            })
+            .map(str::to_owned)
+            .ok_or(ProviderFailure::Uncertain)
+    }
+
     pub async fn refresh(&self, refresh: &str) -> Result<RenewedCredential, ProviderFailure> {
         self.token(&[
             ("grant_type", "refresh_token"),

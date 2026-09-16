@@ -190,6 +190,7 @@ struct AgentCatalog {
 }
 
 pub struct TaskExecutor {
+    review_artifacts: Option<crate::artifact_store::DurableArtifactStore>,
     pub bound_mcp: std::sync::OnceLock<Arc<crate::bound_mcp::Runtime>>,
     pool: PgPool,
     http_client: reqwest::Client,
@@ -207,6 +208,13 @@ pub struct TaskExecutor {
 }
 
 impl TaskExecutor {
+    pub fn with_review_artifacts(
+        mut self,
+        store: Option<crate::artifact_store::DurableArtifactStore>,
+    ) -> Self {
+        self.review_artifacts = store;
+        self
+    }
     pub async fn reconcile_agent_job(
         &self,
         host_id: Uuid,
@@ -214,7 +222,7 @@ impl TaskExecutor {
     ) -> Result<bool, sqlx::Error> {
         let mut tx = self.pool.begin().await?;
         let row=sqlx::query("SELECT j.workflow_process_id,j.workflow_task_id,j.state,j.public_output,j.error,j.output_schema
-            FROM agent_job_t j JOIN task_info_t t ON t.host_id=j.host_id AND t.task_id=j.workflow_task_id
+            FROM workflow_agent_job_t j JOIN task_info_t t ON t.host_id=j.host_id AND t.task_id=j.workflow_task_id
             WHERE j.host_id=$1 AND j.job_id=$2 AND j.state IN('SUCCEEDED','FAILED','CANCELLED','UNKNOWN')
               AND t.status_code='W' FOR UPDATE OF j,t")
             .bind(host_id).bind(job_id).fetch_optional(&mut *tx).await?;
@@ -337,6 +345,7 @@ impl TaskExecutor {
             .expect("failed to build reqwest HTTP client with timeouts and redirects disabled");
         Self {
             bound_mcp: std::sync::OnceLock::new(),
+            review_artifacts: None,
             pool,
             http_client,
             rule_executor,
@@ -2302,34 +2311,29 @@ impl TaskExecutor {
         task_id: Uuid,
         task_name: &str,
     ) -> Result<TaskExecutionResult, DynError> {
-        let catalog = self
-            .load_agent_catalog(host_id, &args.agent, args.skill.as_deref())
-            .await?;
         let task_input = args
             .input
             .as_ref()
             .map(|input| self.resolve_json_value(input, context))
             .unwrap_or_else(|| context.clone());
         let output_schema = self.resolve_agent_output_schema(args, raw_definition)?;
-        let inherited = if let Some(runtime) = self.bound_mcp.get() {
-            if args.mode != workflow_core::models::task::AgentCallMode::Service
+        if args.mode == workflow_core::models::task::AgentCallMode::Service {
+            let agent_id = Uuid::parse_str(&args.agent)?;
+            if args.skill.is_some()
                 || !(task_input.get("workspace").is_some() || task_input.get("coding").is_some())
             {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "A2 Agent calls require a bound coding service job",
-                )
-                .into());
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                    "native service jobs require a published coding binding and no catalog skill override").into());
             }
-            Some(
-                runtime
-                    .authorize_agent(*host_id, process_id, catalog.agent.agent_def_id)
-                    .await?,
-            )
-        } else {
-            None
-        };
-        if args.mode == workflow_core::models::task::AgentCallMode::Service {
+            let runtime = self.bound_mcp.get().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "native Agent dispatch requires run authority",
+                )
+            })?;
+            let (run_deadline, depth, maximum_depth) = runtime
+                .authorize_agent(*host_id, process_id, agent_id)
+                .await?;
             let deadline: Option<chrono::DateTime<Utc>> = sqlx::query_scalar(
                 "SELECT deadline_ts FROM task_info_t WHERE host_id=$1 AND task_id=$2",
             )
@@ -2337,18 +2341,9 @@ impl TaskExecutor {
             .bind(task_id)
             .fetch_one(&self.pool)
             .await?;
-            let mut deadline =
-                deadline.unwrap_or_else(|| Utc::now() + chrono::Duration::minutes(10));
-            let (depth, maximum_depth) = match inherited {
-                Some((run_deadline, depth, maximum_depth)) => {
-                    deadline = deadline.min(run_deadline);
-                    (
-                        depth,
-                        maximum_depth.min(i32::from(args.maximum_delegation_depth.unwrap_or(4))),
-                    )
-                }
-                None => (0, i32::from(args.maximum_delegation_depth.unwrap_or(4))),
-            };
+            let deadline = deadline.unwrap_or(run_deadline).min(run_deadline);
+            let maximum_depth =
+                maximum_depth.min(i32::from(args.maximum_delegation_depth.unwrap_or(4)));
             if depth > maximum_depth {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
@@ -2356,29 +2351,24 @@ impl TaskExecutor {
                 )
                 .into());
             }
-            let input_schema_digest = execution_runner_protocol::canonical_sha256(&task_input)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
             let output_schema = output_schema.unwrap_or_else(|| json!({"type":"object"}));
-            let (policy_digest,data_boundary_digest):(String,String)=sqlx::query_as(
-                "SELECT p.policy_digest,p.data_boundary_digest FROM agent_definition_t d
-                 JOIN agent_policy_snapshot_t p ON p.host_id=d.host_id AND p.policy_snapshot_id=d.policy_snapshot_id
-                 WHERE d.host_id=$1 AND d.agent_def_id=$2 AND p.revoked_ts IS NULL",
-            ).bind(host_id).bind(catalog.agent.agent_def_id).fetch_one(&self.pool).await?;
-            let job_id = Uuid::now_v7();
-            let inserted: Uuid = sqlx::query_scalar(
-                "INSERT INTO agent_job_t(host_id,job_id,workflow_process_id,workflow_task_id,
-                   agent_def_id,idempotency_key,input,input_schema_digest,output_schema,policy_digest,
-                   data_boundary_digest,deadline_ts,token_budget,cost_budget_micros,delegation_depth,
-                   maximum_delegation_depth,memory_mode,state)
-                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$16,$15,'ISOLATED','PENDING')
-                 ON CONFLICT(host_id,idempotency_key) DO UPDATE SET updated_ts=agent_job_t.updated_ts
-                 RETURNING job_id",
-            ).bind(host_id).bind(job_id).bind(process_id).bind(task_id)
-             .bind(catalog.agent.agent_def_id).bind(format!("workflow:{process_id}:{task_id}"))
-             .bind(task_input).bind(input_schema_digest).bind(output_schema).bind(policy_digest)
-             .bind(data_boundary_digest).bind(deadline).bind(args.token_budget.unwrap_or(65_536) as i64)
-             .bind(args.cost_budget_micros.unwrap_or(0) as i64)
-             .bind(maximum_depth).bind(depth).fetch_one(&self.pool).await?;
+            let inserted = crate::native_jobs::enqueue_with_artifacts(
+                &self.pool,
+                *host_id,
+                process_id,
+                task_id,
+                task_name,
+                agent_id,
+                task_input,
+                output_schema,
+                deadline,
+                args.token_budget.unwrap_or(65_536),
+                args.cost_budget_micros.unwrap_or(0),
+                depth,
+                maximum_depth,
+                self.review_artifacts.as_ref(),
+            )
+            .await?;
             return Ok(TaskExecutionResult {
                 status_code: "W",
                 task_output: json!({"agentJobId":inserted,"state":"PENDING"}),
@@ -2386,6 +2376,16 @@ impl TaskExecutor {
                 context_data: None,
             });
         }
+        if self.bound_mcp.get().is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "A2 Agent calls require a bound coding service job",
+            )
+            .into());
+        }
+        let catalog = self
+            .load_agent_catalog(host_id, &args.agent, args.skill.as_deref())
+            .await?;
         let retry_count = args
             .on_invalid_output
             .as_ref()

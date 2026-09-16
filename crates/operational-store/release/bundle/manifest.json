@@ -187,6 +187,46 @@
       "migrationId": "0007_workflow_action_dispatch",
       "path": "crates/workflow-store/migrations/workflow-postgres/0007_workflow_action_dispatch.sql",
       "sha256": "57ec62295e78400237360d89294abc5e1c6d0b6317b9a1e39f0b10f406b5e588"
+    },
+    {
+      "order": 24,
+      "owner": "workflow-store",
+      "schema": "workflow_ops",
+      "migrationId": "0008_development_workflow",
+      "path": "crates/workflow-store/migrations/workflow-postgres/0008_development_workflow.sql",
+      "sha256": "73c9973772fb9af691c98eae563253dad2cb84c4aeab878021ee58c0ff323eb7"
+    },
+    {
+      "order": 25,
+      "owner": "workflow-store",
+      "schema": "workflow_ops",
+      "migrationId": "0009_workflow_agent_dispatch",
+      "path": "crates/workflow-store/migrations/workflow-postgres/0009_workflow_agent_dispatch.sql",
+      "sha256": "5db94c013c51721b9b4d1e2476dcc25a8f3aa825f01bf14106198d2aea9fca2d"
+    },
+    {
+      "order": 26,
+      "owner": "agent-store",
+      "schema": "agent_ops",
+      "migrationId": "0004_workflow_job_transport",
+      "path": "crates/agent-store/migrations/agent-postgres/0004_workflow_job_transport.sql",
+      "sha256": "33953f6f39d59d7ece3a1c882a0db4921b3673692c347bb12b4c8916c22db30e"
+    },
+    {
+      "order": 27,
+      "owner": "workflow-store",
+      "schema": "workflow_ops",
+      "migrationId": "0010_workflow_action_runtime_privileges",
+      "path": "crates/workflow-store/migrations/workflow-postgres/0010_workflow_action_runtime_privileges.sql",
+      "sha256": "6693bb4cc15de9bcaf17255490385e891cef94be5b9f77fc9e6804a903f34979"
+    },
+    {
+      "order": 28,
+      "owner": "agent-store",
+      "schema": "agent_ops",
+      "migrationId": "0005_workflow_job_owner",
+      "path": "crates/agent-store/migrations/agent-postgres/0005_workflow_job_owner.sql",
+      "sha256": "0686196df779bcf7fe57a11b8a4a61472e1ce6353a334376afc80106e26a023b"
     }
   ],
   "roleProfileVersion": 1,

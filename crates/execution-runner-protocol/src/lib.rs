@@ -164,6 +164,18 @@ pub struct CleanupRequestSubmission {
     pub cleanup_deadline: DateTime<Utc>,
 }
 
+/// Controller-owned confirmation. `confirmed` is false until admission is
+/// fenced and every previously issued attempt has confirmed cleanup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RequestCancellation {
+    pub host_id: Uuid,
+    pub request_id: Uuid,
+    pub origin_service_id: String,
+    pub subject: ExecutionSubject,
+    pub confirmed: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OriginKind {
@@ -539,6 +551,7 @@ pub enum RunnerToController {
     RunnerLeaseUnknown(TerminalLeaseResult),
     RunnerLeaseCancelled(TerminalLeaseResult),
     RunnerCleanupCompleted(CleanupCompleted),
+    RunnerLeaseCleanupCompleted(LeaseCleanupCompleted),
     RunnerSessionUpdated(SessionUpdated),
     RunnerDrain(RunnerDrain),
 }
@@ -600,6 +613,56 @@ pub struct CleanupCompleted {
     pub execution_session_id: ExecutionSessionId,
     pub cleanup_state: CleanupState,
     pub evidence_reference: String,
+}
+
+/// Later resource cleanup evidence, separate from the immutable execution result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LeaseCleanupCompleted {
+    pub lease: LeaseContext,
+    pub backend_operation_id: String,
+    pub evidence_reference: String,
+}
+
+/// References are issued only by the authenticated original runner/enrollment.
+/// Operator hashes bind the full lease and unchanged terminal plus OS fence proof;
+/// they do not bypass the Controller's attempt/session identity checks.
+pub fn valid_native_cleanup_reference(execution: ExecutionId, reference: &str) -> bool {
+    reference == format!("native-containment-empty:{execution}")
+        || reference
+            .strip_prefix("operator-unit-fence:")
+            .is_some_and(|hash| {
+                hash.len() == 64
+                    && hash
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+}
+
+#[cfg(test)]
+mod operator_cleanup_reference_tests {
+    use super::*;
+    #[test]
+    fn accepts_only_exact_containment_or_bounded_operator_digest() {
+        let execution = ExecutionId::new();
+        assert!(valid_native_cleanup_reference(
+            execution,
+            &format!("native-containment-empty:{execution}")
+        ));
+        assert!(valid_native_cleanup_reference(
+            execution,
+            &format!("operator-unit-fence:{}", "a".repeat(64))
+        ));
+        for bad in [
+            "operator-unit-fence:".to_owned(),
+            format!("operator-unit-fence:{}", "a".repeat(65)),
+            format!("operator-unit-fence:{}", "A".repeat(64)),
+            format!("operator-unit-fence:{}", "z".repeat(64)),
+            format!("native-containment-empty:{}", ExecutionId::new()),
+        ] {
+            assert!(!valid_native_cleanup_reference(execution, &bad));
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

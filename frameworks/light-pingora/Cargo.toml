@@ -47,4 +47,5 @@ url = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+rcgen = "0.14"
 tempfile = "3"

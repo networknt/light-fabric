@@ -64,6 +64,22 @@ pub async fn accept_invocation(
     request: &StartInvocationRequest,
     prepared: &PreparedInvocationStart<'_>,
 ) -> Result<AcceptOutcome, InvocationAcceptError> {
+    if crate::development_store::is_development_definition(prepared.definition_snapshot) {
+        return Err(sqlx::Error::Protocol(
+            "development stage requires atomic feature claim".into(),
+        )
+        .into());
+    }
+    accept_invocation_in(tx, auth, request, prepared).await
+}
+
+/// Only the guarded development store may bypass the generic-entry prohibition.
+pub(crate) async fn accept_invocation_in(
+    tx: &mut Transaction<'_, Postgres>,
+    auth: &AuthenticatedInvocationContext<'_>,
+    request: &StartInvocationRequest,
+    prepared: &PreparedInvocationStart<'_>,
+) -> Result<AcceptOutcome, InvocationAcceptError> {
     request.validate(Utc::now())?;
     validate_prepared(prepared)?;
 

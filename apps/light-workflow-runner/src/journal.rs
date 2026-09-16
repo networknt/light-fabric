@@ -82,6 +82,156 @@ pub struct Journal {
 }
 
 impl Journal {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn operator_fence_intent(
+        &self,
+        evidence: &crate::operator_fence::FenceEvidence,
+    ) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "journal mutex poisoned")?;
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS operator_scope_fence (execution_id TEXT PRIMARY KEY REFERENCES execution_journal(execution_id), evidence TEXT NOT NULL, confirmed INTEGER NOT NULL DEFAULT 0)").map_err(|_|"initialize operator fence journal")?;
+        let encoded = serde_json::to_string(evidence).map_err(|_| "encode operator fence")?;
+        connection.execute("INSERT INTO operator_scope_fence(execution_id,evidence) VALUES(?1,?2) ON CONFLICT(execution_id) DO NOTHING",params![evidence.lease.execution_id.to_string(),encoded]).map_err(|_|"record operator fence intent")?;
+        let saved: String = connection
+            .query_row(
+                "SELECT evidence FROM operator_scope_fence WHERE execution_id=?1",
+                params![evidence.lease.execution_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(|_| "read operator fence intent")?;
+        if saved != encoded {
+            return Err("operator fence intent changed; inspect previous intent".into());
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    pub(crate) fn operator_fence_confirm(
+        &self,
+        evidence: &crate::operator_fence::FenceEvidence,
+    ) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "journal mutex poisoned")?;
+        let encoded = serde_json::to_string(evidence).map_err(|_| "encode operator fence")?;
+        let rows = connection
+            .execute(
+                "UPDATE operator_scope_fence SET confirmed=1 WHERE execution_id=?1 AND evidence=?2",
+                params![evidence.lease.execution_id.to_string(), encoded],
+            )
+            .map_err(|_| "confirm operator fence")?;
+        if rows != 1 {
+            return Err("operator fence intent mismatch".into());
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    pub(crate) fn operator_fence_evidence(
+        &self,
+        lease: &LeaseContext,
+    ) -> Result<Option<crate::operator_fence::FenceEvidence>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "journal mutex poisoned")?;
+        let exists:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='operator_scope_fence')",[],|row|row.get(0)).map_err(|_|"inspect operator fence journal")?;
+        if !exists {
+            return Ok(None);
+        }
+        let encoded: Option<String> = connection
+            .query_row(
+                "SELECT evidence FROM operator_scope_fence WHERE execution_id=?1 AND confirmed=1",
+                params![lease.execution_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| "read operator fence")?;
+        let Some(encoded) = encoded else {
+            return Ok(None);
+        };
+        drop(connection);
+        let record = self
+            .find(lease.execution_id)?
+            .ok_or("operator execution missing")?;
+        let evidence: crate::operator_fence::FenceEvidence =
+            serde_json::from_str(&encoded).map_err(|_| "invalid operator fence")?;
+        match record.terminal_result.as_ref() {
+            Some(terminal) => evidence.validate(lease, terminal)?,
+            None if record.state == JournalState::CleanupConfirmed => {
+                evidence.validate_identity(lease)?
+            }
+            None => return Err("operator terminal missing".into()),
+        }
+        Ok(Some(evidence))
+    }
+    pub fn native_process_identity(
+        &self,
+        lease: &LeaseContext,
+    ) -> Result<Option<crate::native_process::NativeProcessIdentity>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "journal mutex poisoned")?;
+        let exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='native_process_journal')", [], |row| row.get(0))
+            .map_err(|_| "inspect native process journal")?;
+        if !exists {
+            return Ok(None);
+        }
+        let stored: Option<(String, i64, String)> = connection.query_row(
+            "SELECT lease_id,fencing_token,identity_json FROM native_process_journal WHERE execution_id=?1",
+            params![lease.execution_id.to_string()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .optional().map_err(|_| "read native process identity")?;
+        match stored {
+            None => Ok(None),
+            Some((id, fence, encoded)) => {
+                if id != lease.lease_id.to_string() || fence != lease.fencing_token as i64 {
+                    return Err("native process identity lease fence mismatch".into());
+                }
+                serde_json::from_str(&encoded)
+                    .map(Some)
+                    .map_err(|_| "invalid stored native identity".into())
+            }
+        }
+    }
+
+    pub fn record_native_process(
+        &self,
+        lease: &LeaseContext,
+        identity: &crate::native_process::NativeProcessIdentity,
+    ) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "journal mutex poisoned")?;
+        connection
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS native_process_journal (
+            execution_id TEXT PRIMARY KEY REFERENCES execution_journal(execution_id),
+            lease_id TEXT NOT NULL, fencing_token INTEGER NOT NULL, identity_json TEXT NOT NULL
+        )",
+            )
+            .map_err(|_| "initialize native process journal")?;
+        let encoded = serde_json::to_string(identity).map_err(|_| "encode native identity")?;
+        let matching: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM execution_journal WHERE execution_id=?1 AND lease_id=?2 AND fencing_token=?3)",
+            params![lease.execution_id.to_string(), lease.lease_id.to_string(), lease.fencing_token as i64], |row| row.get(0))
+            .map_err(|_| "check native execution fence")?;
+        if !matching {
+            return Err("native identity does not match journal fence".into());
+        }
+        connection.execute("INSERT INTO native_process_journal VALUES(?1,?2,?3,?4) ON CONFLICT(execution_id) DO NOTHING",
+            params![lease.execution_id.to_string(), lease.lease_id.to_string(), lease.fencing_token as i64, encoded])
+            .map_err(|_| "persist native process identity")?;
+        let stored: String = connection.query_row("SELECT identity_json FROM native_process_journal WHERE execution_id=?1 AND lease_id=?2 AND fencing_token=?3",
+            params![lease.execution_id.to_string(), lease.lease_id.to_string(), lease.fencing_token as i64], |row| row.get(0))
+            .map_err(|_| "read native identity fence")?;
+        if stored != encoded {
+            return Err("native execution already has another process identity".into());
+        }
+        Ok(())
+    }
+
     pub fn open(path: &Path) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -684,6 +834,179 @@ mod tests {
             definition_digest: "definition".into(),
             command_template_digest: "template".into(),
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn operator_fence_confirmation_is_separate_immutable_and_lease_bound() {
+        use execution_backend::BackendError;
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("journal.sqlite");
+        let journal = Journal::open(&file).unwrap();
+        let lease = lease();
+        journal.record_intent(&lease).unwrap();
+        let mut result = crate::normalization::from_backend_error(
+            &lease,
+            format!("agent-worker:{}", lease.lease.execution_id),
+            Utc::now(),
+            &BackendError::Unknown("preserved uncertain result".into()),
+        );
+        result.cleanup_state = execution_runner_protocol::CleanupState::Failed;
+        let terminal = TerminalLeaseResult {
+            lease: lease.lease.clone(),
+            result,
+        };
+        journal.set_terminal(&terminal).unwrap();
+        let uid = unsafe { libc::geteuid() };
+        let evidence = crate::operator_fence::FenceEvidence {
+            lease: lease.lease.clone(),
+            unit: "light-workflow-runner-claude-personal.service".into(),
+            invocation: "a".repeat(32),
+            parent: format!(
+                "/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/light-workflow-runner-claude-personal.service"
+            ),
+            inode: 123,
+            boot: std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+                .unwrap()
+                .trim()
+                .into(),
+            namespace: std::fs::read_link("/proc/self/ns/cgroup")
+                .unwrap()
+                .to_string_lossy()
+                .into(),
+            terminal_digest: execution_runner_protocol::canonical_sha256(&terminal).unwrap(),
+        };
+        assert!(
+            journal
+                .operator_fence_evidence(&lease.lease)
+                .unwrap()
+                .is_none()
+        );
+        journal.operator_fence_intent(&evidence).unwrap();
+        assert!(
+            journal
+                .operator_fence_evidence(&lease.lease)
+                .unwrap()
+                .is_none(),
+            "intent must not become cleanup proof"
+        );
+        let mut changed = evidence.clone();
+        changed.inode += 1;
+        assert!(journal.operator_fence_intent(&changed).is_err());
+        assert!(journal.operator_fence_confirm(&changed).is_err());
+        journal.operator_fence_confirm(&evidence).unwrap();
+        drop(journal);
+        let journal = Journal::open(&file).unwrap();
+        assert_eq!(
+            journal
+                .operator_fence_evidence(&lease.lease)
+                .unwrap()
+                .unwrap()
+                .reference()
+                .unwrap(),
+            evidence.reference().unwrap()
+        );
+        let mut stale = lease.lease.clone();
+        stale.fencing_token += 1;
+        assert!(journal.operator_fence_evidence(&stale).is_err());
+        assert_eq!(
+            journal
+                .find(lease.lease.execution_id)
+                .unwrap()
+                .unwrap()
+                .terminal_result
+                .unwrap(),
+            terminal,
+            "cleanup must preserve the UNKNOWN payload"
+        );
+        let mut wrong = terminal.clone();
+        wrong.result.backend_operation_id = "different".into();
+        journal.set_terminal(&wrong).unwrap();
+        assert!(
+            journal.operator_fence_evidence(&lease.lease).is_err(),
+            "changed terminal must invalidate proof"
+        );
+        journal.set_terminal(&terminal).unwrap();
+        journal
+            .set_state(
+                lease.lease.execution_id,
+                JournalState::TerminalReported,
+                None,
+            )
+            .unwrap();
+        assert!(journal.operator_fence_evidence(&lease.lease).is_err());
+        journal
+            .set_state(
+                lease.lease.execution_id,
+                JournalState::CleanupConfirmed,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            journal
+                .operator_fence_evidence(&lease.lease)
+                .unwrap()
+                .unwrap()
+                .reference()
+                .unwrap(),
+            evidence.reference().unwrap()
+        );
+        assert!(journal.operator_fence_evidence(&stale).is_err());
+        let mut unrelated = lease.lease.clone();
+        unrelated.execution_id = ExecutionId(uuid::Uuid::now_v7());
+        assert!(
+            journal
+                .operator_fence_evidence(&unrelated)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn native_identity_is_durable_immutable_and_lease_fenced() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("journal.sqlite");
+        let journal = Journal::open(&file).unwrap();
+        let lease = lease();
+        assert_eq!(journal.native_process_identity(&lease.lease).unwrap(), None);
+        let identity = crate::native_process::NativeProcessIdentity {
+            #[cfg(target_os = "linux")]
+            containment: None,
+            pid: 1234,
+            start_ticks: 100,
+            boot_id: "boot".into(),
+            pid_namespace: "pid:[123]".into(),
+            cgroup_membership: "0::/test".into(),
+        };
+        assert!(
+            journal
+                .record_native_process(&lease.lease, &identity)
+                .is_err()
+        );
+        journal.record_intent(&lease).unwrap();
+        journal
+            .record_native_process(&lease.lease, &identity)
+            .unwrap();
+        journal
+            .record_native_process(&lease.lease, &identity)
+            .unwrap();
+        let mut conflicting = identity.clone();
+        conflicting.start_ticks += 1;
+        assert!(
+            journal
+                .record_native_process(&lease.lease, &conflicting)
+                .is_err()
+        );
+        let mut stale = lease.lease.clone();
+        stale.fencing_token += 1;
+        assert!(journal.record_native_process(&stale, &identity).is_err());
+        assert!(journal.native_process_identity(&stale).is_err());
+        drop(journal);
+        let reopened = Journal::open(&file).unwrap();
+        assert_eq!(
+            reopened.native_process_identity(&lease.lease).unwrap(),
+            Some(identity)
+        );
     }
 
     #[test]

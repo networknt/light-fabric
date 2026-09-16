@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use object_store::{ObjectStore, PutPayload, aws::AmazonS3Builder, path::Path};
+use object_store::{
+    ObjectStore, PutPayload, aws::AmazonS3Builder, local::LocalFileSystem, path::Path,
+};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
@@ -14,23 +16,82 @@ use crate::{
 pub struct DurableArtifactStore {
     store: Arc<dyn ObjectStore>,
     prefix: String,
+    filesystem_root: Option<std::path::PathBuf>,
 }
 
+#[derive(Clone)]
+pub struct DevelopmentArtifactAccess(pub Option<DurableArtifactStore>);
+
 impl DurableArtifactStore {
+    /// Admission probes actual backend IO, including a full/read-only volume.
+    pub async fn probe_writable(&self) -> Result<(), ArtifactStoreError> {
+        let path = self.staging_path(&format!("readiness/{}", uuid::Uuid::now_v7()))?;
+        self.store
+            .put(&path, PutPayload::from_static(b"ready"))
+            .await
+            .map_err(store_error)?;
+        self.sync_path(&path)?;
+        self.store.delete(&path).await.map_err(store_error)?;
+        Ok(())
+    }
     pub fn from_configuration(
         configuration: &ArtifactSettings,
     ) -> Result<Option<Self>, ArtifactStoreError> {
-        let Some(bucket) = configuration.bucket.as_deref() else {
-            return Ok(None);
-        };
-        let mut builder = AmazonS3Builder::from_env().with_bucket_name(bucket);
-        if let Some(endpoint) = configuration.endpoint.as_deref() {
-            builder = builder.with_endpoint(endpoint);
-        }
-        if configuration.allow_http {
-            builder = builder.with_allow_http(true);
-        }
-        let store = builder.build().map_err(store_error)?;
+        let (store, filesystem_root): (Arc<dyn ObjectStore>, _) =
+            match configuration.backend.as_str() {
+                "disabled" => return Ok(None),
+                "filesystem" => {
+                    let root = configuration
+                        .filesystem_root
+                        .as_ref()
+                        .ok_or_else(|| error("filesystem artifact root required"))?;
+                    if !root.is_absolute() || root == std::path::Path::new("/") {
+                        return Err(error(
+                            "artifact root must be a dedicated absolute directory",
+                        ));
+                    }
+                    std::fs::create_dir_all(root).map_err(store_error)?;
+                    if root.canonicalize().map_err(store_error)? != *root {
+                        return Err(error(
+                            "artifact root cannot contain symlinks or dot segments",
+                        ));
+                    }
+                    // Probe actual writes/fsync, not permission bits (root/container mappings differ).
+                    let probe = root.join(format!(".probe-{}", uuid::Uuid::now_v7()));
+                    let file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&probe)
+                        .map_err(store_error)?;
+                    use std::io::Write;
+                    (&file)
+                        .write_all(b"ready")
+                        .and_then(|_| file.sync_all())
+                        .map_err(store_error)?;
+                    std::fs::remove_file(&probe).map_err(store_error)?;
+                    std::fs::File::open(root)
+                        .and_then(|f| f.sync_all())
+                        .map_err(store_error)?;
+                    (
+                        Arc::new(LocalFileSystem::new_with_prefix(root).map_err(store_error)?),
+                        Some(root.clone()),
+                    )
+                }
+                "s3" => {
+                    let Some(bucket) = configuration.bucket.as_deref() else {
+                        return Ok(None);
+                    };
+                    let mut builder = AmazonS3Builder::from_env().with_bucket_name(bucket);
+                    if let Some(endpoint) = configuration.endpoint.as_deref() {
+                        builder = builder.with_endpoint(endpoint);
+                    }
+                    if configuration.allow_http {
+                        builder = builder.with_allow_http(true);
+                    }
+                    (Arc::new(builder.build().map_err(store_error)?), None)
+                }
+                _ => return Err(error("unknown artifact backend")),
+            };
         let prefix = configuration.prefix.clone();
         if prefix.is_empty()
             || prefix
@@ -40,8 +101,9 @@ impl DurableArtifactStore {
             return Err(error("artifact object-store prefix is invalid"));
         }
         Ok(Some(Self {
-            store: Arc::new(store),
+            store,
             prefix,
+            filesystem_root,
         }))
     }
 
@@ -50,7 +112,55 @@ impl DurableArtifactStore {
         Self {
             store: Arc::new(object_store::memory::InMemory::new()),
             prefix: prefix.into(),
+            filesystem_root: None,
         }
+    }
+
+    fn sync_path(&self, path: &Path) -> Result<(), ArtifactStoreError> {
+        if let Some(root) = &self.filesystem_root {
+            let file = root.join(path.as_ref());
+            std::fs::File::open(&file)
+                .and_then(|f| f.sync_all())
+                .map_err(store_error)?;
+            let mut parent = file.parent();
+            while let Some(directory) = parent {
+                std::fs::File::open(directory)
+                    .and_then(|f| f.sync_all())
+                    .map_err(store_error)?;
+                if directory == root {
+                    break;
+                }
+                parent = directory.parent();
+            }
+        }
+        Ok(())
+    }
+
+    /// Bounded verified recovery read; callers additionally verify tenant metadata.
+    pub async fn read_verified(
+        &self,
+        namespace: &str,
+        digest: &str,
+        maximum_bytes: usize,
+    ) -> Result<Vec<u8>, ArtifactStoreError> {
+        let path = self.durable_path(namespace, digest)?;
+        let object = self.store.get(&path).await.map_err(store_error)?;
+        if object.meta.size > maximum_bytes as u64 {
+            return Err(error("artifact exceeds read bound"));
+        }
+        let mut stream = object.into_stream();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(store_error)?;
+            if chunk.len() > maximum_bytes.saturating_sub(bytes.len()) {
+                return Err(error("artifact exceeds read bound"));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        if format!("sha256:{}", hex::encode(Sha256::digest(&bytes))) != digest {
+            return Err(error("artifact recovery digest mismatch"));
+        }
+        Ok(bytes)
     }
 
     fn staging_path(&self, key: &str) -> Result<Path, ArtifactStoreError> {
@@ -115,6 +225,7 @@ impl ArtifactPublisherStore for DurableArtifactStore {
             .put(&path, PutPayload::from(bytes.to_vec()))
             .await
             .map_err(store_error)?;
+        self.sync_path(&path)?;
         Ok(Self::reference(&path))
     }
 
@@ -137,6 +248,7 @@ impl ArtifactPublisherStore for DurableArtifactStore {
         let destination = self.durable_path(namespace, digest)?;
         if self.store.head(&destination).await.is_ok() {
             self.verify_digest(&destination, digest).await?;
+            self.sync_path(&destination)?;
             return Ok(Self::reference(&destination));
         }
         self.verify_digest(&source, digest).await?;
@@ -147,6 +259,7 @@ impl ArtifactPublisherStore for DurableArtifactStore {
         // The source may have changed between verification and provider copy.
         // Only the destination verification authorizes the metadata binding.
         self.verify_digest(&destination, digest).await?;
+        self.sync_path(&destination)?;
         self.store.delete(&source).await.map_err(store_error)?;
         Ok(Self::reference(&destination))
     }
@@ -215,6 +328,70 @@ mod tests {
 
     const HOST_A: &str = "00000000-0000-0000-0000-000000000001";
     const HOST_B: &str = "00000000-0000-0000-0000-000000000002";
+
+    #[tokio::test]
+    async fn filesystem_reopens_recovers_promotions_and_rejects_corruption() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = ArtifactSettings {
+            backend: "filesystem".into(),
+            filesystem_root: Some(directory.path().to_owned()),
+            bucket: None,
+            endpoint: None,
+            allow_http: false,
+            prefix: "evidence".into(),
+            retention_days: 30,
+        };
+        let store = DurableArtifactStore::from_configuration(&config)
+            .unwrap()
+            .unwrap();
+        let bytes = b"immutable snapshot";
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(bytes)));
+        let staged = store
+            .stage(&format!("{HOST_A}/attempt/snapshot"), bytes)
+            .await
+            .unwrap();
+        drop(store);
+        let reopened = DurableArtifactStore::from_configuration(&config)
+            .unwrap()
+            .unwrap();
+        let reference = reopened.promote(HOST_A, &staged, &digest).await.unwrap();
+        assert_eq!(
+            reopened.promote(HOST_A, &staged, &digest).await.unwrap(),
+            reference
+        );
+        assert_eq!(
+            reopened.read_verified(HOST_A, &digest, 1024).await.unwrap(),
+            bytes
+        );
+        assert!(reopened.read_verified(HOST_A, &digest, 2).await.is_err());
+        assert!(reopened.read_verified(HOST_B, &digest, 1024).await.is_err());
+        let path = reopened.durable_path(HOST_A, &digest).unwrap();
+        std::fs::write(directory.path().join(path.as_ref()), b"corrupt").unwrap();
+        assert!(reopened.read_verified(HOST_A, &digest, 1024).await.is_err());
+        assert!(reopened.promote(HOST_A, &staged, &digest).await.is_err());
+    }
+
+    #[test]
+    fn disabled_or_invalid_filesystem_store_does_not_admit_storage() {
+        let mut config = ArtifactSettings {
+            backend: "disabled".into(),
+            filesystem_root: None,
+            bucket: None,
+            endpoint: None,
+            allow_http: false,
+            prefix: "evidence".into(),
+            retention_days: 30,
+        };
+        assert!(
+            DurableArtifactStore::from_configuration(&config)
+                .unwrap()
+                .is_none()
+        );
+        config.backend = "filesystem".into();
+        assert!(DurableArtifactStore::from_configuration(&config).is_err());
+        config.filesystem_root = Some("/proc/light-workflow-evidence-test".into());
+        assert!(DurableArtifactStore::from_configuration(&config).is_err());
+    }
 
     #[tokio::test]
     async fn promotion_is_verified_idempotent_and_deletable() {

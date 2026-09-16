@@ -98,6 +98,8 @@
   - [Personal Codex Permissions and Models](product/light-agent-worker/codex-personal-policy.md)
   - [Worker Codex Upgrade Strategy](product/light-agent-worker/codex-upgrade-strategy.md)
   - [Personal Development Workflow Orchestration](product/light-agent/development-workflow-orchestration.md)
+  - [Development Workflow Phase 0 Qualification](product/light-agent/development-workflow-orchestration-phase0.md)
+  - [Development Workflow Phase 1 Progress](product/light-agent/development-workflow-orchestration-phase1.md)
   - [Enterprise Development Workflow Orchestration](product/light-agent/development-workflow-orchestration-enterprise.md)
   - [Shared Task Workspaces](product/light-agent/shared-task-workspaces.md)
     - [Local Workspace Runtime](product/light-agent/shared-task-workspaces-runtime.md)

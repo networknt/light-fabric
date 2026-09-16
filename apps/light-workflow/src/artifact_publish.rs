@@ -34,6 +34,51 @@ pub struct ArtifactPublication<'a> {
     pub bytes: &'a [u8],
 }
 
+/// Bind manager-owned bytes in the same transaction as the accepted job report.
+/// No second pool connection is acquired. A rollback may leave unreferenced
+/// content-addressed bytes, but never a committed artifact or accepted result;
+/// the immutable report retry safely repeats promotion using the same identity.
+pub async fn publish_artifact_in_transaction<S: ArtifactPublisherStore>(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    store: &S,
+    artifact: ArtifactPublication<'_>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let digest = format!("sha256:{}", hex::encode(Sha256::digest(artifact.bytes)));
+    let staging = store
+        .stage(
+            &format!(
+                "{}/{}/{}",
+                artifact.host_id, artifact.execution_id, artifact.artifact_id
+            ),
+            artifact.bytes,
+        )
+        .await?;
+    sqlx::query("INSERT INTO workflow_artifact_t(host_id,artifact_id,execution_id,process_id,task_id,logical_name,media_type,size_bytes,content_digest,storage_reference,staging_reference,promotion_state,producer,policy_digest,retain_until_ts,verification_state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,'METADATA_COMMITTED',$11,$12,$13,'PENDING') ON CONFLICT(host_id,artifact_id) DO NOTHING")
+        .bind(artifact.host_id).bind(artifact.artifact_id).bind(artifact.execution_id)
+        .bind(artifact.process_id).bind(artifact.task_id).bind(artifact.logical_name)
+        .bind(artifact.media_type).bind(artifact.bytes.len() as i64).bind(&digest)
+        .bind(&staging).bind(artifact.producer).bind(artifact.policy_digest)
+        .bind(artifact.retain_until).execute(&mut **tx).await?;
+    // The ID alone is not replay authority: reject reparenting, policy changes,
+    // changed content and resurrection of quarantined/deleted evidence.
+    let matching: bool = sqlx::query_scalar("SELECT execution_id=$3 AND process_id IS NOT DISTINCT FROM $4 AND task_id IS NOT DISTINCT FROM $5 AND logical_name=$6 AND media_type=$7 AND size_bytes=$8 AND content_digest=$9 AND producer=$10 AND policy_digest=$11 AND promotion_state IN ('METADATA_COMMITTED','BOUND') AND verification_state IN ('PENDING','VERIFIED') AND deletion_state='RETAINED' AND (legal_hold OR retain_until_ts>clock_timestamp()) FROM workflow_artifact_t WHERE host_id=$1 AND artifact_id=$2 FOR UPDATE")
+        .bind(artifact.host_id).bind(artifact.artifact_id).bind(artifact.execution_id)
+        .bind(artifact.process_id).bind(artifact.task_id).bind(artifact.logical_name)
+        .bind(artifact.media_type).bind(artifact.bytes.len() as i64).bind(&digest)
+        .bind(artifact.producer).bind(artifact.policy_digest)
+        .fetch_one(&mut **tx).await?;
+    if !matching {
+        return Err("artifact publication replay changed or evidence was fenced".into());
+    }
+    let durable = store
+        .promote(&artifact.host_id.to_string(), &staging, &digest)
+        .await?;
+    sqlx::query("UPDATE workflow_artifact_t SET storage_reference=$3,promotion_state='BOUND',verification_state='VERIFIED',updated_ts=now() WHERE host_id=$1 AND artifact_id=$2")
+        .bind(artifact.host_id).bind(artifact.artifact_id).bind(durable)
+        .execute(&mut **tx).await?;
+    Ok(digest)
+}
+
 /// Publishes bytes with a crash-safe stage -> metadata -> bind protocol. A crash
 /// before metadata commit leaves only a native-TTL staging object; a crash after
 /// commit is recoverable from `promotion_state='METADATA_COMMITTED'`.

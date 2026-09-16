@@ -11,6 +11,7 @@ WORKDIR /usr/src/app
 COPY Cargo.toml Cargo.lock ./
 COPY patches/ patches/
 COPY crates/ crates/
+COPY contracts/ contracts/
 COPY frameworks/ frameworks/
 COPY apps/ apps/
 
@@ -21,11 +22,11 @@ RUN cargo build --locked --release
 FROM debian:bookworm-slim
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl && \
+    apt-get install -y --no-install-recommends ca-certificates curl git && \
     groupadd --system workflow && \
     useradd --system --gid workflow --home-dir /app --shell /usr/sbin/nologin workflow && \
-    mkdir -p /app && \
-    chown -R workflow:workflow /app && \
+    mkdir -p /app /var/lib/light-workflow/evidence && \
+    chown -R workflow:workflow /app /var/lib/light-workflow && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

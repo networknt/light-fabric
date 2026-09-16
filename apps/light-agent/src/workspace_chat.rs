@@ -70,6 +70,7 @@ pub(super) fn admit(
         binding,
         subject: principal.to_string(),
         agent_id: state.service_id.clone(),
+        manager_snapshot: None,
     };
     spec.validate()?;
     Ok(Some(spec))

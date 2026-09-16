@@ -208,7 +208,16 @@ async fn process_controller_message(
         ControllerToRunner::RunnerLeaseResultAccepted(accepted) => {
             supervisor.result_accepted(&accepted).await
         }
-        ControllerToRunner::RunnerCancelLease(cancel) => supervisor.cancel_lease(&cancel).await,
+        ControllerToRunner::RunnerCancelLease(cancel) => {
+            supervisor.cancel_lease(&cancel).await?;
+            if let Some(receipt) = supervisor.native_cleanup_receipt(&cancel.lease).await? {
+                outbound
+                    .send(RunnerToController::RunnerLeaseCleanupCompleted(receipt))
+                    .await
+                    .map_err(|_| "controller outbound channel closed".to_string())?;
+            }
+            Ok(())
+        }
         ControllerToRunner::RunnerDrainRequested(_) => {
             supervisor.drain();
             Ok(())

@@ -6081,6 +6081,14 @@ async fn build_agent_state(
                 })?;
         domain =
             domain.with_workflow_job_authorizer(Arc::new(workflow_origin::JobAuthorizer(client)));
+        domain
+            .initialize_workflow_policy(&agent_config.agent_policy.policy_snapshot)
+            .await
+            .map_err(|_| {
+                RuntimeError::Config(
+                    "Workflow Agent policy persistence rejected accepted runtime authority".into(),
+                )
+            })?;
     }
     if workflow_origin.is_some()
         && (!security.config.enable_verify_jwt

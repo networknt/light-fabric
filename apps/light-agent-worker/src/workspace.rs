@@ -14,7 +14,7 @@ use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     process::Command,
 };
-use workspace_execution_protocol::{WorkspaceExecutionSpec, WorkspaceIntent, standalone_intents};
+use workspace_execution_protocol::{WorkspaceExecutionSpec, standalone_intents};
 
 pub(super) async fn run<W: AsyncWrite + Unpin>(
     writer: &mut W,
@@ -30,6 +30,31 @@ pub(super) async fn run<W: AsyncWrite + Unpin>(
             .context("workspaceSpec missing")?
             .clone(),
     )?;
+    if spec.manager_snapshot.is_some() {
+        ensure!(
+            cancel.borrow().is_none(),
+            "snapshot read cancelled before execution"
+        );
+        spec.validate()?;
+        let config_path = std::env::var_os("LIGHT_WORKSPACE_CONFIG")
+            .context("runner workspace configuration is missing")?;
+        let config = RunnerWorkspaceConfig::load(Path::new(&config_path))?;
+        config.authorize(&spec)?;
+        let store = WorkspaceStore::open(&config.store)?;
+        let output = store.read_manager_snapshot(&spec)?;
+        ensure!(cancel.borrow().is_none(), "snapshot read cancelled");
+        return emit(
+            writer,
+            identity,
+            sequence,
+            RuntimeEventPayload::Terminal {
+                class: ResultClass::Success,
+                output: Some(serde_json::to_value(output)?),
+                error: None,
+            },
+        )
+        .await;
+    }
     let contract: CodingAdapterContract = serde_json::from_value(
         input
             .get("adapterContract")

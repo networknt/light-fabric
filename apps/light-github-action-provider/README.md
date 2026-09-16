@@ -30,6 +30,42 @@ Optional: `GITHUB_ACTION_PROVIDER_ADDR` (default `0.0.0.0:8450`),
 (default `agent/`). Secret files must be owner-only regular files. Configure
 Light Workflow with a base URL ending in `/v1/`.
 
+## Accepted document publication
+
+`POST /v1/publications` accepts a typed `PublicationDelivery`; `POST
+/v1/publications/status` reconciles the identical delivery without issuing a
+write. Both require the service token. Publication is disabled unless
+`GITHUB_ACTION_PROVIDER_PUBLICATION_POLICY` explicitly allows the repository,
+document branch/path and issue/comment capabilities. A durable intent precedes
+each first write. Lost responses and restarts perform remote observation, not
+another POST or PUT. Changed retries conflict; documents must be new immutable
+paths and return a verified commit permalink.
+
+The optional `docker-compose.publication.yml` override is provided in
+`light-portal-install` and `portal-config-loc/all-in-lt`. Include it after the
+base Compose file. It uses a loopback listener in Workflow's network namespace,
+exposes no host port, and persists the SQLite journal/work directory in
+`github-publication-state`. Recreate both services together if Workflow's
+network namespace changes. Run one provider replica only.
+
+Required override variables are `LIGHT_FABRIC_WORKSPACE`,
+`WORKFLOW_PUBLICATION_SERVICE_TOKEN_FILE`,
+`WORKFLOW_PUBLICATION_GITHUB_TOKEN_FILE`, `WORKFLOW_PUBLICATION_REPOSITORIES`
+and `WORKFLOW_PUBLICATION_POLICY`. Token sources must already exist as regular
+files with mode `0600`, readable by the images' `workflow` user; bind mounts are
+read-only and do not create missing host paths. Use a newly built Workflow image
+with dispatcher support. The provider has its own local build tag; it does not
+change the release tag in `docker-images.env`. Do not delete its volume when
+recreating containers or diagnosing an uncertain publication.
+
+After building the provider image, run
+`node tests/publication-provider-container-gate.mjs` from `light-portal-install`
+for isolated container recreation/lost-response checks. It uses a loopback mock
+GitHub server, three disposable publication effects and unique test volumes;
+it does not touch the Portal databases or create remote GitHub resources. This
+provider-only gate does not replace owner-authenticated Workflow finalization or
+full installer artifact/export qualification.
+
 The host must provide `git`. Canonical patch input is bounded at 16 MiB, and
 the HTTP service accepts only enough request body space for that bounded patch
 plus its typed metadata.

@@ -21,6 +21,8 @@ pub const DEFAULT_DATABASE_URL_FILE: &str = "/run/secrets/operational-database-u
 pub const MIGRATION_ID: &str = "0001_agent_and_embedded_memory";
 pub const NATIVE_A2A_MIGRATION_ID: &str = "0002_native_a2a_aliases";
 pub const NATIVE_A2A_PHASE4_MIGRATION_ID: &str = "0003_native_a2a_phase4";
+pub const WORKFLOW_JOB_TRANSPORT_MIGRATION_ID: &str = "0004_workflow_job_transport";
+pub const WORKFLOW_JOB_OWNER_MIGRATION_ID: &str = "0005_workflow_job_owner";
 pub const MIGRATIONS: &[(&str, &str)] = &[
     (
         MIGRATION_ID,
@@ -33,6 +35,14 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     (
         NATIVE_A2A_PHASE4_MIGRATION_ID,
         include_str!("../migrations/agent-postgres/0003_native_a2a_phase4.sql"),
+    ),
+    (
+        WORKFLOW_JOB_TRANSPORT_MIGRATION_ID,
+        include_str!("../migrations/agent-postgres/0004_workflow_job_transport.sql"),
+    ),
+    (
+        WORKFLOW_JOB_OWNER_MIGRATION_ID,
+        include_str!("../migrations/agent-postgres/0005_workflow_job_owner.sql"),
     ),
 ];
 
@@ -779,7 +789,12 @@ pub async fn validate(
             "agent-store migration ledger entry is missing".into(),
         ));
     }
-    for migration_id in [NATIVE_A2A_MIGRATION_ID, NATIVE_A2A_PHASE4_MIGRATION_ID] {
+    for migration_id in [
+        NATIVE_A2A_MIGRATION_ID,
+        NATIVE_A2A_PHASE4_MIGRATION_ID,
+        WORKFLOW_JOB_TRANSPORT_MIGRATION_ID,
+        WORKFLOW_JOB_OWNER_MIGRATION_ID,
+    ] {
         let native_a2a_ready: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t
               WHERE migration_owner='agent-store' AND schema_name='agent_ops'
@@ -805,7 +820,7 @@ mod tests {
     fn frozen_agent_inventory_is_exact() {
         assert_eq!(AUTHORITY_TABLES.len(), 21);
         assert_eq!(SUPPORT_TABLES.len(), 4);
-        assert_eq!(MIGRATIONS.len(), 3);
+        assert_eq!(MIGRATIONS.len(), 5);
         let sql = MIGRATIONS[0].1;
         for table in AUTHORITY_TABLES.iter().chain(SUPPORT_TABLES) {
             assert!(sql.contains(&format!("agent_ops.{table}")));

@@ -131,10 +131,14 @@ impl WorkspaceStore {
         }
         let task_id = match &request.task {
             TaskSelection::Existing { task_id } => {
-                let task = self.status(&request.workspace_id, task_id, &context.agent_id)?;
+                self.status(&request.workspace_id, task_id, &context.agent_id)?;
                 if let Some(expected) = &request.expected_checkpoint_digest {
+                    // A fresh Ready task has no saved review checkpoint. Compare
+                    // the actual stable files under the task lock, just as the
+                    // execution session does again before granting file access.
+                    let current = self.files(&request.workspace_id, task_id, &context.agent_id)?;
                     ensure!(
-                        task.checkpoint.as_ref().map(|c| &c.digest) == Some(expected),
+                        &current.digest == expected,
                         "checkpoint precondition failed"
                     );
                 }
@@ -224,13 +228,12 @@ impl WorkspaceStore {
             }
         };
         match result {
-            Ok(task) => {
+            Ok(_) => {
                 if let Some(expected) = &job.request.expected_checkpoint_digest
-                    && (task.checkpoint.as_ref().map(|c| &c.digest) != Some(expected)
-                        || self
-                            .files(workspace, &job.task_id, &context.agent_id)?
-                            .digest
-                            != *expected)
+                    && self
+                        .files(workspace, &job.task_id, &context.agent_id)?
+                        .digest
+                        != *expected
                 {
                     job.state = WorkspaceJobState::Failed;
                     job.failure = Some("checkpoint changed before provisioning completed".into());

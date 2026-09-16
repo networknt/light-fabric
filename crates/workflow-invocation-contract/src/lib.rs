@@ -580,6 +580,9 @@ const VOLATILE_SUBJECT_CLAIMS: &[&str] = &[
     "sid",
     "at_hash",
     "c_hash",
+    // Portal rotates this request-protection nonce on every access-token refresh.
+    // CSRF validation remains at the HTTP boundary, not the disclosure ceiling.
+    "csrf",
 ];
 
 /// Strips volatile JWT claims so a refreshed token still digests to the
@@ -595,6 +598,20 @@ pub fn stable_subject_claims(claims: &Value) -> Value {
             .map(|(name, value)| (name.clone(), value.clone()))
             .collect(),
     )
+}
+
+/// Check immutable accepted evidence before applying the current normalization.
+/// This permits old snapshots containing a rotated CSRF nonce without rewriting
+/// history, but never permits an altered accepted claim set or changed authority.
+pub fn accepted_subject_claims_match(
+    accepted: &Value,
+    recorded_digest: &str,
+    current_digest: &str,
+) -> Result<bool, ContractError> {
+    if !accepted.is_object() || canonical_sha256(accepted)? != recorded_digest {
+        return Ok(false);
+    }
+    Ok(canonical_sha256(&stable_subject_claims(accepted))? == current_digest)
 }
 
 fn validate_safe_numbers(value: &Value) -> Result<(), ContractError> {
@@ -791,6 +808,37 @@ mod tests {
             ))
             .unwrap()
         );
+    }
+
+    #[test]
+    fn portal_refresh_preserves_disclosure_without_weakening_authority() {
+        let accepted = json!({"sub":"owner", "host":"tenant", "client_id":"portal",
+            "role":["reader"], "scope":"portal.r portal.w", "csrf":"old-nonce"});
+        let recorded = canonical_sha256(&accepted).unwrap();
+        let mut refreshed = accepted.clone();
+        refreshed["csrf"] = json!("new-nonce");
+        refreshed["exp"] = json!(2_000_000_000);
+        let current = canonical_sha256(&stable_subject_claims(&refreshed)).unwrap();
+        assert!(accepted_subject_claims_match(&accepted, &recorded, &current).unwrap());
+        let normalized = stable_subject_claims(&accepted);
+        assert!(
+            accepted_subject_claims_match(
+                &normalized,
+                &canonical_sha256(&normalized).unwrap(),
+                &current
+            )
+            .unwrap()
+        );
+        for key in ["sub", "host", "client_id", "role", "scope"] {
+            let mut changed = refreshed.clone();
+            changed[key] = json!("changed");
+            let digest = canonical_sha256(&stable_subject_claims(&changed)).unwrap();
+            assert!(!accepted_subject_claims_match(&accepted, &recorded, &digest).unwrap());
+        }
+        let mut tampered = accepted.clone();
+        tampered["role"] = json!(["admin"]);
+        assert!(!accepted_subject_claims_match(&tampered, &recorded, &current).unwrap());
+        assert!(!accepted_subject_claims_match(&Value::Null, &recorded, &current).unwrap());
     }
 
     #[test]

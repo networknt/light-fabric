@@ -341,6 +341,30 @@ pub fn build_rule_api_router(
         .route("/rule/test", post(run_rule_test))
         .route("/v1/workflow-invocations", post(start_invocation))
         .route(
+            "/v1/workflow-invocations/development-stage",
+            post(start_development_stage),
+        )
+        .route(
+            "/v1/workflow-invocations/development-features/{feature_id}",
+            get(get_development_feature).delete(cancel_development_feature),
+        )
+        .route(
+            "/v1/workflow-invocations/development-features/{feature_id}/accept",
+            post(accept_development_stage),
+        )
+        .route(
+            "/v1/workflow-invocations/development-features/{feature_id}/replan",
+            post(replan_development_stage),
+        )
+        .route(
+            "/v1/workflow-invocations/development-features/{feature_id}/publication",
+            post(publish_development_slot),
+        )
+        .route(
+            "/v1/workflow-invocations/development-features/{feature_id}/finalize-design",
+            post(finalize_development_design),
+        )
+        .route(
             "/v1/workflow-invocations/{workflow_instance_id}",
             get(get_invocation).delete(cancel_invocation),
         )
@@ -466,11 +490,330 @@ async fn repair_quarantined_event(
 
 async fn start_invocation(
     State(state): State<RuleApiState>,
+    artifacts: Option<axum::Extension<crate::artifact_store::DevelopmentArtifactAccess>>,
     broker: Option<axum::Extension<Arc<crate::credential_broker::CredentialBroker>>>,
     peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
     policy: Option<axum::Extension<crate::action_api::ActionSettings>>,
     headers: HeaderMap,
     Json(request): Json<StartInvocationRequest>,
+) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
+    start_invocation_with_stage(
+        State(state),
+        broker,
+        peer,
+        policy,
+        headers,
+        request,
+        None,
+        artifacts.and_then(|a| a.0.0),
+    )
+    .await
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DevelopmentStageStart {
+    claim: development_workflow_contract::StageClaim,
+    invocation: StartInvocationRequest,
+}
+
+async fn start_development_stage(
+    state: State<RuleApiState>,
+    artifacts: Option<axum::Extension<crate::artifact_store::DevelopmentArtifactAccess>>,
+    broker: Option<axum::Extension<Arc<crate::credential_broker::CredentialBroker>>>,
+    peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
+    policy: Option<axum::Extension<crate::action_api::ActionSettings>>,
+    headers: HeaderMap,
+    Json(request): Json<DevelopmentStageStart>,
+) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
+    start_invocation_with_stage(
+        state,
+        broker,
+        peer,
+        policy,
+        headers,
+        request.invocation,
+        Some(request.claim),
+        artifacts.and_then(|a| a.0.0),
+    )
+    .await
+}
+
+async fn get_development_feature(
+    State(state): State<RuleApiState>,
+    headers: HeaderMap,
+    Path(feature_id): Path<String>,
+) -> Result<Json<development_workflow_contract::FeatureRun>, ApiError> {
+    let (identity, _) = authenticate(&state, &headers).await?;
+    let auth = AuthenticatedInvocationContext {
+        host_id: identity.host_id,
+        principal_subject: &identity.principal_subject,
+        end_user_subject: &identity.end_user_subject,
+        update_user: "light-workflow-invocation",
+        user_authorization: None,
+        user_authorization_exp: None,
+    };
+    let mut tx = state.pool.begin().await.map_err(ApiError::database)?;
+    let feature = crate::development_store::load_feature(&mut tx, &auth, &feature_id)
+        .await
+        .map_err(development_store_error)?;
+    tx.commit().await.map_err(ApiError::database)?;
+    Ok(Json(feature))
+}
+
+fn development_store_error(error: crate::development_store::StoreError) -> ApiError {
+    match error {
+        crate::development_store::StoreError::Database(error) => ApiError::database(error),
+        crate::development_store::StoreError::Invocation(error) => ApiError::accept(error),
+        crate::development_store::StoreError::Json(_) => {
+            ApiError::bad_request("invalid development workflow record")
+        }
+        other => ApiError::conflict(other.to_string()),
+    }
+}
+
+async fn accept_development_stage(
+    State(state): State<RuleApiState>,
+    artifacts: Option<axum::Extension<crate::artifact_store::DevelopmentArtifactAccess>>,
+    headers: HeaderMap,
+    Path(feature_id): Path<String>,
+    Json(request): Json<crate::development_handoff::AcceptStage>,
+) -> Result<Json<development_workflow_contract::FeatureRun>, ApiError> {
+    let (identity, _) = authenticate(&state, &headers).await?;
+    if request.result.feature_run_id != feature_id {
+        return Err(ApiError::bad_request(
+            "stage result belongs to another feature",
+        ));
+    }
+    let instance = request
+        .result
+        .claim
+        .workflow_instance_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("invalid stage invocation ID"))?;
+    // Require current claims to match the accepted disclosure/authority ceiling.
+    load_status(&state.pool, &identity, instance).await?;
+    let store = artifacts
+        .and_then(|access| access.0.0)
+        .ok_or_else(|| ApiError::conflict("development artifact store is disabled"))?;
+    let auth = AuthenticatedInvocationContext {
+        host_id: identity.host_id,
+        principal_subject: &identity.principal_subject,
+        end_user_subject: &identity.end_user_subject,
+        update_user: "light-workflow-handoff",
+        user_authorization: None,
+        user_authorization_exp: None,
+    };
+    let mut tx = state.pool.begin().await.map_err(ApiError::database)?;
+    let feature = crate::development_handoff::accept_stage(&mut tx, &auth, &store, &request)
+        .await
+        .map_err(development_store_error)?;
+    tx.commit().await.map_err(ApiError::database)?;
+    Ok(Json(feature))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PublishDevelopmentSlot {
+    slot: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FinalizeDevelopmentDesign {
+    expected_version: u64,
+    operation_id: Uuid,
+}
+
+async fn finalize_development_design(
+    State(state): State<RuleApiState>,
+    artifacts: Option<axum::Extension<crate::artifact_store::DevelopmentArtifactAccess>>,
+    headers: HeaderMap,
+    Path(feature_id): Path<String>,
+    Json(request): Json<FinalizeDevelopmentDesign>,
+) -> Result<Json<development_workflow_contract::FeatureRun>, ApiError> {
+    let (identity, _) = authenticate(&state, &headers).await?;
+    let store = artifacts
+        .and_then(|a| a.0.0)
+        .ok_or_else(|| ApiError::conflict("development artifact store disabled"))?;
+    let auth = AuthenticatedInvocationContext {
+        host_id: identity.host_id,
+        principal_subject: &identity.principal_subject,
+        end_user_subject: &identity.end_user_subject,
+        update_user: "workflow-finalize",
+        user_authorization: None,
+        user_authorization_exp: None,
+    };
+    let mut tx = state.pool.begin().await.map_err(ApiError::database)?;
+    let feature = crate::development_store::load_feature(&mut tx, &auth, &feature_id)
+        .await
+        .map_err(development_store_error)?;
+    let instance = feature
+        .active_claim
+        .as_ref()
+        .or_else(|| feature.accepted_results.last().map(|r| &r.claim))
+        .ok_or_else(|| ApiError::conflict("finalization claim missing"))?
+        .workflow_instance_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("invalid finalization invocation"))?;
+    tx.commit().await.map_err(ApiError::database)?;
+    load_status(&state.pool, &identity, instance).await?;
+    let mut tx = state.pool.begin().await.map_err(ApiError::database)?;
+    let feature = crate::development_finalize::complete_design(
+        &mut tx,
+        &auth,
+        &store,
+        &feature_id,
+        request.expected_version,
+        request.operation_id,
+    )
+    .await
+    .map_err(development_store_error)?;
+    tx.commit().await.map_err(ApiError::database)?;
+    Ok(Json(feature))
+}
+
+async fn publish_development_slot(
+    State(state): State<RuleApiState>,
+    artifacts: Option<axum::Extension<crate::artifact_store::DevelopmentArtifactAccess>>,
+    provider: Option<axum::Extension<crate::publication_dispatch::PublicationProviderAccess>>,
+    headers: HeaderMap,
+    Path(feature_id): Path<String>,
+    Json(request): Json<PublishDevelopmentSlot>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let (identity, _) = authenticate(&state, &headers).await?;
+    let store = artifacts
+        .and_then(|a| a.0.0)
+        .ok_or_else(|| ApiError::conflict("development artifact store disabled"))?;
+    let provider = provider
+        .and_then(|p| p.0.0)
+        .ok_or_else(|| ApiError::conflict("publication provider disabled"))?;
+    let auth = AuthenticatedInvocationContext {
+        host_id: identity.host_id,
+        principal_subject: &identity.principal_subject,
+        end_user_subject: &identity.end_user_subject,
+        update_user: "workflow-publication",
+        user_authorization: None,
+        user_authorization_exp: None,
+    };
+    let mut tx = state.pool.begin().await.map_err(ApiError::database)?;
+    let feature = crate::development_store::load_feature(&mut tx, &auth, &feature_id)
+        .await
+        .map_err(development_store_error)?;
+    let instance = feature
+        .active_claim
+        .as_ref()
+        .ok_or_else(|| ApiError::conflict("publication stage not active"))?
+        .workflow_instance_id
+        .parse()
+        .map_err(|_| ApiError::bad_request("invalid publication invocation"))?;
+    tx.commit().await.map_err(ApiError::database)?;
+    load_status(&state.pool, &identity, instance).await?;
+    let result = crate::publication_dispatch::dispatch(
+        &state.pool,
+        &store,
+        &provider,
+        &auth,
+        &feature_id,
+        &request.slot,
+    )
+    .await
+    .map_err(development_store_error)?;
+    Ok(match result {
+        Some(result) => (StatusCode::OK, Json(result)),
+        None => (
+            StatusCode::ACCEPTED,
+            Json(json!({"state":"pending-reconciliation"})),
+        ),
+    })
+}
+
+async fn replan_development_stage(
+    State(state): State<RuleApiState>,
+    headers: HeaderMap,
+    Path(feature_id): Path<String>,
+    Json(request): Json<crate::development_handoff::ReplanStage>,
+) -> Result<Json<development_workflow_contract::FeatureRun>, ApiError> {
+    let (identity, _) = authenticate(&state, &headers).await?;
+    if request.feature_id != feature_id {
+        return Err(ApiError::bad_request("replan belongs to another feature"));
+    }
+    // Check all previous invocations before taking feature locks. This also
+    // covers historical transition replay without trusting caller receipts.
+    let instances: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT s.workflow_instance_id FROM development_stage_t s
+         JOIN development_feature_t f ON f.host_id=s.host_id AND f.feature_id=s.feature_id
+         WHERE f.host_id=$1 AND f.feature_id=$2 AND f.principal_subject=$3 AND f.end_user_subject=$4",
+    ).bind(identity.host_id).bind(&feature_id).bind(&identity.principal_subject)
+        .bind(&identity.end_user_subject).fetch_all(&state.pool).await.map_err(ApiError::database)?;
+    if instances.is_empty() {
+        return Err(ApiError::not_found(
+            "accepted development stage is unavailable",
+        ));
+    }
+    for instance in instances {
+        load_status(&state.pool, &identity, instance).await?;
+    }
+    let auth = AuthenticatedInvocationContext {
+        host_id: identity.host_id,
+        principal_subject: &identity.principal_subject,
+        end_user_subject: &identity.end_user_subject,
+        update_user: "light-workflow-replan",
+        user_authorization: None,
+        user_authorization_exp: None,
+    };
+    let mut tx = state.pool.begin().await.map_err(ApiError::database)?;
+    let feature = crate::development_handoff::replan_stage(&mut tx, &auth, &request)
+        .await
+        .map_err(development_store_error)?;
+    tx.commit().await.map_err(ApiError::database)?;
+    Ok(Json(feature))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CancelDevelopmentFeature {
+    expected_version: u64,
+}
+
+async fn cancel_development_feature(
+    State(state): State<RuleApiState>,
+    headers: HeaderMap,
+    Path(feature_id): Path<String>,
+    Json(request): Json<CancelDevelopmentFeature>,
+) -> Result<Json<development_workflow_contract::FeatureRun>, ApiError> {
+    let (identity, _) = authenticate(&state, &headers).await?;
+    let auth = AuthenticatedInvocationContext {
+        host_id: identity.host_id,
+        principal_subject: &identity.principal_subject,
+        end_user_subject: &identity.end_user_subject,
+        update_user: "light-workflow-invocation",
+        user_authorization: None,
+        user_authorization_exp: None,
+    };
+    let mut tx = state.pool.begin().await.map_err(ApiError::database)?;
+    let feature = crate::development_store::request_cancel(
+        &mut tx,
+        &auth,
+        &feature_id,
+        request.expected_version,
+    )
+    .await
+    .map_err(development_store_error)?;
+    tx.commit().await.map_err(ApiError::database)?;
+    Ok(Json(feature))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_invocation_with_stage(
+    State(state): State<RuleApiState>,
+    broker: Option<axum::Extension<Arc<crate::credential_broker::CredentialBroker>>>,
+    peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
+    policy: Option<axum::Extension<crate::action_api::ActionSettings>>,
+    headers: HeaderMap,
+    mut request: StartInvocationRequest,
+    stage_claim: Option<development_workflow_contract::StageClaim>,
+    artifacts: Option<crate::artifact_store::DurableArtifactStore>,
 ) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
     let (identity, generation) = authenticate(&state, &headers).await?;
     let mut parent_binding = None;
@@ -627,6 +970,23 @@ async fn start_invocation(
     let initial_task_type = supported_phase2_task_type(initial_task)?;
     let definition_snapshot = serde_json::to_value(&definition)
         .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
+    let stage_claim =
+        crate::development_intake::resolve_claim(&definition_snapshot, &request.input, stage_claim)
+            .map_err(development_store_error)?;
+    if let Some(claim) = stage_claim.as_ref() {
+        crate::development_intake::bind_deadline(&mut request, claim)
+            .map_err(development_store_error)?;
+        request
+            .validate(Utc::now())
+            .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    }
+    if stage_claim.is_none()
+        && crate::development_store::is_development_definition(&definition_snapshot)
+    {
+        return Err(ApiError::definition_mismatch(
+            "development stage requires atomic feature claim",
+        ));
+    }
     let actual_definition_digest = format!(
         "sha256:{}",
         execution_runner_protocol::canonical_sha256(&definition_snapshot)
@@ -677,9 +1037,43 @@ async fn start_invocation(
         user_authorization_exp: stored_user_authorization_exp,
     };
     let mut tx = state.pool.begin().await.map_err(ApiError::database)?;
-    let outcome = accept_invocation(&mut tx, &auth, &request, &prepared)
-        .await
-        .map_err(ApiError::accept)?;
+    let outcome = if let Some(claim) = stage_claim.as_ref() {
+        // Probe actual filesystem writability before any runnable process exists.
+        // Snapshot transfer/recovery remains Workflow-owned, never a runner mount.
+        artifacts
+            .as_ref()
+            .ok_or_else(|| ApiError::conflict("development artifact store is disabled"))?
+            .probe_writable()
+            .await
+            .map_err(|_| ApiError::conflict("development artifact store is unavailable"))?;
+        if let Some(seed) = crate::development_intake::seed(
+            &definition_snapshot,
+            &request.input,
+            claim,
+            Utc::now().timestamp() as u64,
+        )
+        .map_err(development_store_error)?
+        {
+            crate::development_intake::create_or_replay(&mut tx, &auth, &seed)
+                .await
+                .map_err(development_store_error)?;
+        }
+        let receipt =
+            crate::development_store::claim_and_start(&mut tx, &auth, claim, &request, &prepared)
+                .await
+                .map_err(development_store_error)?;
+        AcceptOutcome::Replay {
+            workflow_instance_id: receipt
+                .workflow_instance_id
+                .parse()
+                .map_err(|_| ApiError::conflict("invalid stored stage instance"))?,
+            generation: 1,
+        }
+    } else {
+        accept_invocation(&mut tx, &auth, &request, &prepared)
+            .await
+            .map_err(ApiError::accept)?
+    };
     let accepted_run = match &outcome {
         AcceptOutcome::Accepted {
             workflow_instance_id,
@@ -1091,6 +1485,23 @@ async fn cancel_invocation(
     // mutates any durable state.
     let _ = load_status(&state.pool, &identity, workflow_instance_id).await?;
     let mut tx = state.pool.begin().await.map_err(ApiError::database)?;
+    let auth = AuthenticatedInvocationContext {
+        host_id: identity.host_id,
+        principal_subject: &identity.principal_subject,
+        end_user_subject: &identity.end_user_subject,
+        update_user: "light-workflow-cancellation",
+        user_authorization: None,
+        user_authorization_exp: None,
+    };
+    if crate::development_cancel::cancel_invocation(&mut tx, &auth, workflow_instance_id)
+        .await
+        .map_err(development_store_error)?
+    {
+        tx.commit().await.map_err(ApiError::database)?;
+        return Ok(Json(
+            load_status(&state.pool, &identity, workflow_instance_id).await?,
+        ));
+    }
     let row: Option<(Uuid, String, String, String)> = sqlx::query_as(
         "SELECT process_id,cancellation_policy,effect_state,state
            FROM workflow_invocation_t
@@ -1292,7 +1703,8 @@ async fn load_status(
         "SELECT stable_tool_ref,definition_digest,state,state_version,accepted_ts,updated_ts,deadline_ts,
                 public_result,normalized_error,correlation_id,effect_state,non_cancellable_reason,
                 user_authorization,user_authorization_exp,
-                response_policy_snapshot->>'acceptedSubjectClaimsDigest' AS accepted_claims_digest
+                response_policy_snapshot->>'acceptedSubjectClaimsDigest' AS accepted_claims_digest,
+                response_policy_snapshot->'acceptedSubjectClaims' AS accepted_claims
            FROM workflow_invocation_t
           WHERE host_id=$1 AND workflow_instance_id=$2
             AND principal_subject=$3 AND end_user_subject=$4",
@@ -1308,7 +1720,14 @@ async fn load_status(
     let accepted_claims_digest: String = row
         .try_get("accepted_claims_digest")
         .map_err(ApiError::database)?;
-    if accepted_claims_digest != identity.caller_claims_digest {
+    let accepted_claims: Value = row.try_get("accepted_claims").map_err(ApiError::database)?;
+    if !workflow_invocation_contract::accepted_subject_claims_match(
+        &accepted_claims,
+        &accepted_claims_digest,
+        &identity.caller_claims_digest,
+    )
+    .unwrap_or(false)
+    {
         return Err(ApiError::unauthorized(
             "current subject authorization no longer matches the accepted disclosure ceiling",
         ));
@@ -1635,12 +2054,16 @@ fn validate_orchestration_definition(
         ));
     }
     for entry in &definition.do_.entries {
-        let Some((_, task)) = entry.iter().next() else {
+        let Some((name, task)) = entry.iter().next() else {
             return Err(ApiError::definition_mismatch(
                 "workflow task entry is empty",
             ));
         };
-        validate_phase2_task(task, mode, maximum_parallelism)?;
+        if let TaskDefinition::Call(CallTaskDefinition::Agent(call)) = task {
+            validate_development_agent_call(definition, name, &call.with, mode, budget)?;
+        } else {
+            validate_phase2_task(task, mode, maximum_parallelism)?;
+        }
     }
     let (task_attempts, nested_calls, cost_units) = phase2_budget_envelope(definition)?;
     if task_attempts > u64::from(budget.maximum_task_attempts)
@@ -1651,6 +2074,57 @@ fn validate_orchestration_definition(
             "workflow retry, nested-call, or cost envelope exceeds the published invocation budget",
         ));
     }
+    Ok(())
+}
+
+fn validate_development_agent_call(
+    definition: &WorkflowDefinition,
+    name: &str,
+    call: &workflow_core::models::task::AgentArguments,
+    mode: InvocationMode,
+    budget: &workflow_invocation_contract::InvocationBudget,
+) -> Result<(), ApiError> {
+    let snapshot = serde_json::to_value(definition)
+        .map_err(|_| ApiError::definition_mismatch("invalid development definition"))?;
+    let metadata = &snapshot["document"]["metadata"];
+    let stage = metadata
+        .get("developmentWorkflowStage")
+        .cloned()
+        .and_then(|value| {
+            serde_json::from_value::<development_workflow_contract::StageSelector>(value).ok()
+        });
+    let round = metadata
+        .get("developmentWorkflowTurns")
+        .and_then(|v| v.get(name));
+    let snapshot_task = metadata
+        .get("developmentWorkflowSnapshotTasks")
+        .and_then(Value::as_array)
+        .is_some_and(|tasks| tasks.iter().any(|v| v.as_str() == Some(name)));
+    if mode != InvocationMode::Async
+        || !crate::development_store::is_development_definition(&snapshot)
+        || stage.is_none()
+        || (round.is_none() && !snapshot_task)
+        || call.mode != workflow_core::models::task::AgentCallMode::Service
+        || Uuid::parse_str(&call.agent).is_err()
+        || call
+            .token_budget
+            .is_none_or(|v| v == 0 || v > i64::MAX as u64)
+        || call.cost_budget_micros.is_none_or(|v| v > i64::MAX as u64)
+        || call
+            .maximum_delegation_depth
+            .is_none_or(|v| v == 0 || u16::from(v) > budget.maximum_delegation_depth)
+        || call.mock_output.is_some()
+        || call.input.is_none()
+    {
+        return Err(ApiError::definition_mismatch(
+            "native development calls require async claimed stages, pinned slots, service Agent identity and explicit budgets",
+        ));
+    }
+    let schema = call.output_schema.as_ref().ok_or_else(|| {
+        ApiError::definition_mismatch("native development output schema must be inline")
+    })?;
+    jsonschema::Validator::new(schema)
+        .map_err(|_| ApiError::definition_mismatch("invalid native development output schema"))?;
     Ok(())
 }
 
@@ -2198,6 +2672,56 @@ mod tests {
             maximum_intermediate_bytes: 1_048_576,
             maximum_result_bytes: 1_048_576,
             maximum_cost_units: 100,
+        }
+    }
+
+    #[test]
+    fn development_native_admission_is_scoped_and_bounded() {
+        let value = json!({
+            "document":{"dsl":"1.0.3","namespace":"test","name":"native","version":"1.0.0",
+                "metadata":{"developmentWorkflowStage":{"kind":"intake"},
+                    "developmentWorkflowTurns":{"inspect":{"kind":"author","budgetScope":"test"}}}},
+            "evaluate":{"language":"cel"},
+            "do":[{"inspect":{"call":"agent","with":{
+                "agent":Uuid::now_v7(),"mode":"service","tokenBudget":100,
+                "costBudgetMicros":0,"maximumDelegationDepth":1,
+                "input":{"workspace":{}},"outputSchema":{"type":"object"}
+            }}}]
+        });
+        let validate = |value: &Value, mode| {
+            let definition: WorkflowDefinition = serde_json::from_value(value.clone()).unwrap();
+            validate_orchestration_definition(&definition, mode, &test_budget(), 1)
+        };
+        assert!(validate(&value, InvocationMode::Async).is_ok());
+        assert!(validate(&value, InvocationMode::Sync).is_err());
+        for pointer in [
+            "/document/metadata/developmentWorkflowStage",
+            "/document/metadata/developmentWorkflowTurns",
+            "/do/0/inspect/with/tokenBudget",
+            "/do/0/inspect/with/costBudgetMicros",
+            "/do/0/inspect/with/maximumDelegationDepth",
+            "/do/0/inspect/with/outputSchema",
+        ] {
+            let mut changed = value.clone();
+            *changed.pointer_mut(pointer).unwrap() = Value::Null;
+            assert!(
+                validate(&changed, InvocationMode::Async).is_err(),
+                "{pointer}"
+            );
+        }
+        for (field, replacement) in [
+            ("agent", json!("dynamic-agent")),
+            ("mode", json!("native")),
+            ("mockOutput", json!({})),
+            ("tokenBudget", json!(0)),
+            ("maximumDelegationDepth", json!(2)),
+        ] {
+            let mut changed = value.clone();
+            changed["do"][0]["inspect"]["with"][field] = replacement;
+            assert!(
+                validate(&changed, InvocationMode::Async).is_err(),
+                "{field}"
+            );
         }
     }
 

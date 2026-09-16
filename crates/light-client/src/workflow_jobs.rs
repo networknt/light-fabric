@@ -25,6 +25,58 @@ pub struct Client {
     scope: String,
 }
 impl Client {
+    pub async fn pending(
+        &self,
+        host_id: Uuid,
+    ) -> anyhow::Result<Vec<crate::workflow_job_transport::Job>> {
+        let response = self
+            .http
+            .post(format!(
+                "{}poll",
+                self.endpoint.trim_end_matches("authorize")
+            ))
+            .header("x-scope-token", &self.scope)
+            .json(&crate::workflow_job_transport::Poll { host_id })
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status() == reqwest::StatusCode::OK,
+            "Workflow job polling unavailable"
+        );
+        let bytes = response.bytes().await?;
+        anyhow::ensure!(
+            bytes.len() <= 1024 * 1024,
+            "Workflow job poll exceeds bound"
+        );
+        let jobs: Vec<crate::workflow_job_transport::Job> = serde_json::from_slice(&bytes)?;
+        anyhow::ensure!(jobs.len() <= 4, "Workflow job poll exceeds batch bound");
+        for job in &jobs {
+            job.validate()?;
+            anyhow::ensure!(job.host_id == host_id, "job Host mismatch");
+        }
+        Ok(jobs)
+    }
+
+    pub async fn report(
+        &self,
+        report: &crate::workflow_job_transport::Report,
+    ) -> anyhow::Result<()> {
+        let response = self
+            .http
+            .post(format!(
+                "{}report",
+                self.endpoint.trim_end_matches("authorize")
+            ))
+            .header("x-scope-token", &self.scope)
+            .json(report)
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status() == reqwest::StatusCode::NO_CONTENT,
+            "Workflow job report unavailable"
+        );
+        Ok(())
+    }
     pub async fn new(config: &Config, dir: &Path) -> anyhow::Result<Self> {
         let url = url::Url::parse(&config.base_url)?;
         anyhow::ensure!(

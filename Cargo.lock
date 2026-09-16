@@ -1995,6 +1995,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "development-workflow-contract"
+version = "0.2.1"
+dependencies = [
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5060,8 +5071,10 @@ version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "chrono",
  "coding-agent-runtime",
+ "development-workflow-contract",
  "execution-fixed-action",
  "execution-security",
  "futures-util",
@@ -5190,6 +5203,7 @@ dependencies = [
  "pbkdf2",
  "pingora",
  "rand 0.8.5",
+ "rcgen",
  "redis",
  "regex",
  "reqwest",
@@ -5297,6 +5311,7 @@ dependencies = [
  "chrono",
  "config-embed-build",
  "config-loader",
+ "development-workflow-contract",
  "execution-client",
  "execution-fixed-action",
  "execution-runner-protocol",
@@ -5320,6 +5335,7 @@ dependencies = [
  "serde_yaml",
  "sha2 0.10.9",
  "sqlx",
+ "task-workspace",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -5332,6 +5348,7 @@ dependencies = [
  "workflow-invocation-contract",
  "workflow-policy",
  "workflow-store",
+ "workspace-execution-protocol",
 ]
 
 [[package]]
@@ -5360,6 +5377,7 @@ dependencies = [
  "light-runtime",
  "reqwest",
  "rusqlite",
+ "rustls 0.23.37",
  "serde",
  "serde_json",
  "serde_yaml",

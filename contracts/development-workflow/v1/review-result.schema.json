@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewResult v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "featureRunId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stageExecutionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewer": {
+          "enum": [
+            "codex",
+            "claude"
+          ]
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "candidate": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "repositories": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "featureRunId",
+        "reviewId",
+        "stageExecutionId",
+        "reviewer",
+        "sessionId",
+        "candidate",
+        "repositories"
+      ]
+    },
+    "accepted": {
+      "type": "boolean"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "id",
+        "digest"
+      ]
+    },
+    "existingFindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "existingFindingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "disposition": {
+            "enum": [
+              "still-open",
+              "verified-resolved",
+              "reopened"
+            ]
+          },
+          "evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "id",
+              "digest"
+            ]
+          }
+        },
+        "required": [
+          "existingFindingId",
+          "disposition",
+          "evidence"
+        ]
+      }
+    },
+    "newFindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "localId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "repository": {
+            "type": "string",
+            "minLength": 1
+          },
+          "location": {
+            "type": "string",
+            "minLength": 1
+          },
+          "failure": {
+            "type": "string",
+            "minLength": 1
+          },
+          "resolution": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "id",
+              "digest"
+            ]
+          },
+          "severity": {
+            "enum": [
+              "blocking",
+              "advisory"
+            ]
+          },
+          "duplicateOf": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duplicateReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "localId",
+          "repository",
+          "location",
+          "failure",
+          "resolution",
+          "evidence",
+          "severity"
+        ]
+      }
+    }
+  },
+  "required": [
+    "binding",
+    "accepted",
+    "evidence",
+    "existingFindings",
+    "newFindings"
+  ]
+}

@@ -186,6 +186,59 @@ pub struct EnrollmentChallenge {
 }
 
 impl CredentialBroker {
+    /// Acquire a broker-bound credential from existing Portal scope authorization.
+    /// The one-time code and PKCE material never leave this backend coordinator.
+    pub async fn acquire_for_user(
+        &self,
+        authorization: &str,
+        host: Uuid,
+        user: Uuid,
+        callback: &str,
+        scope: &str,
+        binding: Value,
+        expires: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Uuid, BrokerError> {
+        use aes_gcm::aead::rand_core::RngCore;
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        use sha2::{Digest, Sha256};
+        if !binding.is_object()
+            || binding.as_object().is_some_and(|b| b.is_empty())
+            || scope.trim().is_empty()
+            || expires <= chrono::Utc::now()
+        {
+            return Err(BrokerError::Evidence);
+        }
+        let mut random = [0u8; 32];
+        OsRng.fill_bytes(&mut random);
+        let verifier = URL_SAFE_NO_PAD.encode(random);
+        OsRng.fill_bytes(&mut random);
+        let state = URL_SAFE_NO_PAD.encode(random);
+        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        let id = Uuid::new_v4();
+        let sealed = self.keys.seal(id, 0, &verifier)?;
+        let hash = hex::encode(Sha256::digest(state.as_bytes()));
+        sqlx::query("INSERT INTO workflow_secret.enrollment_t
+          (enrollment_id,host_id,user_id,state_hash,key_id,ciphertext,callback_uri,scope,binding,grant_expires_at,expires_at,state)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,clock_timestamp()+interval '5 minutes','PREPARING')")
+            .bind(id).bind(host).bind(user).bind(hash).bind(&self.keys.active).bind(sealed).bind(callback)
+            .bind(scope).bind(&binding).bind(expires).execute(&self.pool).await.map_err(|_|BrokerError::Store)?;
+        let code = self.provider.acquire_code(authorization, &serde_json::json!({
+            "clientId":self.provider.client_id(),"enrollmentId":id,"hostId":host,"codeChallenge":challenge,
+            "callbackUri":callback,"state":state,"scope":scope,"binding":binding,"expiresAt":expires
+        })).await;
+        let code = match code {
+            Ok(code) => code,
+            Err(_) => {
+                sqlx::query("UPDATE workflow_secret.enrollment_t SET state='REAUTHORIZATION_REQUIRED',revocation_pending=true WHERE enrollment_id=$1")
+                    .bind(id).execute(&self.pool).await.map_err(|_|BrokerError::Store)?;
+                return Err(BrokerError::Reauthorize);
+            }
+        };
+        sqlx::query("UPDATE workflow_secret.enrollment_t SET state='READY' WHERE enrollment_id=$1 AND state='PREPARING'")
+            .bind(id).execute(&self.pool).await.map_err(|_|BrokerError::Store)?;
+        self.complete_enrollment(&state, &code, host, user).await
+    }
+
     /// Revoke durably before contacting the issuer. Failure to reach the issuer
     /// leaves a recoverable revocation obligation and never reopens local use.
     pub async fn revoke_grant(

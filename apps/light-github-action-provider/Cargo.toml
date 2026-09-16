@@ -5,6 +5,8 @@ edition.workspace=true
 license.workspace=true
 
 [dependencies]
+development-workflow-contract={path="../../crates/development-workflow-contract"}
+base64="0.22"
 coding-agent-runtime = { path = "../../crates/coding-agent-runtime" }
 anyhow.workspace=true
 axum.workspace=true

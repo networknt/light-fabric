@@ -134,6 +134,9 @@ impl ResultReconciler {
                 .await
             {
                 Ok(true) => {
+                    crate::development_execution::reconcile_runner_result(&mut tx, &attempt)
+                        .await
+                        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
                     tx.commit().await?;
                     self.execution
                         .acknowledge_result(attempt.execution_id, attempt.fencing_token)
@@ -146,7 +149,21 @@ impl ResultReconciler {
                         "accepted one runner result into workflow state"
                     );
                 }
-                Ok(false) => tx.rollback().await?,
+                Ok(false) => {
+                    let replay = crate::development_execution::runner_result_already_recorded(
+                        &mut tx, &attempt,
+                    )
+                    .await
+                    .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+                    tx.rollback().await?;
+                    if replay {
+                        self.execution
+                            .acknowledge_result(attempt.execution_id, attempt.fencing_token)
+                            .await
+                            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+                        transitioned = true;
+                    }
+                }
                 Err(error) => {
                     tx.rollback().await?;
                     return Err(sqlx::Error::Protocol(error.to_string()));

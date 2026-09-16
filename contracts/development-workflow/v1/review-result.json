@@ -1,0 +1,35 @@
+{
+  "binding": {
+    "featureRunId": "feature-1",
+    "reviewId": "allocated-review-1",
+    "stageExecutionId": "design-1",
+    "reviewer": "claude",
+    "sessionId": "claude-design",
+    "candidate": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "repositories": [
+      "repo"
+    ]
+  },
+  "accepted": false,
+  "evidence": {
+    "id": "artifact:review",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "existingFindings": [],
+  "newFindings": [
+    {
+      "localId": "local-1",
+      "repository": "repo",
+      "location": "src/lib.rs:10",
+      "failure": "expired authority reaches dispatch",
+      "resolution": "reject expired authority before dispatch",
+      "evidence": {
+        "id": "artifact:review",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "severity": "blocking",
+      "duplicateOf": null,
+      "duplicateReason": null
+    }
+  ]
+}
