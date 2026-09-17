@@ -34,10 +34,10 @@ use light_pingora::{
     load_pii_tokenization_runtime, load_proxy_route, load_rate_limit_runtime, load_router_route,
     load_security_runtime, load_stateless_auth_runtime, load_static_resources, load_token_runtime,
     load_unified_security_config, load_websocket_router_runtime_with_policy,
-    merge_extra_response_headers, record_mcp_router_reload_rejection, record_spa_auth_legacy_get,
-    select_router_target, validate_mcp_router_runtime_config, validate_unified_security_config,
-    verify_api_key, verify_basic_auth, verify_jwt_request, verify_unified_security,
-    websocket_policy_endpoint,
+    merge_extra_response_headers, prepend_path_prefix, record_mcp_router_reload_rejection,
+    record_spa_auth_legacy_get, select_router_target, validate_mcp_router_runtime_config,
+    validate_unified_security_config, verify_api_key, verify_basic_auth, verify_jwt_request,
+    verify_unified_security, websocket_policy_endpoint,
 };
 use light_runtime::{
     AdmissionGate, AdmissionKind, AdmissionPermit, CacheRegistry, ConfigManager,
@@ -5476,7 +5476,14 @@ impl ProxyHttp for GatewayProxy {
                 self.server_port,
             )?;
             if let Some(decision) = ctx.a2a_decision.as_ref() {
-                rewrite_upstream_path_exact(upstream_request, &decision.upstream_path)?;
+                rewrite_upstream_path_exact(
+                    upstream_request,
+                    prepend_path_prefix(
+                        target.path_prefix.as_str(),
+                        decision.upstream_path.as_str(),
+                    )
+                    .as_str(),
+                )?;
                 upstream_request.remove_header("service_id");
                 upstream_request.remove_header("service_url");
                 upstream_request.remove_header("env_tag");
@@ -5508,6 +5515,7 @@ impl ProxyHttp for GatewayProxy {
                 apply_websocket_upstream_request(
                     upstream_request,
                     decision,
+                    target.path_prefix.as_str(),
                     ctx.websocket_preserve_routing_headers,
                 )?;
                 if let Some(handshake) = ctx.websocket_handshake.as_ref() {
@@ -6675,11 +6683,7 @@ fn rewrite_upstream_path(
     let (path, query) = original
         .split_once('?')
         .map_or((original, None), |(path, query)| (path, Some(query)));
-    let path = if path == "/" {
-        path_prefix.to_string()
-    } else {
-        format!("{}{}", path_prefix.trim_end_matches('/'), path)
-    };
+    let path = prepend_path_prefix(path_prefix, path);
     let path_and_query = query.map_or(path.clone(), |query| format!("{path}?{query}"));
     let uri = path_and_query.parse().map_err(|error| {
         Error::because(

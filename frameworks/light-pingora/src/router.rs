@@ -1,6 +1,6 @@
 use crate::config_util::{deserialize_string_list, deserialize_typed_map, request_header};
 use crate::direct_registry::direct_registry_target;
-use crate::proxy::ProxyTarget;
+use crate::proxy::{ProxyTarget, prepend_path_prefix};
 use crate::security::HandlerRejection;
 use crate::streaming::StreamingPolicy;
 use light_runtime::{
@@ -613,26 +613,6 @@ fn split_path_query(path_and_query: &str) -> (&str, Option<&str>) {
     path_and_query
         .split_once('?')
         .map_or((path_and_query, None), |(path, query)| (path, Some(query)))
-}
-
-fn prepend_path_prefix(prefix: &str, path: &str) -> String {
-    if prefix.is_empty() {
-        return ensure_path(path);
-    }
-    let path = ensure_path(path);
-    if path == "/" {
-        prefix.to_string()
-    } else {
-        format!("{}{}", prefix.trim_end_matches('/'), path)
-    }
-}
-
-fn ensure_path(path: &str) -> String {
-    if path.starts_with('/') {
-        path.to_string()
-    } else {
-        format!("/{path}")
-    }
 }
 
 fn query_param(query: Option<&str>, key: &str) -> Option<String> {

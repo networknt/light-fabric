@@ -1,7 +1,7 @@
 use crate::access_control::{AccessControlRuntime, AccessDecision};
 use crate::config_util::deserialize_optional_u64;
 use crate::direct_registry::direct_registry_target;
-use crate::proxy::ProxyTarget;
+use crate::proxy::{ProxyTarget, prepend_path_prefix};
 use crate::security::AuthPrincipal;
 use async_trait::async_trait;
 use light_runtime::{
@@ -843,15 +843,14 @@ pub fn load_websocket_router_runtime_with_policy(
 pub fn apply_websocket_upstream_request(
     upstream_request: &mut RequestHeader,
     decision: &WebSocketRouteDecision,
+    path_prefix: &str,
     preserve_routing_headers: bool,
 ) -> pingora::Result<()> {
-    let uri = decision.upstream_path_and_query.parse().map_err(|error| {
+    let path_and_query = websocket_upstream_path_and_query(decision, path_prefix);
+    let uri = path_and_query.parse().map_err(|error| {
         pingora::Error::because(
             pingora::ErrorType::InvalidHTTPHeader,
-            format!(
-                "invalid websocket upstream URI `{}`",
-                decision.upstream_path_and_query
-            ),
+            format!("invalid websocket upstream URI `{path_and_query}`"),
             error,
         )
     })?;
@@ -862,6 +861,18 @@ pub fn apply_websocket_upstream_request(
         }
     }
     Ok(())
+}
+
+fn websocket_upstream_path_and_query(
+    decision: &WebSocketRouteDecision,
+    path_prefix: &str,
+) -> String {
+    if path_prefix.is_empty() {
+        return decision.upstream_path_and_query.clone();
+    }
+    let (path, query) = split_path_query(decision.upstream_path_and_query.as_str());
+    let path = prepend_path_prefix(path_prefix, path);
+    query.map_or(path.clone(), |query| format!("{path}?{query}"))
 }
 
 pub fn apply_browser_websocket_upstream_credentials(
@@ -2173,7 +2184,8 @@ pathPrefixService:
             .insert_header("Sec-WebSocket-Protocol", "chat")
             .expect("subprotocol header");
 
-        apply_websocket_upstream_request(&mut request, &decision, false).expect("apply request");
+        apply_websocket_upstream_request(&mut request, &decision, "", false)
+            .expect("apply request");
 
         assert_eq!(
             request.uri.path_and_query().unwrap().as_str(),
@@ -2183,6 +2195,27 @@ pathPrefixService:
         assert_eq!(
             request.headers["sec-websocket-protocol"].to_str().unwrap(),
             "chat"
+        );
+    }
+
+    #[test]
+    fn apply_upstream_request_prepends_direct_registry_path_prefix() {
+        let decision = WebSocketRouteDecision {
+            service_id: "com.networknt.llmchat-1.0.0".to_string(),
+            protocol: "https".to_string(),
+            env_tag: None,
+            upstream_path_and_query: "/chat/room?room=one".to_string(),
+            source: WebSocketRouteSource::Query,
+        };
+        let mut request =
+            RequestHeader::build("GET", b"/chat/room?room=one", Some(8)).expect("request");
+
+        apply_websocket_upstream_request(&mut request, &decision, "/namespace1/service1", false)
+            .expect("apply request");
+
+        assert_eq!(
+            request.uri.path_and_query().unwrap().as_str(),
+            "/namespace1/service1/chat/room?room=one"
         );
     }
 
@@ -2200,7 +2233,7 @@ pathPrefixService:
             .insert_header("service_id", "com.networknt.llmchat-1.0.0")
             .expect("service header");
 
-        apply_websocket_upstream_request(&mut request, &decision, true).expect("apply request");
+        apply_websocket_upstream_request(&mut request, &decision, "", true).expect("apply request");
 
         assert_eq!(
             request.headers["service_id"].to_str().unwrap(),
@@ -2611,7 +2644,7 @@ maxConnectionDurationMs: 900000
             ] {
                 request.insert_header(name, value).unwrap();
             }
-            apply_websocket_upstream_request(&mut request, &decision, preserve).unwrap();
+            apply_websocket_upstream_request(&mut request, &decision, "", preserve).unwrap();
             apply_browser_websocket_upstream_credentials(
                 &mut request,
                 &handshake,

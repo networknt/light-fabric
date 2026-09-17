@@ -230,6 +230,28 @@ fn normalize_path_prefix(path: &str) -> String {
     }
 }
 
+/// Prepend an upstream base path (for example the `/namespace/service` prefix a
+/// k8s ingress strips before the request reaches the pod) to a request path.
+pub fn prepend_path_prefix(prefix: &str, path: &str) -> String {
+    if prefix.is_empty() {
+        return ensure_path(path);
+    }
+    let path = ensure_path(path);
+    if path == "/" {
+        prefix.to_string()
+    } else {
+        format!("{}{}", prefix.trim_end_matches('/'), path)
+    }
+}
+
+fn ensure_path(path: &str) -> String {
+    if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    }
+}
+
 fn default_enabled() -> bool {
     true
 }
