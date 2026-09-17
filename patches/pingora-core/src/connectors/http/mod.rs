@@ -596,7 +596,10 @@ pub mod rustls_no_verify {
         }
 
         fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-            vec![rustls::SignatureScheme::ECDSA_NISTP256_SHA256]
+            rustls::crypto::CryptoProvider::get_default()
+                .expect("default crypto provider installed")
+                .signature_verification_algorithms
+                .supported_schemes()
         }
     }
 
