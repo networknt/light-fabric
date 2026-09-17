@@ -285,10 +285,24 @@ path. The token, JWK, and SPA auth clients append their configured URI to the
 direct URL, which keeps the base path as well.
 
 The `Host` header and the TLS SNI come from the host of the URL, not the base
-path. Targets that come from controller discovery have no base path, because
-discovery nodes carry an address and a port only. A service behind a path-based
-ingress therefore keeps its direct-registry entry until discovery can express a
-base path.
+path.
+
+A discovered node expresses the same thing with the reserved `basePath`
+registration tag. A service sets `basePath` in its `server.yml`, the runtime
+registers it as a tag, the controller round-trips it, and every consumer of a
+discovery node prepends it:
+
+```yaml
+# server.yml of the service behind the ingress
+basePath: ${server.basePath:/namespace1/service1}
+```
+
+`DiscoveryNode::base_path()` normalizes the tag (leading slash, no trailing
+slash) and `DiscoveryNode::base_url()` includes it, so the router, the WebSocket
+router, MCP tools, the token handler, SPA auth, and the JWK client all route
+through the ingress prefix without their own mapping. A node that does not
+advertise the tag has an empty base path and is reached by address and port as
+before, which keeps every existing deployment unchanged.
 
 This keeps failure behavior predictable. Product configs that require dynamic
 discovery should fail requests loudly when the controller connection is down

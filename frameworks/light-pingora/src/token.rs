@@ -950,7 +950,7 @@ async fn resolve_token_server_url(
             format!("token service `{service_id}` has no usable discovery nodes"),
         )
     })?;
-    Ok(discovery_node_base_url(node))
+    Ok(node.base_url())
 }
 
 fn select_token_node(nodes: &[DiscoveryNode]) -> Option<&DiscoveryNode> {
@@ -964,20 +964,6 @@ fn select_token_node(nodes: &[DiscoveryNode]) -> Option<&DiscoveryNode> {
                 .filter(|node| node.connected && node.port != 0)
                 .find(|node| node.protocol.eq_ignore_ascii_case("http"))
         })
-}
-
-fn discovery_node_base_url(node: &DiscoveryNode) -> String {
-    let host = if node.address.contains(':') && !node.address.starts_with('[') {
-        format!("[{}]", node.address)
-    } else {
-        node.address.clone()
-    };
-    format!(
-        "{}://{}:{}",
-        node.protocol.to_ascii_lowercase(),
-        host,
-        node.port
-    )
 }
 
 fn token_endpoint_url(server_url: &str, uri: &str) -> Result<String, HandlerRejection> {

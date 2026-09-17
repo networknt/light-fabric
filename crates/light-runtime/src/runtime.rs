@@ -5,8 +5,8 @@ use config_loader::{
     load_config_from_sources, load_values_from_sources,
 };
 use portal_registry::{
-    ControlCandidate, PortalRegistryClient, RegistrationBuilder, RegistrationState,
-    RegistryHandler, RegistrySession,
+    BASE_PATH_TAG, ControlCandidate, PortalRegistryClient, RegistrationBuilder, RegistrationState,
+    RegistryHandler, RegistrySession, normalize_base_path,
 };
 use serde::de::DeserializeOwned;
 use serde_yaml::Value;
@@ -927,7 +927,7 @@ where
                     .unwrap_or(server.service_id.as_str()),
             ),
             env_tag,
-            tags: HashMap::new(),
+            tags: service_identity_tags(&server),
         };
         let registry_client = match self.build_registry_client_for_runtime(
             &bootstrap,
@@ -1886,6 +1886,19 @@ fn validate_direct_registry_config(config: &DirectRegistryConfig) -> Result<(), 
     Ok(())
 }
 
+/// Build the registration tags of the service. A base path configured in server.yml is advertised with the
+/// reserved basePath tag so that a caller can reach the service through a path based k8s ingress.
+fn service_identity_tags(server: &ServerConfig) -> HashMap<String, String> {
+    let mut tags = HashMap::new();
+    if let Some(base_path) = server.base_path.as_deref() {
+        let base_path = normalize_base_path(base_path);
+        if !base_path.is_empty() {
+            tags.insert(BASE_PATH_TAG.to_string(), base_path);
+        }
+    }
+    tags
+}
+
 fn derive_service_version(service_id: &str) -> String {
     service_id
         .rsplit_once('-')
@@ -2004,6 +2017,23 @@ fn init_rustls_provider() {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn service_identity_tags_advertise_the_base_path() {
+        let mut server = ServerConfig::default();
+        assert!(service_identity_tags(&server).is_empty());
+
+        server.base_path = Some("namespace1/service1/".to_string());
+        assert_eq!(
+            service_identity_tags(&server)
+                .get(BASE_PATH_TAG)
+                .map(String::as_str),
+            Some("/namespace1/service1")
+        );
+
+        server.base_path = Some("   ".to_string());
+        assert!(service_identity_tags(&server).is_empty());
+    }
     use super::*;
     use crate::transport::{BoundTransport, ResolvedServerMetadata, TransportRuntime};
     use async_trait::async_trait;

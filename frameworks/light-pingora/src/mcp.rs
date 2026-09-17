@@ -6279,7 +6279,7 @@ impl McpRouterRuntime {
                     "MCP tool service `{service_id}` has no usable discovery nodes"
                 ))
             })?;
-        let url = parse_base_url(discovery_node_base_url(node).as_str(), &tool.name, true)?;
+        let url = parse_base_url(node.base_url().as_str(), &tool.name, true)?;
         Ok(ResolvedMcpTarget {
             url,
             allow_private_target_host: true,
@@ -8433,20 +8433,6 @@ fn select_discovery_node<'a>(
                 .filter(usable)
                 .find(|node| node.protocol.eq_ignore_ascii_case("http"))
         })
-}
-
-fn discovery_node_base_url(node: &DiscoveryNode) -> String {
-    let host = if node.address.contains(':') && !node.address.starts_with('[') {
-        format!("[{}]", node.address)
-    } else {
-        node.address.clone()
-    };
-    format!(
-        "{}://{}:{}",
-        node.protocol.to_ascii_lowercase(),
-        host,
-        node.port
-    )
 }
 
 fn append_query_arguments(url: &mut Url, arguments: &JsonValue) {

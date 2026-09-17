@@ -9,4 +9,5 @@ enableRegistry: false
 startOnRegistryFailure: false
 dynamicPort: false
 environment: ${server.environment:dev}
+basePath: ${server.basePath:}
 shutdownGracefulPeriod: 2000

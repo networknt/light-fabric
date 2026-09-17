@@ -86,6 +86,11 @@ pub struct ServerConfig {
     pub dynamic_port: bool,
     #[serde(default = "default_environment")]
     pub environment: String,
+    /// The base path of the service when it is deployed behind a path based k8s ingress. It is registered with the
+    /// controller so that a caller prepends it to the path of every request. The ingress routes on the prefix and
+    /// removes it before the request reaches the pod, so the service itself keeps serving its normal paths.
+    #[serde(default)]
+    pub base_path: Option<String>,
     #[serde(default = "default_shutdown_graceful_period_ms")]
     pub shutdown_graceful_period: u64,
 }
@@ -106,6 +111,7 @@ impl Default for ServerConfig {
             start_on_registry_failure: false,
             dynamic_port: false,
             environment: String::new(),
+            base_path: None,
             shutdown_graceful_period: default_shutdown_graceful_period_ms(),
         }
     }

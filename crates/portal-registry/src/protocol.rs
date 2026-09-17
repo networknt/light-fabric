@@ -118,6 +118,54 @@ pub struct DiscoveryNode {
     pub connected: bool,
 }
 
+/// Reserved registration tag that carries the base path of a service. It is used when the service is deployed
+/// behind a path based k8s ingress where the namespace and the service are the path prefix of the url, and the
+/// ingress removes that prefix before the request reaches the pod.
+pub const BASE_PATH_TAG: &str = "basePath";
+
+/// Normalize a base path so that it starts with a slash and has no trailing slash. An empty string is returned
+/// when the value is blank or is only a slash, which means the service is reached without a path prefix.
+pub fn normalize_base_path(value: &str) -> String {
+    let trimmed = value.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    }
+}
+
+impl DiscoveryNode {
+    /// The base path advertised by the node, normalized to start with a slash and to have no trailing slash. It
+    /// is an empty string when the node does not advertise one, which is the case for every node that is reached
+    /// by its address and port directly.
+    pub fn base_path(&self) -> String {
+        self.tags
+            .get(BASE_PATH_TAG)
+            .map(|value| normalize_base_path(value))
+            .unwrap_or_default()
+    }
+
+    /// The base url of the node, including the base path when the node advertises one. A caller appends its own
+    /// path to it, so the base path is kept in front of every request sent to the service.
+    pub fn base_url(&self) -> String {
+        let host = if self.address.contains(':') && !self.address.starts_with('[') {
+            format!("[{}]", self.address)
+        } else {
+            self.address.clone()
+        };
+        format!(
+            "{}://{}:{}{}",
+            self.protocol.to_ascii_lowercase(),
+            host,
+            self.port,
+            self.base_path()
+        )
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoverySnapshot {
@@ -149,4 +197,74 @@ pub struct DeregistrationParams {
 pub struct DeregistrationResponse {
     pub runtime_instance_id: Uuid,
     pub status: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(tags: &[(&str, &str)]) -> DiscoveryNode {
+        DiscoveryNode {
+            runtime_instance_id: Uuid::nil(),
+            service_id: "com.networknt.petstore-1.0.0".to_string(),
+            env_tag: None,
+            environment: "dev".to_string(),
+            version: "1.0.0".to_string(),
+            protocol: "https".to_string(),
+            address: "api.example.com".to_string(),
+            port: 443,
+            tags: tags
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                .collect(),
+            connected_at: Utc::now(),
+            last_seen_at: Utc::now(),
+            connected: true,
+        }
+    }
+
+    #[test]
+    fn node_without_the_tag_has_no_base_path() {
+        assert_eq!(node(&[]).base_path(), "");
+        assert_eq!(node(&[("region", "ca")]).base_path(), "");
+        assert_eq!(node(&[(BASE_PATH_TAG, "  ")]).base_path(), "");
+        assert_eq!(node(&[(BASE_PATH_TAG, "/")]).base_path(), "");
+        assert_eq!(node(&[]).base_url(), "https://api.example.com:443");
+    }
+
+    #[test]
+    fn base_path_is_normalized() {
+        assert_eq!(
+            node(&[(BASE_PATH_TAG, "/namespace1/service1")]).base_path(),
+            "/namespace1/service1"
+        );
+        assert_eq!(
+            node(&[(BASE_PATH_TAG, "namespace1/service1/")]).base_path(),
+            "/namespace1/service1"
+        );
+        assert_eq!(
+            node(&[(BASE_PATH_TAG, " /namespace1/service1 ")]).base_path(),
+            "/namespace1/service1"
+        );
+    }
+
+    #[test]
+    fn base_url_includes_the_base_path() {
+        assert_eq!(
+            node(&[(BASE_PATH_TAG, "/namespace1/service1")]).base_url(),
+            "https://api.example.com:443/namespace1/service1"
+        );
+    }
+
+    #[test]
+    fn base_url_brackets_an_ipv6_address() {
+        let mut node = node(&[(BASE_PATH_TAG, "/namespace1/service1")]);
+        node.address = "2001:db8::1".to_string();
+        node.port = 8443;
+
+        assert_eq!(
+            node.base_url(),
+            "https://[2001:db8::1]:8443/namespace1/service1"
+        );
+    }
 }

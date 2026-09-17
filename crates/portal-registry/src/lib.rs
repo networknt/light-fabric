@@ -19,9 +19,9 @@ pub use client::{
     RegistrySession, RegistryShutdownOutcome, unsupported_method_response,
 };
 pub use protocol::{
-    DeregistrationParams, DeregistrationResponse, DiscoveryNode, DiscoverySnapshot,
+    BASE_PATH_TAG, DeregistrationParams, DeregistrationResponse, DiscoveryNode, DiscoverySnapshot,
     DiscoverySubscription, JsonRpcMessage, RegistrationResponse, ServiceMetadataUpdate,
-    ServiceRegistrationParams,
+    ServiceRegistrationParams, normalize_base_path,
 };
 
 use std::collections::HashMap;
