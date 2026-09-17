@@ -306,7 +306,11 @@ before, which keeps every existing deployment unchanged.
 
 Only a path is accepted. A value that carries a query, a fragment, a relative
 segment, or an empty segment is rejected, because the base path is concatenated
-with the path of the request and with the uri of an endpoint. A `basePath` in
+with the path of the request and with the uri of an endpoint. A percent encoded
+dot segment such as `/namespace/%2e%2e/admin` is rejected as well, since a url
+parser decodes it before it resolves the segment and the prefix would route to a
+path other than the one validated. An accepted base path is one that survives
+url parsing unchanged. A `basePath` in
 `server.yml` that is not a path fails the startup, while an invalid tag
 advertised by another service is ignored and that node is reached without a
 prefix, since a caller cannot fail a request over a tag it does not own.

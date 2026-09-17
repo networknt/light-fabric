@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use url::Url;
 use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -153,15 +154,29 @@ pub fn parse_base_path(value: &str) -> Result<String, String> {
     if path.contains("//") {
         return Err(format!("`{value}` must not contain an empty path segment"));
     }
-    if path
-        .split('/')
-        .any(|segment| segment == "." || segment == "..")
-    {
+    if path.split('/').any(is_dot_segment) {
         return Err(format!(
             "`{value}` must not contain a relative path segment"
         ));
     }
-    Ok(path)
+    // The consumers build a url from this path, and the url parser normalizes what it considers a dot segment,
+    // including its percent encoded spellings. A path that does not survive that parse unchanged would route to
+    // a different path than the one validated here, so it is rejected rather than silently rewritten.
+    match Url::parse(&format!("https://base.invalid{path}")) {
+        Ok(url) if url.path() == path => Ok(path),
+        Ok(url) => Err(format!(
+            "`{value}` is not a normalized path, a url parser reads it as `{}`",
+            url.path()
+        )),
+        Err(error) => Err(format!("`{value}` is not a usable path: {error}")),
+    }
+}
+
+/// A path segment that a url parser resolves as the current or the parent directory, including the percent
+/// encoded spellings of a dot, which a parser decodes before it resolves the segment.
+fn is_dot_segment(segment: &str) -> bool {
+    let decoded = segment.to_ascii_lowercase().replace("%2e", ".");
+    decoded == "." || decoded == ".."
 }
 
 /// Normalize a base path advertised by a node, ignoring a value that is not a usable path. A caller cannot fail
@@ -309,6 +324,12 @@ mod tests {
             "/tenant//service",
             "/tenant service",
             "/tenant\\service",
+            // a url parser decodes a percent encoded dot before it resolves the segment, so these spellings
+            // would route to a path other than the one validated here.
+            "/namespace/%2e%2e/admin",
+            "/namespace/%2E%2E/admin",
+            "/namespace/%2e/admin",
+            "/namespace/.%2e/admin",
         ] {
             assert!(parse_base_path(value).is_err(), "{value} must be rejected");
             assert_eq!(normalize_base_path(value), "");
@@ -332,6 +353,20 @@ mod tests {
             parse_base_path("/namespace1/service%201"),
             Ok("/namespace1/service%201".to_string())
         );
+    }
+
+    #[test]
+    fn an_accepted_base_path_survives_url_parsing() {
+        for value in [
+            "/namespace1/service1",
+            "/namespace1/service%201",
+            "/tenant-a/api.v1",
+            "/namespace1/service1/deep/path",
+        ] {
+            let parsed = parse_base_path(value).expect("valid base path");
+            let url = Url::parse(&format!("https://api.example.com{parsed}")).expect("url");
+            assert_eq!(url.path(), parsed, "{value} must not be rewritten");
+        }
     }
 
     #[test]
