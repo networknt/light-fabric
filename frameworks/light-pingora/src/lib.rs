@@ -138,7 +138,7 @@ pub use pii_tokenization::{
 };
 pub use proxy::{
     PROXY_CONFIG_NAME, PROXY_FILE, PROXY_MODULE_ID, ProxyConfig, ProxyRoute, ProxyTarget,
-    load_proxy_route, parse_proxy_targets,
+    load_proxy_route, parse_proxy_targets, prepend_path_prefix,
 };
 pub use rate_limit::{
     LIMIT_CONFIG_NAME, LIMIT_FILE, LIMIT_MODULE_ID, LimitConfig, LimitKey, LimitQuota,

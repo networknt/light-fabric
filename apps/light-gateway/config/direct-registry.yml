@@ -1,1 +1,8 @@
+# Direct registry configuration. directUrls maps a serviceId to the target url. An optional environment tag can be
+# appended to the serviceId with a vertical bar, like com.networknt.petstore-1.0.0|dev. Multiple entries are looked
+# up with serviceId|envTag first and then with serviceId.
+#
+# When the service is deployed in a k8s cluster behind a path based ingress, the namespace and the service are the
+# path prefix of the url, like https://api.example.com/namespace1/service1. The prefix is prepended to the path of
+# the upstream request and the ingress removes it before the request reaches the pod.
 directUrls: ${direct-registry.directUrls:{}}

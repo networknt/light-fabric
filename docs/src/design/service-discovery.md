@@ -266,6 +266,30 @@ Static fallback is handler-specific:
 - MCP, token, SPA auth, JWK, and WebSocket service-id routing can use
   `direct-registry.directUrls` without per-handler duplicate maps.
 
+### Base Path For Path-Based Ingress
+
+A direct URL may carry a path, which is the base path of the target service. It
+is used when the service runs in a Kubernetes cluster behind an ingress that
+routes on a path prefix:
+
+```yaml
+direct-registry.directUrls:
+  com.networknt.petstore-1.0.0: https://api.example.com/namespace1/service1
+```
+
+The router, proxy, WebSocket, A2A, and MCP handlers prepend that path to the
+upstream request path, so a request for `/v1/pets` is sent to
+`https://api.example.com/namespace1/service1/v1/pets`. The ingress selects the
+pod from `/namespace1/service1` and strips it, so the pod receives the original
+path. The token, JWK, and SPA auth clients append their configured URI to the
+direct URL, which keeps the base path as well.
+
+The `Host` header and the TLS SNI come from the host of the URL, not the base
+path. Targets that come from controller discovery have no base path, because
+discovery nodes carry an address and a port only. A service behind a path-based
+ingress therefore keeps its direct-registry entry until discovery can express a
+base path.
+
 This keeps failure behavior predictable. Product configs that require dynamic
 discovery should fail requests loudly when the controller connection is down
 instead of silently choosing an unrelated target.
