@@ -292,6 +292,24 @@ staticEnvironment:
     sensitivity: secret
     reloadClass: restartRequired
     consumers: [fixedActions]
+  - key: WORKFLOW_PUBLICATION_PROVIDER_URL
+    currentSource: environment
+    finalAuthority: configServer
+    valueType: url
+    default: null
+    validation: absent disables publication dispatch; otherwise must be an https URL (or loopback http) accepted by PublicationProvider::new
+    sensitivity: internal
+    reloadClass: restartRequired
+    consumers: [publicationProvider]
+  - key: WORKFLOW_PUBLICATION_PROVIDER_TOKEN_FILE
+    currentSource: environment
+    finalAuthority: mountedFile
+    valueType: filePath
+    default: null
+    validation: required when publication provider URL is configured; must be an owner-only regular file
+    sensitivity: internal
+    reloadClass: restartRequired
+    consumers: [publicationProvider]
   - key: OPENAI_API_KEY
     currentSource: environment
     finalAuthority: secretEnvironment
@@ -495,6 +513,8 @@ yamlProperties:
   - {file: workflow.yml, path: runner.configFile, finalAuthority: mountedFile, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: runner.executionApiUrl, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: runner.executionApiCaCertFile, finalAuthority: mountedFile, reloadClass: restartRequired, sensitivity: internal}
+  - {file: workflow.yml, path: artifact.backend, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: workflow.yml, path: artifact.filesystemRoot, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: artifact.s3Bucket, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: artifact.s3Endpoint, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: workflow.yml, path: artifact.allowHttp, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
