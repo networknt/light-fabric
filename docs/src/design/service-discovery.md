@@ -304,6 +304,19 @@ through the ingress prefix without their own mapping. A node that does not
 advertise the tag has an empty base path and is reached by address and port as
 before, which keeps every existing deployment unchanged.
 
+Only a path is accepted. A value that carries a query, a fragment, a relative
+segment, or an empty segment is rejected, because the base path is concatenated
+with the path of the request and with the uri of an endpoint. A `basePath` in
+`server.yml` that is not a path fails the startup, while an invalid tag
+advertised by another service is ignored and that node is reached without a
+prefix, since a caller cannot fail a request over a tag it does not own.
+
+`basePath` is a reserved identity tag. A metadata update publishes the complete
+tag map of the application, so `send_metadata_update` carries the reserved tags
+over from the registration when an update leaves them out. Without it, a service
+that publishes operational tags would lose its base path shortly after it
+registers and on every reconnect.
+
 This keeps failure behavior predictable. Product configs that require dynamic
 discovery should fail requests loudly when the controller connection is down
 instead of silently choosing an unrelated target.

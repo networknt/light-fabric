@@ -123,17 +123,61 @@ pub struct DiscoveryNode {
 /// ingress removes that prefix before the request reaches the pod.
 pub const BASE_PATH_TAG: &str = "basePath";
 
-/// Normalize a base path so that it starts with a slash and has no trailing slash. An empty string is returned
-/// when the value is blank or is only a slash, which means the service is reached without a path prefix.
-pub fn normalize_base_path(value: &str) -> String {
+/// Reserved tags that describe how a service is reached. They are owned by the runtime rather than by the
+/// application, so they survive a metadata update that publishes a complete tag map of its own.
+pub const RESERVED_IDENTITY_TAGS: &[&str] = &[BASE_PATH_TAG];
+
+/// Parse a base path into its normalized form, which starts with a slash and has no trailing slash. A blank
+/// value yields an empty base path, which means the service is reached without a path prefix.
+///
+/// Only a path is accepted. A value that carries a query, a fragment, a relative segment, or anything else that
+/// is not a path is rejected, because the base path is concatenated with the path of the request and with the
+/// uri of an endpoint. For example, `/tenant?x=1` would otherwise turn the rest of the url into a query string.
+pub fn parse_base_path(value: &str) -> Result<String, String> {
     let trimmed = value.trim().trim_end_matches('/');
     if trimmed.is_empty() {
-        return String::new();
+        return Ok(String::new());
     }
-    if trimmed.starts_with('/') {
+    let path = if trimmed.starts_with('/') {
         trimmed.to_string()
     } else {
         format!("/{trimmed}")
+    };
+    if let Some(found) = path.chars().find(|character| {
+        matches!(character, '?' | '#' | '\\') || character.is_whitespace() || character.is_control()
+    }) {
+        return Err(format!(
+            "`{value}` must be a path, but it contains `{found}`"
+        ));
+    }
+    if path.contains("//") {
+        return Err(format!("`{value}` must not contain an empty path segment"));
+    }
+    if path
+        .split('/')
+        .any(|segment| segment == "." || segment == "..")
+    {
+        return Err(format!(
+            "`{value}` must not contain a relative path segment"
+        ));
+    }
+    Ok(path)
+}
+
+/// Normalize a base path advertised by a node, ignoring a value that is not a usable path. A caller cannot fail
+/// a request over a tag published by another service, so an invalid value is dropped and the node is reached
+/// without a prefix instead of with a broken url.
+pub fn normalize_base_path(value: &str) -> String {
+    match parse_base_path(value) {
+        Ok(path) => path,
+        Err(error) => {
+            tracing::warn!(
+                target: "portal_registry::protocol",
+                error = %error,
+                "ignoring invalid {BASE_PATH_TAG} tag"
+            );
+            String::new()
+        }
     }
 }
 
@@ -253,6 +297,40 @@ mod tests {
         assert_eq!(
             node(&[(BASE_PATH_TAG, "/namespace1/service1")]).base_url(),
             "https://api.example.com:443/namespace1/service1"
+        );
+    }
+
+    #[test]
+    fn a_value_that_is_not_a_path_is_rejected() {
+        for value in [
+            "/tenant?x=1",
+            "/tenant#fragment",
+            "/tenant/../admin",
+            "/tenant//service",
+            "/tenant service",
+            "/tenant\\service",
+        ] {
+            assert!(parse_base_path(value).is_err(), "{value} must be rejected");
+            assert_eq!(normalize_base_path(value), "");
+            assert_eq!(node(&[(BASE_PATH_TAG, value)]).base_path(), "");
+            assert_eq!(
+                node(&[(BASE_PATH_TAG, value)]).base_url(),
+                "https://api.example.com:443"
+            );
+        }
+    }
+
+    #[test]
+    fn a_blank_value_is_not_an_error() {
+        assert_eq!(parse_base_path("   "), Ok(String::new()));
+        assert_eq!(parse_base_path("/"), Ok(String::new()));
+    }
+
+    #[test]
+    fn an_encoded_segment_is_accepted() {
+        assert_eq!(
+            parse_base_path("/namespace1/service%201"),
+            Ok("/namespace1/service%201".to_string())
         );
     }
 

@@ -1,7 +1,8 @@
 use crate::candidate::ControlCandidate;
 use crate::logical::{PendingRequests, RuntimeResponse, RuntimeSessionOutput, handle_inbound};
 use crate::protocol::{
-    DiscoverySnapshot, DiscoverySubscription, ServiceMetadataUpdate, ServiceRegistrationParams,
+    DiscoverySnapshot, DiscoverySubscription, RESERVED_IDENTITY_TAGS, ServiceMetadataUpdate,
+    ServiceRegistrationParams,
 };
 use crate::transport::RegistryTransport;
 use rustls::pki_types::CertificateDer;
@@ -479,7 +480,10 @@ impl PortalRegistryClient {
         }
     }
 
-    pub async fn send_metadata_update(&self, update: ServiceMetadataUpdate) -> anyhow::Result<()> {
+    pub async fn send_metadata_update(
+        &self,
+        mut update: ServiceMetadataUpdate,
+    ) -> anyhow::Result<()> {
         // Keep the reconnect registration snapshot in sync with every complete
         // metadata update. If the current socket is unavailable, the caller
         // still gets an error, but the next registration advertises the latest
@@ -495,7 +499,18 @@ impl PortalRegistryClient {
             if let Some(port) = update.port {
                 registration.port = port;
             }
-            if let Some(tags) = &update.tags {
+            if let Some(tags) = update.tags.as_mut() {
+                // A metadata update replaces the whole tag map, and an application publishes the map it owns.
+                // The reserved identity tags describe how the service is reached, so they are carried over from
+                // the registration when the update leaves them out. Without it, a service that publishes an
+                // update loses its base path shortly after it registers and on every reconnect.
+                for key in RESERVED_IDENTITY_TAGS {
+                    if !tags.contains_key(*key)
+                        && let Some(value) = registration.tags.get(*key)
+                    {
+                        tags.insert((*key).to_string(), value.clone());
+                    }
+                }
                 registration.tags = tags.clone();
             }
         }
@@ -935,6 +950,7 @@ fn validate_control_candidates(candidates: &[ControlCandidate]) -> anyhow::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::BASE_PATH_TAG;
     use crate::websocket::WebSocketAdapter;
     use controller_wire::v1::{CommandRequestV1, ServerHelloV1};
     use controller_wire::{
@@ -1028,6 +1044,71 @@ mod tests {
         let registration = client.registration_params.lock().await;
         assert_eq!(registration.version, "0.2.1");
         assert_eq!(registration.tags, tags);
+    }
+
+    #[tokio::test]
+    async fn metadata_update_keeps_the_reserved_identity_tags() {
+        let mut params = test_registration_params();
+        params.tags.insert(
+            BASE_PATH_TAG.to_string(),
+            "/namespace1/service1".to_string(),
+        );
+        let client = PortalRegistryClient::new("ws://127.0.0.1:1", params, Arc::new(NoopHandler))
+            .expect("build client");
+
+        // an application publishes the complete tag map it owns, which does not carry the base path.
+        assert!(
+            client
+                .send_metadata_update(ServiceMetadataUpdate {
+                    tags: Some(HashMap::from([(
+                        "light.workflow.readiness".to_string(),
+                        "ready".to_string(),
+                    )])),
+                    ..Default::default()
+                })
+                .await
+                .is_err()
+        );
+
+        let registration = client.registration_params.lock().await;
+        assert_eq!(
+            registration.tags.get(BASE_PATH_TAG).map(String::as_str),
+            Some("/namespace1/service1")
+        );
+        assert_eq!(
+            registration.tags.get("light.workflow.readiness"),
+            Some(&"ready".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn metadata_update_can_replace_a_reserved_identity_tag() {
+        let mut params = test_registration_params();
+        params.tags.insert(
+            BASE_PATH_TAG.to_string(),
+            "/namespace1/service1".to_string(),
+        );
+        let client = PortalRegistryClient::new("ws://127.0.0.1:1", params, Arc::new(NoopHandler))
+            .expect("build client");
+
+        assert!(
+            client
+                .send_metadata_update(ServiceMetadataUpdate {
+                    tags: Some(HashMap::from([(
+                        BASE_PATH_TAG.to_string(),
+                        "/namespace1/service2".to_string(),
+                    )])),
+                    ..Default::default()
+                })
+                .await
+                .is_err()
+        );
+
+        let registration = client.registration_params.lock().await;
+        assert_eq!(
+            registration.tags.get(BASE_PATH_TAG).map(String::as_str),
+            Some("/namespace1/service2")
+        );
     }
 
     #[tokio::test]

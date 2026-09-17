@@ -6,7 +6,7 @@ use config_loader::{
 };
 use portal_registry::{
     BASE_PATH_TAG, ControlCandidate, PortalRegistryClient, RegistrationBuilder, RegistrationState,
-    RegistryHandler, RegistrySession, normalize_base_path,
+    RegistryHandler, RegistrySession, parse_base_path,
 };
 use serde::de::DeserializeOwned;
 use serde_yaml::Value;
@@ -927,7 +927,7 @@ where
                     .unwrap_or(server.service_id.as_str()),
             ),
             env_tag,
-            tags: service_identity_tags(&server),
+            tags: service_identity_tags(&server)?,
         };
         let registry_client = match self.build_registry_client_for_runtime(
             &bootstrap,
@@ -1887,16 +1887,19 @@ fn validate_direct_registry_config(config: &DirectRegistryConfig) -> Result<(), 
 }
 
 /// Build the registration tags of the service. A base path configured in server.yml is advertised with the
-/// reserved basePath tag so that a caller can reach the service through a path based k8s ingress.
-fn service_identity_tags(server: &ServerConfig) -> HashMap<String, String> {
+/// reserved basePath tag so that a caller can reach the service through a path based k8s ingress. A value that
+/// is not a path fails the startup instead of being advertised, as every caller would build a broken url from
+/// it and the failure would surface far away from the configuration that caused it.
+fn service_identity_tags(server: &ServerConfig) -> Result<HashMap<String, String>, RuntimeError> {
     let mut tags = HashMap::new();
     if let Some(base_path) = server.base_path.as_deref() {
-        let base_path = normalize_base_path(base_path);
+        let base_path = parse_base_path(base_path)
+            .map_err(|error| RuntimeError::Unsupported(format!("server.basePath {error}")))?;
         if !base_path.is_empty() {
             tags.insert(BASE_PATH_TAG.to_string(), base_path);
         }
     }
-    tags
+    Ok(tags)
 }
 
 fn derive_service_version(service_id: &str) -> String {
@@ -2021,18 +2024,34 @@ mod tests {
     #[test]
     fn service_identity_tags_advertise_the_base_path() {
         let mut server = ServerConfig::default();
-        assert!(service_identity_tags(&server).is_empty());
+        assert!(service_identity_tags(&server).expect("tags").is_empty());
 
         server.base_path = Some("namespace1/service1/".to_string());
         assert_eq!(
             service_identity_tags(&server)
+                .expect("tags")
                 .get(BASE_PATH_TAG)
                 .map(String::as_str),
             Some("/namespace1/service1")
         );
 
         server.base_path = Some("   ".to_string());
-        assert!(service_identity_tags(&server).is_empty());
+        assert!(service_identity_tags(&server).expect("tags").is_empty());
+    }
+
+    #[test]
+    fn service_identity_tags_reject_a_base_path_that_is_not_a_path() {
+        let server = ServerConfig {
+            base_path: Some("/tenant?x=1".to_string()),
+            ..ServerConfig::default()
+        };
+
+        let error = service_identity_tags(&server).expect_err("base path error");
+
+        assert!(
+            error.to_string().contains("server.basePath"),
+            "unexpected error: {error}"
+        );
     }
     use super::*;
     use crate::transport::{BoundTransport, ResolvedServerMetadata, TransportRuntime};

@@ -20,8 +20,8 @@ pub use client::{
 };
 pub use protocol::{
     BASE_PATH_TAG, DeregistrationParams, DeregistrationResponse, DiscoveryNode, DiscoverySnapshot,
-    DiscoverySubscription, JsonRpcMessage, RegistrationResponse, ServiceMetadataUpdate,
-    ServiceRegistrationParams, normalize_base_path,
+    DiscoverySubscription, JsonRpcMessage, RESERVED_IDENTITY_TAGS, RegistrationResponse,
+    ServiceMetadataUpdate, ServiceRegistrationParams, normalize_base_path, parse_base_path,
 };
 
 use std::collections::HashMap;

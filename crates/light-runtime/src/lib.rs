@@ -29,7 +29,8 @@ pub use module_registry::{
 };
 pub use portal_registry::{
     BASE_PATH_TAG, DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, PortalRegistryClient,
-    RegistrationState, RegistryHandler, ServiceMetadataUpdate, normalize_base_path,
+    RESERVED_IDENTITY_TAGS, RegistrationState, RegistryHandler, ServiceMetadataUpdate,
+    normalize_base_path, parse_base_path,
 };
 pub use runtime::{
     LifecycleState, LightRuntime, LightRuntimeBuilder, Module, RegistrationPolicy, RunningRuntime,
