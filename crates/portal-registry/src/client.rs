@@ -501,14 +501,27 @@ impl PortalRegistryClient {
             }
             if let Some(tags) = update.tags.as_mut() {
                 // A metadata update replaces the whole tag map, and an application publishes the map it owns.
-                // The reserved identity tags describe how the service is reached, so they are carried over from
-                // the registration when the update leaves them out. Without it, a service that publishes an
-                // update loses its base path shortly after it registers and on every reconnect.
+                // The reserved identity tags describe how the service is reached and belong to the runtime, so
+                // the registration is the only authority for them. They are restored when an update leaves them
+                // out and dropped when an update carries one the runtime did not register. Without it, a service
+                // that publishes an update loses its base path shortly after it registers and on every
+                // reconnect, and an application could silently route its own traffic elsewhere.
                 for key in RESERVED_IDENTITY_TAGS {
-                    if !tags.contains_key(*key)
-                        && let Some(value) = registration.tags.get(*key)
-                    {
-                        tags.insert((*key).to_string(), value.clone());
+                    let registered = registration.tags.get(*key);
+                    if tags.get(*key).map(String::as_str) != registered.map(String::as_str) {
+                        tracing::warn!(
+                            target: "portal_registry::client",
+                            tag = *key,
+                            "ignoring a reserved identity tag in a metadata update"
+                        );
+                    }
+                    match registered {
+                        Some(value) => {
+                            tags.insert((*key).to_string(), value.clone());
+                        }
+                        None => {
+                            tags.remove(*key);
+                        }
                     }
                 }
                 registration.tags = tags.clone();
@@ -1082,7 +1095,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn metadata_update_can_replace_a_reserved_identity_tag() {
+    async fn metadata_update_cannot_replace_a_reserved_identity_tag() {
         let mut params = test_registration_params();
         params.tags.insert(
             BASE_PATH_TAG.to_string(),
@@ -1091,13 +1104,45 @@ mod tests {
         let client = PortalRegistryClient::new("ws://127.0.0.1:1", params, Arc::new(NoopHandler))
             .expect("build client");
 
+        // an application cannot route its own traffic elsewhere, and a blank value cannot drop the prefix.
+        for value in ["/namespace1/service2", ""] {
+            assert!(
+                client
+                    .send_metadata_update(ServiceMetadataUpdate {
+                        tags: Some(HashMap::from([(
+                            BASE_PATH_TAG.to_string(),
+                            value.to_string(),
+                        )])),
+                        ..Default::default()
+                    })
+                    .await
+                    .is_err()
+            );
+
+            let registration = client.registration_params.lock().await;
+            assert_eq!(
+                registration.tags.get(BASE_PATH_TAG).map(String::as_str),
+                Some("/namespace1/service1")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn metadata_update_cannot_introduce_a_reserved_identity_tag() {
+        let client = PortalRegistryClient::new(
+            "ws://127.0.0.1:1",
+            test_registration_params(),
+            Arc::new(NoopHandler),
+        )
+        .expect("build client");
+
         assert!(
             client
                 .send_metadata_update(ServiceMetadataUpdate {
-                    tags: Some(HashMap::from([(
-                        BASE_PATH_TAG.to_string(),
-                        "/namespace1/service2".to_string(),
-                    )])),
+                    tags: Some(HashMap::from([
+                        (BASE_PATH_TAG.to_string(), "/injected".to_string()),
+                        ("light.workflow.readiness".to_string(), "ready".to_string()),
+                    ])),
                     ..Default::default()
                 })
                 .await
@@ -1105,9 +1150,10 @@ mod tests {
         );
 
         let registration = client.registration_params.lock().await;
+        assert!(!registration.tags.contains_key(BASE_PATH_TAG));
         assert_eq!(
-            registration.tags.get(BASE_PATH_TAG).map(String::as_str),
-            Some("/namespace1/service2")
+            registration.tags.get("light.workflow.readiness"),
+            Some(&"ready".to_string())
         );
     }
 
