@@ -12,6 +12,7 @@
 
 # Design
 
+- [Why Rust](design/why-rust.md)
 - [Agentic Workflow](design/agentic-workflow.md)
 - [Workflow Client Architecture](design/workflow-client-architecture.md)
 - [LightAPI Description](design/lightapi-description.md)
