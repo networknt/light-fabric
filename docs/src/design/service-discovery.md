@@ -311,9 +311,12 @@ dot segment such as `/namespace/%2e%2e/admin` is rejected as well, since a url
 parser decodes it before it resolves the segment and the prefix would route to a
 path other than the one validated. An accepted base path is one that survives
 url parsing unchanged. A `basePath` in
-`server.yml` that is not a path fails the startup, while an invalid tag
-advertised by another service is ignored and that node is reached without a
-prefix, since a caller cannot fail a request over a tag it does not own.
+`server.yml` that is not a path fails the startup. A node that advertises one is
+skipped by every consumer, rather than reached at the root, because a service
+behind an ingress serves nothing useful without its prefix and the request would
+land on whatever else that ingress serves. Discovery then yields no usable node
+for the service, so the router falls back to direct-registry or answers with a
+502, which is a visible failure instead of a request sent to another backend.
 
 `basePath` is a reserved identity tag, which means the runtime is its only
 authority. The transport metadata of an application is merged into the

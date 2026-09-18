@@ -333,13 +333,16 @@ fn discovery_node_to_target(node: &DiscoveryNode) -> Option<ProxyTarget> {
     } else {
         String::new()
     };
+    // a service behind a path based k8s ingress advertises its base path as a registration tag. A node that
+    // advertises one that cannot be used is skipped, because reaching it at the root would send the request to
+    // whatever the ingress serves without the prefix, which is another backend.
+    let path_prefix = node.base_path().ok()?;
     Some(ProxyTarget {
         address: address.clone(),
         tls,
         sni,
         host_header: address,
-        // a service behind a path based k8s ingress advertises its base path as a registration tag.
-        path_prefix: node.base_path(),
+        path_prefix,
     })
 }
 
@@ -1000,6 +1003,14 @@ headerRewriteRules:
         let target = discovery_node_to_target(&node).expect("target");
 
         assert_eq!(target.path_prefix, "");
+    }
+
+    #[test]
+    fn a_node_with_an_unusable_base_path_is_skipped() {
+        // reaching it at the root would send the request to whatever the ingress serves without the prefix.
+        let node = discovery_node_json(serde_json::json!({"basePath": "/namespace/%2e%2e/admin"}));
+
+        assert!(discovery_node_to_target(&node).is_none());
     }
 
     #[tokio::test]

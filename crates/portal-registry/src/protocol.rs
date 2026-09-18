@@ -180,19 +180,6 @@ fn is_dot_segment(segment: &str) -> bool {
     decoded == "." || decoded == ".."
 }
 
-/// Normalize a base path advertised by a node, ignoring a value that is not a usable path. A caller cannot fail
-/// a request over a tag published by another service, so an invalid value is dropped and the node is reached
-/// without a prefix instead of with a broken url.
-pub fn normalize_base_path(value: &str) -> String {
-    match parse_base_path(value) {
-        Ok(path) => path,
-        Err(error) => {
-            warn_invalid_base_path_once(value, error.as_str());
-            String::new()
-        }
-    }
-}
-
 /// Report an invalid base path at most once per distinct value, and never more than a few times in a process.
 /// A discovery lookup happens per routing decision, so an operator must learn about a malformed tag without a
 /// single bad controller record filling the log under traffic.
@@ -217,28 +204,30 @@ impl DiscoveryNode {
     /// The base path advertised by the node, normalized to start with a slash and to have no trailing slash. It
     /// is an empty string when the node does not advertise one, which is the case for every node that is reached
     /// by its address and port directly.
-    pub fn base_path(&self) -> String {
-        self.tags
-            .get(BASE_PATH_TAG)
-            .map(|value| normalize_base_path(value))
-            .unwrap_or_default()
+    pub fn base_path(&self) -> Result<String, String> {
+        let Some(value) = self.tags.get(BASE_PATH_TAG) else {
+            return Ok(String::new());
+        };
+        parse_base_path(value).inspect_err(|error| warn_invalid_base_path_once(value, error))
     }
 
     /// The base url of the node, including the base path when the node advertises one. A caller appends its own
-    /// path to it, so the base path is kept in front of every request sent to the service.
-    pub fn base_url(&self) -> String {
+    /// path to it, so the base path is kept in front of every request sent to the service. It is None when the
+    /// node advertises a base path that cannot be used, because reaching that node at the root would send the
+    /// request to whatever the ingress serves without the prefix.
+    pub fn base_url(&self) -> Option<String> {
         let host = if self.address.contains(':') && !self.address.starts_with('[') {
             format!("[{}]", self.address)
         } else {
             self.address.clone()
         };
-        format!(
+        Some(format!(
             "{}://{}:{}{}",
             self.protocol.to_ascii_lowercase(),
             host,
             self.port,
-            self.base_path()
-        )
+            self.base_path().ok()?
+        ))
     }
 }
 
@@ -301,34 +290,38 @@ mod tests {
 
     #[test]
     fn node_without_the_tag_has_no_base_path() {
-        assert_eq!(node(&[]).base_path(), "");
-        assert_eq!(node(&[("region", "ca")]).base_path(), "");
-        assert_eq!(node(&[(BASE_PATH_TAG, "  ")]).base_path(), "");
-        assert_eq!(node(&[(BASE_PATH_TAG, "/")]).base_path(), "");
-        assert_eq!(node(&[]).base_url(), "https://api.example.com:443");
+        assert_eq!(node(&[]).base_path(), Ok(String::new()));
+        assert_eq!(node(&[("region", "ca")]).base_path(), Ok(String::new()));
+        assert_eq!(
+            node(&[(BASE_PATH_TAG, "  ")]).base_path(),
+            Ok(String::new())
+        );
+        assert_eq!(node(&[(BASE_PATH_TAG, "/")]).base_path(), Ok(String::new()));
+        assert_eq!(
+            node(&[]).base_url(),
+            Some("https://api.example.com:443".to_string())
+        );
     }
 
     #[test]
     fn base_path_is_normalized() {
-        assert_eq!(
-            node(&[(BASE_PATH_TAG, "/namespace1/service1")]).base_path(),
-            "/namespace1/service1"
-        );
-        assert_eq!(
-            node(&[(BASE_PATH_TAG, "namespace1/service1/")]).base_path(),
-            "/namespace1/service1"
-        );
-        assert_eq!(
-            node(&[(BASE_PATH_TAG, " /namespace1/service1 ")]).base_path(),
-            "/namespace1/service1"
-        );
+        for value in [
+            "/namespace1/service1",
+            "namespace1/service1/",
+            " /namespace1/service1 ",
+        ] {
+            assert_eq!(
+                node(&[(BASE_PATH_TAG, value)]).base_path(),
+                Ok("/namespace1/service1".to_string())
+            );
+        }
     }
 
     #[test]
     fn base_url_includes_the_base_path() {
         assert_eq!(
             node(&[(BASE_PATH_TAG, "/namespace1/service1")]).base_url(),
-            "https://api.example.com:443/namespace1/service1"
+            Some("https://api.example.com:443/namespace1/service1".to_string())
         );
     }
 
@@ -349,12 +342,12 @@ mod tests {
             "/namespace/.%2e/admin",
         ] {
             assert!(parse_base_path(value).is_err(), "{value} must be rejected");
-            assert_eq!(normalize_base_path(value), "");
-            assert_eq!(node(&[(BASE_PATH_TAG, value)]).base_path(), "");
-            assert_eq!(
-                node(&[(BASE_PATH_TAG, value)]).base_url(),
-                "https://api.example.com:443"
+            // the node is unusable rather than reachable at the root, which would be another backend.
+            assert!(
+                node(&[(BASE_PATH_TAG, value)]).base_path().is_err(),
+                "{value} must make the node unusable"
             );
+            assert_eq!(node(&[(BASE_PATH_TAG, value)]).base_url(), None);
         }
     }
 
@@ -394,7 +387,7 @@ mod tests {
 
         assert_eq!(
             node.base_url(),
-            "https://[2001:db8::1]:8443/namespace1/service1"
+            Some("https://[2001:db8::1]:8443/namespace1/service1".to_string())
         );
     }
 }
