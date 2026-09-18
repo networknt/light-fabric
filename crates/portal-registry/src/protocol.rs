@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
 use url::Url;
 use uuid::Uuid;
 
@@ -186,14 +187,30 @@ pub fn normalize_base_path(value: &str) -> String {
     match parse_base_path(value) {
         Ok(path) => path,
         Err(error) => {
-            tracing::warn!(
-                target: "portal_registry::protocol",
-                error = %error,
-                "ignoring invalid {BASE_PATH_TAG} tag"
-            );
+            warn_invalid_base_path_once(value, error.as_str());
             String::new()
         }
     }
+}
+
+/// Report an invalid base path at most once per distinct value, and never more than a few times in a process.
+/// A discovery lookup happens per routing decision, so an operator must learn about a malformed tag without a
+/// single bad controller record filling the log under traffic.
+fn warn_invalid_base_path_once(value: &str, error: &str) {
+    const MAX_REPORTED: usize = 16;
+    static REPORTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+    let Ok(mut reported) = REPORTED.get_or_init(|| Mutex::new(HashSet::new())).lock() else {
+        return;
+    };
+    if reported.len() >= MAX_REPORTED || !reported.insert(value.to_string()) {
+        return;
+    }
+    tracing::warn!(
+        target: "portal_registry::protocol",
+        error = %error,
+        "ignoring invalid {BASE_PATH_TAG} tag"
+    );
 }
 
 impl DiscoveryNode {

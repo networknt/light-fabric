@@ -315,8 +315,10 @@ url parsing unchanged. A `basePath` in
 advertised by another service is ignored and that node is reached without a
 prefix, since a caller cannot fail a request over a tag it does not own.
 
-`basePath` is a reserved identity tag, which means the registration is its only
-authority. A metadata update publishes the complete tag map of the application,
+`basePath` is a reserved identity tag, which means the runtime is its only
+authority. The transport metadata of an application is merged into the
+registration, so a reserved key it carries is dropped and the identity tags are
+applied last. A metadata update publishes the complete tag map of the application,
 so `send_metadata_update` restores a reserved tag that an update leaves out and
 drops one that an update carries but the runtime never registered. Without the
 first, a service that publishes operational tags would lose its base path
