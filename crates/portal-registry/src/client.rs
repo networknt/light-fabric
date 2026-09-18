@@ -508,7 +508,11 @@ impl PortalRegistryClient {
                 // reconnect, and an application could silently route its own traffic elsewhere.
                 for key in RESERVED_IDENTITY_TAGS {
                     let registered = registration.tags.get(*key);
-                    if tags.get(*key).map(String::as_str) != registered.map(String::as_str) {
+                    // An update that omits the key is the normal case and says nothing about the tag, so only a
+                    // key the application actually supplied with another value is reported as ignored.
+                    if let Some(supplied) = tags.get(*key)
+                        && registered.map(String::as_str) != Some(supplied.as_str())
+                    {
                         tracing::warn!(
                             target: "portal_registry::client",
                             tag = *key,
