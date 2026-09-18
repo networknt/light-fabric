@@ -386,6 +386,7 @@ yamlProperties:
   - {file: server.yml, path: advertisedAddress, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: server.yml, path: dynamicPort, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
   - {file: server.yml, path: environment, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: server.yml, path: basePath, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
   - {file: server.yml, path: shutdownGracefulPeriod, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
   - {file: security.yml, path: enableVerifyJwt, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: security.yml, path: enableVerifyScope, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}

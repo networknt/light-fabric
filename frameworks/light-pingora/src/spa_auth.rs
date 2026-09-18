@@ -1263,34 +1263,30 @@ async fn resolve_token_server_url(
             format!("token service `{service_id}` has no usable discovery nodes"),
         )
     })?;
-    Ok(discovery_node_base_url(node))
+    node.base_url().ok_or_else(|| {
+        HandlerRejection::new(
+            502,
+            "ERR10056",
+            format!("token service `{service_id}` has no usable discovery nodes"),
+        )
+    })
 }
 
 fn select_token_node(nodes: &[DiscoveryNode]) -> Option<&DiscoveryNode> {
+    // a node that advertises a base path that cannot be used is not usable at all, because reaching it at the
+    // root would send the request to whatever its ingress serves without the prefix.
+    let usable =
+        |node: &&DiscoveryNode| node.connected && node.port != 0 && node.base_path().is_ok();
     nodes
         .iter()
-        .filter(|node| node.connected && node.port != 0)
+        .filter(usable)
         .find(|node| node.protocol.eq_ignore_ascii_case("https"))
         .or_else(|| {
             nodes
                 .iter()
-                .filter(|node| node.connected && node.port != 0)
+                .filter(usable)
                 .find(|node| node.protocol.eq_ignore_ascii_case("http"))
         })
-}
-
-fn discovery_node_base_url(node: &DiscoveryNode) -> String {
-    let host = if node.address.contains(':') && !node.address.starts_with('[') {
-        format!("[{}]", node.address)
-    } else {
-        node.address.clone()
-    };
-    format!(
-        "{}://{}:{}",
-        node.protocol.to_ascii_lowercase(),
-        host,
-        node.port
-    )
 }
 
 fn token_endpoint_url(server_url: &str, uri: &str) -> Result<String, HandlerRejection> {

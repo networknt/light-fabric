@@ -28,8 +28,9 @@ pub use module_registry::{
     ReloadSkipped, ReloadStatus, ReloadableModule, RuntimeMcpHandler, client_config_masks,
 };
 pub use portal_registry::{
-    DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, PortalRegistryClient,
-    RegistrationState, RegistryHandler, ServiceMetadataUpdate,
+    BASE_PATH_TAG, DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, PortalRegistryClient,
+    RESERVED_IDENTITY_TAGS, RegistrationState, RegistryHandler, ServiceMetadataUpdate,
+    parse_base_path,
 };
 pub use runtime::{
     LifecycleState, LightRuntime, LightRuntimeBuilder, Module, RegistrationPolicy, RunningRuntime,

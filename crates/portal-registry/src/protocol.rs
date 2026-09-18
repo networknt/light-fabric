@@ -1,7 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
+use url::Url;
 use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -118,6 +120,117 @@ pub struct DiscoveryNode {
     pub connected: bool,
 }
 
+/// Reserved registration tag that carries the base path of a service. It is used when the service is deployed
+/// behind a path based k8s ingress where the namespace and the service are the path prefix of the url, and the
+/// ingress removes that prefix before the request reaches the pod.
+pub const BASE_PATH_TAG: &str = "basePath";
+
+/// Reserved tags that describe how a service is reached. They are owned by the runtime rather than by the
+/// application, so they survive a metadata update that publishes a complete tag map of its own.
+pub const RESERVED_IDENTITY_TAGS: &[&str] = &[BASE_PATH_TAG];
+
+/// Parse a base path into its normalized form, which starts with a slash and has no trailing slash. A blank
+/// value yields an empty base path, which means the service is reached without a path prefix.
+///
+/// Only a path is accepted. A value that carries a query, a fragment, a relative segment, or anything else that
+/// is not a path is rejected, because the base path is concatenated with the path of the request and with the
+/// uri of an endpoint. For example, `/tenant?x=1` would otherwise turn the rest of the url into a query string.
+pub fn parse_base_path(value: &str) -> Result<String, String> {
+    let trimmed = value.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    let path = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+    if let Some(found) = path.chars().find(|character| {
+        matches!(character, '?' | '#' | '\\') || character.is_whitespace() || character.is_control()
+    }) {
+        return Err(format!(
+            "`{value}` must be a path, but it contains `{found}`"
+        ));
+    }
+    if path.contains("//") {
+        return Err(format!("`{value}` must not contain an empty path segment"));
+    }
+    if path.split('/').any(is_dot_segment) {
+        return Err(format!(
+            "`{value}` must not contain a relative path segment"
+        ));
+    }
+    // The consumers build a url from this path, and the url parser normalizes what it considers a dot segment,
+    // including its percent encoded spellings. A path that does not survive that parse unchanged would route to
+    // a different path than the one validated here, so it is rejected rather than silently rewritten.
+    match Url::parse(&format!("https://base.invalid{path}")) {
+        Ok(url) if url.path() == path => Ok(path),
+        Ok(url) => Err(format!(
+            "`{value}` is not a normalized path, a url parser reads it as `{}`",
+            url.path()
+        )),
+        Err(error) => Err(format!("`{value}` is not a usable path: {error}")),
+    }
+}
+
+/// A path segment that a url parser resolves as the current or the parent directory, including the percent
+/// encoded spellings of a dot, which a parser decodes before it resolves the segment.
+fn is_dot_segment(segment: &str) -> bool {
+    let decoded = segment.to_ascii_lowercase().replace("%2e", ".");
+    decoded == "." || decoded == ".."
+}
+
+/// Report an invalid base path at most once per distinct value, and never more than a few times in a process.
+/// A discovery lookup happens per routing decision, so an operator must learn about a malformed tag without a
+/// single bad controller record filling the log under traffic.
+fn warn_invalid_base_path_once(value: &str, error: &str) {
+    const MAX_REPORTED: usize = 16;
+    static REPORTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+    let Ok(mut reported) = REPORTED.get_or_init(|| Mutex::new(HashSet::new())).lock() else {
+        return;
+    };
+    if reported.len() >= MAX_REPORTED || !reported.insert(value.to_string()) {
+        return;
+    }
+    tracing::warn!(
+        target: "portal_registry::protocol",
+        error = %error,
+        "ignoring invalid {BASE_PATH_TAG} tag"
+    );
+}
+
+impl DiscoveryNode {
+    /// The base path advertised by the node, normalized to start with a slash and to have no trailing slash. It
+    /// is an empty string when the node does not advertise one, which is the case for every node that is reached
+    /// by its address and port directly.
+    pub fn base_path(&self) -> Result<String, String> {
+        let Some(value) = self.tags.get(BASE_PATH_TAG) else {
+            return Ok(String::new());
+        };
+        parse_base_path(value).inspect_err(|error| warn_invalid_base_path_once(value, error))
+    }
+
+    /// The base url of the node, including the base path when the node advertises one. A caller appends its own
+    /// path to it, so the base path is kept in front of every request sent to the service. It is None when the
+    /// node advertises a base path that cannot be used, because reaching that node at the root would send the
+    /// request to whatever the ingress serves without the prefix.
+    pub fn base_url(&self) -> Option<String> {
+        let host = if self.address.contains(':') && !self.address.starts_with('[') {
+            format!("[{}]", self.address)
+        } else {
+            self.address.clone()
+        };
+        Some(format!(
+            "{}://{}:{}{}",
+            self.protocol.to_ascii_lowercase(),
+            host,
+            self.port,
+            self.base_path().ok()?
+        ))
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoverySnapshot {
@@ -149,4 +262,132 @@ pub struct DeregistrationParams {
 pub struct DeregistrationResponse {
     pub runtime_instance_id: Uuid,
     pub status: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(tags: &[(&str, &str)]) -> DiscoveryNode {
+        DiscoveryNode {
+            runtime_instance_id: Uuid::nil(),
+            service_id: "com.networknt.petstore-1.0.0".to_string(),
+            env_tag: None,
+            environment: "dev".to_string(),
+            version: "1.0.0".to_string(),
+            protocol: "https".to_string(),
+            address: "api.example.com".to_string(),
+            port: 443,
+            tags: tags
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                .collect(),
+            connected_at: Utc::now(),
+            last_seen_at: Utc::now(),
+            connected: true,
+        }
+    }
+
+    #[test]
+    fn node_without_the_tag_has_no_base_path() {
+        assert_eq!(node(&[]).base_path(), Ok(String::new()));
+        assert_eq!(node(&[("region", "ca")]).base_path(), Ok(String::new()));
+        assert_eq!(
+            node(&[(BASE_PATH_TAG, "  ")]).base_path(),
+            Ok(String::new())
+        );
+        assert_eq!(node(&[(BASE_PATH_TAG, "/")]).base_path(), Ok(String::new()));
+        assert_eq!(
+            node(&[]).base_url(),
+            Some("https://api.example.com:443".to_string())
+        );
+    }
+
+    #[test]
+    fn base_path_is_normalized() {
+        for value in [
+            "/namespace1/service1",
+            "namespace1/service1/",
+            " /namespace1/service1 ",
+        ] {
+            assert_eq!(
+                node(&[(BASE_PATH_TAG, value)]).base_path(),
+                Ok("/namespace1/service1".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn base_url_includes_the_base_path() {
+        assert_eq!(
+            node(&[(BASE_PATH_TAG, "/namespace1/service1")]).base_url(),
+            Some("https://api.example.com:443/namespace1/service1".to_string())
+        );
+    }
+
+    #[test]
+    fn a_value_that_is_not_a_path_is_rejected() {
+        for value in [
+            "/tenant?x=1",
+            "/tenant#fragment",
+            "/tenant/../admin",
+            "/tenant//service",
+            "/tenant service",
+            "/tenant\\service",
+            // a url parser decodes a percent encoded dot before it resolves the segment, so these spellings
+            // would route to a path other than the one validated here.
+            "/namespace/%2e%2e/admin",
+            "/namespace/%2E%2E/admin",
+            "/namespace/%2e/admin",
+            "/namespace/.%2e/admin",
+        ] {
+            assert!(parse_base_path(value).is_err(), "{value} must be rejected");
+            // the node is unusable rather than reachable at the root, which would be another backend.
+            assert!(
+                node(&[(BASE_PATH_TAG, value)]).base_path().is_err(),
+                "{value} must make the node unusable"
+            );
+            assert_eq!(node(&[(BASE_PATH_TAG, value)]).base_url(), None);
+        }
+    }
+
+    #[test]
+    fn a_blank_value_is_not_an_error() {
+        assert_eq!(parse_base_path("   "), Ok(String::new()));
+        assert_eq!(parse_base_path("/"), Ok(String::new()));
+    }
+
+    #[test]
+    fn an_encoded_segment_is_accepted() {
+        assert_eq!(
+            parse_base_path("/namespace1/service%201"),
+            Ok("/namespace1/service%201".to_string())
+        );
+    }
+
+    #[test]
+    fn an_accepted_base_path_survives_url_parsing() {
+        for value in [
+            "/namespace1/service1",
+            "/namespace1/service%201",
+            "/tenant-a/api.v1",
+            "/namespace1/service1/deep/path",
+        ] {
+            let parsed = parse_base_path(value).expect("valid base path");
+            let url = Url::parse(&format!("https://api.example.com{parsed}")).expect("url");
+            assert_eq!(url.path(), parsed, "{value} must not be rewritten");
+        }
+    }
+
+    #[test]
+    fn base_url_brackets_an_ipv6_address() {
+        let mut node = node(&[(BASE_PATH_TAG, "/namespace1/service1")]);
+        node.address = "2001:db8::1".to_string();
+        node.port = 8443;
+
+        assert_eq!(
+            node.base_url(),
+            Some("https://[2001:db8::1]:8443/namespace1/service1".to_string())
+        );
+    }
 }

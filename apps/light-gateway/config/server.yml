@@ -11,4 +11,5 @@ enableRegistry: ${server.enableRegistry:true}
 startOnRegistryFailure: ${server.startOnRegistryFailure:true}
 dynamicPort: ${server.dynamicPort:false}
 environment: ${server.environment:dev}
+basePath: ${server.basePath:}
 shutdownGracefulPeriod: ${server.shutdownGracefulPeriod:2000}

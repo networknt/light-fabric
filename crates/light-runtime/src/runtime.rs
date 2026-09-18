@@ -5,8 +5,8 @@ use config_loader::{
     load_config_from_sources, load_values_from_sources,
 };
 use portal_registry::{
-    ControlCandidate, PortalRegistryClient, RegistrationBuilder, RegistrationState,
-    RegistryHandler, RegistrySession,
+    BASE_PATH_TAG, ControlCandidate, PortalRegistryClient, RESERVED_IDENTITY_TAGS,
+    RegistrationBuilder, RegistrationState, RegistryHandler, RegistrySession, parse_base_path,
 };
 use serde::de::DeserializeOwned;
 use serde_yaml::Value;
@@ -927,7 +927,7 @@ where
                     .unwrap_or(server.service_id.as_str()),
             ),
             env_tag,
-            tags: HashMap::new(),
+            tags: service_identity_tags(&server)?,
         };
         let registry_client = match self.build_registry_client_for_runtime(
             &bootstrap,
@@ -1184,11 +1184,10 @@ where
         if let Some(env_tag) = runtime_config.service_identity.env_tag.as_deref() {
             registration = registration.with_env(env_tag);
         }
-        for (key, value) in &runtime_config.service_identity.tags {
-            registration = registration.with_tag(key, value);
-        }
-        for (key, value) in &metadata.tags {
-            registration = registration.with_tag(key, value);
+        for (key, value) in
+            merge_registration_tags(&runtime_config.service_identity.tags, &metadata.tags)
+        {
+            registration = registration.with_tag(&key, &value);
         }
 
         let registration = registration.build();
@@ -1886,6 +1885,49 @@ fn validate_direct_registry_config(config: &DirectRegistryConfig) -> Result<(), 
     Ok(())
 }
 
+/// Build the registration tags of the service. A base path configured in server.yml is advertised with the
+/// reserved basePath tag so that a caller can reach the service through a path based k8s ingress. A value that
+/// is not a path fails the startup instead of being advertised, as every caller would build a broken url from
+/// it and the failure would surface far away from the configuration that caused it.
+fn service_identity_tags(server: &ServerConfig) -> Result<HashMap<String, String>, RuntimeError> {
+    let mut tags = HashMap::new();
+    if let Some(base_path) = server.base_path.as_deref() {
+        let base_path = parse_base_path(base_path)
+            .map_err(|error| RuntimeError::Unsupported(format!("server.basePath {error}")))?;
+        if !base_path.is_empty() {
+            tags.insert(BASE_PATH_TAG.to_string(), base_path);
+        }
+    }
+    Ok(tags)
+}
+
+/// Merge the transport metadata tags of the application with the service identity tags of the runtime. The
+/// identity tags are applied last, and a reserved identity tag in the application metadata is dropped, because
+/// those keys describe how the service is reached and the runtime owns them. Without it an application could
+/// overwrite or introduce a base path during the initial registration, and the guard in the registry client
+/// would then preserve the injected value on every metadata update that follows.
+fn merge_registration_tags(
+    identity: &HashMap<String, String>,
+    metadata: &HashMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut tags = BTreeMap::new();
+    for (key, value) in metadata {
+        if RESERVED_IDENTITY_TAGS.contains(&key.as_str()) {
+            tracing::warn!(
+                target: "light_runtime::runtime",
+                tag = %key,
+                "ignoring a reserved identity tag in the transport metadata"
+            );
+            continue;
+        }
+        tags.insert(key.clone(), value.clone());
+    }
+    for (key, value) in identity {
+        tags.insert(key.clone(), value.clone());
+    }
+    tags
+}
+
 fn derive_service_version(service_id: &str) -> String {
     service_id
         .rsplit_once('-')
@@ -2004,6 +2046,71 @@ fn init_rustls_provider() {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn service_identity_tags_advertise_the_base_path() {
+        let mut server = ServerConfig::default();
+        assert!(service_identity_tags(&server).expect("tags").is_empty());
+
+        server.base_path = Some("namespace1/service1/".to_string());
+        assert_eq!(
+            service_identity_tags(&server)
+                .expect("tags")
+                .get(BASE_PATH_TAG)
+                .map(String::as_str),
+            Some("/namespace1/service1")
+        );
+
+        server.base_path = Some("   ".to_string());
+        assert!(service_identity_tags(&server).expect("tags").is_empty());
+    }
+
+    #[test]
+    fn merge_registration_tags_drops_a_reserved_tag_from_the_application() {
+        let identity = HashMap::from([(
+            BASE_PATH_TAG.to_string(),
+            "/namespace1/service1".to_string(),
+        )]);
+        let metadata = HashMap::from([
+            (BASE_PATH_TAG.to_string(), "/injected".to_string()),
+            ("light.workflow.readiness".to_string(), "ready".to_string()),
+        ]);
+
+        let tags = merge_registration_tags(&identity, &metadata);
+
+        assert_eq!(
+            tags.get(BASE_PATH_TAG).map(String::as_str),
+            Some("/namespace1/service1")
+        );
+        assert_eq!(
+            tags.get("light.workflow.readiness").map(String::as_str),
+            Some("ready")
+        );
+    }
+
+    #[test]
+    fn merge_registration_tags_drops_a_reserved_tag_the_runtime_did_not_register() {
+        let metadata = HashMap::from([(BASE_PATH_TAG.to_string(), "/injected".to_string())]);
+
+        let tags = merge_registration_tags(&HashMap::new(), &metadata);
+
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn service_identity_tags_reject_a_base_path_that_is_not_a_path() {
+        let server = ServerConfig {
+            base_path: Some("/tenant?x=1".to_string()),
+            ..ServerConfig::default()
+        };
+
+        let error = service_identity_tags(&server).expect_err("base path error");
+
+        assert!(
+            error.to_string().contains("server.basePath"),
+            "unexpected error: {error}"
+        );
+    }
     use super::*;
     use crate::transport::{BoundTransport, ResolvedServerMetadata, TransportRuntime};
     use async_trait::async_trait;

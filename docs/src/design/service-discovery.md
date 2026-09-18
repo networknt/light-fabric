@@ -285,10 +285,49 @@ path. The token, JWK, and SPA auth clients append their configured URI to the
 direct URL, which keeps the base path as well.
 
 The `Host` header and the TLS SNI come from the host of the URL, not the base
-path. Targets that come from controller discovery have no base path, because
-discovery nodes carry an address and a port only. A service behind a path-based
-ingress therefore keeps its direct-registry entry until discovery can express a
-base path.
+path.
+
+A discovered node expresses the same thing with the reserved `basePath`
+registration tag. A service sets `basePath` in its `server.yml`, the runtime
+registers it as a tag, the controller round-trips it, and every consumer of a
+discovery node prepends it:
+
+```yaml
+# server.yml of the service behind the ingress
+basePath: ${server.basePath:/namespace1/service1}
+```
+
+`DiscoveryNode::base_path()` normalizes the tag (leading slash, no trailing
+slash) and `DiscoveryNode::base_url()` includes it, so the router, the WebSocket
+router, MCP tools, the token handler, SPA auth, and the JWK client all route
+through the ingress prefix without their own mapping. A node that does not
+advertise the tag has an empty base path and is reached by address and port as
+before, which keeps every existing deployment unchanged.
+
+Only a path is accepted. A value that carries a query, a fragment, a relative
+segment, or an empty segment is rejected, because the base path is concatenated
+with the path of the request and with the uri of an endpoint. A percent encoded
+dot segment such as `/namespace/%2e%2e/admin` is rejected as well, since a url
+parser decodes it before it resolves the segment and the prefix would route to a
+path other than the one validated. An accepted base path is one that survives
+url parsing unchanged. A `basePath` in
+`server.yml` that is not a path fails the startup. A node that advertises one is
+skipped by every consumer, rather than reached at the root, because a service
+behind an ingress serves nothing useful without its prefix and the request would
+land on whatever else that ingress serves. Discovery then yields no usable node
+for the service, so the router falls back to direct-registry or answers with a
+502, which is a visible failure instead of a request sent to another backend.
+
+`basePath` is a reserved identity tag, which means the runtime is its only
+authority. The transport metadata of an application is merged into the
+registration, so a reserved key it carries is dropped and the identity tags are
+applied last. A metadata update publishes the complete tag map of the application,
+so `send_metadata_update` restores a reserved tag that an update leaves out and
+drops one that an update carries but the runtime never registered. Without the
+first, a service that publishes operational tags would lose its base path
+shortly after it registers and on every reconnect. Without the second, an
+application could route its own traffic elsewhere, or drop the prefix with a
+blank value, without the operator changing any configuration.
 
 This keeps failure behavior predictable. Product configs that require dynamic
 discovery should fail requests loudly when the controller connection is down

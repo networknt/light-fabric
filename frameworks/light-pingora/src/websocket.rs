@@ -952,12 +952,16 @@ fn discovery_node_to_target(node: &DiscoveryNode) -> Option<ProxyTarget> {
     } else {
         String::new()
     };
+    // a service behind a path based k8s ingress advertises its base path as a registration tag. A node that
+    // advertises one that cannot be used is skipped, because reaching it at the root would send the request to
+    // whatever the ingress serves without the prefix, which is another backend.
+    let path_prefix = node.base_path().ok()?;
     Some(ProxyTarget {
         address: address.clone(),
         tls,
         sni,
         host_header: address,
-        path_prefix: String::new(),
+        path_prefix,
     })
 }
 
@@ -2087,6 +2091,51 @@ pathPrefixService:
                 protocol: Some("https".to_string()),
             }
         );
+    }
+
+    fn discovery_node_json(tags: serde_json::Value) -> DiscoveryNode {
+        serde_json::from_value(serde_json::json!({
+            "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f40",
+            "serviceId": "com.networknt.petstore-1.0.0",
+            "envTag": null,
+            "environment": "dev",
+            "version": "1.0.0",
+            "protocol": "https",
+            "address": "api.example.com",
+            "port": 443,
+            "tags": tags,
+            "connectedAt": "2026-01-01T00:00:00Z",
+            "lastSeenAt": "2026-01-01T00:00:01Z",
+            "connected": true
+        }))
+        .expect("discovery node")
+    }
+
+    #[test]
+    fn discovery_target_uses_the_advertised_base_path() {
+        let node = discovery_node_json(serde_json::json!({"basePath": "/namespace1/service1"}));
+
+        let target = discovery_node_to_target(&node).expect("target");
+
+        assert_eq!(target.address, "api.example.com:443");
+        assert_eq!(target.path_prefix, "/namespace1/service1");
+    }
+
+    #[test]
+    fn discovery_target_without_the_tag_has_no_base_path() {
+        let node = discovery_node_json(serde_json::json!({}));
+
+        let target = discovery_node_to_target(&node).expect("target");
+
+        assert_eq!(target.path_prefix, "");
+    }
+
+    #[test]
+    fn a_node_with_an_unusable_base_path_is_skipped() {
+        // reaching it at the root would send the request to whatever the ingress serves without the prefix.
+        let node = discovery_node_json(serde_json::json!({"basePath": "/namespace/%2e%2e/admin"}));
+
+        assert!(discovery_node_to_target(&node).is_none());
     }
 
     #[tokio::test]
