@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Shared client template parity
         run: python3 scripts/sync-client-config.py --check
       - name: Install worker test dependencies
@@ -72,7 +72,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # agent-postgres GRANTs against roles and schemas it does not create, so the
@@ -109,7 +109,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Build runner image
         run: docker build --file apps/light-workflow-runner/docker/Dockerfile --tag light-workflow-runner:ci .
       - uses: azure/setup-kubectl@v4
