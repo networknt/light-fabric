@@ -1,0 +1,20 @@
+[package]
+name = "light-identity-issuer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+jsonwebtoken = "9"
+oauth-workflow-contract = { path = "../oauth-workflow-contract" }
+rcgen = { version = "0.14", features = ["x509-parser"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time = { version = "0.3", features = ["macros", "formatting"] }
+uuid.workspace = true
+ring = "0.17"
+x509-parser = { version = "0.18", features = ["verify"] }
+
+[dev-dependencies]
+tempfile = "3"

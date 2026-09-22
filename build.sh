@@ -21,6 +21,7 @@ APPS=(
   "light-agent"
   "light-deployer"
   "light-gateway"
+  "light-identity-issuer"
   "light-workflow"
   "light-workflow-runner"
   "light-knowledge"
@@ -80,7 +81,7 @@ contains_app() {
 
 dockerfile_for_app() {
   case "$1" in
-    light-a2a|light-agent|light-gateway|light-workflow|light-knowledge-admin)
+    light-a2a|light-agent|light-gateway|light-identity-issuer|light-workflow|light-knowledge-admin)
       printf 'apps/%s/docker/Dockerfile\n' "$1"
       ;;
     light-deployer)
@@ -91,6 +92,22 @@ dockerfile_for_app() {
       ;;
     *)
       fail "No Dockerfile configured for app: $1"
+      ;;
+  esac
+}
+
+# The app directory (and hence release-app name) is `light-identity-issuer`
+# for consistency with every other app, but its Cargo package/binary is
+# `light-identity-issuer-service`: the crate `light-identity-issuer` already
+# names the library in `crates/` this app wraps, so the two cannot share a
+# package name in one workspace.
+cargo_package_for_app() {
+  case "$1" in
+    light-identity-issuer)
+      printf 'light-identity-issuer-service\n'
+      ;;
+    *)
+      printf '%s\n' "$1"
       ;;
   esac
 }
@@ -162,8 +179,9 @@ for release_app in "${BUILD_APPS[@]}"; do
   dockerfile="$(dockerfile_for_app "$release_app")"
   [[ -f "$dockerfile" ]] || fail "Missing Dockerfile: $dockerfile"
 
+  cargo_package="$(cargo_package_for_app "$release_app")"
   echo "Compiling ${release_app} release binary"
-  cargo build --locked --release --package "$release_app" --bin "$release_app"
+  cargo build --locked --release --package "$cargo_package" --bin "$cargo_package"
 
   version_image="${IMAGE_NAMESPACE}/${release_app}:${VERSION}"
   docker_args=(build "${BUILD_ARGS[@]}" --tag "$version_image")

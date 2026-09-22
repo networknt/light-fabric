@@ -1,0 +1,36 @@
+[package]
+name = "light-identity-issuer-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "light_identity_issuer_service"
+path = "src/lib.rs"
+
+[[bin]]
+name = "light-identity-issuer-service"
+path = "src/main.rs"
+
+[dependencies]
+axum.workspace = true
+axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
+base64.workspace = true
+jsonwebtoken = "9"
+light-identity-issuer = { path = "../../crates/light-identity-issuer" }
+reqwest.workspace = true
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+time = { version = "0.3", features = ["macros", "formatting"] }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+rcgen = { version = "0.14", features = ["x509-parser"] }
+tempfile = "3"
+tower = { workspace = true }

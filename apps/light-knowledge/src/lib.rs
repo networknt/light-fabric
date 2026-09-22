@@ -3324,9 +3324,11 @@ mod tests {
                     AppProfile {
                         origin: Origin::Gateway,
                         peer_sha256: vec!["b".repeat(64)],
+                        ca_trust: None,
                     },
                 )]),
                 legacy_long_lived_app_keys: Vec::new(),
+                interactive_user_only: false,
             },
             workflow: light_client::workflow_receivers::Config {
                 base_url: "https://workflow/".into(),

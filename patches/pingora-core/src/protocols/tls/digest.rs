@@ -31,6 +31,16 @@ pub struct SslDigest {
     pub serial_number: Option<String>,
     /// The digest of the peer's certificate
     pub cert_digest: Vec<u8>,
+    /// The digest of the certificate that issued the peer's certificate: the next entry in the
+    /// presented chain, when the peer sent one **and** it verifiably signed the peer's certificate.
+    /// Used by CA-based peer trust (matching "chains to this CA" rather
+    /// than an exact leaf fingerprint) instead of platform-specific
+    /// attestation.
+    pub issuer_digest: Option<Vec<u8>>,
+    /// The first `URI` SAN on the peer's certificate, if any. Used to carry
+    /// a `spiffe://`-shaped workload identity attribute for CA-based peer
+    /// trust.
+    pub uri_san: Option<String>,
     /// The user-defined TLS data
     pub extension: SslDigestExtension,
 }
@@ -47,12 +57,41 @@ impl SslDigest {
     where
         S: Into<Cow<'static, str>>,
     {
+        Self::new_with_chain_attributes(
+            cipher,
+            version,
+            organization,
+            serial_number,
+            cert_digest,
+            None,
+            None,
+        )
+    }
+
+    /// Create a new SslDigest carrying the issuer digest and URI SAN
+    /// extracted from the peer's certificate chain, for backends that
+    /// support it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_chain_attributes<S>(
+        cipher: S,
+        version: S,
+        organization: Option<String>,
+        serial_number: Option<String>,
+        cert_digest: Vec<u8>,
+        issuer_digest: Option<Vec<u8>>,
+        uri_san: Option<String>,
+    ) -> Self
+    where
+        S: Into<Cow<'static, str>>,
+    {
         SslDigest {
             cipher: cipher.into(),
             version: version.into(),
             organization,
             serial_number,
             cert_digest,
+            issuer_digest,
+            uri_san,
             extension: SslDigestExtension::default(),
         }
     }

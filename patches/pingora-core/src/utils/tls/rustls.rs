@@ -64,6 +64,40 @@ pub fn get_organization_serial_bytes(cert: &[u8]) -> Result<(Option<String>, Str
     get_organization_serial_x509(&x509cert)
 }
 
+/// Return the first `URI` subject alternative name on the certificate (as
+/// bytes), if any. Used for CA-based peer trust, which reads a
+/// `spiffe://`-shaped workload identity attribute out of this SAN rather
+/// than matching an exact leaf fingerprint.
+pub fn get_uri_san_bytes(cert: &[u8]) -> Option<String> {
+    let (_, x509cert) = x509_parser::certificate::X509Certificate::from_der(cert).ok()?;
+    let san = x509cert.subject_alternative_name().ok().flatten()?;
+    san.value.general_names.iter().find_map(|name| match name {
+        x509_parser::extensions::GeneralName::URI(uri) => Some(uri.to_string()),
+        _ => None,
+    })
+}
+
+/// Whether `issuer` really issued `cert`: the names line up **and** `cert`'s signature verifies under
+/// `issuer`'s public key. Both are DER. A peer chooses the order of the certificates it sends, so the
+/// second one is not known to be the first one's issuer until this says so; a caller that takes an
+/// issuer digest from the presented chain must check it here first.
+pub fn is_issued_by(cert: &[u8], issuer: &[u8]) -> bool {
+    let Ok((_, cert)) = x509_parser::certificate::X509Certificate::from_der(cert) else {
+        return false;
+    };
+    let Ok((_, issuer)) = x509_parser::certificate::X509Certificate::from_der(issuer) else {
+        return false;
+    };
+    cert.issuer() == issuer.subject() && cert.verify_signature(Some(issuer.public_key())).is_ok()
+}
+
+/// The certificate in a presented chain (leaf first) that issued the leaf: the second entry, if it
+/// verifiably signed the first. `None` for a chain of one, or when the second entry is not the issuer.
+pub fn issuer_in_chain<C: AsRef<[u8]>>(chain: &[C]) -> Option<&C> {
+    let (leaf, issuer) = (chain.first()?, chain.get(1)?);
+    is_issued_by(leaf.as_ref(), issuer.as_ref()).then_some(issuer)
+}
+
 /// Return the organization unit associated with the X509 certificate.
 /// see https://en.wikipedia.org/wiki/X.509#Structure_of_a_certificate
 pub fn get_organization_unit(x509cert: &WrappedX509) -> Option<String> {

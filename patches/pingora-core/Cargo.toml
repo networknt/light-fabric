@@ -251,6 +251,7 @@ version = "2"
 
 [dependencies.x509-parser]
 version = "0.16.0"
+features = ["verify"]
 optional = true
 
 [dependencies.zstd]

@@ -25,7 +25,7 @@ use crate::protocols::{tls::SslDigest, Peek, TimingDigest, UniqueIDType};
 use crate::protocols::{
     GetProxyDigest, GetSocketDigest, GetTimingDigest, SocketDigest, Ssl, UniqueID, ALPN,
 };
-use crate::utils::tls::get_organization_serial_bytes;
+use crate::utils::tls::{get_organization_serial_bytes, get_uri_san_bytes, issuer_in_chain};
 use pingora_error::ErrorType::{AcceptError, ConnectError, InternalError, TLSHandshakeFailure};
 use pingora_error::{OkOrErr, OrErr, Result};
 use pingora_rustls::TlsStream as RusTlsStream;
@@ -381,6 +381,18 @@ impl SslDigest {
             .map(|cert| hash_certificate(cert))
             .unwrap_or_default();
 
+        // The digest of the certificate that issued the leaf. The peer picks the order it sends its
+        // chain in, so the second certificate counts only if it really signed the first: otherwise a
+        // leaf from one trusted CA could carry an unrelated trusted CA's certificate to match that
+        // CA's `issuerSha256`.
+        let issuer_digest = peer_certificates
+            .and_then(|certs| issuer_in_chain(certs))
+            .map(|issuer| hash_certificate(issuer));
+
+        let uri_san = peer_certificates
+            .and_then(|certs| certs.first())
+            .and_then(|cert| get_uri_san_bytes(cert.as_bytes()));
+
         let (organization, serial_number) = peer_certificates
             .and_then(|certs| certs.first())
             .map(|cert| get_organization_serial_bytes(cert.as_bytes()))
@@ -390,7 +402,15 @@ impl SslDigest {
             .map(|(organization, serial)| (organization, Some(serial)))
             .unwrap_or_default();
 
-        SslDigest::new(cipher, version, organization, serial_number, cert_digest)
+        SslDigest::new_with_chain_attributes(
+            cipher,
+            version,
+            organization,
+            serial_number,
+            cert_digest,
+            issuer_digest,
+            uri_san,
+        )
     }
 }
 

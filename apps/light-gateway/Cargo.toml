@@ -6,6 +6,7 @@ license = "Apache-2.0"
 
 [dependencies]
 hex = { workspace = true }
+light-security = { path = "../../crates/light-security" }
 operational-store = { path = "../../crates/operational-store" }
 agent-delegation = { path = "../../crates/agent-delegation" }
 gateway-operational-store = { path = "../../crates/gateway-operational-store" }

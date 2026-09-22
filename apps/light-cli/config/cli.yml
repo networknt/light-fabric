@@ -1,0 +1,31 @@
+# Light CLI configuration template.
+#
+# startup.yml is the standard file, identical for every app; the CLI reads only its environment,
+# CA bundle and timeouts. This file holds the CLI's own settings. Each
+# ${cli.<property>:<default>} placeholder is resolved, highest priority first, from:
+#   1. an environment variable: the placeholder name upper-cased with '.' and '-'
+#      replaced by '_' (cli.gatewayUri -> CLI_GATEWAYURI);
+#   2. the values.yml that the config server named in startup.yml serves for this service's
+#      snapshot, where the key is the full placeholder name (`cli.oauthProviderId: ...`). Which
+#      config server the CLI asks decides which instance it belongs to; a CLI downloaded from
+#      another instance carries that instance's startup.yml;
+#   3. the default after the colon.
+# If the config server cannot be reached, 2 is skipped: it is never fatal.
+#
+# Properties (create these under a config named "cli" in Portal):
+#   gatewayUri      string  Base URL of light-gateway. Every call carries the signed-in user's
+#                           access token in Authorization and nothing else: no certificate, no
+#                           application token.
+#   agentServiceIds string  Comma-separated service ids of the agents `/chat` can talk to
+#                           (a name such as "advisor" is enough once listed).
+#   oauthUri        string  Base URL of light-oauth as the Gateway exposes it, used by
+#                           `/login and /logout` and to refresh the user's login. https only.
+#   oauthProviderId string  The provider segment in /oauth2/{providerId}/... on light-oauth.
+#   oauthClientId   string  Client id of the device client: a public client with profile "cli"
+#                           (Client Profile "cli", Client Type "public" or "trusted"; set them on
+#                           Portal's client page, see all-in-lt/device-authorization/README.md).
+gatewayUri: ${cli.gatewayUri:https://localhost}
+agentServiceIds: ${cli.agentServiceIds:com.networknt.agent.advisor-1.0.0,com.networknt.agent.tech-support-1.0.0,com.networknt.agent.account-1.0.0}
+oauthUri: ${cli.oauthUri:https://localhost}
+oauthProviderId: ${cli.oauthProviderId:AZZRJE52eXu3t1hseacnGQ}
+oauthClientId: ${cli.oauthClientId:01a0bf82-e900-7739-93b0-f33c06db6edb}

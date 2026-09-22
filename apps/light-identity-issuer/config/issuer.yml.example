@@ -1,0 +1,33 @@
+# Copy to config/issuer.yml (or set ISSUER_CONFIG_PATH) and replace the
+# provider ID and paths for the target environment. Keep CA private keys out
+# of source control.
+ca_certificate_path: /etc/light-identity-issuer/ca.pem
+ca_key_path: /etc/light-identity-issuer/ca.key
+jwks_url: https://light-oauth:6881/oauth2/REPLACE_WITH_PROVIDER_ID/keys
+jwks_ca_cert_path: /etc/light-identity-issuer/oauth-ca.pem
+portal_token_issuer: urn:com:networknt:oauth2:v1
+portal_token_audience: urn:com.networknt
+bind_address: 0.0.0.0:9443
+
+# HTTPS is mandatory unless allow_insecure_http is explicitly enabled for a
+# throwaway local run.
+tls_certificate_path: /etc/light-identity-issuer/tls/cert.pem
+tls_key_path: /etc/light-identity-issuer/tls/key.pem
+
+# Durable spent-token state is mandatory unless allow_ephemeral_state is
+# explicitly enabled for a throwaway local run.
+state_dir: /data
+
+environments:
+  loc:
+    leaf_lifetime_seconds: 864000 # 10 days, the recorded pilot default
+    renew_lead_seconds: 86400     # 1 day
+  prod:
+    leaf_lifetime_seconds: 86400  # 1 day, the recorded production default
+    renew_lead_seconds: 3600      # 1 hour
+
+# Empty by default, which rejects every Portal-token bootstrap. Add only the
+# service families this issuer is authorized to enroll.
+bootstrap_roles:
+  - service_id_prefix: com.networknt.light-cli-
+    role: cli

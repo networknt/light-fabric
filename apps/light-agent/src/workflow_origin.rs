@@ -155,9 +155,11 @@ mod tests {
                     AppProfile {
                         origin: Origin::Gateway,
                         peer_sha256: vec!["a".repeat(64)],
+                        ca_trust: None,
                     },
                 )]),
                 legacy_long_lived_app_keys: vec![],
+                interactive_user_only: false,
             },
             job_authorization: (mode == Mode::Workflow).then(|| {
                 light_client::workflow_jobs::Config {

@@ -1,0 +1,38 @@
+[package]
+name = "light-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Light CLI: sign the user in (OAuth device grant) and connect to light-gateway"
+
+[lib]
+name = "light_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "light"
+path = "src/main.rs"
+
+[dependencies]
+base64.workspace = true
+clap = { version = "4", features = ["derive", "env"] }
+futures-util.workspace = true
+config-loader = { path = "../../crates/config-loader" }
+reqwest.workspace = true
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustyline = "14"
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+time = { version = "0.3", features = ["macros", "formatting"] }
+tokio.workspace = true
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+url.workspace = true
+uuid.workspace = true
+webpki-roots = "0.26"
+
+[dev-dependencies]
+rcgen = "0.14"
+tempfile = "3"
+tokio-rustls = "0.26"

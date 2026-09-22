@@ -4939,15 +4939,24 @@ impl ProxyHttp for GatewayProxy {
                                 )
                                 .await;
                         };
-                        let peer = session
-                            .digest()
-                            .and_then(|d| d.ssl_digest.as_ref())
-                            .map(|d| hex::encode(&d.cert_digest));
+                        let ssl_digest = session.digest().and_then(|d| d.ssl_digest.as_ref());
+                        let peer_sha256 = ssl_digest.map(|d| hex::encode(&d.cert_digest));
+                        let issuer_sha256 = ssl_digest
+                            .and_then(|d| d.issuer_digest.as_ref())
+                            .map(|d| hex::encode(d));
+                        let uri_san = ssl_digest.and_then(|d| d.uri_san.as_deref());
+                        let environment = ssl_digest.and_then(|d| d.organization.as_deref());
+                        let peer = light_security::dual_identity::TlsPeer {
+                            sha256: peer_sha256.as_deref(),
+                            issuer_sha256: issuer_sha256.as_deref(),
+                            environment,
+                            uri_san,
+                        };
                         match actions
                             .context(
                                 security,
                                 &session.req_header().headers,
-                                peer.as_deref(),
+                                peer,
                                 Bytes::copy_from_slice(&body),
                             )
                             .await

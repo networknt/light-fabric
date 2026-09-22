@@ -173,12 +173,18 @@ impl Runtime {
         self: &Arc<Self>,
         security: &SecurityRuntime,
         headers: &http::HeaderMap,
-        peer: Option<&str>,
+        peer: dual_identity::TlsPeer<'_>,
         body: Bytes,
     ) -> Result<Option<Context>, String> {
-        let identity = dual_identity::authenticate(security, &self.config.policy, headers, peer)
+        // A caller with no application credential, on a route that allows it, is judged on its
+        // user token alone and is interactive by construction (no action reference).
+        let identity = match dual_identity::admit(security, &self.config.policy, headers, peer)
             .await
-            .map_err(|_| denied())?;
+            .map_err(|_| denied())?
+        {
+            dual_identity::Admission::Application(identity) => *identity,
+            dual_identity::Admission::UserOnly(_) => return Ok(None),
+        };
         match identity.action_reference {
             Some(reference) => Ok(Some(Context {
                 runtime: self.clone(),
