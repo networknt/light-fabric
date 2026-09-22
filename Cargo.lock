@@ -5001,10 +5001,12 @@ dependencies = [
 name = "light-cli"
 version = "0.2.1"
 dependencies = [
+ "anyhow",
  "base64",
  "clap",
  "config-loader",
  "futures-util",
+ "mcp-client",
  "rcgen",
  "reqwest",
  "rustls 0.23.37",

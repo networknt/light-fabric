@@ -18,6 +18,7 @@ pub mod fixed_action;
 pub mod invocation;
 pub mod job_authorization;
 pub mod lease_reaper;
+pub mod mcp_api;
 pub mod native_jobs;
 mod native_result;
 pub mod provenance;

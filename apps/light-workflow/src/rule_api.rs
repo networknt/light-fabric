@@ -7,6 +7,7 @@ use axum::{
     Json, Router,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
+    response::IntoResponse,
     routing::{get, post},
 };
 use chrono::{DateTime, Utc};
@@ -380,12 +381,112 @@ pub fn build_rule_api_router(
             "/v1/workflow-event-quarantine/{quarantine_id}/repair",
             post(repair_quarantined_event),
         )
+        .merge(crate::mcp_api::routes())
         .merge(crate::admin_api::routes())
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             enforce_action_receiver,
         ))
         .with_state(state)
+}
+
+pub(crate) async fn dispatch_native_tool(
+    name: &str,
+    state: RuleApiState,
+    headers: HeaderMap,
+    arguments: Value,
+) -> Result<Value, axum::response::Response> {
+    if let Some(result) =
+        crate::admin_api::dispatch_tool(name, state.clone(), headers.clone(), arguments.clone())
+            .await
+    {
+        return result;
+    }
+    let uuid = |field: &str| {
+        arguments
+            .get(field)
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok())
+            .ok_or_else(|| ApiError::bad_request("tool identifier is invalid").into_response())
+    };
+    match name {
+        "workflow_get_status" => {
+            let id = uuid("workflowInstanceId")?;
+            get_invocation(State(state), headers, Path(id))
+                .await
+                .map(|Json(value)| {
+                    json!({
+                        "workflowInstanceId":value.workflow_instance_id,"state":value.state,
+                        "invocationStateVersion":value.state_version,
+                        "cancellationRequested":matches!(value.state, InvocationState::Cancelled),
+                        "executionStopped":value.state.is_terminal()
+                    })
+                })
+                .map_err(IntoResponse::into_response)
+        }
+        "workflow_get_result" => {
+            let id = uuid("workflowInstanceId")?;
+            get_invocation_result(State(state), headers, Path(id)).await
+                .map(|Json(result)| json!({"workflowInstanceId":id,"state":"COMPLETED","result":result,"safeFailureSummary":Value::Null}))
+                .map_err(IntoResponse::into_response)
+        }
+        "workflow_cancel" => {
+            let id = uuid("workflowInstanceId")?;
+            cancel_invocation(State(state), headers, Path(id))
+                .await
+                .map(|Json(value)| {
+                    json!({
+                        "operationId":id,"accepted":true,"state":value.state,
+                        "message":"Cancellation accepted; execution stop may still be pending."
+                    })
+                })
+                .map_err(IntoResponse::into_response)
+        }
+        "workflow_get_feature" => {
+            let id = arguments
+                .get("featureRunId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    ApiError::bad_request("tool identifier is invalid").into_response()
+                })?;
+            get_development_feature(State(state), headers, Path(id.to_string()))
+                .await
+                .map(|Json(value)| {
+                    let terminal = matches!(value.state, development_workflow_contract::FeatureState::Completed | development_workflow_contract::FeatureState::Cancelled | development_workflow_contract::FeatureState::Failed);
+                    json!({"featureRunId":value.feature_run_id,"featureVersion":value.version,"state":value.state,
+                        "holdsVm":!value.vm.released,"vmState":if value.vm.released{"RELEASED"}else if value.vm.release_pending{"RELEASE_PENDING"}else{"RESERVED"},
+                        "vmGeneration":value.vm.generation,"activeWorkflowInstanceId":value.active_claim.map(|claim|claim.workflow_instance_id),
+                        "releasePending":value.vm.release_pending,"releaseEvidence":Value::Null,
+                        "canCancelFeature":{"allowed":!terminal,"reason":terminal.then_some("FEATURE_TERMINAL")}})
+                })
+                .map_err(IntoResponse::into_response)
+        }
+        "workflow_cancel_feature" => {
+            let id = arguments
+                .get("featureRunId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    ApiError::bad_request("tool identifier is invalid").into_response()
+                })?;
+            let expected_version = arguments
+                .get("expectedVersion")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    ApiError::bad_request("expectedVersion is invalid").into_response()
+                })?;
+            cancel_development_feature(
+                State(state),
+                headers,
+                Path(id.to_string()),
+                Json(CancelDevelopmentFeature { expected_version }),
+            )
+            .await
+            .map(|Json(value)| json!({"operationId":value.feature_run_id,"accepted":true,"state":value.state,
+                "featureVersion":value.version,"releasePending":value.vm.release_pending,"vmReleased":value.vm.released}))
+            .map_err(IntoResponse::into_response)
+        }
+        _ => Err(ApiError::not_found("workflow tool is unavailable").into_response()),
+    }
 }
 
 async fn enforce_action_receiver(

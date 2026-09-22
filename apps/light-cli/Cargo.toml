@@ -15,9 +15,11 @@ path = "src/main.rs"
 
 [dependencies]
 base64.workspace = true
+anyhow.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
 futures-util.workspace = true
 config-loader = { path = "../../crates/config-loader" }
+mcp-client = { path = "../../crates/mcp-client" }
 reqwest.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustyline = "14"

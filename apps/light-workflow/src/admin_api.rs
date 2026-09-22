@@ -15,6 +15,118 @@ use uuid::Uuid;
 const DEFAULT_PAGE_SIZE: i64 = 25;
 const MAX_PAGE_SIZE: i64 = 100;
 
+pub(crate) async fn dispatch_tool(
+    name: &str,
+    state: RuleApiState,
+    headers: HeaderMap,
+    arguments: Value,
+) -> Option<Result<Value, Response>> {
+    macro_rules! body {
+        ($ty:ty) => {
+            match serde_json::from_value::<$ty>({
+                let mut value = arguments.clone();
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("processId");
+                    object.remove("taskAsstId");
+                }
+                value
+            }) {
+                Ok(value) => value,
+                Err(_) => {
+                    return Some(Err(
+                        AdminError::bad("tool arguments are invalid").into_response()
+                    ))
+                }
+            }
+        };
+    }
+    macro_rules! json_result {
+        ($future:expr) => {
+            Some($future.await.map(|Json(value)| value))
+        };
+    }
+    let id = |field: &str| {
+        arguments
+            .get(field)
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok())
+            .ok_or_else(|| AdminError::bad("tool identifier is invalid").into_response())
+    };
+    match name {
+        "workflow_list_processes" => json_result!(list_processes(
+            State(state),
+            headers,
+            Json(body!(ProcessListRequest))
+        )),
+        "workflow_get_process" => json_result!(get_process(
+            State(state),
+            headers,
+            Path(match id("processId") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            })
+        )),
+        "workflow_list_features" => json_result!(list_features(
+            State(state),
+            headers,
+            Json(body!(FeatureListRequest))
+        )),
+        "workflow_get_human_task_inbox_summary" => {
+            json_result!(inbox_summary(State(state), headers, Json(arguments)))
+        }
+        "workflow_list_human_tasks" => json_result!(list_human_tasks(
+            State(state),
+            headers,
+            Json(body!(HumanTaskListRequest))
+        )),
+        "workflow_get_human_task" => json_result!(get_human_task(
+            State(state),
+            headers,
+            Path(match id("taskAsstId") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            })
+        )),
+        "workflow_claim_human_task" => {
+            let id = match id("taskAsstId") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            json_result!(claim_human_task(
+                State(state),
+                headers,
+                Path(id),
+                Json(body!(ClaimRequest))
+            ))
+        }
+        "workflow_release_human_task" => {
+            let id = match id("taskAsstId") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            json_result!(release_human_task(
+                State(state),
+                headers,
+                Path(id),
+                Json(body!(VersionRequest))
+            ))
+        }
+        "workflow_complete_human_task" => {
+            let id = match id("taskAsstId") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            json_result!(complete_human_task(
+                State(state),
+                headers,
+                Path(id),
+                Json(body!(CompleteRequest))
+            ))
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn routes() -> Router<RuleApiState> {
     Router::new()
         .route("/v1/workflow-admin/processes/search", post(list_processes))

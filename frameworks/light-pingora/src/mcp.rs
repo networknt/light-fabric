@@ -758,6 +758,9 @@ pub enum McpBackendCredentialMode {
     Caller,
     Exchange,
     Service,
+    /// Preserve Workflow's dual identity: caller Authorization plus the
+    /// Gateway service scope and derived, verified subject headers.
+    Workflow,
     Anonymous,
     /// Observable migration behavior for pre-profile legacy tools only.
     CallerCompat,
@@ -1943,11 +1946,10 @@ impl McpRouterRuntime {
                     "invalid MCP HTTP client for approved private targets: {error}"
                 ))
             })?;
-        let workflow_dispatch = if config
-            .tools
-            .iter()
-            .any(|tool| tool.execution_placement == McpExecutionPlacement::Workflow)
-        {
+        let workflow_dispatch = if config.tools.iter().any(|tool| {
+            tool.execution_placement == McpExecutionPlacement::Workflow
+                || tool_backend_credential_mode(tool) == McpBackendCredentialMode::Workflow
+        }) {
             match workflow_scope_authorization(config.workflow.scope_token_env.as_deref()) {
                 Ok(scope_authorization) => Some(Arc::new(WorkflowDispatchRuntime {
                     client: private_target_client.clone(),
@@ -5464,6 +5466,68 @@ impl McpRouterRuntime {
             arguments,
             authorization.as_deref(),
         )?;
+        if tool_backend_credential_mode(tool) == McpBackendCredentialMode::Workflow {
+            let runtime = self.workflow_dispatch.as_ref().ok_or_else(|| {
+                McpExecutionError::execution_failed(
+                    "Workflow backend authentication is unavailable",
+                )
+            })?;
+            let scope = runtime.scope_authorization.as_deref().ok_or_else(|| {
+                McpExecutionError::execution_failed(
+                    "Workflow backend scope authentication is unavailable",
+                )
+            })?;
+            let auth = effective.request.auth.as_ref().ok_or_else(|| {
+                McpExecutionError::execution_failed(
+                    "Workflow backend requires a verified user principal",
+                )
+            })?;
+            let host = auth
+                .host
+                .as_deref()
+                .or_else(|| auth.claims.get("hostId").and_then(JsonValue::as_str))
+                .or_else(|| auth.claims.get("host_id").and_then(JsonValue::as_str))
+                .and_then(|value| Uuid::parse_str(value).ok())
+                .ok_or_else(|| {
+                    McpExecutionError::execution_failed(
+                        "Workflow backend requires a UUID Host identity",
+                    )
+                })?;
+            let principal = auth
+                .client_id
+                .as_deref()
+                .or_else(|| auth.claims.get("client_id").and_then(JsonValue::as_str))
+                .or_else(|| auth.claims.get("sub").and_then(JsonValue::as_str))
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    McpExecutionError::execution_failed("Workflow backend principal is unavailable")
+                })?;
+            let user = auth
+                .user_id
+                .as_deref()
+                .or_else(|| auth.claims.get("user_id").and_then(JsonValue::as_str))
+                .or_else(|| auth.claims.get("userId").and_then(JsonValue::as_str))
+                .or_else(|| auth.claims.get("sub").and_then(JsonValue::as_str))
+                .unwrap_or(principal);
+            let digest = canonical_sha256(&stable_subject_claims(&auth.claims))
+                .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
+            for (name, value) in [
+                ("x-scope-token", scope.to_string()),
+                ("x-host-id", host.to_string()),
+                ("x-principal-subject", principal.to_string()),
+                ("x-end-user-subject", user.to_string()),
+                ("x-caller-claims-digest", digest),
+            ] {
+                headers.insert(
+                    reqwest::header::HeaderName::from_bytes(name.as_bytes()).expect("fixed header"),
+                    value.parse().map_err(|_| {
+                        McpExecutionError::execution_failed(
+                            "invalid Workflow backend identity header",
+                        )
+                    })?,
+                );
+            }
+        }
         // Content length and host remain transport-owned.
         headers.remove(reqwest::header::CONTENT_LENGTH);
         let (status, content_type, response_headers, body) = if let Some(action) =
@@ -5755,6 +5819,9 @@ impl McpRouterRuntime {
                     .await
                     .map(|token| Some(format!("Bearer {token}")))
                     .map_err(|error| McpExecutionError::execution_failed(error.message))
+            }
+            McpBackendCredentialMode::Workflow => {
+                exact_bearer_authorization(effective.transport_headers).map(Some)
             }
             McpBackendCredentialMode::Anonymous | McpBackendCredentialMode::CallerCompat => {
                 Ok(None)
@@ -6552,7 +6619,9 @@ fn backend_credential_identity(tool: &McpToolConfig, context: &McpRequestContext
     let mode = tool_backend_credential_mode(tool);
     let principal = matches!(
         mode,
-        McpBackendCredentialMode::Caller | McpBackendCredentialMode::Exchange
+        McpBackendCredentialMode::Caller
+            | McpBackendCredentialMode::Exchange
+            | McpBackendCredentialMode::Workflow
     )
     .then(|| {
         request_principal_binding(context)

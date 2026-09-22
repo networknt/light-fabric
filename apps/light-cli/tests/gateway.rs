@@ -30,7 +30,6 @@ async fn setup() -> Setup {
     let (ca, cert, key) = write_server_pki(dir.path());
     let refuse: Refusal = Arc::default();
     let switch = Arc::clone(&refuse);
-    let ready = Arc::new(Mutex::new(false));
     let server = start_tls_server(&cert, &key, move |req| {
         if let Some(status) = *switch.lock().unwrap() {
             return Reply { status, headers: Vec::new(), body: "ERR: refused".into() };
@@ -38,30 +37,15 @@ async fn setup() -> Setup {
         let request: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
         let id = request["id"].clone();
         match request["method"].as_str() {
-            Some("initialize") => Reply {
-                status: 200,
-                headers: vec![("mcp-session-id".into(), "sess-1".into())],
-                body: serde_json::json!({"jsonrpc":"2.0","id":id,"result":{
-                    "protocolVersion":"2025-03-26","capabilities":{},
-                    "serverInfo":{"name":"stand-in-gateway","version":"0"}}})
-                .to_string(),
-            },
-            // A strict server: `tools/list` is refused until the session has been marked initialized.
-            Some("notifications/initialized") if request.get("id").is_none() && req.headers.get("mcp-session-id").map(String::as_str) == Some("sess-1") => {
-                *ready.lock().unwrap() = true;
-                Reply { status: 202, headers: Vec::new(), body: String::new() }
-            }
-            Some("tools/list") if !*ready.lock().unwrap() => Reply {
-                status: 200,
-                headers: Vec::new(),
-                body: serde_json::json!({"jsonrpc":"2.0","id":id,"error":{"code":-32600,"message":"session not initialized"}}).to_string(),
-            },
-            Some("tools/list") if req.headers.get("mcp-session-id").map(String::as_str) == Some("sess-1") => Reply::json(
+            Some("server/discover") => Reply::json(200, serde_json::json!({"jsonrpc":"2.0","id":id,"result":{
+                "supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},
+                "serverInfo":{"name":"stand-in-gateway","version":"0"},"ttlMs":30000,"cacheScope":"private","resultType":"complete"}})),
+            Some("tools/list") => Reply::json(
                 200,
                 serde_json::json!({"jsonrpc":"2.0","id":id,"result":{"tools":[
-                    {"name":"workflow_get_feature"},{"name":"workflow_mcp_smoke"}]}}),
+                    {"name":"workflow_get_feature","inputSchema":{"type":"object"}},{"name":"workflow_mcp_smoke","inputSchema":{"type":"object"}}],"ttlMs":30000,"cacheScope":"private","resultType":"complete"}}),
             ),
-            _ => Reply { status: 400, headers: Vec::new(), body: "missing session".into() },
+            _ => Reply { status: 400, headers: Vec::new(), body: "unexpected method".into() },
         }
     })
     .await;
@@ -82,7 +66,8 @@ async fn the_gateway_is_called_with_the_user_token_and_nothing_else() {
         .await
         .expect("connects");
 
-    assert_eq!(report.protocol_version, "2025-03-26");
+    assert_eq!(report.protocol_version, "2026-07-28");
+    assert!(!report.session);
     assert_eq!(report.server.as_deref(), Some("stand-in-gateway"));
     assert_eq!(
         report.tools,
@@ -94,10 +79,7 @@ async fn the_gateway_is_called_with_the_user_token_and_nothing_else() {
         .iter()
         .map(|r| (r.method.as_str(), r.path.as_str()))
         .collect();
-    assert_eq!(
-        paths,
-        [("POST", "/mcp"), ("POST", "/mcp"), ("POST", "/mcp")]
-    );
+    assert_eq!(paths, [("POST", "/mcp"), ("POST", "/mcp")]);
     let methods: Vec<String> = seen
         .iter()
         .map(|r| {
@@ -109,8 +91,8 @@ async fn the_gateway_is_called_with_the_user_token_and_nothing_else() {
         .collect();
     assert_eq!(
         methods,
-        ["initialize", "notifications/initialized", "tools/list"],
-        "the lifecycle order"
+        ["server/discover", "tools/list"],
+        "the stateless request order"
     );
     for request in seen.iter() {
         assert_eq!(
@@ -122,6 +104,7 @@ async fn the_gateway_is_called_with_the_user_token_and_nothing_else() {
             "no application token: a downloadable program cannot keep one"
         );
         assert!(!request.headers.contains_key("x-workflow-action"));
+        assert!(!request.headers.contains_key("mcp-session-id"));
         assert_eq!(
             request.client_certificates, 0,
             "no client certificate is presented"
