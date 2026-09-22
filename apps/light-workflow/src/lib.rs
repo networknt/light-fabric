@@ -1,4 +1,5 @@
 pub mod action_api;
+pub mod admin_api;
 pub mod agent_job;
 pub mod approval;
 pub mod artifact_publish;

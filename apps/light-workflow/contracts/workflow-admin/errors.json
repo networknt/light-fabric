@@ -1,5 +1,5 @@
 {
-  "version": "0.1.0-phase0",
+  "version": "0.2.0-restoration",
   "errors": [
     {"code":"UNAUTHENTICATED","httpStatus":401,"retryable":false},
     {"code":"FORBIDDEN","httpStatus":403,"retryable":false},
@@ -7,6 +7,7 @@
     {"code":"INVALID_ARGUMENT","httpStatus":400,"retryable":false},
     {"code":"VALIDATION_FAILED","httpStatus":422,"retryable":false},
     {"code":"INVALID_STATE","httpStatus":409,"retryable":false},
+    {"code":"TASK_EXPIRED","httpStatus":409,"retryable":false},
     {"code":"VERSION_CONFLICT","httpStatus":409,"retryable":true},
     {"code":"CLAIM_CONFLICT","httpStatus":409,"retryable":true},
     {"code":"CLAIM_NOT_OWNED","httpStatus":409,"retryable":false},

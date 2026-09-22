@@ -9537,6 +9537,67 @@ fn workflow_lifecycle_route(
     name: &str,
     arguments: &JsonValue,
 ) -> Result<(reqwest::Method, String, Option<JsonValue>), &'static str> {
+    let admin_base = "/v1/workflow-admin";
+    if matches!(
+        name,
+        "workflow_list_processes"
+            | "workflow_list_features"
+            | "workflow_get_human_task_inbox_summary"
+            | "workflow_list_human_tasks"
+    ) {
+        let suffix = match name {
+            "workflow_list_processes" => "processes/search",
+            "workflow_list_features" => "features/search",
+            "workflow_get_human_task_inbox_summary" => "human-tasks/inbox-summary",
+            "workflow_list_human_tasks" => "human-tasks/search",
+            _ => unreachable!(),
+        };
+        return Ok((
+            reqwest::Method::POST,
+            format!("{admin_base}/{suffix}"),
+            Some(arguments.clone()),
+        ));
+    }
+    if name == "workflow_get_process" {
+        let id = workflow_argument_uuid(arguments, "processId")?;
+        return Ok((
+            reqwest::Method::GET,
+            format!("{admin_base}/processes/{id}"),
+            None,
+        ));
+    }
+    if matches!(
+        name,
+        "workflow_get_human_task"
+            | "workflow_claim_human_task"
+            | "workflow_release_human_task"
+            | "workflow_complete_human_task"
+    ) {
+        let id = workflow_argument_uuid(arguments, "taskAsstId")?;
+        let suffix = match name {
+            "workflow_get_human_task" => "",
+            "workflow_claim_human_task" => "/claim",
+            "workflow_release_human_task" => "/release",
+            "workflow_complete_human_task" => "/complete",
+            _ => unreachable!(),
+        };
+        let body = if name == "workflow_get_human_task" {
+            None
+        } else {
+            let mut body = arguments
+                .as_object()
+                .cloned()
+                .ok_or("WORKFLOW_INPUT_INVALID: arguments must be an object")?;
+            body.remove("taskAsstId");
+            Some(JsonValue::Object(body))
+        };
+        return Ok((
+            reqwest::Method::from_bytes(if body.is_some() { b"POST" } else { b"GET" })
+                .expect("fixed method"),
+            format!("{admin_base}/human-tasks/{id}{suffix}"),
+            body,
+        ));
+    }
     let feature_operation = matches!(
         name,
         "workflow_get_feature"
@@ -9634,7 +9695,66 @@ fn workflow_lifecycle_route(
     })
 }
 
+fn workflow_argument_uuid(arguments: &JsonValue, field: &str) -> Result<Uuid, &'static str> {
+    arguments
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .filter(|value| !value.is_nil())
+        .ok_or("WORKFLOW_INPUT_INVALID: lifecycle identity must be a non-nil UUID")
+}
+
+fn resolve_workflow_contract_refs(value: &JsonValue, shared: &JsonValue) -> JsonValue {
+    if let Some(reference) = value.get("$ref").and_then(JsonValue::as_str)
+        && let Some(name) = reference
+            .strip_prefix("schemas.json#/$defs/")
+            .or_else(|| reference.strip_prefix("#/$defs/"))
+    {
+        return shared
+            .pointer(&format!("/$defs/{name}"))
+            .map(|resolved| resolve_workflow_contract_refs(resolved, shared))
+            .unwrap_or_else(|| value.clone());
+    }
+    match value {
+        JsonValue::Array(items) => JsonValue::Array(
+            items
+                .iter()
+                .map(|item| resolve_workflow_contract_refs(item, shared))
+                .collect(),
+        ),
+        JsonValue::Object(values) => JsonValue::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), resolve_workflow_contract_refs(value, shared)))
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
+fn frozen_workflow_admin_schema(name: &str) -> Option<JsonValue> {
+    let manifest: JsonValue = serde_json::from_str(include_str!(
+        "../../../apps/light-workflow/contracts/workflow-admin/tool-manifest.json"
+    ))
+    .expect("frozen Workflow admin manifest is valid JSON");
+    let shared: JsonValue = serde_json::from_str(include_str!(
+        "../../../apps/light-workflow/contracts/workflow-admin/schemas.json"
+    ))
+    .expect("frozen Workflow admin shared schemas are valid JSON");
+    manifest["tools"].as_array()?.iter().find_map(|tool| {
+        (tool["name"].as_str() == Some(name))
+            .then(|| resolve_workflow_contract_refs(&tool["inputSchema"], &shared))
+    })
+}
+
 fn workflow_lifecycle_schema(name: &str) -> JsonValue {
+    if let Some(schema) = frozen_workflow_admin_schema(name) {
+        return schema;
+    }
+    workflow_internal_lifecycle_schema(name)
+}
+
+fn workflow_internal_lifecycle_schema(name: &str) -> JsonValue {
     match name {
         "workflow_publish_slot" => {
             json!({"type":"object","properties":{"featureRunId":{"type":"string","format":"uuid"},"slot":{"type":"string","minLength":1,"maxLength":128}},"required":["featureRunId","slot"],"additionalProperties":false})
@@ -9642,22 +9762,61 @@ fn workflow_lifecycle_schema(name: &str) -> JsonValue {
         "workflow_finalize_design" => {
             json!({"type":"object","properties":{"featureRunId":{"type":"string","format":"uuid"},"expectedVersion":{"type":"integer","minimum":1},"operationId":{"type":"string","format":"uuid"}},"required":["featureRunId","expectedVersion","operationId"],"additionalProperties":false})
         }
-        "workflow_cancel_feature" => {
-            json!({"type":"object","properties":{"featureRunId":{"type":"string","format":"uuid"},"expectedVersion":{"type":"integer","minimum":1}},"required":["featureRunId","expectedVersion"],"additionalProperties":false})
-        }
-        "workflow_get_feature" => {
-            json!({"type":"object","properties":{"featureRunId":{"type":"string","format":"uuid"}},"required":["featureRunId"],"additionalProperties":false})
-        }
         "workflow_accept_stage" => {
             json!({"type":"object","properties":{"featureRunId":{"type":"string","format":"uuid"},"acceptance":{"type":"object","properties":{"operationId":{"type":"string","format":"uuid"},"expectedVersion":{"type":"integer","minimum":1},"result":{"type":"object"},"nextStage":{"type":["object","null"]}},"required":["operationId","expectedVersion","result","nextStage"],"additionalProperties":false}},"required":["featureRunId","acceptance"],"additionalProperties":false})
         }
-        _ => {
-            json!({"type":"object","properties":{"workflowInstanceId":{"type":"string","format":"uuid"}},"required":["workflowInstanceId"],"additionalProperties":false})
-        }
+        _ => panic!(
+            "workflow lifecycle schema `{name}` is absent from the frozen admin manifest and the internal lifecycle contracts"
+        ),
     }
 }
 
-const WORKFLOW_LIFECYCLE_TOOLS: [(&str, &str, bool); 8] = [
+const WORKFLOW_LIFECYCLE_TOOLS: [(&str, &str, bool); 17] = [
+    (
+        "workflow_list_processes",
+        "List owned Workflow process history",
+        true,
+    ),
+    (
+        "workflow_get_process",
+        "Inspect an owned Workflow process",
+        true,
+    ),
+    (
+        "workflow_list_features",
+        "List owned development features and VM reservations",
+        true,
+    ),
+    (
+        "workflow_get_human_task_inbox_summary",
+        "Summarize assigned human tasks",
+        true,
+    ),
+    (
+        "workflow_list_human_tasks",
+        "List assigned human tasks",
+        true,
+    ),
+    (
+        "workflow_get_human_task",
+        "Inspect an assigned human task",
+        true,
+    ),
+    (
+        "workflow_claim_human_task",
+        "Claim an assigned human task",
+        false,
+    ),
+    (
+        "workflow_release_human_task",
+        "Release an owned human-task claim",
+        false,
+    ),
+    (
+        "workflow_complete_human_task",
+        "Complete a claimed human task",
+        false,
+    ),
     (
         "workflow_publish_slot",
         "Publish an owned feature's pinned accepted document slot",
@@ -18163,6 +18322,15 @@ tools:
         assert_eq!(
             lifecycle,
             vec![
+                "workflow_list_processes",
+                "workflow_get_process",
+                "workflow_list_features",
+                "workflow_get_human_task_inbox_summary",
+                "workflow_list_human_tasks",
+                "workflow_get_human_task",
+                "workflow_claim_human_task",
+                "workflow_release_human_task",
+                "workflow_complete_human_task",
                 "workflow_publish_slot",
                 "workflow_finalize_design",
                 "workflow_cancel_feature",
@@ -18177,6 +18345,82 @@ tools:
             tool.execution_placement != McpExecutionPlacement::WorkflowLifecycle
                 || tool.endpoint.as_deref() == Some(&format!("{}@call", tool.name))
         }));
+    }
+
+    #[test]
+    fn frozen_workflow_admin_schemas_resolve_and_cover_generated_tools() {
+        fn contains_ref(value: &JsonValue) -> bool {
+            match value {
+                JsonValue::Object(values) => {
+                    values.contains_key("$ref") || values.values().any(contains_ref)
+                }
+                JsonValue::Array(values) => values.iter().any(contains_ref),
+                _ => false,
+            }
+        }
+        let manifest: JsonValue = serde_json::from_str(include_str!(
+            "../../../apps/light-workflow/contracts/workflow-admin/tool-manifest.json"
+        ))
+        .expect("manifest");
+        let manifest_names = manifest["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect::<BTreeSet<_>>();
+        let internal = WORKFLOW_LIFECYCLE_TOOLS
+            .iter()
+            .map(|(name, _, _)| *name)
+            .filter(|name| !manifest_names.contains(name))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            internal,
+            vec![
+                "workflow_publish_slot",
+                "workflow_finalize_design",
+                "workflow_accept_stage"
+            ]
+        );
+        for tool in manifest["tools"].as_array().expect("tools") {
+            let name = tool["name"].as_str().expect("tool name");
+            assert!(
+                WORKFLOW_LIFECYCLE_TOOLS
+                    .iter()
+                    .any(|(generated, _, _)| *generated == name),
+                "manifest tool {name} is not generated by Gateway"
+            );
+            assert!(
+                !contains_ref(&workflow_lifecycle_schema(name)),
+                "manifest tool {name} reached Gateway with an unresolved $ref"
+            );
+        }
+    }
+
+    #[test]
+    fn workflow_admin_routes_bind_typed_ids_and_strip_path_identity_from_mutations() {
+        let id = "01964b05-552a-7c4b-9184-6857e7f3dc5f";
+        let (method, route, body) = workflow_lifecycle_route(
+            "workflow_claim_human_task",
+            &json!({"taskAsstId":id,"assignmentVersion":2,"claimMinutes":30}),
+        )
+        .unwrap();
+        assert_eq!(method, reqwest::Method::POST);
+        assert_eq!(route, format!("/v1/workflow-admin/human-tasks/{id}/claim"));
+        assert_eq!(body, Some(json!({"assignmentVersion":2,"claimMinutes":30})));
+        let (method, route, body) =
+            workflow_lifecycle_route("workflow_list_processes", &json!({"page":{"pageSize":25}}))
+                .unwrap();
+        assert_eq!(method, reqwest::Method::POST);
+        assert_eq!(route, "/v1/workflow-admin/processes/search");
+        assert_eq!(body, Some(json!({"page":{"pageSize":25}})));
+        assert!(
+            workflow_lifecycle_route("workflow_get_process", &json!({"processId":"../other"}))
+                .is_err()
+        );
+        let validator =
+            jsonschema::validator_for(&workflow_lifecycle_schema("workflow_complete_human_task"))
+                .unwrap();
+        assert!(!validator.is_valid(&json!({"taskAsstId":id,"decision":"APPROVED"})));
     }
 
     #[test]

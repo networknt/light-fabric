@@ -31,6 +31,35 @@ pub struct GatewayReport {
     pub tools: Vec<String>,
 }
 
+fn structured_tool_result(result: Value) -> Result<Value, CliError> {
+    if result.get("isError").and_then(Value::as_bool) == Some(true) {
+        let detail = result
+            .get("content")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find_map(|item| item.get("text").and_then(Value::as_str))
+            })
+            .unwrap_or("Workflow operation failed");
+        return Err(CliError::Failed(detail.to_string()));
+    }
+    if let Some(value) = result.get("structuredContent") {
+        return Ok(value.clone());
+    }
+    let text = result
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .find_map(|item| item.get("text").and_then(Value::as_str))
+        })
+        .ok_or_else(|| CliError::Failed("Gateway returned no structured tool result".into()))?;
+    serde_json::from_str(text)
+        .map_err(|_| CliError::Failed("Gateway returned an invalid JSON tool result".into()))
+}
+
 /// Every error in the chain, so a TLS failure says what actually failed.
 fn describe(error: &reqwest::Error) -> String {
     let mut text = error.to_string();
@@ -264,4 +293,89 @@ pub async fn check(
         tool_count: tools.len(),
         tools,
     })
+}
+
+/// Invoke one authorized Gateway tool through the CLI's explicitly retained restoration profile.
+pub async fn invoke(
+    config: &CliConfig,
+    user_token: Option<Secret>,
+    tool: &str,
+    arguments: Value,
+) -> Result<Value, CliError> {
+    let user_token = user_token.ok_or_else(|| {
+        CliError::LoginRequired("no user login to send to the Gateway; run `/login`".into())
+    })?;
+    let (settings, _) = remote::load_settings(config).await?;
+    let base = settings.gateway_uri.ok_or_else(|| {
+        CliError::Config(
+            "no Gateway URL: set cli.gatewayUri in cli.yml, the config server, or CLI_GATEWAYURI"
+                .into(),
+        )
+    })?;
+    ensure_transport_is_safe(&base)?;
+    let endpoint = format!("{base}/mcp");
+    let client = http::client(
+        config.ca_bundle.as_deref(),
+        Duration::from_secs(5),
+        Duration::from_secs(30),
+    )?;
+    let call = Call {
+        client: &client,
+        endpoint: &endpoint,
+        user_token: &user_token,
+    };
+    let (initialized, session) = call
+        .rpc(
+            None,
+            "initialize",
+            json!({
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "light-cli", "version": env!("CARGO_PKG_VERSION")},
+            }),
+        )
+        .await?;
+    if initialized.get("protocolVersion").and_then(Value::as_str) != Some(PROTOCOL_VERSION) {
+        return Err(CliError::Failed(
+            "Gateway returned an unsupported MCP protocol version".into(),
+        ));
+    }
+    let session =
+        session.ok_or_else(|| CliError::Failed("the Gateway returned no MCP session".into()))?;
+    call.notify(&session, "notifications/initialized").await?;
+    let (result, _) = call
+        .rpc(
+            Some(&session),
+            "tools/call",
+            json!({
+                "name": tool,
+                "arguments": arguments,
+            }),
+        )
+        .await?;
+    structured_tool_result(result)
+}
+
+#[cfg(test)]
+mod tool_result_tests {
+    use super::*;
+
+    #[test]
+    fn structured_and_text_tool_results_are_supported() {
+        assert_eq!(
+            structured_tool_result(json!({"structuredContent":{"ok":true}})).unwrap(),
+            json!({"ok":true})
+        );
+        assert_eq!(
+            structured_tool_result(json!({"content":[{"type":"text","text":"{\"ok\":true}"}]}))
+                .unwrap(),
+            json!({"ok":true})
+        );
+        assert!(
+            structured_tool_result(
+                json!({"isError":true,"content":[{"type":"text","text":"denied"}]})
+            )
+            .is_err()
+        );
+    }
 }

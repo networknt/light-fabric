@@ -77,6 +77,14 @@ Commands (anything else you type is said to the agent you are chatting with):
   /new                           start a fresh session with the same agent
   /disconnect                    end the chat
   /tools                         connect to the Gateway and list its tools
+  /workflow list                list your Workflow processes and invocation IDs
+  /workflow show ID             show an invocation status
+  /workflow result ID           show an invocation result
+  /workflow cancel ID --yes     request invocation cancellation
+  /feature list [--holding-vm]  list your development features
+  /feature show ID              show a development feature
+  /feature cancel ID --expected-version N --yes
+                                 cancel a feature and release its VM after fencing
   /exit                          leave (also /quit and Ctrl-D)
 Start a line with // to say something that begins with a slash.";
 
@@ -299,6 +307,8 @@ impl Shell {
                 "new" => self.new_session().await?,
                 "disconnect" => self.disconnect().await,
                 "tools" => self.tools().await?,
+                "workflow" => self.workflow(&args).await?,
+                "feature" => self.feature(&args).await?,
                 other => {
                     return Err(CliError::Failed(format!(
                         "unknown command /{}; /help lists the commands",
@@ -321,6 +331,79 @@ impl Shell {
         ));
         self.settings = Some(settings.clone());
         Ok(settings)
+    }
+
+    async fn gateway_tool(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, CliError> {
+        let token = access_token(&self.config).await?;
+        crate::gateway::invoke(&self.config, token, name, arguments).await
+    }
+
+    fn print_json(&self, value: &serde_json::Value) -> Result<(), CliError> {
+        let rendered = serde_json::to_string_pretty(value)
+            .map_err(|e| CliError::Failed(format!("rendering result: {e}")))?;
+        self.out.line(&rendered);
+        Ok(())
+    }
+
+    async fn workflow(&self, args: &str) -> Result<(), CliError> {
+        let words: Vec<&str> = args.split_whitespace().collect();
+        let result = match words.as_slice() {
+            ["list"] => {
+                self.gateway_tool("workflow_list_processes", serde_json::json!({}))
+                    .await?
+            }
+            ["show", id] => {
+                self.gateway_tool(
+                    "workflow_get_status",
+                    serde_json::json!({"workflowInstanceId": id}),
+                )
+                .await?
+            }
+            ["result", id] => {
+                self.gateway_tool(
+                    "workflow_get_result",
+                    serde_json::json!({"workflowInstanceId": id}),
+                )
+                .await?
+            }
+            ["cancel", id, "--yes"] | ["cancel", "--yes", id] => {
+                self.gateway_tool(
+                    "workflow_cancel",
+                    serde_json::json!({"workflowInstanceId": id}),
+                )
+                .await?
+            }
+            ["cancel", ..] => {
+                return Err(CliError::Failed("usage: /workflow cancel ID --yes".into()));
+            }
+            _ => {
+                return Err(CliError::Failed(
+                    "usage: /workflow list | show ID | result ID | cancel ID --yes".into(),
+                ));
+            }
+        };
+        self.print_json(&result)
+    }
+
+    async fn feature(&self, args: &str) -> Result<(), CliError> {
+        let words: Vec<&str> = args.split_whitespace().collect();
+        let result = match words.as_slice() {
+            ["list"] => self.gateway_tool("workflow_list_features", serde_json::json!({})).await?,
+            ["list", "--holding-vm"] => self.gateway_tool("workflow_list_features", serde_json::json!({"holdsVm": true})).await?,
+            ["show", id] => self.gateway_tool("workflow_get_feature", serde_json::json!({"featureRunId": id})).await?,
+            ["cancel", id, "--expected-version", version, "--yes"]
+            | ["cancel", id, "--yes", "--expected-version", version] => {
+                let expected_version = version.parse::<i64>().map_err(|_| CliError::Failed("expected version must be an integer".into()))?;
+                self.gateway_tool("workflow_cancel_feature", serde_json::json!({"featureRunId": id, "expectedVersion": expected_version})).await?
+            }
+            ["cancel", ..] => return Err(CliError::Failed("usage: /feature cancel ID --expected-version N --yes".into())),
+            _ => return Err(CliError::Failed("usage: /feature list [--holding-vm] | show ID | cancel ID --expected-version N --yes".into())),
+        };
+        self.print_json(&result)
     }
 
     // ── sign in and out ───────────────────────────────────────────────────────────────────────

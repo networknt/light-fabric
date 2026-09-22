@@ -1,10 +1,10 @@
 {
   "$schema":"https://json-schema.org/draft/2020-12/schema",
-  "$id":"https://lightapi.net/schemas/workflow-admin/0.1.0-phase0",
+  "$id":"https://lightapi.net/schemas/workflow-admin/0.2.0-restoration",
   "$defs":{
     "Uuid":{"type":"string","format":"uuid"},
     "Timestamp":{"type":"string","format":"date-time"},
-    "PageInput":{"type":"object","properties":{"cursor":{"type":"string","minLength":1},"pageSize":{"type":"integer","minimum":1,"maximum":100,"default":25}},"additionalProperties":false},
+    "PageInput":{"type":"object","description":"Offset pagination. cursor is the decimal row offset returned as nextCursor; it is not a stable keyset cursor under concurrent writes.","properties":{"cursor":{"type":"string","minLength":1,"pattern":"^[0-9]+$"},"pageSize":{"type":"integer","minimum":1,"maximum":100,"default":25}},"additionalProperties":false},
     "PageMeta":{"type":"object","required":["pageSize","hasMore"],"properties":{"pageSize":{"type":"integer","minimum":0,"maximum":100},"nextCursor":{"type":["string","null"]},"hasMore":{"type":"boolean"},"authorizedTotal":{"type":"integer","minimum":0}},"additionalProperties":false},
     "ActionHint":{"type":"object","required":["allowed"],"properties":{"allowed":{"type":"boolean"},"reason":{"type":["string","null"]}},"additionalProperties":false},
     "ProcessSummary":{"type":"object","required":["processId","definitionId","workflowName","workflowVersion","processState","createdAt","updatedAt","canCancelInvocation"],"properties":{"processId":{"$ref":"#/$defs/Uuid"},"workflowInstanceId":{"anyOf":[{"$ref":"#/$defs/Uuid"},{"type":"null"}]},"featureRunId":{"anyOf":[{"$ref":"#/$defs/Uuid"},{"type":"null"}]},"definitionId":{"$ref":"#/$defs/Uuid"},"workflowName":{"type":"string"},"workflowVersion":{"type":"string"},"processState":{"type":"string"},"invocationState":{"type":["string","null"]},"invocationStateVersion":{"type":["integer","null"],"minimum":0},"createdAt":{"$ref":"#/$defs/Timestamp"},"updatedAt":{"$ref":"#/$defs/Timestamp"},"deadline":{"anyOf":[{"$ref":"#/$defs/Timestamp"},{"type":"null"}]},"ownerDisplay":{"type":["string","null"]},"safeFailureSummary":{"type":["string","null"]},"featureState":{"type":["string","null"]},"vmState":{"type":["string","null"]},"vmGeneration":{"type":["integer","null"],"minimum":0},"canCancelInvocation":{"$ref":"#/$defs/ActionHint"},"canCancelFeature":{"$ref":"#/$defs/ActionHint"}},"additionalProperties":false},

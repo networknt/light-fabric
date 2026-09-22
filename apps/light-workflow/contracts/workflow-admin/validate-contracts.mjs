@@ -77,7 +77,7 @@ const listPage = schemas.$defs.PageInput.properties.pageSize;
 if (listPage.default !== 25 || listPage.maximum !== 100) fail('pagination must default to 25 and cap at 100');
 if (examples.workflow_list_processes.output.processes[0].workflowInstanceId !== null) fail('process-only fixture must retain null workflowInstanceId');
 if (examples.workflow_get_human_task.output.task.taskId === examples.workflow_get_human_task.output.task.taskAsstId) fail('taskId and taskAsstId must remain distinct');
-for (const code of ['STORE_UNAVAILABLE','AUTHORITY_UNAVAILABLE','VERSION_CONFLICT','CLAIM_CONFLICT','VALIDATION_FAILED']) if (!errors.errors.some((error) => error.code === code)) fail(`missing stable error ${code}`);
+for (const code of ['STORE_UNAVAILABLE','AUTHORITY_UNAVAILABLE','VERSION_CONFLICT','CLAIM_CONFLICT','VALIDATION_FAILED','TASK_EXPIRED']) if (!errors.errors.some((error) => error.code === code)) fail(`missing stable error ${code}`);
 
 if (failures.length) {
   console.error(failures.map((failure) => `FAIL ${failure}`).join('\n'));

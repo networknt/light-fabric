@@ -36,7 +36,7 @@ const MAX_WAIT_MS: u64 = 20_000;
 #[derive(Clone)]
 pub struct RuleApiState {
     engine: Arc<RuleEngine>,
-    pool: PgPool,
+    pub(crate) pool: PgPool,
     invocation_security: Arc<SecurityRuntime>,
     invocation_environment: Arc<str>,
     runtime_config: Arc<WorkflowConfigManager>,
@@ -293,10 +293,10 @@ struct QuarantineRepairRequest {
 }
 
 #[derive(Debug)]
-struct InvocationIdentity {
-    host_id: Uuid,
-    principal_subject: String,
-    end_user_subject: String,
+pub(crate) struct InvocationIdentity {
+    pub(crate) host_id: Uuid,
+    pub(crate) principal_subject: String,
+    pub(crate) end_user_subject: String,
     caller_claims_digest: String,
     user_authorization: String,
     user_authorization_exp: i64,
@@ -380,6 +380,7 @@ pub fn build_rule_api_router(
             "/v1/workflow-event-quarantine/{quarantine_id}/repair",
             post(repair_quarantined_event),
         )
+        .merge(crate::admin_api::routes())
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             enforce_action_receiver,
@@ -1814,7 +1815,7 @@ async fn load_status(
     })
 }
 
-async fn authenticate(
+pub(crate) async fn authenticate(
     state: &RuleApiState,
     headers: &HeaderMap,
 ) -> Result<(InvocationIdentity, Arc<WorkflowConfigGeneration>), ApiError> {
@@ -2469,7 +2470,7 @@ fn parse_state(value: &str) -> Result<InvocationState, ApiError> {
 }
 
 #[derive(Debug)]
-struct ApiError {
+pub(crate) struct ApiError {
     status: StatusCode,
     error: InvocationError,
 }

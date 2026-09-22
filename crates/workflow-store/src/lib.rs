@@ -16,6 +16,7 @@ pub const ENDPOINT_RESOLUTION_MIGRATION_ID: &str = "0006_workflow_endpoint_resol
 pub const DEVELOPMENT_MIGRATION_ID: &str = "0008_development_workflow";
 pub const AGENT_DISPATCH_MIGRATION_ID: &str = "0009_workflow_agent_dispatch";
 pub const ACTION_PRIVILEGES_MIGRATION_ID: &str = "0010_workflow_action_runtime_privileges";
+pub const HUMAN_TASK_MIGRATION_ID: &str = "0011_workflow_human_task_assignment";
 pub const ACTION_TABLES: &[&str] = &[
     "workflow_action_authority_t",
     "workflow_action_permit_t",
@@ -28,6 +29,8 @@ pub const AGENT_DISPATCH_MIGRATION_SQL: &str =
     include_str!("../migrations/workflow-postgres/0009_workflow_agent_dispatch.sql");
 pub const DEVELOPMENT_MIGRATION_SQL: &str =
     include_str!("../migrations/workflow-postgres/0008_development_workflow.sql");
+pub const HUMAN_TASK_MIGRATION_SQL: &str =
+    include_str!("../migrations/workflow-postgres/0011_workflow_human_task_assignment.sql");
 pub const DEVELOPMENT_TABLES: &[&str] = &[
     "development_vm_t",
     "development_feature_t",
@@ -54,6 +57,7 @@ pub const AUTHORITY_TABLES: &[&str] = &[
     "consumer_offsets",
     "process_info_t",
     "task_info_t",
+    "task_asst_t",
     "workflow_approval_t",
     "workflow_artifact_t",
     "workflow_executor_tenant_turn_t",
@@ -260,6 +264,14 @@ pub async fn validate(
             "Workflow action runtime privilege migration is missing".into(),
         ));
     }
+    let human_task_ready: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t WHERE migration_owner='workflow-store' AND schema_name='workflow_ops' AND migration_id=$1)",
+    ).bind(HUMAN_TASK_MIGRATION_ID).fetch_one(pool).await?;
+    if !human_task_ready {
+        return Err(ValidationError::Scope(
+            "Workflow human-task assignment migration is missing".into(),
+        ));
+    }
     let denied: Vec<String> = sqlx::query_scalar(
         "SELECT t FROM unnest($1::text[]) AS t WHERE NOT (
             has_table_privilege(current_user,'workflow_ops.' || t,'SELECT') AND
@@ -284,11 +296,12 @@ mod tests {
 
     #[test]
     fn workflow_inventory_and_boundary_are_frozen() {
-        assert_eq!(AUTHORITY_TABLES.len(), 18);
+        assert_eq!(AUTHORITY_TABLES.len(), 19);
         assert_eq!(PROJECTION_TABLES.len(), 7);
         for table in AUTHORITY_TABLES
             .iter()
             .skip(1)
+            .filter(|table| **table != "task_asst_t")
             .chain(PROJECTION_TABLES.iter().take(6))
         {
             assert!(MIGRATION_SQL.contains(&format!("workflow_ops.{table}")));
@@ -306,5 +319,7 @@ mod tests {
             );
         }
         assert!(!DEVELOPMENT_MIGRATION_SQL.contains("configserver."));
+        assert!(HUMAN_TASK_MIGRATION_SQL.contains("workflow_ops.task_asst_t"));
+        assert!(!HUMAN_TASK_MIGRATION_SQL.contains("configserver."));
     }
 }
