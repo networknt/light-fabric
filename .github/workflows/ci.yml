@@ -19,6 +19,14 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/light-workflow/contracts/workflow-admin/package-lock.json
+      - name: Validate Workflow admin contracts
+        working-directory: apps/light-workflow/contracts/workflow-admin
+        run: npm ci --ignore-scripts && npm test
       - name: Shared client template parity
         run: python3 scripts/sync-client-config.py --check
       - name: Install worker test dependencies
