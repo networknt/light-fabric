@@ -4,7 +4,10 @@
 //! unrelated trusted CA's certificate to satisfy that CA's `caTrust.issuerSha256`.
 
 use pingora::utils::tls::{is_issued_by, issuer_in_chain};
-use rcgen::{BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose};
+use rcgen::{
+    BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, Issuer, KeyPair,
+    KeyUsagePurpose,
+};
 
 struct Ca {
     der: Vec<u8>,
@@ -17,9 +20,14 @@ fn ca(common_name: &str) -> Ca {
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
     params.distinguished_name = DistinguishedName::new();
-    params.distinguished_name.push(DnType::CommonName, common_name);
+    params
+        .distinguished_name
+        .push(DnType::CommonName, common_name);
     let cert = params.self_signed(&key).unwrap();
-    Ca { der: cert.der().to_vec(), issuer: Issuer::new(params, key) }
+    Ca {
+        der: cert.der().to_vec(),
+        issuer: Issuer::new(params, key),
+    }
 }
 
 fn leaf_from(ca: &Ca) -> Vec<u8> {
@@ -34,8 +42,14 @@ fn only_the_certificate_that_signed_the_leaf_counts_as_its_issuer() {
     let leaf_from_b = leaf_from(&b);
 
     assert!(is_issued_by(&leaf_from_b, &b.der), "the real issuer");
-    assert!(!is_issued_by(&leaf_from_b, &a.der), "another trusted CA sent in its place");
-    assert!(!is_issued_by(&leaf_from_b, &leaf_from_b), "the leaf is not its own issuer");
+    assert!(
+        !is_issued_by(&leaf_from_b, &a.der),
+        "another trusted CA sent in its place"
+    );
+    assert!(
+        !is_issued_by(&leaf_from_b, &leaf_from_b),
+        "the leaf is not its own issuer"
+    );
 }
 
 #[test]
@@ -45,7 +59,10 @@ fn a_lookalike_with_the_same_name_but_another_key_is_not_the_issuer() {
     let leaf = leaf_from(&real);
 
     assert!(is_issued_by(&leaf, &real.der));
-    assert!(!is_issued_by(&leaf, &impostor.der), "names match but the signature does not verify");
+    assert!(
+        !is_issued_by(&leaf, &impostor.der),
+        "names match but the signature does not verify"
+    );
 }
 
 #[test]
@@ -62,7 +79,10 @@ fn a_chain_yields_an_issuer_only_when_its_second_entry_signed_its_first() {
     let (a, b) = (ca("CA A"), ca("CA B"));
     let leaf = leaf_from(&b);
 
-    assert_eq!(issuer_in_chain(&[leaf.clone(), b.der.clone()]), Some(&b.der));
+    assert_eq!(
+        issuer_in_chain(&[leaf.clone(), b.der.clone()]),
+        Some(&b.der)
+    );
     // Sent in another CA's company, or without the CA, or in the wrong order: no issuer.
     assert_eq!(issuer_in_chain(&[leaf.clone(), a.der.clone()]), None);
     assert_eq!(issuer_in_chain(&[leaf.clone()]), None);
