@@ -31,6 +31,58 @@ fn manifest() -> &'static Value {
     })
 }
 
+fn shared_schemas() -> &'static Value {
+    static VALUE: OnceLock<Value> = OnceLock::new();
+    VALUE.get_or_init(|| {
+        serde_json::from_str(include_str!("../contracts/workflow-admin/schemas.json"))
+            .expect("embedded workflow admin shared schemas must be valid")
+    })
+}
+
+fn resolve_contract_refs(value: &Value) -> Value {
+    if let Some(reference) = value.get("$ref").and_then(Value::as_str) {
+        let pointer = reference
+            .strip_prefix("schemas.json#")
+            .or_else(|| reference.strip_prefix('#'))
+            .unwrap_or_else(|| panic!("unsupported workflow admin schema reference: {reference}"));
+        let resolved = shared_schemas()
+            .pointer(pointer)
+            .unwrap_or_else(|| panic!("unresolved workflow admin schema reference: {reference}"));
+        return resolve_contract_refs(resolved);
+    }
+    match value {
+        Value::Array(items) => Value::Array(items.iter().map(resolve_contract_refs).collect()),
+        Value::Object(values) => Value::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), resolve_contract_refs(value)))
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
+fn advertised_tools() -> Vec<Value> {
+    manifest()["tools"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|tool| {
+            json!({
+                "name":tool["name"],
+                "description":tool.get("description").cloned().unwrap_or_else(|| json!("Workflow lifecycle operation")),
+                "inputSchema":resolve_contract_refs(&tool["inputSchema"]),
+                "outputSchema":resolve_contract_refs(&tool["outputSchema"]),
+                "annotations":{
+                    "readOnlyHint":!tool["sideEffect"].as_bool().unwrap_or(false),
+                    "destructiveHint":tool["sideEffect"].as_bool().unwrap_or(false)
+                }
+            })
+        })
+        .collect()
+}
+
 fn rpc_error(id: Value, status: StatusCode, code: i64, message: &str) -> Response {
     let mut response = (
         status,
@@ -205,11 +257,7 @@ async fn handle(
             json!({"supportedVersions":[VERSION],"capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"light-workflow","version":env!("CARGO_PKG_VERSION")},"ttlMs":30000,"cacheScope":"private","resultType":"complete"})
         }
         "tools/list" => {
-            let tools = manifest()["tools"].as_array().cloned().unwrap_or_default().into_iter().map(|tool| json!({
-                "name":tool["name"], "description":tool.get("description").cloned().unwrap_or_else(|| json!("Workflow lifecycle operation")),
-                "inputSchema":tool["inputSchema"], "outputSchema":tool["outputSchema"],
-                "annotations":{"readOnlyHint":!tool["sideEffect"].as_bool().unwrap_or(false),"destructiveHint":tool["sideEffect"].as_bool().unwrap_or(false)}
-            })).collect::<Vec<_>>();
+            let tools = advertised_tools();
             json!({"tools":tools,"ttlMs":30000,"cacheScope":"private","resultType":"complete"})
         }
         "tools/call" => {
@@ -254,6 +302,21 @@ async fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn contains_external_ref(value: &Value) -> bool {
+        match value {
+            Value::Array(items) => items.iter().any(contains_external_ref),
+            Value::Object(values) => {
+                values
+                    .get("$ref")
+                    .and_then(Value::as_str)
+                    .is_some_and(|reference| !reference.starts_with('#'))
+                    || values.values().any(contains_external_ref)
+            }
+            _ => false,
+        }
+    }
+
     #[test]
     fn embedded_catalog_is_complete_and_unique() {
         let tools = manifest()["tools"].as_array().unwrap();
@@ -263,6 +326,34 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(names.len(), 14);
         assert_eq!(names.len(), tools.len());
+    }
+
+    #[test]
+    fn advertised_catalog_has_self_contained_compilable_schemas_and_valid_examples() {
+        let tools = advertised_tools();
+        let examples: Value =
+            serde_json::from_str(include_str!("../contracts/workflow-admin/examples.json"))
+                .unwrap();
+        assert_eq!(tools.len(), 14);
+        for tool in tools {
+            let name = tool["name"].as_str().unwrap();
+            for (schema_name, example_name) in
+                [("inputSchema", "input"), ("outputSchema", "output")]
+            {
+                let schema = &tool[schema_name];
+                assert!(
+                    !contains_external_ref(schema),
+                    "{name} {schema_name} contains an external reference"
+                );
+                let validator = jsonschema::validator_for(schema).unwrap_or_else(|error| {
+                    panic!("{name} {schema_name} does not compile: {error}")
+                });
+                assert!(
+                    validator.is_valid(&examples[name][example_name]),
+                    "{name} {example_name} does not match its advertised schema"
+                );
+            }
+        }
     }
 
     #[tokio::test]
