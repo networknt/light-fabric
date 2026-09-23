@@ -62,6 +62,20 @@ impl InferenceError {
         }
     }
 
+    /// The request itself is valid, but the configured physical model is not
+    /// available from this provider. A different deployment can safely serve
+    /// the same request because the provider did not accept it.
+    pub fn model_not_found(status: u16, detail: impl Into<String>) -> Self {
+        Self {
+            category: InferenceErrorCategory::InvalidRequest,
+            provider_status: Some(status),
+            retry: RetryDisposition::Safe,
+            acceptance: AcceptanceEvidence::NotAccepted,
+            retry_after_ms: None,
+            detail: detail.into(),
+        }
+    }
+
     pub fn unsupported(detail: impl Into<String>) -> Self {
         Self {
             category: InferenceErrorCategory::UnsupportedFeature,

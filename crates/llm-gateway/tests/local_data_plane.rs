@@ -55,6 +55,11 @@ struct SseProvider {
     cancellation_observed: Arc<AtomicBool>,
 }
 
+struct StreamOpenErrorProvider {
+    error: InferenceError,
+    calls: AtomicUsize,
+}
+
 struct DurableStartProvider {
     audit: Arc<WalAudit>,
     durable_before_dispatch: AtomicBool,
@@ -272,6 +277,34 @@ impl GenerationProvider for SseProvider {
                 }
             },
         )))
+    }
+}
+
+#[async_trait]
+impl GenerationProvider for StreamOpenErrorProvider {
+    fn protocol(&self) -> ProviderProtocol {
+        ProviderProtocol::OpenAiChat
+    }
+
+    fn capabilities(&self) -> GenerationCapabilities {
+        generation_capabilities(true, true, true)
+    }
+
+    async fn generate(
+        &self,
+        _context: ProviderRequestContext,
+        _request: InferenceRequest,
+    ) -> Result<InferenceResponse, InferenceError> {
+        Err(InferenceError::unsupported("stream-only test provider"))
+    }
+
+    async fn generate_stream(
+        &self,
+        _context: ProviderRequestContext,
+        _request: InferenceRequest,
+    ) -> Result<GenerationStream, InferenceError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(self.error.clone())
     }
 }
 
@@ -1093,6 +1126,39 @@ async fn lf5b_safe_failure_falls_back_once_and_reconciles_exact_usage() {
     assert_eq!(execution.attempts, 2);
     assert_eq!(execution.usage.charged_micros, 14);
     assert!(execution.usage.complete);
+}
+
+#[tokio::test]
+async fn model_not_found_falls_back_to_the_next_deployment() {
+    let first = Arc::new(ScriptedProvider::new(
+        ProviderProtocol::OpenAiChat,
+        vec![Err(InferenceError::model_not_found(
+            404,
+            "configured provider model was not found",
+        ))],
+    ));
+    let second = Arc::new(ScriptedProvider::new(
+        ProviderProtocol::OpenAiChat,
+        vec![Ok(success_response())],
+    ));
+    let runtime = runtime_with(
+        vec![first.clone(), second.clone()],
+        2,
+        4096,
+        Arc::new(RecordingAudit::default()),
+    );
+
+    let execution = runtime
+        .execute(
+            LlmRequestContext::with_timeout("user", Duration::from_secs(1)),
+            InferenceRequest::text("public-model", "hello"),
+        )
+        .await
+        .expect("model_not_found must fall back to the next deployment");
+
+    assert_eq!(execution.attempts, 2);
+    assert_eq!(first.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(second.calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -3435,6 +3501,41 @@ async fn full_sse_falls_back_before_visible_output_across_provider_formats() {
     while let Some(frame) = response.stream.next_frame().await {
         body.extend_from_slice(&frame);
     }
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("hello"));
+    assert!(body.ends_with("data: [DONE]\n\n"));
+    assert_eq!(first.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(second.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn full_sse_model_not_found_falls_back_before_visible_output() {
+    let first = Arc::new(StreamOpenErrorProvider {
+        error: InferenceError::model_not_found(404, "configured provider model was not found"),
+        calls: AtomicUsize::new(0),
+    });
+    let second = Arc::new(SseProvider::success());
+    let runtime = runtime_with(
+        vec![first.clone(), second.clone()],
+        2,
+        4096,
+        Arc::new(RecordingAudit::default()),
+    );
+    let http = LlmBufferedHttp::new(runtime, Arc::new(Allow), 4096, 32, Duration::from_secs(1));
+
+    let LlmHttpResponse::Streaming(mut response) = http
+        .handle_route(http_request(
+            br#"{"model":"public-model","messages":[{"role":"user","content":"hello"}],"stream":true}"#,
+        ))
+        .await
+    else {
+        panic!("expected SSE response from the fallback deployment");
+    };
+    let mut body = Vec::new();
+    while let Some(frame) = response.stream.next_frame().await {
+        body.extend_from_slice(&frame);
+    }
+
     let body = String::from_utf8(body).unwrap();
     assert!(body.contains("hello"));
     assert!(body.ends_with("data: [DONE]\n\n"));

@@ -256,15 +256,21 @@ impl OpenAiResponsesCodec {
         retry_after: Option<&str>,
         body: &[u8],
     ) -> InferenceError {
-        let detail = serde_json::from_slice::<Value>(body)
-            .ok()
-            .and_then(|value| {
-                value
-                    .pointer("/error/message")
-                    .and_then(Value::as_str)
-                    .map(|value| value.chars().take(512).collect())
-            })
+        let error = serde_json::from_slice::<Value>(body).ok();
+        let detail = error
+            .as_ref()
+            .and_then(|value| value.pointer("/error/message"))
+            .and_then(Value::as_str)
+            .map(|value| value.chars().take(512).collect())
             .unwrap_or_else(|| format!("OpenAI Responses provider returned HTTP {status}"));
+        if error
+            .as_ref()
+            .and_then(|value| value.pointer("/error/code"))
+            .and_then(Value::as_str)
+            == Some("model_not_found")
+        {
+            return InferenceError::model_not_found(status, detail);
+        }
         InferenceError::from_status(status, retry_after, detail)
     }
 }
@@ -1279,6 +1285,25 @@ fn find_frame(buffer: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_not_found_is_safe_for_deployment_fallback() {
+        let error = OpenAiResponsesCodec.decode_error(
+            404,
+            None,
+            br#"{"error":{"message":"model is unavailable","code":"model_not_found"}}"#,
+        );
+        assert_eq!(
+            error.category,
+            crate::inference::InferenceErrorCategory::InvalidRequest
+        );
+        assert_eq!(error.retry, crate::inference::RetryDisposition::Safe);
+        assert_eq!(
+            error.acceptance,
+            crate::inference::AcceptanceEvidence::NotAccepted
+        );
+        assert_eq!(error.provider_status, Some(404));
+    }
 
     #[test]
     fn client_profile_defaults_store_to_false_and_round_trips_tools() {
