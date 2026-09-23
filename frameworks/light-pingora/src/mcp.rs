@@ -9940,9 +9940,21 @@ fn ensure_workflow_lifecycle_tools(config: &mut McpRouterConfig) -> Result<(), R
         return Ok(());
     }
     for (name, description, read_only) in WORKFLOW_LIFECYCLE_TOOLS {
-        if config.tools.iter().any(|tool| tool.name == name) {
+        let configured = config
+            .tools
+            .iter()
+            .enumerate()
+            .filter(|(_, tool)| tool.name == name)
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if !configured.is_empty() {
+            if configured.len() == 1
+                && normalize_native_workflow_lifecycle_tool(&mut config.tools[configured[0]], name)
+            {
+                continue;
+            }
             return Err(RuntimeError::Unsupported(format!(
-                "mcp-router tool name `{name}` is reserved for asynchronous workflow lifecycle access"
+                "mcp-router tool name `{name}` is reserved for validated native or generated asynchronous workflow lifecycle access"
             )));
         }
         config.tools.push(McpToolConfig {
@@ -9975,6 +9987,33 @@ fn ensure_workflow_lifecycle_tools(config: &mut McpRouterConfig) -> Result<(), R
         });
     }
     Ok(())
+}
+
+fn normalize_native_workflow_lifecycle_tool(tool: &mut McpToolConfig, name: &str) -> bool {
+    let canonical = tool.name == name
+        && tool.api_type == McpToolType::Mcp
+        && tool.execution_placement == McpExecutionPlacement::Backend
+        && tool.workflow_binding.is_none()
+        && tool.service_id.as_deref() == Some("com.networknt.workflow-1.0.0")
+        && tool.path == "/mcp"
+        && tool.method == McpHttpMethod::Call
+        && tool.endpoint.as_deref() == Some(&format!("{name}@call"))
+        && tool.endpoint_name.as_deref().unwrap_or(name) == name
+        && matches!(
+            tool.backend_mcp_protocol,
+            None | Some(McpBackendProtocol::Stateless)
+        )
+        && matches!(
+            tool.backend_credential_mode,
+            None | Some(McpBackendCredentialMode::Workflow)
+        );
+    if !canonical {
+        return false;
+    }
+    tool.backend_mcp_protocol = Some(McpBackendProtocol::Stateless);
+    tool.backend_credential_mode = Some(McpBackendCredentialMode::Workflow);
+    tool.session_independent = true;
+    true
 }
 
 impl fmt::Display for McpHttpMethod {
@@ -18414,6 +18453,149 @@ tools:
             tool.execution_placement != McpExecutionPlacement::WorkflowLifecycle
                 || tool.endpoint.as_deref() == Some(&format!("{}@call", tool.name))
         }));
+    }
+
+    #[test]
+    fn native_workflow_admin_tools_replace_generated_lifecycle_tools() {
+        let yaml = r#"
+enabled: true
+workflow:
+  invocationUrl: http://light-workflow:8436
+tools:
+  - name: update_customer
+    executionPlacement: workflow
+    inputSchema: {type: object}
+    toolMetadata: {readOnly: false, destructive: true, humanApprovalRequired: true}
+    workflowBinding:
+      stableToolRef: 15000000-0000-0000-0000-000000000011
+      workflowDefinitionId: 15000000-0000-0000-0000-000000000012
+      workflowVersion: 2.0.0
+      definitionDigest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      schemaDigest: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      policyDigest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      responsePolicyDigest: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+      mode: async
+      cancellationPolicy: COOPERATIVE
+      totalDeadlineMs: 3600000
+      budget:
+        maximumTaskAttempts: 16
+        maximumNestedCalls: 8
+        maximumDelegationDepth: 1
+        maximumParallelism: 4
+        maximumRequestBytes: 65536
+        maximumIntermediateBytes: 262144
+        maximumResultBytes: 131072
+        maximumCostUnits: 100
+"#;
+        let mut config: McpRouterConfig = serde_yaml::from_str(yaml).expect("async config");
+        let manifest: JsonValue = serde_json::from_str(include_str!(
+            "../../../apps/light-workflow/contracts/workflow-admin/tool-manifest.json"
+        ))
+        .expect("manifest");
+        for name in manifest["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+        {
+            let native: McpToolConfig = serde_yaml::from_str(&format!(
+                r#"
+name: {name}
+endpointName: {name}
+serviceId: com.networknt.workflow-1.0.0
+path: /mcp
+method: CALL
+endpoint: {name}@call
+apiType: mcp
+inputSchema: {{type: object}}
+"#
+            ))
+            .expect("native Workflow MCP tool");
+            config.tools.push(native);
+        }
+
+        ensure_workflow_lifecycle_tools(&mut config).expect("native replacements accepted");
+        validate_config(&config).expect("mixed native and generated lifecycle configuration");
+
+        let generated = config
+            .tools
+            .iter()
+            .filter(|tool| tool.execution_placement == McpExecutionPlacement::WorkflowLifecycle)
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            generated,
+            vec![
+                "workflow_publish_slot",
+                "workflow_finalize_design",
+                "workflow_accept_stage"
+            ]
+        );
+        for tool in manifest["tools"].as_array().expect("tools") {
+            let name = tool["name"].as_str().expect("name");
+            let matching = config
+                .tools
+                .iter()
+                .filter(|candidate| candidate.name == name)
+                .collect::<Vec<_>>();
+            assert_eq!(matching.len(), 1);
+            assert_eq!(
+                matching[0].backend_mcp_protocol,
+                Some(McpBackendProtocol::Stateless)
+            );
+            assert_eq!(
+                matching[0].backend_credential_mode,
+                Some(McpBackendCredentialMode::Workflow)
+            );
+            assert!(matching[0].session_independent);
+        }
+    }
+
+    #[test]
+    fn async_workflow_rejects_reserved_name_without_native_workflow_profile() {
+        let yaml = r#"
+enabled: true
+tools:
+  - name: workflow_list_processes
+    serviceId: unrelated-service
+    path: /mcp
+    method: CALL
+    apiType: mcp
+    backendMcpProtocol: stateless
+    backendCredentialMode: anonymous
+    sessionIndependent: true
+    inputSchema: {type: object}
+  - name: update_customer
+    executionPlacement: workflow
+    inputSchema: {type: object}
+    workflowBinding:
+      stableToolRef: 15000000-0000-0000-0000-000000000011
+      workflowDefinitionId: 15000000-0000-0000-0000-000000000012
+      workflowVersion: 2.0.0
+      definitionDigest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      schemaDigest: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      policyDigest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      responsePolicyDigest: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+      mode: async
+      cancellationPolicy: COOPERATIVE
+      totalDeadlineMs: 3600000
+      budget:
+        maximumTaskAttempts: 16
+        maximumNestedCalls: 8
+        maximumDelegationDepth: 1
+        maximumParallelism: 4
+        maximumRequestBytes: 65536
+        maximumIntermediateBytes: 262144
+        maximumResultBytes: 131072
+        maximumCostUnits: 100
+"#;
+        let mut config: McpRouterConfig = serde_yaml::from_str(yaml).expect("config");
+        let error = ensure_workflow_lifecycle_tools(&mut config).expect_err("reserved impostor");
+        assert!(
+            error
+                .to_string()
+                .contains("reserved for validated native or generated")
+        );
     }
 
     #[test]
