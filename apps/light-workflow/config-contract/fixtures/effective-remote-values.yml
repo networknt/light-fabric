@@ -4,6 +4,11 @@ files:
     environment: dev
     ip: 0.0.0.0
     httpPort: 8436
+    enableHttp: false
+    httpsPort: 8436
+    enableHttps: true
+    tlsCertPath: /config/cert.pem
+    tlsKeyPath: /config/key.pem
     enableRegistry: false
   security.yml: |
     issuer: urn:com:networknt:oauth2:v1

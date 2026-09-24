@@ -324,7 +324,7 @@ mod tests {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(names.len(), 14);
+        assert_eq!(names.len(), 15);
         assert_eq!(names.len(), tools.len());
     }
 
@@ -334,7 +334,7 @@ mod tests {
         let examples: Value =
             serde_json::from_str(include_str!("../contracts/workflow-admin/examples.json"))
                 .unwrap();
-        assert_eq!(tools.len(), 14);
+        assert_eq!(tools.len(), 15);
         for tool in tools {
             let name = tool["name"].as_str().unwrap();
             for (schema_name, example_name) in

@@ -1,9 +1,11 @@
 ip: 0.0.0.0
 advertisedAddress: ${server.advertisedAddress:light-workflow}
 httpPort: 8436
-enableHttp: true
-httpsPort: 8443
-enableHttps: false
+enableHttp: ${server.enableHttp:false}
+httpsPort: ${server.httpsPort:8436}
+enableHttps: ${server.enableHttps:true}
+tlsCertPath: ${server.tlsCertPath:/config/cert.pem}
+tlsKeyPath: ${server.tlsKeyPath:/config/key.pem}
 serviceId: ${server.serviceId:com.networknt.workflow-1.0.0}
 enableRegistry: ${server.enableRegistry:false}
 startOnRegistryFailure: ${server.startOnRegistryFailure:false}

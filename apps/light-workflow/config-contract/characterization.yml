@@ -18,7 +18,7 @@ cases:
     postgresRequired: false
   - id: forwarded-user-identity-binding
     layer: authorization
-    evidence: invocation_user_claims_must_match_forwarded_identity
+    evidence: invocation_user_identity_is_derived_from_verified_claims
     postgresRequired: false
   - id: runtime-owned-task-shutdown-order
     layer: lifecycle

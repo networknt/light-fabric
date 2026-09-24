@@ -294,14 +294,6 @@ pub struct McpWorkflowRuntimeConfig {
     /// token is always preserved from the inbound Authorization header.
     #[serde(default, skip_serializing)]
     pub bearer_token_env: Option<String>,
-    /// Optional environment variable containing the service credential sent
-    /// to light-workflow as X-Scope-Token. When omitted,
-    /// a non-empty WORKFLOW_INVOCATION_SCOPE_TOKEN is preferred, followed by
-    /// LIGHT_PORTAL_AUTHORIZATION for legacy deployments. An invalid non-empty
-    /// dedicated credential disables workflow dispatch rather than falling
-    /// back to a different service identity.
-    #[serde(default)]
-    pub scope_token_env: Option<String>,
     #[serde(default = "default_workflow_permit_pools")]
     pub permit_pools: Vec<usize>,
 }
@@ -311,14 +303,12 @@ impl Default for McpWorkflowRuntimeConfig {
         Self {
             invocation_url: String::new(),
             bearer_token_env: None,
-            scope_token_env: None,
             permit_pools: default_workflow_permit_pools(),
         }
     }
 }
 
 const LIGHT_PORTAL_AUTHORIZATION_ENV: &str = "LIGHT_PORTAL_AUTHORIZATION";
-const WORKFLOW_INVOCATION_SCOPE_TOKEN_ENV: &str = "WORKFLOW_INVOCATION_SCOPE_TOKEN";
 
 fn normalize_bearer_header(value: &str) -> Option<String> {
     let (scheme, token) = value.trim().split_once(char::is_whitespace)?;
@@ -337,64 +327,25 @@ fn service_bearer_header(value: &str) -> Option<String> {
         .then(|| format!("Bearer {token}"))
 }
 
-fn workflow_scope_authorization(
-    configured_env: Option<&str>,
-) -> Result<Option<String>, RuntimeError> {
-    workflow_scope_authorization_with(configured_env, |name| std::env::var(name).ok())
+fn workflow_scope_authorization() -> Result<Option<String>, RuntimeError> {
+    workflow_scope_authorization_with(|name| std::env::var(name).ok())
 }
 
 fn workflow_scope_authorization_with(
-    configured_env: Option<&str>,
     read_env: impl Fn(&str) -> Option<String>,
 ) -> Result<Option<String>, RuntimeError> {
-    let configured_env = configured_env
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let (env_name, value, required, explicit) = if let Some(env_name) = configured_env {
-        (env_name, read_env(env_name), true, true)
-    } else {
-        match read_env(WORKFLOW_INVOCATION_SCOPE_TOKEN_ENV).filter(|value| !value.trim().is_empty())
-        {
-            Some(value) => (
-                WORKFLOW_INVOCATION_SCOPE_TOKEN_ENV,
-                Some(value),
-                true,
-                false,
-            ),
-            None => (
-                LIGHT_PORTAL_AUTHORIZATION_ENV,
-                read_env(LIGHT_PORTAL_AUTHORIZATION_ENV),
-                false,
-                false,
-            ),
-        }
-    };
+    let env_name = LIGHT_PORTAL_AUTHORIZATION_ENV;
+    let value = read_env(env_name);
     let Some(value) = value else {
-        if !required {
-            return Ok(None);
-        }
-        let source = if explicit {
-            "mcp-router workflow scopeTokenEnv"
-        } else {
-            "workflow invocation environment variable"
-        };
         return Err(RuntimeError::Unsupported(format!(
-            "{source} `{env_name}` is unavailable"
+            "`{env_name}` is required for Workflow backend dispatch"
         )));
     };
     match service_bearer_header(&value) {
         Some(authorization) => Ok(Some(authorization)),
-        None if !required => Ok(None),
-        None => {
-            let source = if explicit {
-                "mcp-router workflow scopeTokenEnv"
-            } else {
-                "workflow invocation environment variable"
-            };
-            Err(RuntimeError::Unsupported(format!(
-                "{source} `{env_name}` does not contain a valid service bearer token"
-            )))
-        }
+        None => Err(RuntimeError::Unsupported(format!(
+            "`{env_name}` does not contain a valid service bearer token"
+        ))),
     }
 }
 
@@ -1221,11 +1172,11 @@ impl ForwardedHeaderContext {
             admitted.push(("x-correlation-id".to_string(), correlation_id.to_string()));
         }
         if let Some(auth) = context.auth.as_ref() {
+            if let Some(host_id) = auth.host.as_deref() {
+                admitted.push(("x-host-id".to_string(), host_id.to_string()));
+            }
             if let Some(user_id) = auth.user_id.as_deref() {
                 admitted.push(("x-user-id".to_string(), user_id.to_string()));
-            }
-            if let Some(host) = auth.host.as_deref() {
-                admitted.push(("x-host-id".to_string(), host.to_string()));
             }
             if let Some(tenant) =
                 normalized_claim(&auth.claims, &["tenant", "tenant_id", "tenantId", "tid"])
@@ -1950,7 +1901,7 @@ impl McpRouterRuntime {
             tool.execution_placement == McpExecutionPlacement::Workflow
                 || tool_backend_credential_mode(tool) == McpBackendCredentialMode::Workflow
         }) {
-            match workflow_scope_authorization(config.workflow.scope_token_env.as_deref()) {
+            match workflow_scope_authorization() {
                 Ok(scope_authorization) => Some(Arc::new(WorkflowDispatchRuntime {
                     client: private_target_client.clone(),
                     invocation_url: config
@@ -4425,8 +4376,6 @@ impl McpRouterRuntime {
                 ));
             }
         };
-        let caller_claims_digest = canonical_sha256(&stable_subject_claims(&auth.claims))
-            .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
         let configured_idempotency_key = match binding.idempotency_kind {
             IdempotencyKind::Derived => None,
             IdempotencyKind::Explicit | IdempotencyKind::Business => {
@@ -4550,10 +4499,8 @@ impl McpRouterRuntime {
                 for (name, value) in [
                     ("content-type", "application/json".to_string()),
                     ("accept", "application/json".to_string()),
-                    ("x-host-id", host_id.to_string()),
-                    ("x-principal-subject", principal_subject.to_string()),
-                    ("x-end-user-subject", end_user_subject.to_string()),
-                    ("x-caller-claims-digest", caller_claims_digest.clone()),
+                    ("authorization", user_authorization.clone()),
+                    ("x-scope-token", scope_authorization.to_string()),
                 ] {
                     headers.insert(
                         http::HeaderName::from_bytes(name.as_bytes()).expect("fixed header name"),
@@ -4578,10 +4525,6 @@ impl McpRouterRuntime {
                     .post(&start_url)
                     .header("authorization", &user_authorization)
                     .header("x-scope-token", scope_authorization)
-                    .header("x-host-id", host_id.to_string())
-                    .header("x-principal-subject", principal_subject)
-                    .header("x-end-user-subject", end_user_subject)
-                    .header("x-caller-claims-digest", &caller_claims_digest)
                     .json(&request)
                     .send()
                     .await
@@ -4607,10 +4550,6 @@ impl McpRouterRuntime {
                                 runtime,
                                 &user_authorization,
                                 &scope_authorization,
-                                host_id,
-                                principal_subject,
-                                end_user_subject,
-                                &caller_claims_digest,
                                 workflow_instance_id,
                             )
                             .await
@@ -4657,10 +4596,6 @@ impl McpRouterRuntime {
                         runtime,
                         &user_authorization,
                         &scope_authorization,
-                        host_id,
-                        principal_subject,
-                        end_user_subject,
-                        &caller_claims_digest,
                         workflow_instance_id,
                     )
                     .await
@@ -4731,10 +4666,6 @@ impl McpRouterRuntime {
                 .post(wait_url)
                 .header("authorization", &user_authorization)
                 .header("x-scope-token", scope_authorization)
-                .header("x-host-id", host_id.to_string())
-                .header("x-principal-subject", principal_subject)
-                .header("x-end-user-subject", end_user_subject)
-                .header("x-caller-claims-digest", &caller_claims_digest)
                 .json(&json!({"waitMs": wait_ms, "observedVersion": status.state_version}))
                 .send()
                 .await;
@@ -4820,16 +4751,11 @@ impl McpRouterRuntime {
         }))
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn recover_workflow_start_status(
         &self,
         runtime: &WorkflowDispatchRuntime,
         user_authorization: &str,
         scope_authorization: &str,
-        host_id: Uuid,
-        principal_subject: &str,
-        end_user_subject: &str,
-        caller_claims_digest: &str,
         workflow_instance_id: Uuid,
     ) -> Option<InvocationStatus> {
         let url = format!(
@@ -4841,10 +4767,6 @@ impl McpRouterRuntime {
             .get(url)
             .header("authorization", user_authorization)
             .header("x-scope-token", scope_authorization)
-            .header("x-host-id", host_id.to_string())
-            .header("x-principal-subject", principal_subject)
-            .header("x-end-user-subject", end_user_subject)
-            .header("x-caller-claims-digest", caller_claims_digest)
             .send()
             .await
             .ok()?;
@@ -4880,7 +4802,7 @@ impl McpRouterRuntime {
                 ));
             }
         };
-        let Some(auth) = context.auth.as_ref() else {
+        let Some(_auth) = context.auth.as_ref() else {
             return Ok(error_result(
                 ErrorCode::WorkflowPolicyDenied,
                 "WORKFLOW_POLICY_DENIED: authenticated workflow identity is required".to_string(),
@@ -4898,37 +4820,6 @@ impl McpRouterRuntime {
                 ));
             }
         };
-        let host_id = auth
-            .host
-            .as_deref()
-            .or_else(|| auth.claims.get("hostId").and_then(JsonValue::as_str))
-            .or_else(|| auth.claims.get("host_id").and_then(JsonValue::as_str))
-            .and_then(|value| Uuid::parse_str(value).ok());
-        let Some(host_id) = host_id else {
-            return Ok(error_result(
-                ErrorCode::WorkflowPolicyDenied,
-                "WORKFLOW_POLICY_DENIED: a UUID tenant identity is required".to_string(),
-            ));
-        };
-        let principal_subject = auth
-            .client_id
-            .as_deref()
-            .or_else(|| auth.claims.get("client_id").and_then(JsonValue::as_str))
-            .or_else(|| auth.claims.get("sub").and_then(JsonValue::as_str));
-        let Some(principal_subject) = principal_subject.filter(|value| !value.trim().is_empty())
-        else {
-            return Ok(error_result(
-                ErrorCode::WorkflowPolicyDenied,
-                "WORKFLOW_POLICY_DENIED: principal subject is required".to_string(),
-            ));
-        };
-        let end_user_subject = auth
-            .user_id
-            .as_deref()
-            .or_else(|| auth.claims.get("user_id").and_then(JsonValue::as_str))
-            .or_else(|| auth.claims.get("userId").and_then(JsonValue::as_str))
-            .or_else(|| auth.claims.get("sub").and_then(JsonValue::as_str))
-            .unwrap_or(principal_subject);
         let scope_authorization = match runtime.scope_authorization.as_deref() {
             Some(authorization) => authorization,
             None => {
@@ -4939,8 +4830,6 @@ impl McpRouterRuntime {
                 ));
             }
         };
-        let caller_claims_digest = canonical_sha256(&stable_subject_claims(&auth.claims))
-            .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
         let mut request = runtime
             .client
             .request(method, format!("{}{route}", runtime.invocation_url));
@@ -4950,10 +4839,6 @@ impl McpRouterRuntime {
         let response = request
             .header("authorization", user_authorization)
             .header("x-scope-token", scope_authorization)
-            .header("x-host-id", host_id.to_string())
-            .header("x-principal-subject", principal_subject)
-            .header("x-end-user-subject", end_user_subject)
-            .header("x-caller-claims-digest", caller_claims_digest)
             .send()
             .await;
         let response = match response {
@@ -5477,56 +5362,17 @@ impl McpRouterRuntime {
                     "Workflow backend scope authentication is unavailable",
                 )
             })?;
-            let auth = effective.request.auth.as_ref().ok_or_else(|| {
+            let _auth = effective.request.auth.as_ref().ok_or_else(|| {
                 McpExecutionError::execution_failed(
                     "Workflow backend requires a verified user principal",
                 )
             })?;
-            let host = auth
-                .host
-                .as_deref()
-                .or_else(|| auth.claims.get("hostId").and_then(JsonValue::as_str))
-                .or_else(|| auth.claims.get("host_id").and_then(JsonValue::as_str))
-                .and_then(|value| Uuid::parse_str(value).ok())
-                .ok_or_else(|| {
-                    McpExecutionError::execution_failed(
-                        "Workflow backend requires a UUID Host identity",
-                    )
-                })?;
-            let principal = auth
-                .client_id
-                .as_deref()
-                .or_else(|| auth.claims.get("client_id").and_then(JsonValue::as_str))
-                .or_else(|| auth.claims.get("sub").and_then(JsonValue::as_str))
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| {
-                    McpExecutionError::execution_failed("Workflow backend principal is unavailable")
-                })?;
-            let user = auth
-                .user_id
-                .as_deref()
-                .or_else(|| auth.claims.get("user_id").and_then(JsonValue::as_str))
-                .or_else(|| auth.claims.get("userId").and_then(JsonValue::as_str))
-                .or_else(|| auth.claims.get("sub").and_then(JsonValue::as_str))
-                .unwrap_or(principal);
-            let digest = canonical_sha256(&stable_subject_claims(&auth.claims))
-                .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
-            for (name, value) in [
-                ("x-scope-token", scope.to_string()),
-                ("x-host-id", host.to_string()),
-                ("x-principal-subject", principal.to_string()),
-                ("x-end-user-subject", user.to_string()),
-                ("x-caller-claims-digest", digest),
-            ] {
-                headers.insert(
-                    reqwest::header::HeaderName::from_bytes(name.as_bytes()).expect("fixed header"),
-                    value.parse().map_err(|_| {
-                        McpExecutionError::execution_failed(
-                            "invalid Workflow backend identity header",
-                        )
-                    })?,
-                );
-            }
+            headers.insert(
+                reqwest::header::HeaderName::from_static("x-scope-token"),
+                scope.parse().map_err(|_| {
+                    McpExecutionError::execution_failed("invalid Workflow scope token header")
+                })?,
+            );
         }
         // Content length and host remain transport-owned.
         headers.remove(reqwest::header::CONTENT_LENGTH);
@@ -5565,7 +5411,18 @@ impl McpRouterRuntime {
                 .json(&request)
                 .send()
                 .await
-                .map_err(|_| {
+                .map_err(|error| {
+                    // Keep the RPC response generic, but retain a credential-safe
+                    // transport diagnostic in Gateway logs. reqwest's display
+                    // form can include the request URL, so strip it before logging.
+                    tracing::warn!(
+                        target: "light_pingora::mcp",
+                        toolName = %tool.name,
+                        isConnect = error.is_connect(),
+                        isTimeout = error.is_timeout(),
+                        error = ?error.without_url(),
+                        "stateless MCP backend request failed"
+                    );
                     McpExecutionError::execution_failed("stateless MCP backend request failed")
                 })?;
             let (status, content_type, response_headers, body) = read_backend_mcp_response(
@@ -5753,22 +5610,32 @@ impl McpRouterRuntime {
         } else {
             None
         };
-        let resource = explicit_resource
-            .or(configured_target_resource)
-            .ok_or_else(|| {
-                McpExecutionError::execution_failed(
-                    "backendResource is required for the selected credential mode",
-                )
-            })?;
-        let normalized_resource = Url::parse(resource.as_str())
-            .map(|mut url| {
-                url.set_fragment(None);
-                url.as_str().trim_end_matches('/').to_string()
-            })
-            .unwrap_or(resource);
-        let resource = normalized_resource.as_str();
+        let resource = explicit_resource.or(configured_target_resource);
+        if resource.is_none()
+            && matches!(
+                mode,
+                McpBackendCredentialMode::Caller | McpBackendCredentialMode::Exchange
+            )
+        {
+            return Err(McpExecutionError::execution_failed(
+                "backendResource is required for caller or exchange credential mode",
+            ));
+        }
+        let normalized_resource = resource.map(|resource| {
+            Url::parse(resource.as_str())
+                .map(|mut url| {
+                    url.set_fragment(None);
+                    url.as_str().trim_end_matches('/').to_string()
+                })
+                .unwrap_or(resource)
+        });
         match mode {
             McpBackendCredentialMode::Caller => {
+                let resource = normalized_resource.as_deref().ok_or_else(|| {
+                    McpExecutionError::execution_failed(
+                        "backendResource is required for caller credential mode",
+                    )
+                })?;
                 let bearer = exact_bearer_authorization(effective.transport_headers)?;
                 let claims = &effective
                     .request
@@ -5788,6 +5655,11 @@ impl McpRouterRuntime {
                 Ok(Some(bearer))
             }
             McpBackendCredentialMode::Exchange => {
+                let resource = normalized_resource.as_deref().ok_or_else(|| {
+                    McpExecutionError::execution_failed(
+                        "backendResource is required for exchange credential mode",
+                    )
+                })?;
                 if effective.request.auth.is_none() {
                     return Err(McpExecutionError::execution_failed(
                         "token exchange requires a verified principal",
@@ -5809,6 +5681,11 @@ impl McpRouterRuntime {
                     .map_err(|error| McpExecutionError::execution_failed(error.message))
             }
             McpBackendCredentialMode::Service => {
+                let resource = normalized_resource.as_deref().ok_or_else(|| {
+                    McpExecutionError::execution_failed(
+                        "backend resource could not be resolved for service credential mode",
+                    )
+                })?;
                 let provider = self.backend_credentials.as_ref().ok_or_else(|| {
                     McpExecutionError::execution_failed(
                         "shared backend credential provider is unavailable",
@@ -7438,12 +7315,21 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
                 "mcp-router tool `{name}` must explicitly select backendMcpProtocol for a stateless backend"
             )));
         }
-        if profile == McpBackendProtocol::Stateless
-            && (tool.backend_credential_mode.is_none()
-                || credential_mode == McpBackendCredentialMode::CallerCompat)
+        if profile == McpBackendProtocol::Stateless && tool.backend_credential_mode.is_none() {
+            return Err(RuntimeError::Unsupported(format!(
+                "mcp-router tool `{name}` must explicitly select backendCredentialMode for a stateless backend"
+            )));
+        }
+        if credential_mode == McpBackendCredentialMode::Workflow
+            && (profile != McpBackendProtocol::Stateless
+                || tool.service_id.as_deref() != Some("com.networknt.workflow-1.0.0")
+                || tool
+                    .target_host
+                    .as_deref()
+                    .is_some_and(|target| !target.trim().is_empty()))
         {
             return Err(RuntimeError::Unsupported(format!(
-                "mcp-router stateless backend tool `{name}` requires explicit backendCredentialMode"
+                "mcp-router Workflow credential mode is restricted to the stateless Workflow service (tool `{name}`)"
             )));
         }
         if credential_mode == McpBackendCredentialMode::CallerCompat
@@ -9928,7 +9814,28 @@ const WORKFLOW_LIFECYCLE_TOOLS: [(&str, &str, bool); 17] = [
     ),
 ];
 
+const WORKFLOW_NATIVE_BACKEND_TOOLS: [&str; 1] = ["workflow_rule_test"];
+
 fn ensure_workflow_lifecycle_tools(config: &mut McpRouterConfig) -> Result<(), RuntimeError> {
+    for name in WORKFLOW_NATIVE_BACKEND_TOOLS {
+        let configured = config
+            .tools
+            .iter()
+            .enumerate()
+            .filter(|(_, tool)| tool.name == name)
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if !configured.is_empty() {
+            if configured.len() == 1
+                && normalize_native_workflow_lifecycle_tool(&mut config.tools[configured[0]], name)
+            {
+                continue;
+            }
+            return Err(RuntimeError::Unsupported(format!(
+                "mcp-router native Workflow backend tool `{name}` has an invalid Workflow service contract"
+            )));
+        }
+    }
     let has_async = config.tools.iter().any(|tool| {
         tool.execution_placement == McpExecutionPlacement::Workflow
             && tool
@@ -10113,27 +10020,18 @@ mod tests {
     }
 
     #[test]
-    fn workflow_config_preserves_active_scope_token_env_and_deprecated_bearer_env() {
+    fn workflow_config_does_not_expose_a_separate_scope_token_setting() {
         let config: McpRouterConfig = serde_yaml::from_str(
             r#"
 workflow:
   invocationUrl: http://light-workflow:8436
   bearerTokenEnv: WORKFLOW_INVOCATION_BEARER_TOKEN
-  scopeTokenEnv: WORKFLOW_INVOCATION_SCOPE_TOKEN
 "#,
         )
         .unwrap();
         assert_eq!(
             config.workflow.bearer_token_env.as_deref(),
             Some("WORKFLOW_INVOCATION_BEARER_TOKEN")
-        );
-        assert_eq!(
-            config.workflow.scope_token_env.as_deref(),
-            Some("WORKFLOW_INVOCATION_SCOPE_TOKEN")
-        );
-        assert_eq!(
-            serde_json::to_value(&config).unwrap()["workflow"]["scopeTokenEnv"],
-            "WORKFLOW_INVOCATION_SCOPE_TOKEN"
         );
         assert!(
             serde_json::to_value(&config).unwrap()["workflow"]
@@ -10143,40 +10041,25 @@ workflow:
     }
 
     #[test]
-    fn workflow_scope_token_selection_handles_explicit_blank_and_legacy_values() {
-        const EXPLICIT_ENV: &str = "LIGHT_PINGORA_TEST_WORKFLOW_SCOPE_AUTHORIZATION";
+    fn workflow_scope_token_uses_the_shared_gateway_authorization() {
         let token = "s".repeat(32);
         assert_eq!(
-            workflow_scope_authorization_with(Some(EXPLICIT_ENV), |name| {
-                (name == EXPLICIT_ENV).then(|| token.clone())
+            workflow_scope_authorization_with(|name| {
+                (name == LIGHT_PORTAL_AUTHORIZATION_ENV).then(|| token.clone())
             })
             .unwrap()
             .as_deref(),
             Some(format!("Bearer {token}").as_str())
         );
-        let error = workflow_scope_authorization_with(Some(EXPLICIT_ENV), |_| None).unwrap_err();
-        assert!(error.to_string().contains("is unavailable"));
-
-        let legacy = "l".repeat(32);
-        assert_eq!(
-            workflow_scope_authorization_with(None, |name| match name {
-                WORKFLOW_INVOCATION_SCOPE_TOKEN_ENV => Some("  ".to_string()),
-                LIGHT_PORTAL_AUTHORIZATION_ENV => Some(legacy.clone()),
-                _ => None,
-            })
-            .unwrap()
-            .as_deref(),
-            Some(format!("Bearer {legacy}").as_str())
-        );
-
-        let error = workflow_scope_authorization_with(None, |name| {
-            (name == WORKFLOW_INVOCATION_SCOPE_TOKEN_ENV).then(|| "invalid".to_string())
-        })
-        .unwrap_err();
         assert!(
-            error
-                .to_string()
-                .contains("workflow invocation environment variable")
+            workflow_scope_authorization_with(|_| None)
+                .is_err()
+        );
+        assert!(
+            workflow_scope_authorization_with(|name| {
+                (name == LIGHT_PORTAL_AUTHORIZATION_ENV).then(|| "invalid".to_string())
+            })
+            .is_err()
         );
     }
 
@@ -10186,7 +10069,6 @@ workflow:
             r#"
 workflow:
   invocationUrl: http://light-workflow:8436
-  scopeTokenEnv: LIGHT_PINGORA_TEST_MISSING_WORKFLOW_SCOPE_TOKEN
 tools:
   - name: customer_summary
     executionPlacement: workflow
@@ -18637,8 +18519,9 @@ tools:
             assert!(
                 WORKFLOW_LIFECYCLE_TOOLS
                     .iter()
-                    .any(|(generated, _, _)| *generated == name),
-                "manifest tool {name} is not generated by Gateway"
+                    .any(|(generated, _, _)| *generated == name)
+                    || WORKFLOW_NATIVE_BACKEND_TOOLS.contains(&name),
+                "manifest tool {name} is neither a generated lifecycle tool nor a native Workflow backend tool"
             );
             assert!(
                 !contains_ref(&workflow_lifecycle_schema(name)),

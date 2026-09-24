@@ -441,10 +441,9 @@ fn phase0_source_characterizes_current_manual_lifecycle() {
 #[test]
 fn phase0_source_characterizes_current_readiness_surface() {
     let rule_api = fs::read_to_string(manifest_dir().join("src/rule_api.rs")).unwrap();
-    for route in [
-        ".route(\"/rule/test\"",
-        ".route(\"/v1/workflow-invocations\"",
-    ] {
+    assert!(!rule_api.contains(".route(\"/rule/test\""));
+    assert!(rule_api.contains("\"workflow_rule_test\""));
+    for route in [".route(\"/v1/workflow-invocations\""] {
         assert!(rule_api.contains(route));
     }
     for route in [".route(\"/health\"", ".route(\"/ready\""] {
