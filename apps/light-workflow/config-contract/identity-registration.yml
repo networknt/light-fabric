@@ -25,7 +25,7 @@ correlation:
   equalityRequired: false
   channels: [structuredLogs, controllerMetadata]
 registration:
-  protocol: http
+  protocol: https
   routingEffect: visibilityOnly
   existingCallerRouting: static
   advertisedEndpoint: workflowRuleApi
@@ -35,7 +35,7 @@ registration:
     - trust material ready
     - PostgreSQL connected
     - workflow recovery complete
-    - HTTP listener bound
+    - HTTPS listener bound
   metadata:
     versionField: buildVersion
     tagUpdateSemantics: replaceCompleteMap

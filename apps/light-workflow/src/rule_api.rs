@@ -339,7 +339,6 @@ pub fn build_rule_api_router(
         .route("/health", get(liveness))
         .route("/ready", get(readiness))
         .route("/metrics", get(metrics))
-        .route("/rule/test", post(run_rule_test))
         .route("/v1/workflow-invocations", post(start_invocation))
         .route(
             "/v1/workflow-invocations/development-stage",
@@ -410,6 +409,7 @@ pub(crate) async fn dispatch_native_tool(
             .ok_or_else(|| ApiError::bad_request("tool identifier is invalid").into_response())
     };
     match name {
+        "workflow_rule_test" => run_mcp_rule_test(state, headers, arguments).await,
         "workflow_get_status" => {
             let id = uuid("workflowInstanceId")?;
             get_invocation(State(state), headers, Path(id))
@@ -1928,9 +1928,6 @@ pub(crate) async fn authenticate(
         scope_authorization,
         "X-Scope-Token Bearer authentication is required",
     )?;
-    let host_id = header(headers, "x-host-id")?
-        .parse()
-        .map_err(|_| ApiError::unauthorized("x-host-id must be a UUID"))?;
     let scope_principal = verify_jwt_token(
         &state.invocation_security,
         scope_token,
@@ -1938,6 +1935,18 @@ pub(crate) async fn authenticate(
     )
     .await
     .map_err(|error| jwt_verification_error("gateway service", error))?;
+    let host_id = scope_principal
+        .host
+        .as_deref()
+        .or_else(|| scope_principal.claims.get("hostId").and_then(Value::as_str))
+        .or_else(|| {
+            scope_principal
+                .claims
+                .get("host_id")
+                .and_then(Value::as_str)
+        })
+        .and_then(|host| host.parse::<Uuid>().ok())
+        .ok_or_else(|| ApiError::unauthorized("X-Scope-Token has no valid Host identity"))?;
     validate_invocation_caller(
         &scope_principal,
         host_id,
@@ -1951,9 +1960,14 @@ pub(crate) async fn authenticate(
     )
     .await
     .map_err(|error| jwt_verification_error("user", error))?;
-    let user_authorization_exp = validate_invocation_user(&user_principal, headers, host_id)?;
+    let user_authorization_exp = validate_invocation_user(&user_principal, host_id)?;
     Ok((
-        invocation_identity(headers, host_id, authorization, user_authorization_exp)?,
+        invocation_identity(
+            &user_principal,
+            host_id,
+            authorization,
+            user_authorization_exp,
+        )?,
         generation,
     ))
 }
@@ -1967,17 +1981,32 @@ fn user_jwt_expiry_mode(ignore_user_jwt_expiry: bool) -> JwtExpiryMode {
 }
 
 fn invocation_identity(
-    headers: &HeaderMap,
+    principal: &AuthPrincipal,
     host_id: Uuid,
     authorization: &str,
     user_authorization_exp: i64,
 ) -> Result<InvocationIdentity, ApiError> {
     let user_token = bearer_token(authorization, "user Bearer authentication is required")?;
+    let principal_subject = principal
+        .client_id
+        .as_deref()
+        .or_else(|| principal.claims.get("client_id").and_then(Value::as_str))
+        .or_else(|| principal.claims.get("sub").and_then(Value::as_str))
+        .ok_or_else(|| ApiError::unauthorized("user Authorization has no principal subject"))?;
+    let end_user_subject = principal
+        .user_id
+        .as_deref()
+        .or_else(|| principal.claims.get("user_id").and_then(Value::as_str))
+        .or_else(|| principal.claims.get("userId").and_then(Value::as_str))
+        .or_else(|| principal.claims.get("sub").and_then(Value::as_str))
+        .unwrap_or(principal_subject);
+    let caller_claims_digest = canonical_sha256(&stable_subject_claims(&principal.claims))
+        .map_err(|_| ApiError::unauthorized("user Authorization claims cannot be canonicalized"))?;
     Ok(InvocationIdentity {
         host_id,
-        principal_subject: header(headers, "x-principal-subject")?.to_string(),
-        end_user_subject: header(headers, "x-end-user-subject")?.to_string(),
-        caller_claims_digest: header(headers, "x-caller-claims-digest")?.to_string(),
+        principal_subject: principal_subject.to_string(),
+        end_user_subject: end_user_subject.to_string(),
+        caller_claims_digest,
         user_authorization: format!("Bearer {user_token}"),
         user_authorization_exp,
     })
@@ -2041,11 +2070,7 @@ fn validate_invocation_caller(
     Ok(())
 }
 
-fn validate_invocation_user(
-    principal: &AuthPrincipal,
-    headers: &HeaderMap,
-    host_id: Uuid,
-) -> Result<i64, ApiError> {
+fn validate_invocation_user(principal: &AuthPrincipal, host_id: Uuid) -> Result<i64, ApiError> {
     let user_host = principal
         .host
         .as_deref()
@@ -2054,33 +2079,6 @@ fn validate_invocation_user(
     if user_host.and_then(|host| host.parse::<Uuid>().ok()) != Some(host_id) {
         return Err(ApiError::unauthorized(
             "user Authorization host does not match the workflow host",
-        ));
-    }
-    let principal_subject = principal
-        .client_id
-        .as_deref()
-        .or_else(|| principal.claims.get("client_id").and_then(Value::as_str))
-        .or_else(|| principal.claims.get("sub").and_then(Value::as_str))
-        .ok_or_else(|| ApiError::unauthorized("user Authorization has no principal subject"))?;
-    let end_user_subject = principal
-        .user_id
-        .as_deref()
-        .or_else(|| principal.claims.get("user_id").and_then(Value::as_str))
-        .or_else(|| principal.claims.get("userId").and_then(Value::as_str))
-        .or_else(|| principal.claims.get("sub").and_then(Value::as_str))
-        .unwrap_or(principal_subject);
-    if header(headers, "x-principal-subject")? != principal_subject
-        || header(headers, "x-end-user-subject")? != end_user_subject
-    {
-        return Err(ApiError::unauthorized(
-            "user Authorization subjects do not match the workflow caller",
-        ));
-    }
-    let claims_digest = canonical_sha256(&stable_subject_claims(&principal.claims))
-        .map_err(|_| ApiError::unauthorized("user Authorization claims cannot be canonicalized"))?;
-    if header(headers, "x-caller-claims-digest")? != claims_digest {
-        return Err(ApiError::unauthorized(
-            "user Authorization claims do not match the workflow disclosure ceiling",
         ));
     }
     principal
@@ -2647,11 +2645,35 @@ impl axum::response::IntoResponse for ApiError {
     }
 }
 
-async fn run_rule_test(
-    State(state): State<RuleApiState>,
-    Json(request): Json<RuleTestRequest>,
-) -> Result<Json<RuleTestResponse>, (StatusCode, Json<Value>)> {
-    let mut rule: Rule = serde_json::from_value(request.rule_body).map_err(bad_request)?;
+async fn run_mcp_rule_test(
+    state: RuleApiState,
+    headers: HeaderMap,
+    arguments: Value,
+) -> Result<Value, axum::response::Response> {
+    authenticate(&state, &headers)
+        .await
+        .map_err(IntoResponse::into_response)?;
+    let request: RuleTestRequest = serde_json::from_value(arguments)
+        .map_err(|_| ApiError::bad_request("rule test arguments are invalid").into_response())?;
+    let result = evaluate_rule_test(&state, request)
+        .await
+        .map_err(IntoResponse::into_response)?;
+    serde_json::to_value(result).map_err(|_| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ErrorCode::WorkflowTaskFailed,
+            "rule test result could not be serialized",
+        )
+        .into_response()
+    })
+}
+
+async fn evaluate_rule_test(
+    state: &RuleApiState,
+    request: RuleTestRequest,
+) -> Result<RuleTestResponse, ApiError> {
+    let mut rule: Rule = serde_json::from_value(request.rule_body)
+        .map_err(|_| ApiError::bad_request("rule body is invalid"))?;
     if request
         .test_mode
         .as_deref()
@@ -2662,28 +2684,28 @@ async fn run_rule_test(
     }
 
     let mut context = request.input_context;
-    let passed = state
-        .engine
+    let passed = state.engine
         .execute_rule(&rule, &mut context)
         .await
         .map_err(|err| {
             error!("Rust rule test failed for {}: {}", rule.rule_id, err);
-            (
+            ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Rule engine failed: {}", err) })),
+                ErrorCode::WorkflowTaskFailed,
+                "rule engine failed",
             )
         })?;
 
     let success = request
         .expected_result
         .is_none_or(|expected| expected == passed);
-    Ok(Json(RuleTestResponse {
+    Ok(RuleTestResponse {
         executor: "rust".to_string(),
         passed,
         expected_result: request.expected_result,
         success,
         mutated_context: context,
-    }))
+    })
 }
 
 fn bad_request<E: std::fmt::Display>(err: E) -> (StatusCode, Json<Value>) {
@@ -3019,21 +3041,23 @@ fork:
 
     #[test]
     fn invocation_authentication_preserves_user_token() {
-        let mut headers = HeaderMap::new();
-        headers.insert("authorization", "bEaReR current-user-jwt".parse().unwrap());
-        headers.insert("x-host-id", Uuid::nil().to_string().parse().unwrap());
-        headers.insert("x-principal-subject", "portal-ui".parse().unwrap());
-        headers.insert("x-end-user-subject", "user-1".parse().unwrap());
-        headers.insert("x-caller-claims-digest", "sha256:claims".parse().unwrap());
-
-        let identity = invocation_identity(
-            &headers,
-            Uuid::nil(),
-            header(&headers, "authorization").unwrap(),
-            2_000_000_000,
-        )
-        .unwrap();
+        let authorization = "bEaReR current-user-jwt";
+        let claims = json!({"client_id":"portal-ui", "user_id":"user-1"});
+        let principal = AuthPrincipal {
+            client_id: Some("portal-ui".to_string()),
+            user_id: Some("user-1".to_string()),
+            claims: claims.clone(),
+            ..AuthPrincipal::default()
+        };
+        let identity =
+            invocation_identity(&principal, Uuid::nil(), authorization, 2_000_000_000).unwrap();
         assert_eq!(identity.user_authorization, "Bearer current-user-jwt");
+        assert_eq!(identity.principal_subject, "portal-ui");
+        assert_eq!(identity.end_user_subject, "user-1");
+        assert_eq!(
+            identity.caller_claims_digest,
+            canonical_sha256(&stable_subject_claims(&claims)).unwrap()
+        );
     }
 
     #[test]
@@ -3086,7 +3110,7 @@ fork:
     }
 
     #[test]
-    fn invocation_user_claims_must_match_forwarded_identity() {
+    fn invocation_user_identity_is_derived_from_verified_claims() {
         let host_id = Uuid::new_v4();
         let claims = json!({
             "sub": "user-1",
@@ -3103,20 +3127,8 @@ fork:
             claims: claims.clone(),
             ..AuthPrincipal::default()
         };
-        let mut headers = HeaderMap::new();
-        headers.insert("x-principal-subject", "portal-ui".parse().unwrap());
-        headers.insert("x-end-user-subject", "user-1".parse().unwrap());
-        headers.insert(
-            "x-caller-claims-digest",
-            canonical_sha256(&stable_subject_claims(&claims))
-                .unwrap()
-                .parse()
-                .unwrap(),
-        );
-        validate_invocation_user(&principal, &headers, host_id).unwrap();
-
-        headers.insert("x-end-user-subject", "another-user".parse().unwrap());
-        assert!(validate_invocation_user(&principal, &headers, host_id).is_err());
+        validate_invocation_user(&principal, host_id).unwrap();
+        assert!(validate_invocation_user(&principal, Uuid::new_v4()).is_err());
     }
 
     #[test]

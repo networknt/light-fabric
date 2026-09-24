@@ -1,6 +1,29 @@
 # light-workflow
 An agentic workflow implemented in Rust
 
+## HTTPS listener
+
+The main Workflow API listens on HTTPS at port `8436` by default. HTTP is
+disabled. Configure `server.tlsCertPath` and `server.tlsKeyPath` to files
+mounted into the process; the defaults are `/config/cert.pem` and
+`/config/key.pem`. Mount a certificate whose SAN includes the address used by
+Gateway service discovery, and configure Gateway's client CA bundle to trust
+its issuer. Kubernetes deployments should provide these files through a
+dedicated TLS Secret and expose service port `8436` as HTTPS. Do not reuse
+another workload's private key in production.
+
+## Rule testing through MCP
+
+Rust rule evaluation is exposed as the `workflow_rule_test` stateless MCP tool
+on `/mcp`; the standalone `/rule/test` REST route is removed. Portal submits the
+MCP call to Light Gateway with the signed-in caller bearer token. Gateway must
+publish this tool with a Workflow MCP backend resource pointing at
+`https://light-workflow:8436/mcp` and the `workflow` backend credential mode.
+Gateway forwards the caller identity and its configured long-lived application
+token to Workflow, where the normal dual-identity checks run. The Gateway tool
+catalog and caller access policy must include `workflow_rule_test` before
+Portal's Rust rule-test option can use it.
+
 ## Run a Local Test
 
 Start the local light-portal stack first so Postgres, `workflow-command`, and
@@ -20,12 +43,19 @@ cargo build -p light-workflow --locked
 
 Run it from this app directory with the portal Postgres URL:
 
+HTTPS is enabled by default. Supply a certificate and key at the configured
+paths (`/config/cert.pem` and `/config/key.pem` by default). For an explicit
+local HTTP-only debug run, set `SERVER_ENABLEHTTPS=false` and
+`SERVER_ENABLEHTTP=true`.
+
 ```bash
 cd /home/steve/workspace/light-fabric/apps/light-workflow
 DATABASE_URL=postgres://postgres:secret@localhost:5432/configserver \
 LIGHT_PORTAL_AUTHORIZATION="Bearer <workflow-service-token>" \
 LIGHT_WORKFLOW_CONFIG_MODE=local \
 SERVER_ENVIRONMENT=dev \
+SERVER_TLSCERTPATH=/path/to/cert.pem \
+SERVER_TLSKEYPATH=/path/to/key.pem \
 ./run.sh --debug-binary
 ```
 

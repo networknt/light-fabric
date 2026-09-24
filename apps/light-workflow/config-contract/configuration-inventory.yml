@@ -380,6 +380,8 @@ yamlProperties:
   - {file: server.yml, path: enableHttp, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
   - {file: server.yml, path: httpsPort, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
   - {file: server.yml, path: enableHttps, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: public}
+  - {file: server.yml, path: tlsCertPath, finalAuthority: mountedFile, reloadClass: restartRequired, sensitivity: internal}
+  - {file: server.yml, path: tlsKeyPath, finalAuthority: mountedFile, reloadClass: restartRequired, sensitivity: secret}
   - {file: server.yml, path: serviceId, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: server.yml, path: enableRegistry, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: server.yml, path: startOnRegistryFailure, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
