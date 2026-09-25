@@ -21,16 +21,8 @@ fi
 STUB
 chmod +x "${TEST_ROOT}/bin/docker"
 
-cat > "${TEST_ROOT}/bin/cargo" <<'STUB'
-#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "$*" >> "${CARGO_LOG:?}"
-STUB
-chmod +x "${TEST_ROOT}/bin/cargo"
-
 export PATH="${TEST_ROOT}/bin:${PATH}"
 export DOCKER_LOG="${TEST_ROOT}/docker.log"
-export CARGO_LOG="${TEST_ROOT}/cargo.log"
 
 grep -Fxq '!target/release/light-knowledge-admin' "${REPO_ROOT}/.dockerignore" || {
   echo "FAIL: light-knowledge-admin release binary is excluded from the Docker build context" >&2
@@ -42,8 +34,8 @@ grep -Eq '^FROM rust:[^ ]+-bookworm AS builder$' "$KNOWLEDGE_ADMIN_DOCKERFILE" |
   echo "FAIL: light-knowledge-admin must compile in a pinned Bookworm builder" >&2
   exit 1
 }
-grep -Fq 'COPY --from=builder /usr/src/app/target/release/light-knowledge-admin /usr/local/bin/light-knowledge-admin' "$KNOWLEDGE_ADMIN_DOCKERFILE" || {
-  echo "FAIL: light-knowledge-admin runtime image copied a host-built binary" >&2
+grep -Fq 'COPY --from=builder /out/light-knowledge-admin /usr/local/bin/light-knowledge-admin' "$KNOWLEDGE_ADMIN_DOCKERFILE" || {
+  echo "FAIL: light-knowledge-admin runtime image does not copy the builder output" >&2
   exit 1
 }
 
@@ -52,6 +44,7 @@ APPS=(
   "light-agent"
   "light-deployer"
   "light-gateway"
+  "light-identity-issuer"
   "light-workflow"
   "light-workflow-runner"
   "light-knowledge"
@@ -69,59 +62,53 @@ dockerfile_for_app() {
   esac
 }
 
-assert_line() {
-  local expected="$1"
-  grep -Fxq -- "$expected" "$DOCKER_LOG" || {
-    echo "FAIL: missing Docker invocation: ${expected}" >&2
+assert_build_line() {
+  local app="$1"
+  local version="$2"
+  local dockerfile="$3"
+  local expected_regex="$4"
+  grep -Eq -- "$expected_regex" "$DOCKER_LOG" || {
+    echo "FAIL: missing Docker invocation for ${app}:${version} (${dockerfile})" >&2
     exit 1
   }
 }
 
 : > "$DOCKER_LOG"
-: > "$CARGO_LOG"
 (
   cd "$TEST_ROOT"
   "${REPO_ROOT}/build.sh" 9.8.7 --local --no-cache
 )
 
 [[ "$(grep -c '^build ' "$DOCKER_LOG")" -eq "${#APPS[@]}" ]]
-[[ "$(wc -l < "$CARGO_LOG")" -eq "${#APPS[@]}" ]]
 if grep -q '^push ' "$DOCKER_LOG"; then
   echo "FAIL: --local attempted to push an image" >&2
   exit 1
 fi
 for app in "${APPS[@]}"; do
   dockerfile="$(dockerfile_for_app "$app")"
-  grep -Fxq -- "build --locked --release --package ${app} --bin ${app}" "$CARGO_LOG"
-  assert_line "build --no-cache --tag networknt/${app}:9.8.7 --tag networknt/${app}:latest --file ${dockerfile} ."
+  assert_build_line "$app" "9.8.7" "$dockerfile" \
+    "^build --no-cache --tag networknt/${app}:9\\.8\\.7 --build-arg CARGO_CACHE_ID=cold-[0-9]+-[0-9]+-${app} --tag networknt/${app}:latest --file ${dockerfile} \\.$"
 done
 
 : > "$DOCKER_LOG"
-: > "$CARGO_LOG"
 "${REPO_ROOT}/apps/light-a2a/build.sh" 9.8.8 --local --skip-latest
-grep -Fxq -- "build --locked --release --package light-a2a --bin light-a2a" "$CARGO_LOG"
-[[ "$(wc -l < "$CARGO_LOG")" -eq 1 ]]
-assert_line "build --tag networknt/light-a2a:9.8.8 --file apps/light-a2a/docker/Dockerfile ."
+assert_build_line "light-a2a" "9.8.8" "apps/light-a2a/docker/Dockerfile" \
+  '^build --build-arg CARGO_CACHE_ID=warm --tag networknt/light-a2a:9\.8\.8 --file apps/light-a2a/docker/Dockerfile \.$'
 [[ "$(wc -l < "$DOCKER_LOG")" -eq 1 ]]
 
 : > "$DOCKER_LOG"
-: > "$CARGO_LOG"
 "${REPO_ROOT}/apps/light-gateway/build.sh" 9.8.8 --local --skip-latest
-grep -Fxq -- "build --locked --release --package light-gateway --bin light-gateway" "$CARGO_LOG"
-[[ "$(wc -l < "$CARGO_LOG")" -eq 1 ]]
-assert_line "build --tag networknt/light-gateway:9.8.8 --file apps/light-gateway/docker/Dockerfile ."
+assert_build_line "light-gateway" "9.8.8" "apps/light-gateway/docker/Dockerfile" \
+  '^build --build-arg CARGO_CACHE_ID=warm --tag networknt/light-gateway:9\.8\.8 --file apps/light-gateway/docker/Dockerfile \.$'
 [[ "$(wc -l < "$DOCKER_LOG")" -eq 1 ]]
 
 : > "$DOCKER_LOG"
-: > "$CARGO_LOG"
 "${REPO_ROOT}/apps/light-knowledge-admin/build.sh" 9.8.8 --local --skip-latest
-grep -Fxq -- "build --locked --release --package light-knowledge-admin --bin light-knowledge-admin" "$CARGO_LOG"
-[[ "$(wc -l < "$CARGO_LOG")" -eq 1 ]]
-assert_line "build --tag networknt/light-knowledge-admin:9.8.8 --file apps/light-knowledge-admin/docker/Dockerfile ."
+assert_build_line "light-knowledge-admin" "9.8.8" "apps/light-knowledge-admin/docker/Dockerfile" \
+  '^build --build-arg CARGO_CACHE_ID=warm --tag networknt/light-knowledge-admin:9\.8\.8 --file apps/light-knowledge-admin/docker/Dockerfile \.$'
 [[ "$(wc -l < "$DOCKER_LOG")" -eq 1 ]]
 
 : > "$DOCKER_LOG"
-: > "$CARGO_LOG"
 "${REPO_ROOT}/build.sh" 9.8.9
 [[ "$(grep -c '^build ' "$DOCKER_LOG")" -eq "${#APPS[@]}" ]]
 [[ "$(grep -c '^push networknt/.*:9\.8\.9$' "$DOCKER_LOG")" -eq "${#APPS[@]}" ]]

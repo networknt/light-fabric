@@ -60,6 +60,33 @@ CREATE TABLE IF NOT EXISTS workflow_secret.renewal_t (
     finished_at timestamptz,
     result text CHECK (result IN ('ROTATED','UNCERTAIN','REAUTHORIZATION_REQUIRED','NOT_SENT'))
 );
+-- Customer-hosted LONG bindings use the same restricted credential database,
+-- but neither depend on nor extend the finite mTLS grant tables above.
+CREATE TABLE IF NOT EXISTS workflow_secret.long_binding_t (
+    binding_id uuid PRIMARY KEY,
+    run_id uuid NOT NULL UNIQUE,
+    host_id uuid NOT NULL,
+    owner_user_id uuid NOT NULL,
+    issuer_client_id text NOT NULL,
+    registration_key_sha256 text NOT NULL CHECK(registration_key_sha256 ~ '^[0-9a-f]{64}$'),
+    subject_token_sha256 text NOT NULL CHECK(subject_token_sha256 ~ '^[0-9a-f]{64}$'),
+    state text NOT NULL CHECK(state IN ('PENDING','ACTIVE','CLOSING','CLOSED','REVOKED')),
+    issuer_version bigint NOT NULL CHECK(issuer_version > 0),
+    key_id text NOT NULL,
+    ciphertext bytea NOT NULL,
+    acceptance_digest text,
+    close_id uuid,
+    terminal_state text CHECK(terminal_state IN ('COMPLETED','CANCELED')),
+    terminal_version bigint,
+    created_ts timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_ts timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS workflow_secret.long_identity_t (
+    singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton),
+    gateway_url text NOT NULL,
+    provider_id text NOT NULL,
+    client_id text NOT NULL
+);
 -- Upgrade preserved A1 credential stores as well as fresh installations.
 ALTER TABLE workflow_secret.renewal_t DROP CONSTRAINT IF EXISTS renewal_t_result_check;
 ALTER TABLE workflow_secret.renewal_t ADD CONSTRAINT renewal_t_result_check

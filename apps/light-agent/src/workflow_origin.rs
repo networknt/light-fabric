@@ -31,6 +31,13 @@ pub struct Config {
     pub incoming: RoutePolicy,
     pub tls: light_axum::mtls::Config,
     pub job_authorization: Option<light_client::workflow_jobs::Config>,
+    pub long_job_authorization: Option<LongJobConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LongJobConfig {
+    pub workflow_client_id: Uuid,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -42,7 +49,8 @@ impl Config {
         self.incoming
             .validate()
             .map_err(|_| RuntimeError::Config("invalid Agent origin policy".into()))?;
-        if (self.mode == Mode::Workflow) != self.job_authorization.is_some()
+        if (self.mode == Mode::Workflow)
+            != (self.job_authorization.is_some() ^ self.long_job_authorization.is_some())
             || self.service_id != service
             || self.agent_def_id != agent
             || self.agent_def_id.is_nil()
@@ -169,6 +177,7 @@ mod tests {
                     scope_token_file: "scope-token".into(),
                 }
             }),
+            long_job_authorization: None,
             tls: light_axum::mtls::Config {
                 address: "127.0.0.1:0".into(),
                 certificate_file: "cert.pem".into(),
@@ -290,7 +299,10 @@ mod tests {
     }
 }
 
-pub struct JobAuthorizer(pub light_client::workflow_jobs::Client);
+pub enum JobAuthorizer {
+    Legacy(light_client::workflow_jobs::Client),
+    Long(light_client::workflow_jobs::GatewayClient),
+}
 #[async_trait::async_trait]
 impl light_agent::domain::WorkflowJobAuthorizer for JobAuthorizer {
     fn transport_enabled(&self) -> bool {
@@ -299,16 +311,30 @@ impl light_agent::domain::WorkflowJobAuthorizer for JobAuthorizer {
     async fn pending(
         &self,
         host: Uuid,
-    ) -> anyhow::Result<Vec<light_client::workflow_job_transport::Job>> {
-        self.0.pending(host).await
+    ) -> anyhow::Result<Vec<light_client::workflow_job_transport::JobDelivery>> {
+        match self {
+            Self::Legacy(client) => Ok(client
+                .pending(host)
+                .await?
+                .into_iter()
+                .map(Into::into)
+                .collect()),
+            Self::Long(client) => client.pending(host).await,
+        }
     }
     async fn report(
         &self,
         report: &light_client::workflow_job_transport::Report,
     ) -> anyhow::Result<()> {
-        self.0.report(report).await
+        match self {
+            Self::Legacy(client) => client.report(report).await,
+            Self::Long(client) => client.report(report).await,
+        }
     }
     async fn authorized(&self, host: Uuid, job: Uuid) -> anyhow::Result<bool> {
-        self.0.authorized(host, job).await
+        match self {
+            Self::Legacy(client) => client.authorized(host, job).await,
+            Self::Long(client) => client.authorized(host, job).await,
+        }
     }
 }

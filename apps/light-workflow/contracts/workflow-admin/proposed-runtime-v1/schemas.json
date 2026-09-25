@@ -1,0 +1,1039 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lightapi.net/contracts/workflow-mcp-runtime/proposed-v1/schemas.json",
+  "$defs": {
+    "Uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "Key": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "Page": {
+      "type": "object",
+      "properties": {
+        "pageSize": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 25
+        },
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      },
+      "additionalProperties": false
+    },
+    "StartInput": {
+      "type": "object",
+      "required": [
+        "workflowDefinitionId",
+        "input",
+        "idempotencyKey"
+      ],
+      "properties": {
+        "workflowDefinitionId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "input": {
+          "type": "object",
+          "maxProperties": 256
+        },
+        "idempotencyKey": {
+          "$ref": "#/$defs/Key"
+        },
+        "approvalRequestId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "approvalRequestDigest": {
+          "$ref": "#/$defs/Digest"
+        }
+      },
+      "dependentRequired": {
+        "approvalRequestId": [
+          "approvalRequestDigest"
+        ],
+        "approvalRequestDigest": [
+          "approvalRequestId"
+        ]
+      },
+      "additionalProperties": false
+    },
+    "StartReceipt": {
+      "type": "object",
+      "required": [
+        "accepted",
+        "workflowInstanceId",
+        "processId",
+        "state",
+        "invocationStateVersion",
+        "idempotencyKey"
+      ],
+      "properties": {
+        "accepted": {
+          "const": true
+        },
+        "workflowInstanceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "processId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "state": {
+          "enum": [
+            "ACCEPTED",
+            "RUNNING",
+            "WAITING"
+          ]
+        },
+        "invocationStateVersion": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "idempotencyKey": {
+          "$ref": "#/$defs/Key"
+        },
+        "initialTaskId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "TrustedStartContext": {
+      "type": "object",
+      "required": [
+        "hostId",
+        "subject",
+        "bindingId",
+        "definitionDigest",
+        "profile",
+        "callerClaimsDigest",
+        "authorityExpiresAt",
+        "budgetVersion"
+      ],
+      "properties": {
+        "hostId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bindingId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "definitionDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "profile": {
+          "enum": [
+            "portal_execution",
+            "workflow_backed",
+            "development_stage"
+          ]
+        },
+        "callerClaimsDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "authorityExpiresAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "budgetVersion": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "parentActionId": {
+          "$ref": "#/$defs/Uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "PrivateExecutionProfile": {
+      "type": "object",
+      "required": [
+        "version",
+        "profile",
+        "waitPolicy",
+        "executionAuthority",
+        "budgetAccounting"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "profile": {
+          "const": "portal_execution"
+        },
+        "waitPolicy": {
+          "const": "durable_until_explicit_timeout_or_terminal"
+        },
+        "executionAuthority": {
+          "const": "bounded_renewable_recheck_on_resume"
+        },
+        "budgetAccounting": {
+          "const": "durable_consumed_total_never_reset_on_renewal"
+        },
+        "explicitTaskDeadlineAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "RoleSnapshotInput": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "RoleMembershipSnapshot": {
+      "type": "object",
+      "required": [
+        "hostId",
+        "userId",
+        "currentRoleIds",
+        "checkedAt",
+        "authority"
+      ],
+      "properties": {
+        "hostId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "userId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "currentRoleIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "checkedAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "authority": {
+          "const": "portal-current-role-membership"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RoleMembershipDecision": {
+      "type": "object",
+      "required": [
+        "hostId",
+        "userId",
+        "roleId",
+        "current",
+        "checkedAt",
+        "authority"
+      ],
+      "properties": {
+        "hostId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "userId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "roleId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "current": {
+          "type": "boolean"
+        },
+        "checkedAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "authority": {
+          "const": "portal-current-role-membership"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DecisionInput": {
+      "type": "object",
+      "required": [
+        "taskAsstId",
+        "assignmentVersion",
+        "requestId",
+        "requestDigest",
+        "decision",
+        "idempotencyKey"
+      ],
+      "properties": {
+        "taskAsstId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "assignmentVersion": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "requestId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "decision": {
+          "enum": [
+            "APPROVE",
+            "REJECT"
+          ]
+        },
+        "comment": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "idempotencyKey": {
+          "$ref": "#/$defs/Key"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DecisionReceipt": {
+      "type": "object",
+      "required": [
+        "decisionId",
+        "requestId",
+        "taskAsstId",
+        "state",
+        "assignmentVersion"
+      ],
+      "properties": {
+        "decisionId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "taskAsstId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "state": {
+          "enum": [
+            "PENDING_DELIVERY",
+            "GRANTED",
+            "REJECTED",
+            "STALE"
+          ]
+        },
+        "assignmentVersion": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "portalCommittedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "PENDING_DELIVERY"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "portalCommittedAt": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "GRANTED",
+                  "REJECTED",
+                  "STALE"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "portalCommittedAt"
+            ],
+            "properties": {
+              "portalCommittedAt": {
+                "$ref": "#/$defs/Timestamp"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "AuditListInput": {
+      "type": "object",
+      "required": [
+        "processId"
+      ],
+      "properties": {
+        "processId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "page": {
+          "$ref": "#/$defs/Page"
+        },
+        "from": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "to": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      },
+      "additionalProperties": false
+    },
+    "AuditListOutput": {
+      "type": "object",
+      "required": [
+        "entries",
+        "nextCursor"
+      ],
+      "properties": {
+        "entries": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "required": [
+              "entryId",
+              "kind",
+              "at"
+            ],
+            "properties": {
+              "entryId": {
+                "$ref": "#/$defs/Uuid"
+              },
+              "kind": {
+                "enum": [
+                  "TRANSITION",
+                  "EXECUTION",
+                  "OPERATOR_NOTE"
+                ]
+              },
+              "at": {
+                "$ref": "#/$defs/Timestamp"
+              },
+              "safeSummary": {
+                "type": "string",
+                "maxLength": 2000
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ApprovalServiceEvidence": {
+      "type": "object",
+      "required": [
+        "iss",
+        "aud",
+        "hostId",
+        "requestId",
+        "operation",
+        "sub",
+        "actorEvidenceDigest",
+        "iat",
+        "exp",
+        "jti"
+      ],
+      "properties": {
+        "iss": {
+          "const": "light-workflow-approval"
+        },
+        "aud": {
+          "const": "portal-workflow-approval"
+        },
+        "hostId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "operation": {
+          "enum": [
+            "getWorkflowToolAccessRequestForExecution",
+            "deliverWorkflowToolAccessDecision"
+          ]
+        },
+        "sub": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actorEvidenceDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "iat": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "exp": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "jti": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "acceptedInstanceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "decisionId": {
+          "$ref": "#/$defs/Uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ApprovalReadInput": {
+      "type": "object",
+      "required": [
+        "hostId",
+        "requestId",
+        "requestDigest"
+      ],
+      "properties": {
+        "hostId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/Digest"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ApprovalReadOutput": {
+      "type": "object",
+      "required": [
+        "requestId",
+        "requestDigest",
+        "requestVersion",
+        "status",
+        "requesterSubject",
+        "approvalDefinitionDigest"
+      ],
+      "properties": {
+        "requestId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "requestVersion": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "status": {
+          "const": "REQUESTED"
+        },
+        "requesterSubject": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approvalDefinitionDigest": {
+          "$ref": "#/$defs/Digest"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ApprovalDeliveryInput": {
+      "type": "object",
+      "required": [
+        "hostId",
+        "decisionId",
+        "requestId",
+        "requestDigest",
+        "acceptedInstanceId",
+        "taskId",
+        "taskAsstId",
+        "decision",
+        "approverSubject",
+        "payloadDigest"
+      ],
+      "properties": {
+        "hostId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "decisionId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "acceptedInstanceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "taskId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "taskAsstId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "decision": {
+          "enum": [
+            "APPROVE",
+            "REJECT"
+          ]
+        },
+        "approverSubject": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payloadDigest": {
+          "$ref": "#/$defs/Digest"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ApprovalDeliveryOutput": {
+      "type": "object",
+      "required": [
+        "decisionId",
+        "requestId",
+        "outcome",
+        "requestVersion",
+        "committedAt"
+      ],
+      "properties": {
+        "decisionId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "outcome": {
+          "enum": [
+            "GRANTED",
+            "REJECTED",
+            "STALE"
+          ]
+        },
+        "requestVersion": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "committedAt": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      },
+      "additionalProperties": false
+    },
+    "PageInput": {
+      "type": "object",
+      "description": "Offset pagination. cursor is the decimal row offset returned as nextCursor; it is not a stable keyset cursor under concurrent writes.",
+      "properties": {
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9]+$"
+        },
+        "pageSize": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 25
+        }
+      },
+      "additionalProperties": false
+    },
+    "PageMeta": {
+      "type": "object",
+      "required": [
+        "pageSize",
+        "hasMore"
+      ],
+      "properties": {
+        "pageSize": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hasMore": {
+          "type": "boolean"
+        },
+        "authorizedTotal": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "NativeDeleteInput": {
+      "type": "object",
+      "required": [
+        "processId",
+        "expectedLifecycleVersion",
+        "reason",
+        "idempotencyKey"
+      ],
+      "properties": {
+        "processId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "expectedLifecycleVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": false
+    },
+    "NativeDeleteReceipt": {
+      "type": "object",
+      "required": [
+        "operationId",
+        "processId",
+        "lifecycleVersion",
+        "logicalDeletion",
+        "artifactCleanup",
+        "artifacts"
+      ],
+      "properties": {
+        "operationId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "processId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "lifecycleVersion": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "logicalDeletion": {
+          "const": "RECORDED"
+        },
+        "artifactCleanup": {
+          "enum": [
+            "PENDING",
+            "RETAINED",
+            "COMPLETE"
+          ]
+        },
+        "artifacts": {
+          "type": "object",
+          "required": [
+            "pending",
+            "failed",
+            "deleted",
+            "legalHold",
+            "retained"
+          ],
+          "properties": {
+            "pending": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "deleted": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "legalHold": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "retained": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "NativeTaskGetInput": {
+      "type": "object",
+      "required": [
+        "taskId"
+      ],
+      "properties": {
+        "taskId": {
+          "$ref": "#/$defs/Uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NativeTaskDetail": {
+      "type": "object",
+      "required": [
+        "taskId",
+        "processId",
+        "workflowInstanceId",
+        "workflowTaskId",
+        "type",
+        "state",
+        "taskVersion",
+        "startedAt",
+        "completedAt",
+        "deadline",
+        "resultCode",
+        "effectState",
+        "assignments"
+      ],
+      "properties": {
+        "taskId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "processId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "workflowInstanceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "workflowTaskId": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "RUNNING",
+            "WAITING",
+            "COMPLETED",
+            "FAILED"
+          ]
+        },
+        "taskVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "startedAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "completedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deadline": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resultCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "effectState": {
+          "type": "string"
+        },
+        "assignments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "taskAsstId",
+              "state",
+              "type",
+              "assigneeId"
+            ],
+            "properties": {
+              "taskAsstId": {
+                "$ref": "#/$defs/Uuid"
+              },
+              "state": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              },
+              "assigneeId": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "NativeNoteInput": {
+      "type": "object",
+      "required": [
+        "processId",
+        "text",
+        "idempotencyKey"
+      ],
+      "properties": {
+        "processId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "taskId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": false
+    },
+    "NativeNote": {
+      "type": "object",
+      "required": [
+        "noteId",
+        "processId",
+        "workflowInstanceId",
+        "taskId",
+        "text",
+        "actor",
+        "createdAt"
+      ],
+      "properties": {
+        "noteId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "processId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "workflowInstanceId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "taskId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NativeNotesQuery": {
+      "type": "object",
+      "required": [
+        "processId"
+      ],
+      "properties": {
+        "processId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "page": {
+          "$ref": "#/$defs/PageInput"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NativeNotesPage": {
+      "type": "object",
+      "required": [
+        "notes",
+        "page"
+      ],
+      "properties": {
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NativeNote"
+          }
+        },
+        "page": {
+          "$ref": "#/$defs/PageMeta"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

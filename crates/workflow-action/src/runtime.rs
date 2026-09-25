@@ -12,7 +12,7 @@ pub(crate) async fn lock_live_invocation(
     tx: &mut Transaction<'_, Postgres>,
     b: &Binding,
 ) -> Result<(), Error> {
-    let row=sqlx::query("SELECT end_user_subject,policy_digest,response_policy_digest,execution_class,deadline_ts,state,cancel_requested_ts FROM workflow_ops.workflow_invocation_t WHERE host_id=$1 AND workflow_instance_id=$2 FOR SHARE")
+    let row=sqlx::query("SELECT i.end_user_subject,i.policy_digest,i.response_policy_digest,i.execution_class,i.deadline_ts,i.response_policy_snapshot,i.state,i.cancel_requested_ts,p.deadline_ts AS process_deadline_ts FROM workflow_ops.workflow_invocation_t i JOIN workflow_ops.process_info_t p ON p.host_id=i.host_id AND p.process_id=i.process_id WHERE i.host_id=$1 AND i.workflow_instance_id=$2 FOR SHARE OF i")
         .bind(b.host_id).bind(b.run_id).fetch_optional(&mut **tx).await?.ok_or(Error::Denied)?;
     let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
         .fetch_one(&mut **tx)
@@ -30,15 +30,22 @@ pub(crate) async fn lock_live_invocation(
             != serde_json::to_value(b.execution_class)?
                 .as_str()
                 .ok_or(Error::Denied)?
-        || row.get::<DateTime<Utc>, _>("deadline_ts") < b.deadline
+        || (row.get::<serde_json::Value, _>("response_policy_snapshot")["privateExecutionProfile"]
+            ["version"]
+            != 1
+            && row.get::<DateTime<Utc>, _>("deadline_ts") < b.deadline)
+        || row
+            .get::<Option<DateTime<Utc>>, _>("process_deadline_ts")
+            .is_some_and(|deadline| deadline < b.deadline)
         || b.deadline <= now
     {
         return Err(Error::Denied);
     }
-    let row=sqlx::query("SELECT generation,deadline_ts,task_attempt_used,task_attempt_reserved,task_attempt_limit,nested_call_used,nested_call_reserved,nested_call_limit,byte_used,byte_reserved,byte_limit,cost_unit_used,cost_unit_reserved,cost_unit_limit FROM workflow_ops.workflow_invocation_budget_t WHERE host_id=$1 AND workflow_instance_id=$2 FOR UPDATE")
+    let row=sqlx::query("SELECT generation,deadline_ts,lifetime_version,task_attempt_used,task_attempt_reserved,task_attempt_limit,nested_call_used,nested_call_reserved,nested_call_limit,byte_used,byte_reserved,byte_limit,cost_unit_used,cost_unit_reserved,cost_unit_limit FROM workflow_ops.workflow_invocation_budget_t WHERE host_id=$1 AND workflow_instance_id=$2 FOR UPDATE")
         .bind(b.host_id).bind(b.run_id).fetch_optional(&mut **tx).await?.ok_or(Error::Denied)?;
     if row.get::<i64, _>("generation") != b.budget_generation
-        || row.get::<DateTime<Utc>, _>("deadline_ts") < b.deadline
+        || (row.get::<Option<i16>, _>("lifetime_version") != Some(1)
+            && row.get::<DateTime<Utc>, _>("deadline_ts") < b.deadline)
     {
         return Err(Error::Denied);
     }
@@ -91,7 +98,7 @@ impl Ledger {
         grant: Uuid,
         user: Uuid,
     ) -> Result<(), Error> {
-        let row=sqlx::query("SELECT i.end_user_subject,i.deadline_ts,b.generation,b.nested_call_limit FROM workflow_ops.workflow_invocation_t i JOIN workflow_ops.workflow_invocation_budget_t b ON b.host_id=i.host_id AND b.workflow_instance_id=i.workflow_instance_id WHERE i.host_id=$1 AND i.workflow_instance_id=$2 AND i.state IN ('ACCEPTED','RUNNING','WAITING') AND i.cancel_requested_ts IS NULL AND i.deadline_ts>clock_timestamp() AND b.deadline_ts>=i.deadline_ts FOR SHARE OF i,b")
+        let row=sqlx::query("SELECT i.end_user_subject,i.deadline_ts,b.generation,b.nested_call_limit FROM workflow_ops.workflow_invocation_t i JOIN workflow_ops.workflow_invocation_budget_t b ON b.host_id=i.host_id AND b.workflow_instance_id=i.workflow_instance_id WHERE i.host_id=$1 AND i.workflow_instance_id=$2 AND i.state IN ('ACCEPTED','RUNNING','WAITING') AND i.cancel_requested_ts IS NULL AND i.deadline_ts>clock_timestamp() AND (b.deadline_ts>=i.deadline_ts OR (b.lifetime_version=1 AND i.response_policy_snapshot->'privateExecutionProfile'->>'version'='1')) FOR SHARE OF i,b")
             .bind(host).bind(run).fetch_optional(&mut **tx).await?.ok_or(Error::Denied)?;
         if row.get::<String, _>("end_user_subject") != user.to_string() {
             return Err(Error::Denied);
@@ -201,7 +208,7 @@ pub(crate) async fn reserve_budget(
         .and_then(|v| i64::try_from(v).ok())
         .ok_or(Error::Denied)?;
     let cost = i64::try_from(b.cost_unit_limit).map_err(|_| Error::Denied)?;
-    let n=sqlx::query("UPDATE workflow_ops.workflow_invocation_budget_t SET nested_call_reserved=nested_call_reserved+1,byte_reserved=byte_reserved+$4,cost_unit_reserved=cost_unit_reserved+$5,updated_ts=clock_timestamp() WHERE host_id=$1 AND workflow_instance_id=$2 AND generation=$3 AND deadline_ts>clock_timestamp() AND nested_call_used+nested_call_reserved<nested_call_limit AND byte_used+byte_reserved<=byte_limit-$4 AND cost_unit_used+cost_unit_reserved<=cost_unit_limit-$5")
+    let n=sqlx::query("UPDATE workflow_ops.workflow_invocation_budget_t SET nested_call_reserved=nested_call_reserved+1,byte_reserved=byte_reserved+$4,cost_unit_reserved=cost_unit_reserved+$5,updated_ts=clock_timestamp() WHERE host_id=$1 AND workflow_instance_id=$2 AND generation=$3 AND (deadline_ts>clock_timestamp() OR (deadline_ts IS NULL AND lifetime_version=1)) AND nested_call_used+nested_call_reserved<nested_call_limit AND byte_used+byte_reserved<=byte_limit-$4 AND cost_unit_used+cost_unit_reserved<=cost_unit_limit-$5")
         .bind(b.host_id).bind(b.run_id).bind(b.budget_generation).bind(bytes).bind(cost)
         .execute(&mut **tx).await?.rows_affected();
     if n != 1 {

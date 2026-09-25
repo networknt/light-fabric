@@ -2,6 +2,34 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
+use zeroize::Zeroize;
+
+/// Transient poll envelope. The bearer is never part of `Job` and is wiped
+/// when the receiving app finishes admission or drops a failed delivery.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JobDelivery {
+    pub job: Job,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_token: Option<String>,
+}
+
+impl Drop for JobDelivery {
+    fn drop(&mut self) {
+        if let Some(token) = &mut self.owner_token {
+            token.zeroize();
+        }
+    }
+}
+
+impl From<Job> for JobDelivery {
+    fn from(job: Job) -> Self {
+        Self {
+            job,
+            owner_token: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

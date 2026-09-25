@@ -1,5 +1,7 @@
+# syntax=docker/dockerfile:1
 # Stage 1: Build the Rust binary
 FROM rust:1.98.0-bookworm AS builder
+ARG CARGO_CACHE_ID=warm
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends cmake g++ pkg-config && \
@@ -15,7 +17,12 @@ COPY frameworks/ frameworks/
 COPY apps/ apps/
 
 WORKDIR /usr/src/app/apps/light-gateway
-RUN cargo build --locked --release
+RUN --mount=type=cache,id=light-fabric-rust198-registry-${CARGO_CACHE_ID},target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=light-fabric-rust198-git-${CARGO_CACHE_ID},target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=light-fabric-rust198-target-${CARGO_CACHE_ID}-app-gnu,target=/usr/src/app/target,sharing=locked \
+    cargo build --locked --release \
+    && mkdir -p /out \
+    && cp /usr/src/app/target/release/light-gateway /out/light-gateway
 
 # Stage 2: Create the runtime image
 FROM debian:bookworm-slim
@@ -31,7 +38,7 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-COPY --from=builder --chown=gateway:gateway /usr/src/app/target/release/light-gateway /app/light-gateway
+COPY --from=builder --chown=gateway:gateway /out/light-gateway /app/light-gateway
 COPY --from=builder --chown=gateway:gateway /usr/src/app/apps/light-gateway/config/*.yml /app/config-defaults/
 
 ENV GATEWAY_LOG_ANSI=false

@@ -18,6 +18,10 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+zeroize = "1"
+aes-gcm = "0.10"
 url = { workspace = true }
 
 [dev-dependencies]

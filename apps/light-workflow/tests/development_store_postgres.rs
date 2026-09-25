@@ -28,7 +28,7 @@ impl Fixture {
     }
     fn prepared(&self) -> PreparedInvocationStart<'_> {
         PreparedInvocationStart {
-            binding_id: self.binding,
+            binding_id: Some(self.binding),
             process_id: Uuid::now_v7(),
             initial_task_id: Uuid::now_v7(),
             application_id: "feature-design",
@@ -36,6 +36,9 @@ impl Fixture {
             initial_task_type: "run",
             definition_snapshot: &self.definition,
             execution_placement: "host",
+            execution_profile_id: "development-host",
+            admission_profile: "workflow_backed",
+            policy_snapshot_id: None,
             task_policy_digest: self.request.policy_digest.trim_start_matches("sha256:"),
             public_output_schema: None,
         }

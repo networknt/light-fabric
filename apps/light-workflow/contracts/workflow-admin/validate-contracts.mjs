@@ -10,10 +10,14 @@ const manifest = read('tool-manifest.json');
 const schemas = read('schemas.json');
 const examples = read('examples.json');
 const errors = read('errors.json');
+const gateway = read('gateway-publication.json');
+const gatewayTools = read('gateway-tools-list.json');
 const failures = [];
 const fail = (message) => failures.push(message);
 
 const expected = [
+  'workflow_decide_tool_access',
+  'workflow_delete_process','workflow_get_task','workflow_add_process_note','workflow_list_process_notes',
   'workflow_list_processes','workflow_get_process','workflow_list_features','workflow_get_feature',
   'workflow_get_status','workflow_get_result','workflow_cancel','workflow_cancel_feature',
   'workflow_get_human_task_inbox_summary','workflow_list_human_tasks','workflow_get_human_task',
@@ -73,11 +77,56 @@ for (const tool of manifest.tools) {
   validateExample(examples[tool.name]?.output, tool.outputSchema, `${tool.name}.output`);
   scanResolvedInput(tool.inputSchema, `${tool.name}.inputSchema`);
 }
+const nativeNames = ['workflow_start', 'workflow_decide_tool_access', 'workflow_delete_process',
+  'workflow_get_task', 'workflow_add_process_note', 'workflow_list_process_notes'];
+if (gateway.serviceId !== 'com.networknt.workflow-1.0.0' || gateway.path !== '/mcp'
+    || gateway.apiType !== 'mcp' || gateway.backendMcpProtocol !== 'stateless'
+    || gateway.backendCredentialMode !== 'workflow' || gateway.sessionIndependent !== true) {
+  fail('Gateway native Workflow profile is invalid');
+}
+if (JSON.stringify(gateway.tools.map(tool => tool.name)) !== JSON.stringify(nativeNames)) {
+  fail('Gateway additive publication names must match implemented native Tools');
+}
+for (const published of gateway.tools) {
+  const contract = manifest.tools.find(tool => tool.name === published.name);
+  if (published.permission !== contract?.permission || published.endpoint !== `${published.name}@call`) {
+    fail(`${published.name}: Gateway publication permission or endpoint differs from Workflow contract`);
+  }
+}
+if (JSON.stringify(gatewayTools.tools.map(tool => tool.name)) !== JSON.stringify(nativeNames)) {
+  fail('Gateway import spec must contain exactly the additive native Tools');
+}
+function hasReference(value) {
+  if (!value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(hasReference);
+  return Object.hasOwn(value, '$ref') || Object.values(value).some(hasReference);
+}
+for (const tool of gatewayTools.tools) {
+  if (hasReference(tool.inputSchema) || hasReference(tool.outputSchema)) {
+    fail(`${tool.name}: Gateway import schema contains an unresolved reference`);
+  }
+  validateExample(examples[tool.name]?.input, tool.inputSchema, `${tool.name}.gatewayInput`);
+  validateExample(examples[tool.name]?.output, tool.outputSchema, `${tool.name}.gatewayOutput`);
+}
+if (!gateway.restrictedRoutes.every(route => ['GET','POST'].includes(route.method) && route.path.startsWith('/')
+    && ['light-oauth','portal-bff-loc'].includes(route.target) && route.authentication)) {
+  fail('Gateway restricted route inventory is incomplete or malformed');
+}
+if (new Set(gateway.restrictedRoutes.map(route => `${route.method} ${route.path}`)).size !== gateway.restrictedRoutes.length) {
+  fail('Gateway restricted routes must be unique');
+}
+if (gateway.restrictedRoutes.some(route => route.path.includes('current-roles'))) {
+  fail('current-role issuer route is outside the Gateway ACL task profile');
+}
+if (!gateway.restrictedRoutes.some(route => route.method === 'GET' && route.path === '/portal/query')
+    || !gateway.restrictedRoutes.some(route => route.method === 'POST' && route.path === '/portal/command')) {
+  fail('approval service routes must match the Workflow client methods');
+}
 const listPage = schemas.$defs.PageInput.properties.pageSize;
 if (listPage.default !== 25 || listPage.maximum !== 100) fail('pagination must default to 25 and cap at 100');
 if (examples.workflow_list_processes.output.processes[0].workflowInstanceId !== null) fail('process-only fixture must retain null workflowInstanceId');
 if (examples.workflow_get_human_task.output.task.taskId === examples.workflow_get_human_task.output.task.taskAsstId) fail('taskId and taskAsstId must remain distinct');
-for (const code of ['STORE_UNAVAILABLE','AUTHORITY_UNAVAILABLE','VERSION_CONFLICT','CLAIM_CONFLICT','VALIDATION_FAILED','TASK_EXPIRED']) if (!errors.errors.some((error) => error.code === code)) fail(`missing stable error ${code}`);
+for (const code of ['STORE_UNAVAILABLE','AUTHORITY_UNAVAILABLE','VERSION_CONFLICT','CLAIM_CONFLICT','VALIDATION_FAILED','TASK_EXPIRED','PROCESS_NOT_TERMINAL','RESOURCE_HELD','IDEMPOTENCY_CONFLICT']) if (!errors.errors.some((error) => error.code === code)) fail(`missing stable error ${code}`);
 
 if (failures.length) {
   console.error(failures.map((failure) => `FAIL ${failure}`).join('\n'));

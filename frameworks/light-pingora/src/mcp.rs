@@ -5454,6 +5454,14 @@ impl McpRouterRuntime {
             ));
         }
         if !status.is_success() {
+            if WORKFLOW_NATIVE_BACKEND_TOOLS.contains(&backend_tool_name)
+                && matches!(status.as_u16(), 401 | 403)
+            {
+                return Err(McpExecutionError {
+                    code: -32001,
+                    message: "Workflow backend authorization denied".to_string(),
+                });
+            }
             return Err(McpExecutionError::execution_failed(format!(
                 "stateless MCP backend returned HTTP {}",
                 status.as_u16()
@@ -5492,6 +5500,16 @@ impl McpRouterRuntime {
         let result = message.get("result").cloned().ok_or_else(|| {
             McpExecutionError::execution_failed("stateless MCP backend response missing result")
         })?;
+        if backend_tool_name == "workflow_start"
+            && result.get("resultType").and_then(JsonValue::as_str) == Some("complete")
+            && result.get("isError").and_then(JsonValue::as_bool) != Some(true)
+            && (result.get("isError").and_then(JsonValue::as_bool) != Some(false)
+                || !native_start_receipt_matches(arguments, &result))
+        {
+            return Err(McpExecutionError::execution_failed(
+                "Workflow start acceptance could not be confirmed from its receipt",
+            ));
+        }
         match result.get("resultType").and_then(JsonValue::as_str) {
             Some("complete") => Ok(result),
             Some("input_required") => Ok(mcp_tool_error_result(
@@ -7215,7 +7233,11 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
                         || binding.total_deadline_ms < binding.wait_timeout_ms
                         || binding.total_deadline_ms > 30_000))
                 || (binding.mode == InvocationMode::Async
-                    && (binding.total_deadline_ms == 0 || binding.total_deadline_ms > 604_800_000))
+                    && !workflow_invocation_contract::authority_lease_allowed(
+                        workflow_invocation_contract::AuthorityLeaseProfile::WorkflowBacked,
+                        binding.mode,
+                        binding.total_deadline_ms,
+                    ))
                 || (binding.mode == InvocationMode::Sync
                     && binding.execution_class != ExecutionClass::Interactive)
                 || (binding.idempotency_kind != IdempotencyKind::Derived
@@ -9814,7 +9836,38 @@ const WORKFLOW_LIFECYCLE_TOOLS: [(&str, &str, bool); 17] = [
     ),
 ];
 
-const WORKFLOW_NATIVE_BACKEND_TOOLS: [&str; 1] = ["workflow_rule_test"];
+const WORKFLOW_NATIVE_BACKEND_TOOLS: [&str; 7] = [
+    "workflow_rule_test",
+    "workflow_start",
+    "workflow_decide_tool_access",
+    "workflow_delete_process",
+    "workflow_get_task",
+    "workflow_add_process_note",
+    "workflow_list_process_notes",
+];
+
+fn native_start_receipt_matches(arguments: &JsonValue, result: &JsonValue) -> bool {
+    let receipt = &result["structuredContent"];
+    receipt["accepted"] == true
+        && ["workflowInstanceId", "processId"].iter().all(|field| {
+            receipt[field]
+                .as_str()
+                .is_some_and(|id| Uuid::parse_str(id).is_ok())
+        })
+        && receipt["workflowDefinitionId"] == arguments["workflowDefinitionId"]
+        && receipt["definitionDigest"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("sha256:") && value.len() == 71)
+        && matches!(
+            receipt["state"].as_str(),
+            Some("ACCEPTED" | "RUNNING" | "WAITING")
+        )
+        && receipt["invocationStateVersion"].as_u64().is_some()
+        && receipt["acceptedAt"]
+            .as_str()
+            .is_some_and(|value| value.parse::<chrono::DateTime<chrono::Utc>>().is_ok())
+        && receipt["replayed"].as_bool().is_some()
+}
 
 fn ensure_workflow_lifecycle_tools(config: &mut McpRouterConfig) -> Result<(), RuntimeError> {
     for name in WORKFLOW_NATIVE_BACKEND_TOOLS {
@@ -10051,10 +10104,7 @@ workflow:
             .as_deref(),
             Some(format!("Bearer {token}").as_str())
         );
-        assert!(
-            workflow_scope_authorization_with(|_| None)
-                .is_err()
-        );
+        assert!(workflow_scope_authorization_with(|_| None).is_err());
         assert!(
             workflow_scope_authorization_with(|name| {
                 (name == LIGHT_PORTAL_AUTHORIZATION_ENV).then(|| "invalid".to_string())
@@ -18431,6 +18481,36 @@ inputSchema: {{type: object}}
             );
             assert!(matching[0].session_independent);
         }
+        for name in WORKFLOW_NATIVE_BACKEND_TOOLS {
+            let native = config.tools.iter().find(|tool| tool.name == name).unwrap();
+            assert_eq!(native.execution_placement, McpExecutionPlacement::Backend);
+            assert_eq!(native.path, "/mcp");
+            assert_eq!(
+                native.endpoint.as_deref(),
+                Some(format!("{name}@call").as_str())
+            );
+            assert!(native.workflow_binding.is_none());
+        }
+    }
+
+    #[test]
+    fn native_workflow_start_receipt_must_match_selected_definition() {
+        let examples: JsonValue = serde_json::from_str(include_str!(
+            "../../../apps/light-workflow/contracts/workflow-admin/examples.json"
+        ))
+        .unwrap();
+        let input = &examples["workflow_start"]["input"];
+        let mut result = json!({
+            "resultType":"complete",
+            "isError":false,
+            "structuredContent":examples["workflow_start"]["output"]
+        });
+        assert!(native_start_receipt_matches(input, &result));
+        result["structuredContent"]["definitionDigest"] = json!("sha256:stale");
+        assert!(!native_start_receipt_matches(input, &result));
+        result["structuredContent"]["definitionDigest"] = examples["workflow_start"]["output"]["definitionDigest"].clone();
+        result["structuredContent"]["processId"] = json!("not-a-uuid");
+        assert!(!native_start_receipt_matches(input, &result));
     }
 
     #[test]

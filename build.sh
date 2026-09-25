@@ -15,6 +15,7 @@ APP_SELECTED=false
 LOCAL_BUILD=false
 NO_CACHE=false
 SKIP_LATEST=false
+CHANGED_ONLY=false
 
 APPS=(
   "light-a2a"
@@ -39,17 +40,19 @@ show_help() {
     echo "Error: ${error}"
     echo " "
   fi
-  echo "    build.sh [VERSION] [-a|--app APP] [-l|--local] [--no-cache] [--skip-latest]"
+  echo "    build.sh [VERSION] [-a|--app APP] [-l|--local] [--changed] [--no-cache] [--skip-latest]"
   echo " "
   echo "    where [VERSION] is the Docker image version to build and publish"
   echo "          [-a|--app APP] optionally builds one release app instead of all apps"
   echo "          [-l|--local] builds images locally without pushing"
+  echo "          [--changed] selects images affected by staged, unstaged, and untracked files"
   echo "          [--no-cache] builds images without using the Docker build cache"
   echo "          [--skip-latest] does not create or push latest tags"
   echo " "
   echo "    examples:"
   echo "          ./build.sh 0.3.0"
   echo "          ./build.sh 0.3.0 --local"
+  echo "          ./build.sh 0.3.0 --changed --local"
   echo "          ./build.sh 0.3.0 --app light-gateway --no-cache"
   echo " "
   echo "    release apps: ${APPS[*]}"
@@ -96,22 +99,6 @@ dockerfile_for_app() {
   esac
 }
 
-# The app directory (and hence release-app name) is `light-identity-issuer`
-# for consistency with every other app, but its Cargo package/binary is
-# `light-identity-issuer-service`: the crate `light-identity-issuer` already
-# names the library in `crates/` this app wraps, so the two cannot share a
-# package name in one workspace.
-cargo_package_for_app() {
-  case "$1" in
-    light-identity-issuer)
-      printf 'light-identity-issuer-service\n'
-      ;;
-    *)
-      printf '%s\n' "$1"
-      ;;
-  esac
-}
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
@@ -129,6 +116,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     -l|--local)
       LOCAL_BUILD=true
+      shift
+      ;;
+    --changed)
+      CHANGED_ONLY=true
       shift
       ;;
     --no-cache)
@@ -156,8 +147,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$VERSION" ]] || fail "[VERSION] parameter is missing"
-command -v cargo >/dev/null 2>&1 || fail "Missing required command: cargo"
 command -v docker >/dev/null 2>&1 || fail "Missing required command: docker"
+if $CHANGED_ONLY; then
+  command -v cargo >/dev/null 2>&1 || fail "Missing required command: cargo"
+  command -v python3 >/dev/null 2>&1 || fail "Missing required command: python3"
+fi
 
 if [[ "$APP" == "all" ]]; then
   BUILD_APPS=("${APPS[@]}")
@@ -173,25 +167,43 @@ fi
 
 cd "$REPO_ROOT"
 
+if $CHANGED_ONLY; then
+  selector_args=(--root "$REPO_ROOT")
+  if $APP_SELECTED; then
+    selector_args+=(--only "$APP")
+  fi
+  changed_output="$(python3 "$SCRIPT_DIR/scripts/select-changed-apps.py" "${selector_args[@]}")" \
+    || fail "Unable to select changed apps"
+  if [[ -z "$changed_output" ]]; then
+    echo "No selected images are affected by uncommitted files; nothing to build or publish"
+    exit 0
+  fi
+  mapfile -t CHANGED_APPS <<< "$changed_output"
+  BUILD_APPS=("${CHANGED_APPS[@]}")
+  echo "Changed image selection: ${BUILD_APPS[*]}"
+fi
+
 # Finish every local build before publishing any tag. This prevents a compile
 # failure in a later app from publishing an incomplete release unnecessarily.
 for release_app in "${BUILD_APPS[@]}"; do
   dockerfile="$(dockerfile_for_app "$release_app")"
   [[ -f "$dockerfile" ]] || fail "Missing Dockerfile: $dockerfile"
 
-  cargo_package="$(cargo_package_for_app "$release_app")"
-  echo "Compiling ${release_app} release binary"
-  cargo build --locked --release --package "$cargo_package" --bin "$cargo_package"
-
   version_image="${IMAGE_NAMESPACE}/${release_app}:${VERSION}"
   docker_args=(build "${BUILD_ARGS[@]}" --tag "$version_image")
+  if $NO_CACHE; then
+    cache_id="cold-${BASHPID}-${RANDOM}-${release_app}"
+  else
+    cache_id="warm"
+  fi
+  docker_args+=(--build-arg "CARGO_CACHE_ID=${cache_id}")
   if ! $SKIP_LATEST; then
     docker_args+=(--tag "${IMAGE_NAMESPACE}/${release_app}:latest")
   fi
   docker_args+=(--file "$dockerfile" .)
 
   echo "Building ${version_image}"
-  docker "${docker_args[@]}"
+  DOCKER_BUILDKIT=1 docker "${docker_args[@]}"
 done
 
 if $LOCAL_BUILD; then

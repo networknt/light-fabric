@@ -1,0 +1,2489 @@
+{
+  "tools": [
+    {
+      "name": "workflow_start",
+      "description": "Start a saved workflow definition",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "workflowDefinitionId",
+          "input",
+          "idempotencyKey"
+        ],
+        "properties": {
+          "workflowDefinitionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "input": {
+            "type": "object",
+            "maxProperties": 256
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "accepted",
+          "workflowInstanceId",
+          "processId",
+          "workflowDefinitionId",
+          "definitionDigest",
+          "state",
+          "invocationStateVersion",
+          "acceptedAt",
+          "replayed"
+        ],
+        "properties": {
+          "accepted": {
+            "const": true
+          },
+          "workflowInstanceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "processId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "workflowDefinitionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "definitionDigest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "state": {
+            "enum": [
+              "ACCEPTED",
+              "RUNNING",
+              "WAITING"
+            ]
+          },
+          "invocationStateVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "acceptedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "replayed": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "permission": "workflow.instance.start"
+      }
+    },
+    {
+      "name": "workflow_decide_tool_access",
+      "description": "Reserve a claimed Tool access approval decision for Portal grant delivery",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "taskAsstId",
+          "assignmentVersion",
+          "requestId",
+          "requestDigest",
+          "decision",
+          "idempotencyKey"
+        ],
+        "properties": {
+          "taskAsstId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "assignmentVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "requestDigest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "decision": {
+            "enum": [
+              "APPROVE",
+              "REJECT"
+            ]
+          },
+          "comment": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "decisionId",
+          "requestId",
+          "taskAsstId",
+          "state",
+          "assignmentVersion",
+          "portalCommittedAt"
+        ],
+        "properties": {
+          "decisionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "taskAsstId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "enum": [
+              "PENDING_DELIVERY",
+              "GRANTED",
+              "REJECTED",
+              "STALE"
+            ]
+          },
+          "assignmentVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "portalCommittedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "workflow_delete_process",
+      "description": "Logically delete an owned terminal native process and schedule eligible artifact cleanup",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "processId",
+          "expectedLifecycleVersion",
+          "reason",
+          "idempotencyKey"
+        ],
+        "properties": {
+          "processId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expectedLifecycleVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "operationId",
+          "processId",
+          "lifecycleVersion",
+          "logicalDeletion",
+          "artifactCleanup",
+          "artifacts"
+        ],
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "processId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "lifecycleVersion": {
+            "type": "integer",
+            "minimum": 2
+          },
+          "logicalDeletion": {
+            "const": "RECORDED"
+          },
+          "artifactCleanup": {
+            "enum": [
+              "PENDING",
+              "RETAINED",
+              "COMPLETE"
+            ]
+          },
+          "artifacts": {
+            "type": "object",
+            "required": [
+              "pending",
+              "failed",
+              "deleted",
+              "legalHold",
+              "retained"
+            ],
+            "properties": {
+              "pending": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "failed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "deleted": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "legalHold": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "retained": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "workflow_get_task",
+      "description": "Read a safe task detail for an owned native process",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "taskId"
+        ],
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "taskId",
+          "processId",
+          "workflowInstanceId",
+          "workflowTaskId",
+          "type",
+          "state",
+          "taskVersion",
+          "startedAt",
+          "completedAt",
+          "deadline",
+          "resultCode",
+          "effectState",
+          "assignments"
+        ],
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "processId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "workflowInstanceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "workflowTaskId": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "RUNNING",
+              "WAITING",
+              "COMPLETED",
+              "FAILED"
+            ]
+          },
+          "taskVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "completedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deadline": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resultCode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effectState": {
+            "type": "string"
+          },
+          "assignments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "taskAsstId",
+                "state",
+                "type",
+                "assigneeId"
+              ],
+              "properties": {
+                "taskAsstId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "state": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "assigneeId": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "workflow_add_process_note",
+      "description": "Append an operator note to an owned native process",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "processId",
+          "text",
+          "idempotencyKey"
+        ],
+        "properties": {
+          "processId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "taskId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "noteId",
+          "processId",
+          "workflowInstanceId",
+          "taskId",
+          "text",
+          "actor",
+          "createdAt"
+        ],
+        "properties": {
+          "noteId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "processId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "workflowInstanceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "taskId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "workflow_list_process_notes",
+      "description": "Read operator notes for an owned native process",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "processId"
+        ],
+        "properties": {
+          "processId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "page": {
+            "type": "object",
+            "description": "Offset pagination. cursor is the decimal row offset returned as nextCursor; it is not a stable keyset cursor under concurrent writes.",
+            "properties": {
+              "cursor": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[0-9]+$"
+              },
+              "pageSize": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 25
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "notes",
+          "page"
+        ],
+        "properties": {
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "noteId",
+                "processId",
+                "workflowInstanceId",
+                "taskId",
+                "text",
+                "actor",
+                "createdAt"
+              ],
+              "properties": {
+                "noteId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "processId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "workflowInstanceId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "taskId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                },
+                "actor": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "page": {
+            "type": "object",
+            "required": [
+              "pageSize",
+              "hasMore"
+            ],
+            "properties": {
+              "pageSize": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "nextCursor": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "hasMore": {
+                "type": "boolean"
+              },
+              "authorizedTotal": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "workflow_list_processes",
+      "description": "Workflow lifecycle operation",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "object",
+            "description": "Offset pagination. cursor is the decimal row offset returned as nextCursor; it is not a stable keyset cursor under concurrent writes.",
+            "properties": {
+              "cursor": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[0-9]+$"
+              },
+              "pageSize": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 25
+              }
+            },
+            "additionalProperties": false
+          },
+          "definitionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "workflowInstanceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "states": {
+            "type": "array",
+            "maxItems": 20,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "createdFrom": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdTo": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "sort": {
+            "enum": [
+              "createdAt:asc",
+              "createdAt:desc",
+              "updatedAt:asc",
+              "updatedAt:desc"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "processes",
+          "page"
+        ],
+        "properties": {
+          "processes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "processId",
+                "definitionId",
+                "workflowName",
+                "workflowVersion",
+                "processState",
+                "createdAt",
+                "updatedAt",
+                "canCancelInvocation"
+              ],
+              "properties": {
+                "processId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "workflowInstanceId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "featureRunId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "definitionId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "workflowName": {
+                  "type": "string"
+                },
+                "workflowVersion": {
+                  "type": "string"
+                },
+                "processState": {
+                  "type": "string"
+                },
+                "invocationState": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "invocationStateVersion": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "deadline": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "ownerDisplay": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "safeFailureSummary": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "featureState": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "vmState": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "vmGeneration": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "canCancelInvocation": {
+                  "type": "object",
+                  "required": [
+                    "allowed"
+                  ],
+                  "properties": {
+                    "allowed": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "canCancelFeature": {
+                  "type": "object",
+                  "required": [
+                    "allowed"
+                  ],
+                  "properties": {
+                    "allowed": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "page": {
+            "type": "object",
+            "required": [
+              "pageSize",
+              "hasMore"
+            ],
+            "properties": {
+              "pageSize": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "nextCursor": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "hasMore": {
+                "type": "boolean"
+              },
+              "authorizedTotal": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "workflow_get_process",
+      "description": "Workflow lifecycle operation",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "processId"
+        ],
+        "properties": {
+          "processId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "process",
+          "tasks",
+          "links"
+        ],
+        "properties": {
+          "process": {
+            "type": "object",
+            "required": [
+              "processId",
+              "definitionId",
+              "workflowName",
+              "workflowVersion",
+              "processState",
+              "createdAt",
+              "updatedAt",
+              "canCancelInvocation"
+            ],
+            "properties": {
+              "processId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "workflowInstanceId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "featureRunId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "definitionId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "workflowName": {
+                "type": "string"
+              },
+              "workflowVersion": {
+                "type": "string"
+              },
+              "processState": {
+                "type": "string"
+              },
+              "invocationState": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "invocationStateVersion": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "deadline": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "ownerDisplay": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "safeFailureSummary": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "featureState": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "vmState": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "vmGeneration": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "canCancelInvocation": {
+                "type": "object",
+                "required": [
+                  "allowed"
+                ],
+                "properties": {
+                  "allowed": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "canCancelFeature": {
+                "type": "object",
+                "required": [
+                  "allowed"
+                ],
+                "properties": {
+                  "allowed": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "taskId",
+                "state"
+              ],
+              "properties": {
+                "taskId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "taskAsstId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "state": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "links": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "result": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "feature": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "audit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "workflow_list_features",
+      "description": "Workflow lifecycle operation",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "object",
+            "description": "Offset pagination. cursor is the decimal row offset returned as nextCursor; it is not a stable keyset cursor under concurrent writes.",
+            "properties": {
+              "cursor": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[0-9]+$"
+              },
+              "pageSize": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 25
+              }
+            },
+            "additionalProperties": false
+          },
+          "states": {
+            "type": "array",
+            "maxItems": 20,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "holdsVm": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "features",
+          "page"
+        ],
+        "properties": {
+          "features": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "featureRunId",
+                "featureVersion",
+                "state",
+                "holdsVm",
+                "canCancelFeature"
+              ],
+              "properties": {
+                "featureRunId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "featureVersion": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "state": {
+                  "type": "string"
+                },
+                "holdsVm": {
+                  "type": "boolean"
+                },
+                "vmState": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "vmGeneration": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "activeWorkflowInstanceId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "canCancelFeature": {
+                  "type": "object",
+                  "required": [
+                    "allowed"
+                  ],
+                  "properties": {
+                    "allowed": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "page": {
+            "type": "object",
+            "required": [
+              "pageSize",
+              "hasMore"
+            ],
+            "properties": {
+              "pageSize": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "nextCursor": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "hasMore": {
+                "type": "boolean"
+              },
+              "authorizedTotal": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "workflow_get_feature",
+      "description": "Workflow lifecycle operation",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "featureRunId"
+        ],
+        "properties": {
+          "featureRunId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "featureRunId",
+          "featureVersion",
+          "state",
+          "holdsVm",
+          "canCancelFeature"
+        ],
+        "properties": {
+          "featureRunId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "featureVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string"
+          },
+          "holdsVm": {
+            "type": "boolean"
+          },
+          "vmState": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "vmGeneration": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "activeWorkflowInstanceId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "releasePending": {
+            "type": "boolean"
+          },
+          "releaseEvidence": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          },
+          "canCancelFeature": {
+            "type": "object",
+            "required": [
+              "allowed"
+            ],
+            "properties": {
+              "allowed": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "workflow_get_status",
+      "description": "Workflow lifecycle operation",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "workflowInstanceId"
+        ],
+        "properties": {
+          "workflowInstanceId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "workflowInstanceId",
+          "state",
+          "invocationStateVersion"
+        ],
+        "properties": {
+          "workflowInstanceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "type": "string"
+          },
+          "invocationStateVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cancellationRequested": {
+            "type": "boolean"
+          },
+          "executionStopped": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "workflow_get_result",
+      "description": "Workflow lifecycle operation",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "workflowInstanceId"
+        ],
+        "properties": {
+          "workflowInstanceId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "workflowInstanceId",
+          "state"
+        ],
+        "properties": {
+          "workflowInstanceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "type": "string"
+          },
+          "result": {
+            "type": [
+              "object",
+              "array",
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          },
+          "safeFailureSummary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "workflow_cancel",
+      "description": "Workflow lifecycle operation",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "workflowInstanceId"
+        ],
+        "properties": {
+          "workflowInstanceId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "allOf": [
+          {
+            "type": "object",
+            "required": [
+              "operationId",
+              "accepted",
+              "state"
+            ],
+            "properties": {
+              "operationId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "accepted": {
+                "type": "boolean"
+              },
+              "state": {
+                "type": "string"
+              },
+              "message": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "workflow_cancel_feature",
+      "description": "Workflow lifecycle operation",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "featureRunId",
+          "expectedVersion"
+        ],
+        "properties": {
+          "featureRunId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expectedVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "operationId",
+          "accepted",
+          "state",
+          "featureVersion",
+          "releasePending",
+          "vmReleased"
+        ],
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "accepted": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string"
+          },
+          "featureVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "releasePending": {
+            "type": "boolean"
+          },
+          "vmReleased": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "workflow_get_human_task_inbox_summary",
+      "description": "Workflow lifecycle operation",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "tabs"
+        ],
+        "properties": {
+          "tabs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "label",
+                "count"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "assignmentType": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "assignmentId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "workflow_list_human_tasks",
+      "description": "Workflow lifecycle operation",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "object",
+            "description": "Offset pagination. cursor is the decimal row offset returned as nextCursor; it is not a stable keyset cursor under concurrent writes.",
+            "properties": {
+              "cursor": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[0-9]+$"
+              },
+              "pageSize": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 25
+              }
+            },
+            "additionalProperties": false
+          },
+          "tabId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "includeClaimed": {
+            "type": "boolean",
+            "default": true
+          },
+          "includeClaimedByOthers": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "humanTasks",
+          "page"
+        ],
+        "properties": {
+          "humanTasks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "taskAsstId",
+                "taskId",
+                "processId",
+                "assignmentVersion",
+                "assignmentType",
+                "assignmentId",
+                "assignmentStatus",
+                "taskStatus",
+                "assignedAt",
+                "canClaim",
+                "canRelease",
+                "canComplete",
+                "readOnly"
+              ],
+              "properties": {
+                "taskAsstId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "taskId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "processId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "workflowInstanceId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "assignmentVersion": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "assignmentType": {
+                  "enum": [
+                    "USER",
+                    "ROLE"
+                  ]
+                },
+                "assignmentId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "assignmentLabel": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "assignmentStatus": {
+                  "enum": [
+                    "ASSIGNED",
+                    "CLAIMED",
+                    "COMPLETED",
+                    "CANCELLED"
+                  ]
+                },
+                "taskStatus": {
+                  "type": "string"
+                },
+                "assignedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "claimedBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "claimExpiresAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "deadline": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "category": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "prompt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "canClaim": {
+                  "type": "object",
+                  "required": [
+                    "allowed"
+                  ],
+                  "properties": {
+                    "allowed": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "canRelease": {
+                  "type": "object",
+                  "required": [
+                    "allowed"
+                  ],
+                  "properties": {
+                    "allowed": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "canComplete": {
+                  "type": "object",
+                  "required": [
+                    "allowed"
+                  ],
+                  "properties": {
+                    "allowed": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "readOnly": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "page": {
+            "type": "object",
+            "required": [
+              "pageSize",
+              "hasMore"
+            ],
+            "properties": {
+              "pageSize": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "nextCursor": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "hasMore": {
+                "type": "boolean"
+              },
+              "authorizedTotal": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "workflow_get_human_task",
+      "description": "Workflow lifecycle operation",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "taskAsstId"
+        ],
+        "properties": {
+          "taskAsstId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "task",
+          "ask",
+          "contextSummary"
+        ],
+        "properties": {
+          "task": {
+            "type": "object",
+            "required": [
+              "taskAsstId",
+              "taskId",
+              "processId",
+              "assignmentVersion",
+              "assignmentType",
+              "assignmentId",
+              "assignmentStatus",
+              "taskStatus",
+              "assignedAt",
+              "canClaim",
+              "canRelease",
+              "canComplete",
+              "readOnly"
+            ],
+            "properties": {
+              "taskAsstId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "taskId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "processId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "workflowInstanceId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "assignmentVersion": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "assignmentType": {
+                "enum": [
+                  "USER",
+                  "ROLE"
+                ]
+              },
+              "assignmentId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "assignmentLabel": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "assignmentStatus": {
+                "enum": [
+                  "ASSIGNED",
+                  "CLAIMED",
+                  "COMPLETED",
+                  "CANCELLED"
+                ]
+              },
+              "taskStatus": {
+                "type": "string"
+              },
+              "assignedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "claimedBy": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "claimExpiresAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "deadline": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "category": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prompt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "canClaim": {
+                "type": "object",
+                "required": [
+                  "allowed"
+                ],
+                "properties": {
+                  "allowed": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "canRelease": {
+                "type": "object",
+                "required": [
+                  "allowed"
+                ],
+                "properties": {
+                  "allowed": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "canComplete": {
+                "type": "object",
+                "required": [
+                  "allowed"
+                ],
+                "properties": {
+                  "allowed": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "readOnly": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "ask": {
+            "type": "object",
+            "required": [
+              "mode",
+              "prompt",
+              "required"
+            ],
+            "properties": {
+              "action": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "mode": {
+                "enum": [
+                  "approval",
+                  "confirm",
+                  "choice",
+                  "multiChoice",
+                  "text",
+                  "object"
+                ]
+              },
+              "prompt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "required": {
+                "type": "boolean"
+              },
+              "allowComment": {
+                "type": "boolean"
+              },
+              "commentRequired": {
+                "type": "boolean"
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "value"
+                  ],
+                  "properties": {
+                    "value": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "form": {
+                "type": "array"
+              },
+              "default": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            },
+            "additionalProperties": false
+          },
+          "contextSummary": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "workflow_claim_human_task",
+      "description": "Workflow lifecycle operation",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "taskAsstId",
+          "assignmentVersion"
+        ],
+        "properties": {
+          "taskAsstId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "assignmentVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "claimMinutes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120,
+            "default": 30
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "taskAsstId",
+          "assignmentVersion",
+          "assignmentStatus",
+          "claimExpiresAt"
+        ],
+        "properties": {
+          "taskAsstId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "assignmentVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "assignmentStatus": {
+            "const": "CLAIMED"
+          },
+          "claimExpiresAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "workflow_release_human_task",
+      "description": "Workflow lifecycle operation",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "taskAsstId",
+          "assignmentVersion"
+        ],
+        "properties": {
+          "taskAsstId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "assignmentVersion": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "taskAsstId",
+          "assignmentVersion",
+          "assignmentStatus"
+        ],
+        "properties": {
+          "taskAsstId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "assignmentVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "assignmentStatus": {
+            "const": "ASSIGNED"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "workflow_complete_human_task",
+      "description": "Workflow lifecycle operation",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "taskAsstId",
+          "assignmentVersion",
+          "decision"
+        ],
+        "properties": {
+          "taskAsstId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "assignmentVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "decision": {},
+          "comment": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "taskAsstId",
+          "assignmentVersion",
+          "assignmentStatus",
+          "completionId",
+          "completionRecorded"
+        ],
+        "properties": {
+          "taskAsstId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "assignmentVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "assignmentStatus": {
+            "const": "COMPLETED"
+          },
+          "completionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "completionRecorded": {
+            "const": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true
+      }
+    },
+    {
+      "name": "workflow_rule_test",
+      "description": "Evaluate a rule using the Rust workflow rule engine for Portal rule testing.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "ruleBody",
+          "inputContext"
+        ],
+        "properties": {
+          "ruleBody": {
+            "type": "object",
+            "description": "Rule definition to evaluate."
+          },
+          "inputContext": {
+            "type": "object",
+            "description": "Input values passed to the rule."
+          },
+          "expectedResult": {
+            "type": "boolean"
+          },
+          "testMode": {
+            "enum": [
+              "conditions",
+              "full"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "executor",
+          "passed",
+          "success",
+          "mutatedContext"
+        ],
+        "properties": {
+          "executor": {
+            "const": "rust"
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "expectedResult": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "mutatedContext": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      }
+    }
+  ]
+}

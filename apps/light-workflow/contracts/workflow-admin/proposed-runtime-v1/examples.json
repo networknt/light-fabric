@@ -1,0 +1,228 @@
+{
+  "workflow_start": {
+    "input": {
+      "workflowDefinitionId": "00000000-0000-4000-8000-000000000001",
+      "input": {},
+      "idempotencyKey": "start-example-001"
+    },
+    "output": {
+      "accepted": true,
+      "workflowInstanceId": "00000000-0000-4000-8000-000000000003",
+      "processId": "00000000-0000-4000-8000-000000000004",
+      "state": "WAITING",
+      "invocationStateVersion": 1,
+      "idempotencyKey": "start-example-001",
+      "initialTaskId": "00000000-0000-4000-8000-000000000005"
+    }
+  },
+  "workflow_decide_tool_access": {
+    "input": {
+      "taskAsstId": "00000000-0000-4000-8000-000000000006",
+      "assignmentVersion": 2,
+      "requestId": "00000000-0000-4000-8000-000000000007",
+      "requestDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "decision": "APPROVE",
+      "idempotencyKey": "decision-example-001"
+    },
+    "output": {
+      "decisionId": "00000000-0000-4000-8000-000000000008",
+      "requestId": "00000000-0000-4000-8000-000000000007",
+      "taskAsstId": "00000000-0000-4000-8000-000000000006",
+      "state": "PENDING_DELIVERY",
+      "assignmentVersion": 3,
+      "portalCommittedAt": null
+    }
+  },
+  "workflow_delete_process": {
+    "input": {
+      "processId": "00000000-0000-4000-8000-000000000021",
+      "expectedLifecycleVersion": 4,
+      "reason": "completed fixture cleanup",
+      "idempotencyKey": "delete-fixture-001"
+    },
+    "output": {
+      "operationId": "00000000-0000-4000-8000-000000000022",
+      "processId": "00000000-0000-4000-8000-000000000021",
+      "lifecycleVersion": 5,
+      "logicalDeletion": "RECORDED",
+      "artifactCleanup": "PENDING",
+      "artifacts": {
+        "pending": 1,
+        "failed": 0,
+        "deleted": 0,
+        "legalHold": 0,
+        "retained": 0
+      }
+    }
+  },
+  "workflow_get_task": {
+    "input": {
+      "taskId": "00000000-0000-4000-8000-000000000023"
+    },
+    "output": {
+      "taskId": "00000000-0000-4000-8000-000000000023",
+      "processId": "00000000-0000-4000-8000-000000000021",
+      "workflowInstanceId": "00000000-0000-4000-8000-000000000024",
+      "workflowTaskId": "review",
+      "type": "human",
+      "state": "COMPLETED",
+      "taskVersion": 2,
+      "startedAt": "2026-09-25T10:00:00Z",
+      "completedAt": "2026-09-25T10:01:00Z",
+      "deadline": null,
+      "resultCode": "APPROVED",
+      "effectState": "none",
+      "assignments": []
+    }
+  },
+  "workflow_add_process_note": {
+    "input": {
+      "processId": "00000000-0000-4000-8000-000000000021",
+      "taskId": "00000000-0000-4000-8000-000000000023",
+      "text": "Operator reviewed the outcome.",
+      "idempotencyKey": "note-fixture-001"
+    },
+    "output": {
+      "noteId": "00000000-0000-4000-8000-000000000025",
+      "processId": "00000000-0000-4000-8000-000000000021",
+      "workflowInstanceId": "00000000-0000-4000-8000-000000000024",
+      "taskId": "00000000-0000-4000-8000-000000000023",
+      "text": "Operator reviewed the outcome.",
+      "actor": "fixture-user",
+      "createdAt": "2026-09-25T10:02:00Z"
+    }
+  },
+  "workflow_list_audit": {
+    "input": {
+      "processId": "00000000-0000-4000-8000-000000000004",
+      "page": {
+        "pageSize": 25
+      }
+    },
+    "output": {
+      "entries": [
+        {
+          "entryId": "00000000-0000-4000-8000-000000000013",
+          "kind": "OPERATOR_NOTE",
+          "at": "2026-09-24T12:00:00Z",
+          "safeSummary": "Operator follow-up"
+        }
+      ],
+      "nextCursor": null
+    }
+  },
+  "getCurrentWorkflowRoles": {
+    "input": {},
+    "output": {
+      "hostId": "00000000-0000-4000-8000-000000000015",
+      "userId": "00000000-0000-4000-8000-000000000016",
+      "currentRoleIds": [
+        "genai-admin"
+      ],
+      "checkedAt": "2026-09-24T12:00:00Z",
+      "authority": "portal-current-role-membership"
+    }
+  },
+  "getWorkflowToolAccessRequestForExecution": {
+    "input": {
+      "hostId": "00000000-0000-4000-8000-000000000015",
+      "requestId": "00000000-0000-4000-8000-000000000007",
+      "requestDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "output": {
+      "requestId": "00000000-0000-4000-8000-000000000007",
+      "requestDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "requestVersion": 1,
+      "status": "REQUESTED",
+      "requesterSubject": "fixture-requester",
+      "approvalDefinitionDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  },
+  "deliverWorkflowToolAccessDecision": {
+    "input": {
+      "hostId": "00000000-0000-4000-8000-000000000015",
+      "decisionId": "00000000-0000-4000-8000-000000000008",
+      "requestId": "00000000-0000-4000-8000-000000000007",
+      "requestDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "acceptedInstanceId": "00000000-0000-4000-8000-000000000003",
+      "taskId": "00000000-0000-4000-8000-000000000005",
+      "taskAsstId": "00000000-0000-4000-8000-000000000006",
+      "decision": "APPROVE",
+      "approverSubject": "fixture-approver",
+      "payloadDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "output": {
+      "decisionId": "00000000-0000-4000-8000-000000000008",
+      "requestId": "00000000-0000-4000-8000-000000000007",
+      "outcome": "GRANTED",
+      "requestVersion": 3,
+      "committedAt": "2026-09-24T12:01:00Z"
+    }
+  },
+  "TrustedStartContext": {
+    "hostId": "00000000-0000-4000-8000-000000000015",
+    "subject": "fixture-user",
+    "bindingId": "00000000-0000-4000-8000-000000000002",
+    "definitionDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "profile": "portal_execution",
+    "callerClaimsDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "authorityExpiresAt": "2026-09-24T13:00:00Z",
+    "budgetVersion": 0
+  },
+  "PrivateExecutionProfile": {
+    "version": 1,
+    "profile": "portal_execution",
+    "waitPolicy": "durable_until_explicit_timeout_or_terminal",
+    "executionAuthority": "bounded_renewable_recheck_on_resume",
+    "budgetAccounting": "durable_consumed_total_never_reset_on_renewal",
+    "explicitTaskDeadlineAt": null
+  },
+  "RoleMembershipDecision": {
+    "hostId": "00000000-0000-4000-8000-000000000015",
+    "userId": "00000000-0000-4000-8000-000000000016",
+    "roleId": "genai-admin",
+    "current": true,
+    "checkedAt": "2026-09-24T12:00:00Z",
+    "authority": "portal-current-role-membership"
+  },
+  "ApprovalServiceEvidence": {
+    "iss": "light-workflow-approval",
+    "aud": "portal-workflow-approval",
+    "hostId": "00000000-0000-4000-8000-000000000015",
+    "requestId": "00000000-0000-4000-8000-000000000007",
+    "operation": "deliverWorkflowToolAccessDecision",
+    "sub": "fixture-approver",
+    "actorEvidenceDigest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "iat": 1790251260,
+    "exp": 1790251560,
+    "jti": "00000000-0000-4000-8000-000000000017",
+    "acceptedInstanceId": "00000000-0000-4000-8000-000000000003",
+    "decisionId": "00000000-0000-4000-8000-000000000008"
+  },
+  "workflow_list_process_notes": {
+    "input": {
+      "processId": "00000000-0000-4000-8000-000000000021",
+      "page": {
+        "pageSize": 25
+      }
+    },
+    "output": {
+      "notes": [
+        {
+          "noteId": "00000000-0000-4000-8000-000000000025",
+          "processId": "00000000-0000-4000-8000-000000000021",
+          "workflowInstanceId": "00000000-0000-4000-8000-000000000024",
+          "taskId": "00000000-0000-4000-8000-000000000023",
+          "text": "Operator reviewed the outcome.",
+          "actor": "fixture-user",
+          "createdAt": "2026-09-25T10:02:00Z"
+        }
+      ],
+      "page": {
+        "pageSize": 1,
+        "nextCursor": null,
+        "hasMore": false
+      }
+    }
+  }
+}

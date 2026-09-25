@@ -1,7 +1,9 @@
 actionAuthorization: ${workflow.actionAuthorization:null}
-credentialBroker: ${workflow.credentialBroker:null}
+approvalPortal: ${workflow.approvalPortal:null}
+longKeyringFile: ${workflow.longKeyringFile:}
 invocation:
   allowedCallerServiceIds: ${workflow.invocation.allowedCallerServiceIds:[com.networknt.portal.gateway-1.0.0]}
+  allowedCallerEnvironments: ${workflow.invocation.allowedCallerEnvironments:[]}
   waitListenerConnections: ${workflow.invocation.waitListenerConnections:8}
   ignoreUserJwtExpiry: ${workflow.invocation.ignoreUserJwtExpiry:false}
 execution:

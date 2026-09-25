@@ -1,22 +1,897 @@
 {
-  "contractVersion":"0.2.0-restoration",
-  "protocolTarget":"2026-07-28",
-  "identitySource":"trustedInvocationContext",
+  "contractVersion": "0.3.0-definition-start",
+  "protocolTarget": "2026-07-28",
+  "identitySource": "trustedInvocationContext",
   "tools": [
-    {"name":"workflow_list_processes","permission":"workflow.process.read","sideEffect":false,"inputSchema":{"type":"object","properties":{"page":{"$ref":"schemas.json#/$defs/PageInput"},"definitionId":{"$ref":"schemas.json#/$defs/Uuid"},"states":{"type":"array","maxItems":20,"uniqueItems":true,"items":{"type":"string"}},"createdFrom":{"$ref":"schemas.json#/$defs/Timestamp"},"createdTo":{"$ref":"schemas.json#/$defs/Timestamp"},"sort":{"enum":["createdAt:asc","createdAt:desc","updatedAt:asc","updatedAt:desc"]}},"additionalProperties":false},"outputSchema":{"type":"object","required":["processes","page"],"properties":{"processes":{"type":"array","items":{"$ref":"schemas.json#/$defs/ProcessSummary"}},"page":{"$ref":"schemas.json#/$defs/PageMeta"}},"additionalProperties":false}},
-    {"name":"workflow_get_process","permission":"workflow.process.read","sideEffect":false,"inputSchema":{"type":"object","required":["processId"],"properties":{"processId":{"$ref":"schemas.json#/$defs/Uuid"}},"additionalProperties":false},"outputSchema":{"type":"object","required":["process","tasks","links"],"properties":{"process":{"$ref":"schemas.json#/$defs/ProcessSummary"},"tasks":{"type":"array","items":{"type":"object","required":["taskId","state"],"properties":{"taskId":{"$ref":"schemas.json#/$defs/Uuid"},"taskAsstId":{"anyOf":[{"$ref":"schemas.json#/$defs/Uuid"},{"type":"null"}]},"state":{"type":"string"},"type":{"type":"string"}},"additionalProperties":false}},"links":{"type":"object","properties":{"status":{"type":["string","null"]},"result":{"type":["string","null"]},"feature":{"type":["string","null"]},"audit":{"type":["string","null"]}},"additionalProperties":false}},"additionalProperties":false}},
-    {"name":"workflow_list_features","permission":"workflow.feature.read","sideEffect":false,"inputSchema":{"type":"object","properties":{"page":{"$ref":"schemas.json#/$defs/PageInput"},"states":{"type":"array","maxItems":20,"uniqueItems":true,"items":{"type":"string"}},"holdsVm":{"type":"boolean"}},"additionalProperties":false},"outputSchema":{"type":"object","required":["features","page"],"properties":{"features":{"type":"array","items":{"type":"object","required":["featureRunId","featureVersion","state","holdsVm","canCancelFeature"],"properties":{"featureRunId":{"$ref":"schemas.json#/$defs/Uuid"},"featureVersion":{"type":"integer","minimum":0},"state":{"type":"string"},"holdsVm":{"type":"boolean"},"vmState":{"type":["string","null"]},"vmGeneration":{"type":["integer","null"],"minimum":0},"activeWorkflowInstanceId":{"anyOf":[{"$ref":"schemas.json#/$defs/Uuid"},{"type":"null"}]},"canCancelFeature":{"$ref":"schemas.json#/$defs/ActionHint"}},"additionalProperties":false}},"page":{"$ref":"schemas.json#/$defs/PageMeta"}},"additionalProperties":false}},
-    {"name":"workflow_get_feature","permission":"workflow.feature.read","sideEffect":false,"inputSchema":{"type":"object","required":["featureRunId"],"properties":{"featureRunId":{"$ref":"schemas.json#/$defs/Uuid"}},"additionalProperties":false},"outputSchema":{"type":"object","required":["featureRunId","featureVersion","state","holdsVm","canCancelFeature"],"properties":{"featureRunId":{"$ref":"schemas.json#/$defs/Uuid"},"featureVersion":{"type":"integer","minimum":0},"state":{"type":"string"},"holdsVm":{"type":"boolean"},"vmState":{"type":["string","null"]},"vmGeneration":{"type":["integer","null"],"minimum":0},"activeWorkflowInstanceId":{"anyOf":[{"$ref":"schemas.json#/$defs/Uuid"},{"type":"null"}]},"releasePending":{"type":"boolean"},"releaseEvidence":{"type":["object","null"],"additionalProperties":true},"canCancelFeature":{"$ref":"schemas.json#/$defs/ActionHint"}},"additionalProperties":false}},
-    {"name":"workflow_get_status","permission":"workflow.instance.read","sideEffect":false,"inputSchema":{"type":"object","required":["workflowInstanceId"],"properties":{"workflowInstanceId":{"$ref":"schemas.json#/$defs/Uuid"}},"additionalProperties":false},"outputSchema":{"type":"object","required":["workflowInstanceId","state","invocationStateVersion"],"properties":{"workflowInstanceId":{"$ref":"schemas.json#/$defs/Uuid"},"state":{"type":"string"},"invocationStateVersion":{"type":"integer","minimum":0},"cancellationRequested":{"type":"boolean"},"executionStopped":{"type":"boolean"}},"additionalProperties":false}},
-    {"name":"workflow_get_result","permission":"workflow.result.read","sideEffect":false,"inputSchema":{"type":"object","required":["workflowInstanceId"],"properties":{"workflowInstanceId":{"$ref":"schemas.json#/$defs/Uuid"}},"additionalProperties":false},"outputSchema":{"type":"object","required":["workflowInstanceId","state"],"properties":{"workflowInstanceId":{"$ref":"schemas.json#/$defs/Uuid"},"state":{"type":"string"},"result":{"type":["object","array","string","number","boolean","null"]},"safeFailureSummary":{"type":["string","null"]}},"additionalProperties":false}},
-    {"name":"workflow_cancel","permission":"workflow.instance.cancel","sideEffect":true,"inputSchema":{"type":"object","required":["workflowInstanceId"],"properties":{"workflowInstanceId":{"$ref":"schemas.json#/$defs/Uuid"},"reason":{"type":"string","minLength":1,"maxLength":500}},"additionalProperties":false},"outputSchema":{"allOf":[{"$ref":"schemas.json#/$defs/MutationResult"}]}},
-    {"name":"workflow_cancel_feature","permission":"workflow.feature.cancel","sideEffect":true,"inputSchema":{"type":"object","required":["featureRunId","expectedVersion"],"properties":{"featureRunId":{"$ref":"schemas.json#/$defs/Uuid"},"expectedVersion":{"type":"integer","minimum":0},"reason":{"type":"string","minLength":1,"maxLength":500}},"additionalProperties":false},"outputSchema":{"type":"object","required":["operationId","accepted","state","featureVersion","releasePending","vmReleased"],"properties":{"operationId":{"$ref":"schemas.json#/$defs/Uuid"},"accepted":{"type":"boolean"},"state":{"type":"string"},"featureVersion":{"type":"integer","minimum":0},"releasePending":{"type":"boolean"},"vmReleased":{"type":"boolean"}},"additionalProperties":false}},
-    {"name":"workflow_get_human_task_inbox_summary","permission":"workflow.human_task.read","sideEffect":false,"inputSchema":{"type":"object","additionalProperties":false},"outputSchema":{"type":"object","required":["tabs"],"properties":{"tabs":{"type":"array","items":{"type":"object","required":["id","label","count"],"properties":{"id":{"type":"string"},"label":{"type":"string"},"assignmentType":{"type":["string","null"]},"assignmentId":{"type":["string","null"]},"count":{"type":"integer","minimum":0}},"additionalProperties":false}}},"additionalProperties":false}},
-    {"name":"workflow_list_human_tasks","permission":"workflow.human_task.read","sideEffect":false,"inputSchema":{"type":"object","properties":{"page":{"$ref":"schemas.json#/$defs/PageInput"},"tabId":{"type":"string","minLength":1},"includeClaimed":{"type":"boolean","default":true},"includeClaimedByOthers":{"type":"boolean","default":false}},"additionalProperties":false},"outputSchema":{"type":"object","required":["humanTasks","page"],"properties":{"humanTasks":{"type":"array","items":{"$ref":"schemas.json#/$defs/HumanTaskSummary"}},"page":{"$ref":"schemas.json#/$defs/PageMeta"}},"additionalProperties":false}},
-    {"name":"workflow_get_human_task","permission":"workflow.human_task.read","sideEffect":false,"inputSchema":{"type":"object","required":["taskAsstId"],"properties":{"taskAsstId":{"$ref":"schemas.json#/$defs/Uuid"}},"additionalProperties":false},"outputSchema":{"type":"object","required":["task","ask","contextSummary"],"properties":{"task":{"$ref":"schemas.json#/$defs/HumanTaskSummary"},"ask":{"$ref":"schemas.json#/$defs/Ask"},"contextSummary":{"type":"object","additionalProperties":true}},"additionalProperties":false}},
-    {"name":"workflow_claim_human_task","permission":"workflow.human_task.claim","sideEffect":true,"inputSchema":{"type":"object","required":["taskAsstId","assignmentVersion"],"properties":{"taskAsstId":{"$ref":"schemas.json#/$defs/Uuid"},"assignmentVersion":{"type":"integer","minimum":0},"claimMinutes":{"type":"integer","minimum":1,"maximum":120,"default":30}},"additionalProperties":false},"outputSchema":{"type":"object","required":["taskAsstId","assignmentVersion","assignmentStatus","claimExpiresAt"],"properties":{"taskAsstId":{"$ref":"schemas.json#/$defs/Uuid"},"assignmentVersion":{"type":"integer","minimum":0},"assignmentStatus":{"const":"CLAIMED"},"claimExpiresAt":{"$ref":"schemas.json#/$defs/Timestamp"}},"additionalProperties":false}},
-    {"name":"workflow_release_human_task","permission":"workflow.human_task.release","sideEffect":true,"inputSchema":{"type":"object","required":["taskAsstId","assignmentVersion"],"properties":{"taskAsstId":{"$ref":"schemas.json#/$defs/Uuid"},"assignmentVersion":{"type":"integer","minimum":0}},"additionalProperties":false},"outputSchema":{"type":"object","required":["taskAsstId","assignmentVersion","assignmentStatus"],"properties":{"taskAsstId":{"$ref":"schemas.json#/$defs/Uuid"},"assignmentVersion":{"type":"integer","minimum":0},"assignmentStatus":{"const":"ASSIGNED"}},"additionalProperties":false}},
-    {"name":"workflow_complete_human_task","permission":"workflow.human_task.complete","sideEffect":true,"inputSchema":{"type":"object","required":["taskAsstId","assignmentVersion","decision"],"properties":{"taskAsstId":{"$ref":"schemas.json#/$defs/Uuid"},"assignmentVersion":{"type":"integer","minimum":0},"decision":{},"comment":{"type":"string","maxLength":4000},"idempotencyKey":{"type":"string","minLength":8,"maxLength":128}},"additionalProperties":false},"outputSchema":{"type":"object","required":["taskAsstId","assignmentVersion","assignmentStatus","completionId","completionRecorded"],"properties":{"taskAsstId":{"$ref":"schemas.json#/$defs/Uuid"},"assignmentVersion":{"type":"integer","minimum":0},"assignmentStatus":{"const":"COMPLETED"},"completionId":{"$ref":"schemas.json#/$defs/Uuid"},"completionRecorded":{"const":true}},"additionalProperties":false}},
-    {"name":"workflow_rule_test","permission":"workflow.rule.test","sideEffect":false,"description":"Evaluate a rule using the Rust workflow rule engine for Portal rule testing.","inputSchema":{"type":"object","required":["ruleBody","inputContext"],"properties":{"ruleBody":{"type":"object","description":"Rule definition to evaluate."},"inputContext":{"type":"object","description":"Input values passed to the rule."},"expectedResult":{"type":"boolean"},"testMode":{"enum":["conditions","full"]}},"additionalProperties":false},"outputSchema":{"type":"object","required":["executor","passed","success","mutatedContext"],"properties":{"executor":{"const":"rust"},"passed":{"type":"boolean"},"expectedResult":{"type":["boolean","null"]},"success":{"type":"boolean"},"mutatedContext":{"type":"object"}},"additionalProperties":false}}
+    {
+      "name": "workflow_start",
+      "description": "Start a saved workflow definition",
+      "permission": "workflow.instance.start",
+      "sideEffect": true,
+      "inputSchema": {
+        "$ref": "schemas.json#/$defs/StartInput"
+      },
+      "outputSchema": {
+        "$ref": "schemas.json#/$defs/StartReceipt"
+      }
+    },
+    {
+      "name": "workflow_decide_tool_access",
+      "description": "Reserve a claimed Tool access approval decision for Portal grant delivery",
+      "permission": "workflow.tool_access.decide",
+      "sideEffect": true,
+      "inputSchema": {"$ref": "schemas.json#/$defs/DecisionInput"},
+      "outputSchema": {"$ref": "schemas.json#/$defs/DecisionReceipt"}
+    },
+    {"name":"workflow_delete_process","description":"Logically delete an owned terminal native process and schedule eligible artifact cleanup","permission":"workflow.process.delete","sideEffect":true,"inputSchema":{"$ref":"schemas.json#/$defs/NativeDeleteInput"},"outputSchema":{"$ref":"schemas.json#/$defs/NativeDeleteReceipt"}},
+    {"name":"workflow_get_task","description":"Read a safe task detail for an owned native process","permission":"workflow.process.read","sideEffect":false,"inputSchema":{"$ref":"schemas.json#/$defs/NativeTaskGetInput"},"outputSchema":{"$ref":"schemas.json#/$defs/NativeTaskDetail"}},
+    {"name":"workflow_add_process_note","description":"Append an operator note to an owned native process","permission":"workflow.process.note","sideEffect":true,"inputSchema":{"$ref":"schemas.json#/$defs/NativeNoteInput"},"outputSchema":{"$ref":"schemas.json#/$defs/NativeNote"}},
+    {"name":"workflow_list_process_notes","description":"Read operator notes for an owned native process","permission":"workflow.process.read","sideEffect":false,"inputSchema":{"$ref":"schemas.json#/$defs/NativeNotesQuery"},"outputSchema":{"$ref":"schemas.json#/$defs/NativeNotesPage"}},
+    {
+      "name": "workflow_list_processes",
+      "permission": "workflow.process.read",
+      "sideEffect": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "$ref": "schemas.json#/$defs/PageInput"
+          },
+          "definitionId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          },
+          "workflowInstanceId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          },
+          "states": {
+            "type": "array",
+            "maxItems": 20,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "createdFrom": {
+            "$ref": "schemas.json#/$defs/Timestamp"
+          },
+          "createdTo": {
+            "$ref": "schemas.json#/$defs/Timestamp"
+          },
+          "sort": {
+            "enum": [
+              "createdAt:asc",
+              "createdAt:desc",
+              "updatedAt:asc",
+              "updatedAt:desc"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "processes",
+          "page"
+        ],
+        "properties": {
+          "processes": {
+            "type": "array",
+            "items": {
+              "$ref": "schemas.json#/$defs/ProcessSummary"
+            }
+          },
+          "page": {
+            "$ref": "schemas.json#/$defs/PageMeta"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "workflow_get_process",
+      "permission": "workflow.process.read",
+      "sideEffect": false,
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "processId"
+        ],
+        "properties": {
+          "processId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "process",
+          "tasks",
+          "links"
+        ],
+        "properties": {
+          "process": {
+            "$ref": "schemas.json#/$defs/ProcessSummary"
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "taskId",
+                "state"
+              ],
+              "properties": {
+                "taskId": {
+                  "$ref": "schemas.json#/$defs/Uuid"
+                },
+                "taskAsstId": {
+                  "anyOf": [
+                    {
+                      "$ref": "schemas.json#/$defs/Uuid"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "state": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "links": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "result": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "feature": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "audit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "workflow_list_features",
+      "permission": "workflow.feature.read",
+      "sideEffect": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "$ref": "schemas.json#/$defs/PageInput"
+          },
+          "states": {
+            "type": "array",
+            "maxItems": 20,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "holdsVm": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "features",
+          "page"
+        ],
+        "properties": {
+          "features": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "featureRunId",
+                "featureVersion",
+                "state",
+                "holdsVm",
+                "canCancelFeature"
+              ],
+              "properties": {
+                "featureRunId": {
+                  "$ref": "schemas.json#/$defs/Uuid"
+                },
+                "featureVersion": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "state": {
+                  "type": "string"
+                },
+                "holdsVm": {
+                  "type": "boolean"
+                },
+                "vmState": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "vmGeneration": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "activeWorkflowInstanceId": {
+                  "anyOf": [
+                    {
+                      "$ref": "schemas.json#/$defs/Uuid"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "canCancelFeature": {
+                  "$ref": "schemas.json#/$defs/ActionHint"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "page": {
+            "$ref": "schemas.json#/$defs/PageMeta"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "workflow_get_feature",
+      "permission": "workflow.feature.read",
+      "sideEffect": false,
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "featureRunId"
+        ],
+        "properties": {
+          "featureRunId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "featureRunId",
+          "featureVersion",
+          "state",
+          "holdsVm",
+          "canCancelFeature"
+        ],
+        "properties": {
+          "featureRunId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          },
+          "featureVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string"
+          },
+          "holdsVm": {
+            "type": "boolean"
+          },
+          "vmState": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "vmGeneration": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "activeWorkflowInstanceId": {
+            "anyOf": [
+              {
+                "$ref": "schemas.json#/$defs/Uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "releasePending": {
+            "type": "boolean"
+          },
+          "releaseEvidence": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          },
+          "canCancelFeature": {
+            "$ref": "schemas.json#/$defs/ActionHint"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "workflow_get_status",
+      "permission": "workflow.instance.read",
+      "sideEffect": false,
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "workflowInstanceId"
+        ],
+        "properties": {
+          "workflowInstanceId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "workflowInstanceId",
+          "state",
+          "invocationStateVersion"
+        ],
+        "properties": {
+          "workflowInstanceId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          },
+          "state": {
+            "type": "string"
+          },
+          "invocationStateVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cancellationRequested": {
+            "type": "boolean"
+          },
+          "executionStopped": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "workflow_get_result",
+      "permission": "workflow.result.read",
+      "sideEffect": false,
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "workflowInstanceId"
+        ],
+        "properties": {
+          "workflowInstanceId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "workflowInstanceId",
+          "state"
+        ],
+        "properties": {
+          "workflowInstanceId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          },
+          "state": {
+            "type": "string"
+          },
+          "result": {
+            "type": [
+              "object",
+              "array",
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          },
+          "safeFailureSummary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "workflow_cancel",
+      "permission": "workflow.instance.cancel",
+      "sideEffect": true,
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "workflowInstanceId"
+        ],
+        "properties": {
+          "workflowInstanceId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "allOf": [
+          {
+            "$ref": "schemas.json#/$defs/MutationResult"
+          }
+        ]
+      }
+    },
+    {
+      "name": "workflow_cancel_feature",
+      "permission": "workflow.feature.cancel",
+      "sideEffect": true,
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "featureRunId",
+          "expectedVersion"
+        ],
+        "properties": {
+          "featureRunId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          },
+          "expectedVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "operationId",
+          "accepted",
+          "state",
+          "featureVersion",
+          "releasePending",
+          "vmReleased"
+        ],
+        "properties": {
+          "operationId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          },
+          "accepted": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string"
+          },
+          "featureVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "releasePending": {
+            "type": "boolean"
+          },
+          "vmReleased": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "workflow_get_human_task_inbox_summary",
+      "permission": "workflow.human_task.read",
+      "sideEffect": false,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "tabs"
+        ],
+        "properties": {
+          "tabs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "label",
+                "count"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "assignmentType": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "assignmentId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "workflow_list_human_tasks",
+      "permission": "workflow.human_task.read",
+      "sideEffect": false,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "$ref": "schemas.json#/$defs/PageInput"
+          },
+          "tabId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "includeClaimed": {
+            "type": "boolean",
+            "default": true
+          },
+          "includeClaimedByOthers": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "humanTasks",
+          "page"
+        ],
+        "properties": {
+          "humanTasks": {
+            "type": "array",
+            "items": {
+              "$ref": "schemas.json#/$defs/HumanTaskSummary"
+            }
+          },
+          "page": {
+            "$ref": "schemas.json#/$defs/PageMeta"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "workflow_get_human_task",
+      "permission": "workflow.human_task.read",
+      "sideEffect": false,
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "taskAsstId"
+        ],
+        "properties": {
+          "taskAsstId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "task",
+          "ask",
+          "contextSummary"
+        ],
+        "properties": {
+          "task": {
+            "$ref": "schemas.json#/$defs/HumanTaskSummary"
+          },
+          "ask": {
+            "$ref": "schemas.json#/$defs/Ask"
+          },
+          "contextSummary": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "workflow_claim_human_task",
+      "permission": "workflow.human_task.claim",
+      "sideEffect": true,
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "taskAsstId",
+          "assignmentVersion"
+        ],
+        "properties": {
+          "taskAsstId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          },
+          "assignmentVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "claimMinutes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120,
+            "default": 30
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "taskAsstId",
+          "assignmentVersion",
+          "assignmentStatus",
+          "claimExpiresAt"
+        ],
+        "properties": {
+          "taskAsstId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          },
+          "assignmentVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "assignmentStatus": {
+            "const": "CLAIMED"
+          },
+          "claimExpiresAt": {
+            "$ref": "schemas.json#/$defs/Timestamp"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "workflow_release_human_task",
+      "permission": "workflow.human_task.release",
+      "sideEffect": true,
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "taskAsstId",
+          "assignmentVersion"
+        ],
+        "properties": {
+          "taskAsstId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          },
+          "assignmentVersion": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "taskAsstId",
+          "assignmentVersion",
+          "assignmentStatus"
+        ],
+        "properties": {
+          "taskAsstId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          },
+          "assignmentVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "assignmentStatus": {
+            "const": "ASSIGNED"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "workflow_complete_human_task",
+      "permission": "workflow.human_task.complete",
+      "sideEffect": true,
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "taskAsstId",
+          "assignmentVersion",
+          "decision"
+        ],
+        "properties": {
+          "taskAsstId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          },
+          "assignmentVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "decision": {},
+          "comment": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "taskAsstId",
+          "assignmentVersion",
+          "assignmentStatus",
+          "completionId",
+          "completionRecorded"
+        ],
+        "properties": {
+          "taskAsstId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          },
+          "assignmentVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "assignmentStatus": {
+            "const": "COMPLETED"
+          },
+          "completionId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          },
+          "completionRecorded": {
+            "const": true
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "workflow_rule_test",
+      "permission": "workflow.rule.test",
+      "sideEffect": false,
+      "description": "Evaluate a rule using the Rust workflow rule engine for Portal rule testing.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "ruleBody",
+          "inputContext"
+        ],
+        "properties": {
+          "ruleBody": {
+            "type": "object",
+            "description": "Rule definition to evaluate."
+          },
+          "inputContext": {
+            "type": "object",
+            "description": "Input values passed to the rule."
+          },
+          "expectedResult": {
+            "type": "boolean"
+          },
+          "testMode": {
+            "enum": [
+              "conditions",
+              "full"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "executor",
+          "passed",
+          "success",
+          "mutatedContext"
+        ],
+        "properties": {
+          "executor": {
+            "const": "rust"
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "expectedResult": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "mutatedContext": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
   ]
 }

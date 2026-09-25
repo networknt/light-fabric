@@ -1,0 +1,26 @@
+{
+  "contractVersion": "step09-additive-v1",
+  "serviceId": "com.networknt.workflow-1.0.0",
+  "path": "/mcp",
+  "apiType": "mcp",
+  "backendMcpProtocol": "stateless",
+  "backendCredentialMode": "workflow",
+  "sessionIndependent": true,
+  "tools": [
+    {"name":"workflow_start","permission":"workflow.instance.start","endpoint":"workflow_start@call"},
+    {"name":"workflow_decide_tool_access","permission":"workflow.tool_access.decide","endpoint":"workflow_decide_tool_access@call"},
+    {"name":"workflow_delete_process","permission":"workflow.process.delete","endpoint":"workflow_delete_process@call"},
+    {"name":"workflow_get_task","permission":"workflow.process.read","endpoint":"workflow_get_task@call"},
+    {"name":"workflow_add_process_note","permission":"workflow.process.note","endpoint":"workflow_add_process_note@call"},
+    {"name":"workflow_list_process_notes","permission":"workflow.process.read","endpoint":"workflow_list_process_notes@call"}
+  ],
+  "restrictedRoutes": [
+    {"method":"POST","path":"/oauth2/{providerId}/long/v1/bindings","target":"light-oauth","authentication":"confidential-client"},
+    {"method":"POST","path":"/oauth2/{providerId}/long/v1/bindings/{bindingId}/activate","target":"light-oauth","authentication":"confidential-client"},
+    {"method":"POST","path":"/oauth2/{providerId}/long/v1/bindings/{bindingId}/close","target":"light-oauth","authentication":"confidential-client"},
+    {"method":"POST","path":"/oauth2/{providerId}/token","target":"light-oauth","authentication":"confidential-client"},
+    {"method":"POST","path":"/oauth2/{providerId}/workflow/bindings/{bindingId}/revoke","target":"light-oauth","authentication":"authorized-portal-actor"},
+    {"method":"GET","path":"/portal/query","target":"portal-bff-loc","authentication":"approval-service-and-actor"},
+    {"method":"POST","path":"/portal/command","target":"portal-bff-loc","authentication":"approval-service-and-actor"}
+  ]
+}

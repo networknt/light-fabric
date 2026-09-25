@@ -74,7 +74,10 @@ pub trait WorkflowJobAuthorizer: Send + Sync {
         false
     }
     async fn authorized(&self, host: Uuid, job: Uuid) -> Result<bool>;
-    async fn pending(&self, _host: Uuid) -> Result<Vec<light_client::workflow_job_transport::Job>> {
+    async fn pending(
+        &self,
+        _host: Uuid,
+    ) -> Result<Vec<light_client::workflow_job_transport::JobDelivery>> {
         Ok(Vec::new())
     }
     async fn report(&self, _report: &light_client::workflow_job_transport::Report) -> Result<()> {
@@ -89,6 +92,7 @@ pub struct AgentRepository {
     execution: Option<Arc<ExecutionClient>>,
     workflow_jobs_enabled: bool,
     workflow_job_authorizer: Option<Arc<dyn WorkflowJobAuthorizer>>,
+    long_authority: Option<Arc<crate::long_authority::AgentLongAuthority>>,
 }
 
 fn coding_thread_scope(
@@ -594,6 +598,9 @@ impl AgentRepository {
         if !bridge.transport_enabled() {
             return Ok(());
         }
+        if let Some(long) = &self.long_authority {
+            long.reconcile().await?;
+        }
         let a = self
             .authority
             .as_ref()
@@ -650,7 +657,8 @@ impl AgentRepository {
                 self.request_job_cancellation(a.host_id, job).await?;
             }
         }
-        for job in bridge.pending(a.host_id).await? {
+        for delivery in bridge.pending(a.host_id).await? {
+            let job = &delivery.job;
             job.validate()?;
             anyhow::ensure!(
                 job.host_id == a.host_id && job.agent_def_id == a.agent_def_id,
@@ -665,6 +673,32 @@ impl AgentRepository {
                 job.cancellation_requested || deadline > Utc::now(),
                 "Workflow job expired before admission"
             );
+            let prepared = if let Some(long) = &self.long_authority {
+                if job.cancellation_requested {
+                    None
+                } else {
+                    let owner = Uuid::parse_str(&job.end_user_subject)?;
+                    if long.status(job.job_id, job.host_id, owner).await?.is_some() {
+                        None
+                    } else {
+                        let source = delivery
+                            .owner_token
+                            .as_deref()
+                            .context("Workflow LONG job handoff missing owner token")?;
+                        let key = canonical_sha256(&json!({
+                            "jobId":job.job_id,"hostId":job.host_id,
+                            "agentDefId":job.agent_def_id
+                        }))?;
+                        let digest = canonical_sha256(&serde_json::to_value(job)?)?;
+                        Some(
+                            long.prepare(job.job_id, job.host_id, owner, source, &key, &digest)
+                                .await?,
+                        )
+                    }
+                }
+            } else {
+                None
+            };
             let mut tx = self.pool.begin().await?;
             sqlx::query("INSERT INTO agent_job_t(host_id,job_id,workflow_process_id,workflow_task_id,agent_def_id,idempotency_key,input,input_schema_digest,output_schema,policy_digest,data_boundary_digest,deadline_ts,token_budget,cost_budget_micros,delegation_depth,maximum_delegation_depth,end_user_subject,memory_mode,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'ISOLATED','PENDING') ON CONFLICT(host_id,job_id) DO NOTHING")
                 .bind(a.host_id).bind(job.job_id).bind(job.process_id).bind(job.task_id).bind(a.agent_def_id)
@@ -678,6 +712,9 @@ impl AgentRepository {
                 .bind(&job.input).bind(&job.input_digest).bind(&job.output_schema).bind(deadline).bind(job.token_budget)
                 .bind(job.cost_budget_micros).bind(job.depth).bind(job.maximum_depth).bind(&job.end_user_subject).fetch_one(&mut *tx).await?;
             anyhow::ensure!(same, "Workflow job replay changed immutable admission");
+            if let (Some(long), Some(prepared)) = (&self.long_authority, prepared) {
+                long.record(&mut tx, prepared).await?;
+            }
             if job.cancellation_requested {
                 // Fence the newly inserted job in the same transaction. For a
                 // previously admitted job, retain its turn and Controller ID
@@ -686,6 +723,9 @@ impl AgentRepository {
                     .bind(a.host_id).bind(job.job_id).execute(&mut *tx).await?;
             }
             tx.commit().await?;
+            if let Some(long) = &self.long_authority {
+                long.reconcile().await?;
+            }
         }
         Ok(())
     }
@@ -696,6 +736,7 @@ impl AgentRepository {
             execution: None,
             workflow_jobs_enabled: true,
             workflow_job_authorizer: None,
+            long_authority: None,
         }
     }
 
@@ -710,6 +751,7 @@ impl AgentRepository {
             execution: Some(Arc::new(execution)),
             workflow_jobs_enabled: true,
             workflow_job_authorizer: None,
+            long_authority: None,
         }
     }
 
@@ -943,6 +985,7 @@ impl AgentRepository {
             execution: None,
             workflow_jobs_enabled: true,
             workflow_job_authorizer: None,
+            long_authority: None,
         }
     }
 
@@ -953,9 +996,30 @@ impl AgentRepository {
         self.workflow_job_authorizer = Some(authorizer);
         self
     }
+    pub fn with_long_authority(
+        mut self,
+        authority: Arc<crate::long_authority::AgentLongAuthority>,
+    ) -> Self {
+        self.long_authority = Some(authority);
+        self
+    }
     pub async fn workflow_job_authorized(&self, host: Uuid, job: Uuid) -> Result<bool> {
         if !self.workflow_jobs_enabled {
             return Ok(false);
+        }
+        if let Some(long) = &self.long_authority {
+            let owner: Option<String> = sqlx::query_scalar(
+                "SELECT end_user_subject FROM agent_ops.agent_job_t WHERE host_id=$1 AND job_id=$2",
+            )
+            .bind(host)
+            .bind(job)
+            .fetch_optional(&self.pool)
+            .await?;
+            let owner = Uuid::parse_str(owner.as_deref().context("LONG job owner missing")?)?;
+            anyhow::ensure!(
+                long.status(job, host, owner).await?.as_deref() == Some("ACTIVE"),
+                "Agent LONG binding not active"
+            );
         }
         match &self.workflow_job_authorizer {
             Some(authorizer) => authorizer.authorized(host, job).await,
@@ -3749,8 +3813,8 @@ mod tests {
             async fn pending(
                 &self,
                 _: Uuid,
-            ) -> Result<Vec<light_client::workflow_job_transport::Job>> {
-                Ok(vec![self.0.lock().unwrap().clone()])
+            ) -> Result<Vec<light_client::workflow_job_transport::JobDelivery>> {
+                Ok(vec![self.0.lock().unwrap().clone().into()])
             }
         }
         let owner = Uuid::now_v7().to_string();

@@ -933,6 +933,27 @@ mod tests {
         );
         assert!(action_reference(&h).is_err());
     }
+    #[tokio::test]
+    async fn gateway_job_app_token_is_verified_without_a_client_certificate() {
+        let app = token(serde_json::json!({
+            "iss":"issuer","aud":"audience","exp":4102444800u64,
+            "token_use":"app","sid":"com.networknt.cli.dev-1.0.0"
+        }));
+        let headers = headers(&[("x-scope-token", &format!("Bearer {app}"))]);
+        let (_, sid, origin) =
+            authenticate_application_token(&runtime(false).await, &policy(false), &headers)
+                .await
+                .unwrap();
+        assert_eq!(sid, "com.networknt.cli.dev-1.0.0");
+        assert_eq!(origin, Origin::Interactive);
+        let mut duplicate = headers.clone();
+        duplicate.append("x-scope-token", "Bearer another".parse().unwrap());
+        assert!(
+            authenticate_application_token(&runtime(false).await, &policy(false), &duplicate,)
+                .await
+                .is_err()
+        );
+    }
 }
 
 /// Service-only evidence reporting. This profile cannot disclose user results or
@@ -972,5 +993,38 @@ pub async fn authenticate_application<'a>(
     if !profile_trusts_peer(profile, &tls_peer, &sid) {
         return Err(denied());
     }
+    Ok((app, sid, profile.origin))
+}
+
+/// Bearer-only application authentication for a Gateway-routed internal job
+/// bridge. Callers must pin the resulting service ID to the stored job owner
+/// and keep the backend route unreachable to unauthenticated clients.
+pub async fn authenticate_application_token(
+    runtime: &SecurityRuntime,
+    policy: &RoutePolicy,
+    headers: &HeaderMap,
+) -> Result<(AuthPrincipal, String, Origin), HandlerRejection> {
+    policy.validate()?;
+    if runtime.config.ignore_jwt_expiry
+        || runtime.config.enable_mock_jwt
+        || !runtime.config.enable_verify_jwt
+    {
+        return Err(denied());
+    }
+    let app = verify_with_purpose(
+        runtime,
+        bearer(headers, "x-scope-token")?,
+        TokenUse::App,
+        &policy.legacy_long_lived_app_keys,
+    )
+    .await?;
+    check_claims(&app, policy, false)?;
+    let sid = app
+        .claims
+        .get("sid")
+        .and_then(|s| s.as_str())
+        .ok_or_else(denied)?
+        .to_owned();
+    let profile = policy.apps.get(&sid).ok_or_else(denied)?;
     Ok((app, sid, profile.origin))
 }

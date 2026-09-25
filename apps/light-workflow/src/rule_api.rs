@@ -3,6 +3,9 @@ use crate::invocation::{
     AcceptOutcome, AuthenticatedInvocationContext, InvocationAcceptError, PreparedInvocationStart,
     accept_invocation,
 };
+use crate::runtime_definition::{
+    policy_task_kind, runtime_task_fields, supported_task_type, validate_runtime_definition,
+};
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -22,16 +25,35 @@ use sqlx::{PgPool, Row, postgres::PgListener};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::error;
+use tracing::{error, warn};
 use uuid::Uuid;
 use workflow_core::models::retry::OneOfRetryPolicyDefinitionOrReference;
 use workflow_core::models::task::{CallTaskDefinition, TaskDefinition, TaskDefinitionFields};
 use workflow_core::models::workflow::{RuntimeExpressionLanguage, WorkflowDefinition};
 use workflow_invocation_contract::{
-    CONTRACT_VERSION, CancellationPolicy, EffectState, ErrorCode, InvocationError, InvocationMode,
-    InvocationState, InvocationStatus, StartInvocationRequest, canonical_json_bytes,
-    canonical_sha256, stable_subject_claims,
+    CANONICAL_INPUT_PROFILE, CONTRACT_VERSION, CancellationPolicy, EffectState, ErrorCode,
+    ExecutionClass, IdempotencyBinding, IdempotencyKind, InvocationBudget, InvocationError,
+    InvocationMode, InvocationState, InvocationStatus, StartInvocationRequest,
+    canonical_json_bytes, canonical_sha256, stable_subject_claims,
 };
+use workflow_policy::{
+    ExecutionProfile, ResolvedExecutionPolicy, parse_security_policy, resolve_policy,
+};
+
+/// Selected by Workflow's trusted entry point, never by request JSON.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AdmissionProfile {
+    WorkflowBacked,
+    PortalExecution,
+}
+impl AdmissionProfile {
+    fn stored_name(self) -> &'static str {
+        match self {
+            Self::WorkflowBacked => "workflow_backed",
+            Self::PortalExecution => "portal_execution",
+        }
+    }
+}
 
 const MAX_WAIT_MS: u64 = 20_000;
 #[derive(Clone)]
@@ -43,6 +65,10 @@ pub struct RuleApiState {
     runtime_config: Arc<WorkflowConfigManager>,
     database_url: Arc<str>,
     health: WorkflowHealth,
+    pub(crate) role_authority: Option<Arc<dyn crate::admin_api::RoleAuthority>>,
+    private_execution_profiles:
+        Arc<std::collections::BTreeMap<String, workflow_policy::ExecutionProfile>>,
+    long_authority: Option<Arc<crate::long_authority::LongAuthority>>,
 }
 
 #[derive(Clone)]
@@ -298,14 +324,15 @@ pub(crate) struct InvocationIdentity {
     pub(crate) host_id: Uuid,
     pub(crate) principal_subject: String,
     pub(crate) end_user_subject: String,
-    caller_claims_digest: String,
-    user_authorization: String,
-    user_authorization_exp: i64,
+    pub(crate) caller_claims_digest: String,
+    pub(crate) caller_claims: Value,
+    pub(crate) user_authorization: String,
+    pub(crate) user_authorization_exp: i64,
 }
 
 #[derive(sqlx::FromRow)]
 struct BindingRow {
-    binding_id: Uuid,
+    binding_id: Option<Uuid>,
     wf_def_id: Uuid,
     workflow_version: String,
     definition_digest: String,
@@ -324,6 +351,12 @@ pub fn build_rule_api_router(
     invocation_security: Arc<SecurityRuntime>,
     invocation_environment: String,
     health: WorkflowHealth,
+    role_authority: Option<Arc<dyn crate::admin_api::RoleAuthority>>,
+    private_execution_profiles: std::collections::BTreeMap<
+        String,
+        workflow_policy::ExecutionProfile,
+    >,
+    long_authority: Option<Arc<crate::long_authority::LongAuthority>>,
 ) -> Router {
     let state = RuleApiState {
         engine: Arc::new(RuleEngine::new(Arc::new(ActionRegistry::new()))),
@@ -333,6 +366,9 @@ pub fn build_rule_api_router(
         runtime_config,
         database_url: database_url.into(),
         health,
+        role_authority,
+        private_execution_profiles: Arc::new(private_execution_profiles),
+        long_authority,
     };
 
     Router::new()
@@ -394,7 +430,14 @@ pub(crate) async fn dispatch_native_tool(
     state: RuleApiState,
     headers: HeaderMap,
     arguments: Value,
+    _settings: Option<crate::action_api::ActionSettings>,
+    approval_portal: Option<Arc<crate::approval_portal::Client>>,
 ) -> Result<Value, axum::response::Response> {
+    if name == "workflow_start" {
+        return start_native_workflow(state, headers, arguments, approval_portal)
+            .await
+            .map_err(IntoResponse::into_response);
+    }
     if let Some(result) =
         crate::admin_api::dispatch_tool(name, state.clone(), headers.clone(), arguments.clone())
             .await
@@ -608,6 +651,8 @@ async fn start_invocation(
         request,
         None,
         artifacts.and_then(|a| a.0.0),
+        AdmissionProfile::WorkflowBacked,
+        None,
     )
     .await
 }
@@ -637,8 +682,288 @@ async fn start_development_stage(
         request.invocation,
         Some(request.claim),
         artifacts.and_then(|a| a.0.0),
+        AdmissionProfile::WorkflowBacked,
+        None,
     )
     .await
+}
+
+/// Step 05's native handler will call this trusted entry point after deriving
+/// the private binding and caller context. No public route selects this profile.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn start_private_portal_execution(
+    state: State<RuleApiState>,
+    broker: Option<axum::Extension<Arc<crate::credential_broker::CredentialBroker>>>,
+    peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
+    policy: Option<axum::Extension<crate::action_api::ActionSettings>>,
+    headers: HeaderMap,
+    request: StartInvocationRequest,
+    approval: Option<ApprovalAdmission>,
+) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
+    start_invocation_with_stage(
+        state,
+        broker,
+        peer,
+        policy,
+        headers,
+        request,
+        None,
+        None,
+        AdmissionProfile::PortalExecution,
+        approval,
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NativeStartInput {
+    workflow_definition_id: Uuid,
+    input: Value,
+    idempotency_key: String,
+}
+
+#[derive(Clone)]
+pub(crate) struct ApprovalAdmission {
+    request_id: Uuid,
+    request_digest: String,
+    request_version: i64,
+    definition_digest: String,
+}
+
+fn parse_native_start_input(arguments: Value) -> Result<NativeStartInput, ApiError> {
+    let input: NativeStartInput = serde_json::from_value(arguments)
+        .map_err(|_| ApiError::input_invalid("invalid workflow_start arguments"))?;
+    if input.workflow_definition_id.is_nil()
+        || input
+            .input
+            .as_object()
+            .is_none_or(|object| object.len() > 256)
+        || input.idempotency_key.is_empty()
+        || input.idempotency_key.len() > 128
+        || input.idempotency_key.chars().any(char::is_control)
+    {
+        return Err(ApiError::input_invalid("invalid workflow_start arguments"));
+    }
+    Ok(input)
+}
+
+fn saved_definition_digest(snapshot: &Value) -> Result<String, ApiError> {
+    Ok(format!(
+        "sha256:{}",
+        execution_runner_protocol::canonical_sha256(snapshot)
+            .map_err(|error| ApiError::definition_mismatch(error.to_string()))?
+    ))
+}
+
+fn native_definition_pins(
+    definition_text: &str,
+    profiles: &std::collections::BTreeMap<String, workflow_policy::ExecutionProfile>,
+) -> Result<(String, String, String, String), ApiError> {
+    let snapshot: Value = serde_yaml::from_str(definition_text)
+        .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
+    let raw_definition: serde_yaml::Value = serde_yaml::from_str(definition_text)
+        .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
+    let definition: WorkflowDefinition = serde_yaml::from_str(definition_text)
+        .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
+    let resolved_policy = prepare_private_policy(&raw_definition, &definition, profiles)?;
+    let definition_digest = saved_definition_digest(&snapshot)?;
+    let schema_digest = canonical_sha256(&json!({
+        "input": snapshot.get("input"), "output": snapshot.get("output")
+    }))
+    .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
+    let policy_digest = format!("sha256:{}", resolved_policy.policy_digest.trim_start_matches("sha256:"));
+    let response_policy_digest = canonical_sha256(&json!({ "output": snapshot.get("output") }))
+        .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
+    Ok((definition_digest, schema_digest, policy_digest, response_policy_digest))
+}
+
+async fn start_native_workflow(
+    state: RuleApiState,
+    headers: HeaderMap,
+    arguments: Value,
+    approval_portal: Option<Arc<crate::approval_portal::Client>>,
+) -> Result<Value, ApiError> {
+    if state.long_authority.is_none() {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ErrorCode::WorkflowInvocationUnavailable,
+            "Workflow LONG authority is unavailable",
+        ));
+    }
+    let mut input = parse_native_start_input(arguments)?;
+    let (identity, generation) = authenticate(&state, &headers).await?;
+    let approval = if let Some(marker) = input.input.get("workflowToolAccessRequest") {
+        let request_id = marker
+            .get("requestId")
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok())
+            .ok_or_else(|| ApiError::input_invalid("approval request ID is invalid"))?;
+        let request_digest = marker
+            .get("requestDigest")
+            .and_then(Value::as_str)
+            .filter(|value| value.starts_with("sha256:") && value.len() == 71)
+            .ok_or_else(|| ApiError::input_invalid("approval request digest is invalid"))?
+            .to_owned();
+        let client = approval_portal.as_ref().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                ErrorCode::WorkflowInvocationUnavailable,
+                "Workflow approval Portal client is unavailable",
+            )
+        })?;
+        let actor = crate::approval_portal::ActorEvidence::new(
+            identity.host_id,
+            request_id,
+            "getWorkflowToolAccessRequestForExecution",
+            &identity.end_user_subject,
+            &identity.caller_claims_digest,
+        )
+        .map_err(|_| ApiError::unauthorized("Workflow approval requester evidence is invalid"))?;
+        let read = client
+            .read(
+                &crate::approval_portal::ReadRequest {
+                    host_id: identity.host_id,
+                    request_id,
+                    request_digest: request_digest.to_string(),
+                },
+                &actor,
+            )
+            .await
+            .map_err(|_| ApiError::unauthorized("Workflow approval request read denied"))?;
+        if read.approval_wf_def_id != input.workflow_definition_id
+            || read.requester_subject != identity.end_user_subject
+        {
+            return Err(ApiError::unauthorized(
+                "Workflow approval request binding denied",
+            ));
+        }
+        input.idempotency_key = format!("approval:{}:{}", request_id, request_digest);
+        input.input = json!({
+            "requestId":request_id,"requestDigest":request_digest,
+            "targetWfDefId":read.target_wf_def_id,"requesterUserId":read.requester_subject,
+            "justification":read.justification,"items":read.items,
+        });
+        Some(ApprovalAdmission {
+            request_id,
+            request_digest: request_digest.to_string(),
+            request_version: read.request_version,
+            definition_digest: read.approval_definition_digest,
+        })
+    } else {
+        None
+    };
+    let (workflow_version, definition_text): (String, String) = sqlx::query_as(
+        "SELECT version,definition FROM wf_definition_t
+         WHERE host_id=$1 AND wf_def_id=$2 AND active",
+    )
+    .bind(identity.host_id)
+    .bind(input.workflow_definition_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(ApiError::database)?
+    .ok_or_else(|| ApiError::definition_mismatch("saved workflow definition is unavailable"))?;
+    let (definition_digest, schema_digest, policy_digest, response_policy_digest) =
+        native_definition_pins(&definition_text, &state.private_execution_profiles)?;
+    if let Some(approval) = approval.as_ref() {
+        if approval.definition_digest != definition_digest {
+            return Err(ApiError::definition_mismatch("approval definition revision changed"));
+        }
+    }
+    let execution_class = ExecutionClass::Interactive;
+    let default_budget = InvocationBudget {
+        maximum_task_attempts: 100,
+        maximum_nested_calls: 20,
+        maximum_delegation_depth: 8,
+        maximum_parallelism: u16::try_from(generation.config.maximum_parallelism.min(16))
+            .unwrap_or(16)
+            .max(1),
+        maximum_request_bytes: 1_048_576,
+        maximum_intermediate_bytes: 4_194_304,
+        maximum_result_bytes: 1_048_576,
+        maximum_cost_units: 1_000_000,
+    };
+    let budget = default_budget;
+    let now = Utc::now();
+    let deadline_ms = 2_592_000_000_i64;
+    let deadline = now + chrono::Duration::milliseconds(deadline_ms);
+    let input_digest = canonical_sha256(&input.input)
+        .map_err(|_| ApiError::input_invalid("workflow input cannot be canonicalized"))?;
+    let scoped_key_digest = canonical_sha256(&json!({
+        "hostId":identity.host_id,
+        "principal":identity.principal_subject,
+        "workflowDefinitionId":input.workflow_definition_id,
+        "definitionDigest":definition_digest,
+        "idempotencyKey":input.idempotency_key,
+    }))
+    .map_err(|_| ApiError::bad_request("workflow idempotency key is invalid"))?;
+    let run = Uuid::now_v7();
+    let request = StartInvocationRequest {
+        renewable_grant_id: None,
+        parent_action_id: None,
+        contract_version: CONTRACT_VERSION,
+        workflow_instance_id: run,
+        stable_tool_ref: input.workflow_definition_id,
+        workflow_definition_id: input.workflow_definition_id,
+        workflow_version,
+        definition_digest,
+        schema_digest,
+        policy_digest,
+        response_policy_digest,
+        mode: InvocationMode::Async,
+        cancellation_policy: CancellationPolicy::BeforeEffectsOnly,
+        execution_class,
+        permit_depth: 0,
+        deadline_ts: deadline,
+        canonical_input_profile: CANONICAL_INPUT_PROFILE.into(),
+        normalized_input_digest: input_digest.clone(),
+        input: input.input,
+        caller_claims: identity.caller_claims,
+        idempotency: IdempotencyBinding {
+            kind: IdempotencyKind::Explicit,
+            scoped_key_digest,
+            input_digest,
+            in_flight_until: deadline,
+            result_replay_until: DateTime::<Utc>::MAX_UTC,
+        },
+        budget,
+        correlation_id: headers
+            .get("x-correlation-id")
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.is_empty() && value.len() <= 128)
+            .map(str::to_string)
+            .unwrap_or_else(|| Uuid::now_v7().to_string()),
+    };
+    let (_, Json(status)) = start_private_portal_execution(
+        State(state.clone()),
+        None,
+        None,
+        None,
+        headers,
+        request,
+        approval,
+    )
+    .await?;
+    let process_id: Uuid = sqlx::query_scalar(
+        "SELECT process_id FROM workflow_invocation_t
+         WHERE host_id=$1 AND workflow_instance_id=$2",
+    )
+    .bind(identity.host_id)
+    .bind(status.workflow_instance_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(ApiError::database)?;
+    Ok(json!({
+        "accepted":true,
+        "workflowInstanceId":status.workflow_instance_id,
+        "processId":process_id,
+        "workflowDefinitionId":input.workflow_definition_id,
+        "definitionDigest":status.definition_digest,
+        "state":status.state,
+        "invocationStateVersion":status.state_version,
+        "acceptedAt":status.accepted_ts,
+        "replayed":status.workflow_instance_id != run,
+    }))
 }
 
 async fn get_development_feature(
@@ -916,6 +1241,8 @@ async fn start_invocation_with_stage(
     mut request: StartInvocationRequest,
     stage_claim: Option<development_workflow_contract::StageClaim>,
     artifacts: Option<crate::artifact_store::DurableArtifactStore>,
+    profile: AdmissionProfile,
+    approval: Option<ApprovalAdmission>,
 ) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
     let (identity, generation) = authenticate(&state, &headers).await?;
     let mut parent_binding = None;
@@ -1011,7 +1338,33 @@ async fn start_invocation_with_stage(
             "workflow input exceeds maximumRequestBytes",
         ));
     }
-    let binding = sqlx::query_as::<_, BindingRow>(
+    let binding = if profile == AdmissionProfile::PortalExecution {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT version,definition FROM wf_definition_t
+             WHERE host_id=$1 AND wf_def_id=$2 AND active",
+        )
+        .bind(identity.host_id)
+        .bind(request.workflow_definition_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(ApiError::database)?;
+        let (workflow_version, definition) = row.ok_or_else(||
+            ApiError::definition_mismatch("saved workflow definition is unavailable"))?;
+        let (definition_digest, schema_digest, policy_digest, response_policy_digest) =
+            native_definition_pins(&definition, &state.private_execution_profiles)?;
+        BindingRow {
+            binding_id: None,
+            wf_def_id: request.workflow_definition_id,
+            workflow_version,
+            definition_digest,
+            schema_digest,
+            policy_digest,
+            response_policy_digest,
+            definition,
+            tool_name: "workflow".to_string(),
+        }
+    } else {
+    sqlx::query_as::<_, BindingRow>(
         "SELECT b.binding_id,b.wf_def_id,b.workflow_version,b.definition_digest,
                 b.schema_digest,b.policy_digest,b.response_policy_digest,w.definition,
                 b.tool_name
@@ -1025,32 +1378,60 @@ async fn start_invocation_with_stage(
     .fetch_optional(&state.pool)
     .await
     .map_err(ApiError::database)?
-    .ok_or_else(|| ApiError::definition_mismatch("workflow binding is unavailable"))?;
+    .ok_or_else(|| ApiError::definition_mismatch("workflow binding is unavailable"))?
+    };
     verify_binding(&request, &binding)?;
     let definition: WorkflowDefinition = serde_yaml::from_str(&binding.definition)
         .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
-    validate_orchestration_definition(
-        &definition,
-        request.mode,
-        &request.budget,
-        generation.config.maximum_parallelism,
-    )?;
-    validate_pinned_dependencies(
-        &state.pool,
-        identity.host_id,
-        binding.binding_id,
-        &definition,
-        request.mode,
-        request.budget.maximum_delegation_depth,
-    )
-    .await?;
-    validate_approval_evidence(
-        &state.pool,
-        identity.host_id,
-        binding.binding_id,
-        &definition,
-    )
-    .await?;
+    if profile == AdmissionProfile::PortalExecution {
+        if let Some(schema) = definition
+            .input
+            .as_ref()
+            .and_then(|input| input.schema.as_ref())
+            .and_then(|schema| schema.document.as_ref())
+        {
+            let validator = jsonschema::Validator::new(schema).map_err(|error| {
+                ApiError::definition_mismatch(format!("invalid workflow input schema: {error}"))
+            })?;
+            if !validator.is_valid(&request.input) {
+                return Err(ApiError::input_invalid(
+                    "workflow input does not match the saved definition",
+                ));
+            }
+        }
+    }
+    match profile {
+        AdmissionProfile::WorkflowBacked => validate_orchestration_definition(
+            &definition,
+            request.mode,
+            &request.budget,
+            generation.config.maximum_parallelism,
+        )?,
+        AdmissionProfile::PortalExecution => validate_portal_execution_definition(
+            &definition,
+            request.mode,
+            &request.budget,
+            generation.config.maximum_parallelism,
+        )?,
+    }
+    if profile == AdmissionProfile::WorkflowBacked {
+        validate_pinned_dependencies(
+            &state.pool,
+            identity.host_id,
+            binding.binding_id.ok_or_else(|| ApiError::definition_mismatch("workflow Tool binding is unavailable"))?,
+            &definition,
+            request.mode,
+            request.budget.maximum_delegation_depth,
+        )
+        .await?;
+        validate_approval_evidence(
+            &state.pool,
+            identity.host_id,
+            binding.binding_id.ok_or_else(|| ApiError::definition_mismatch("workflow Tool binding is unavailable"))?,
+            &definition,
+        )
+        .await?;
+    }
     if request.mode == InvocationMode::Sync {
         enforce_deadline_aware_admission(
             &state.pool,
@@ -1069,7 +1450,11 @@ async fn start_invocation_with_stage(
         .first()
         .and_then(|entry| entry.iter().next())
         .ok_or_else(|| ApiError::definition_mismatch("workflow has no initial task"))?;
-    let initial_task_type = supported_phase2_task_type(initial_task)?;
+    let initial_task_type = match profile {
+        AdmissionProfile::WorkflowBacked => supported_phase2_task_type(initial_task)?,
+        AdmissionProfile::PortalExecution => supported_task_type(initial_task)
+            .ok_or_else(|| ApiError::definition_mismatch("unsupported initial task"))?,
+    };
     let definition_snapshot = serde_json::to_value(&definition)
         .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
     let stage_claim =
@@ -1089,17 +1474,20 @@ async fn start_invocation_with_stage(
             "development stage requires atomic feature claim",
         ));
     }
-    let actual_definition_digest = format!(
-        "sha256:{}",
-        execution_runner_protocol::canonical_sha256(&definition_snapshot)
-            .map_err(|error| ApiError::definition_mismatch(error.to_string()))?
-    );
+    // The executor reads directives such as `end: true` from the saved raw
+    // definition. The typed WorkflowDefinition omits those fields, so it must
+    // not replace the full saved definition in the admission digest check.
+    let saved_snapshot: Value = serde_yaml::from_str(&binding.definition)
+        .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
+    let actual_definition_digest = saved_definition_digest(&saved_snapshot)?;
     if actual_definition_digest != request.definition_digest {
         return Err(ApiError::definition_mismatch(
             "published workflow definition does not match its pinned digest",
         ));
     }
-    validate_cel_expressions(&state.engine, &definition_snapshot)?;
+    if profile == AdmissionProfile::WorkflowBacked {
+        validate_cel_expressions(&state.engine, &definition_snapshot)?;
+    }
     let public_output_schema = definition
         .output
         .as_ref()
@@ -1109,14 +1497,25 @@ async fn start_invocation_with_stage(
         jsonschema::Validator::new(schema).map_err(|error| {
             ApiError::definition_mismatch(format!("invalid workflow output schema: {error}"))
         })?;
-    } else if request.mode == InvocationMode::Async {
+    } else if request.mode == InvocationMode::Async && profile == AdmissionProfile::WorkflowBacked {
         return Err(ApiError::definition_mismatch(
             "asynchronous workflow-backed tools require an inline workflow output schema",
         ));
     }
+    let private_policy = if profile == AdmissionProfile::PortalExecution {
+        let raw_definition: serde_yaml::Value = serde_yaml::from_str(&binding.definition)
+            .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
+        Some(prepare_private_policy(
+            &raw_definition,
+            &definition,
+            &state.private_execution_profiles,
+        )?)
+    } else {
+        None
+    };
     let process_id = Uuid::now_v7();
     let initial_task_id = Uuid::now_v7();
-    let prepared = PreparedInvocationStart {
+    let mut prepared = PreparedInvocationStart {
         binding_id: binding.binding_id,
         process_id,
         initial_task_id,
@@ -1124,12 +1523,31 @@ async fn start_invocation_with_stage(
         initial_task_name,
         initial_task_type,
         definition_snapshot: &definition_snapshot,
-        execution_placement: "host",
-        task_policy_digest: request.policy_digest.trim_start_matches("sha256:"),
+        execution_placement: if private_policy
+            .as_ref()
+            .is_some_and(|policy| policy.placement == workflow_policy::ExecutionPlacement::Runner)
+        {
+            "runner"
+        } else {
+            "host"
+        },
+        execution_profile_id: private_policy
+            .as_ref()
+            .and_then(|policy| policy.profile.as_ref().map(|profile| profile.id.as_str()))
+            .unwrap_or("host"),
+        admission_profile: profile.stored_name(),
+        policy_snapshot_id: None,
+        task_policy_digest: private_policy
+            .as_ref()
+            .map(|policy| policy.policy_digest.as_str())
+            .unwrap_or_else(|| request.policy_digest.trim_start_matches("sha256:")),
         public_output_schema,
     };
     let (stored_user_authorization, stored_user_authorization_exp) =
-        invocation_authorization_for_storage(policy.is_some(), &identity);
+        invocation_authorization_for_storage(
+            policy.is_some() || profile == AdmissionProfile::PortalExecution,
+            &identity,
+        );
     let auth = AuthenticatedInvocationContext {
         host_id: identity.host_id,
         principal_subject: &identity.principal_subject,
@@ -1139,6 +1557,19 @@ async fn start_invocation_with_stage(
         user_authorization_exp: stored_user_authorization_exp,
     };
     let mut tx = state.pool.begin().await.map_err(ApiError::database)?;
+    if let Some(private_policy) = private_policy.as_ref() {
+        prepared.policy_snapshot_id = Some(
+            crate::repositories::WorkflowRepository::store_policy_snapshot(
+                &mut tx,
+                identity.host_id,
+                request.definition_digest.trim_start_matches("sha256:"),
+                private_policy,
+                "light-workflow-private-admission",
+            )
+            .await
+            .map_err(ApiError::database)?,
+        );
+    }
     let outcome = if let Some(claim) = stage_claim.as_ref() {
         // Probe actual filesystem writability before any runnable process exists.
         // Snapshot transfer/recovery remains Workflow-owned, never a runner mount.
@@ -1185,7 +1616,78 @@ async fn start_invocation_with_stage(
             ..
         } => *workflow_instance_id,
     };
-    if let Some(parent) = parent_binding {
+    if profile == AdmissionProfile::PortalExecution {
+        if matches!(outcome, AcceptOutcome::Accepted { .. }) {
+            let long = state.long_authority.as_ref().ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    ErrorCode::WorkflowInvocationUnavailable,
+                    "Workflow LONG authority is unavailable",
+                )
+            })?;
+            let owner = identity.end_user_subject.parse::<Uuid>().map_err(|_| {
+                auth_denied(
+                    "owner_id_invalid",
+                    ApiError::unauthorized("workflow owner identity is invalid"),
+                )
+            })?;
+            let source = bearer_token(
+                &identity.user_authorization,
+                "original user bearer is required",
+            )?;
+            let registration_key = canonical_sha256(&json!({
+                "workflowInstanceId":accepted_run,
+                "idempotencyScope":request.idempotency.scoped_key_digest,
+            }))
+            .map_err(|_| ApiError::bad_request("invalid workflow registration key"))?;
+            let binding = long
+                .register(
+                    accepted_run,
+                    identity.host_id,
+                    owner,
+                    source,
+                    &registration_key,
+                )
+                .await
+                .map_err(long_admission_error)?;
+            sqlx::query(
+                "INSERT INTO workflow_action_authority_t
+                (host_id,run_id,grant_id,user_id,grant_generation,run_generation,
+                 budget_generation,active,deadline,action_limit,maximum_depth)
+                VALUES($1,$2,$3,$4,1,1,1,true,$5,$6,$7)",
+            )
+            .bind(identity.host_id)
+            .bind(accepted_run)
+            .bind(binding)
+            .bind(owner)
+            .bind(DateTime::<Utc>::MAX_UTC)
+            .bind(
+                i64::from(request.budget.maximum_task_attempts)
+                    .saturating_add(i64::from(request.budget.maximum_nested_calls)),
+            )
+            .bind(i32::from(request.budget.maximum_delegation_depth))
+            .execute(&mut *tx)
+            .await
+            .map_err(ApiError::database)?;
+            crate::long_lifecycle::record_acceptance(
+                &mut tx,
+                identity.host_id,
+                accepted_run,
+                binding,
+                owner,
+                canonical_sha256(&json!({
+                    "hostId":identity.host_id,"workflowInstanceId":accepted_run,
+                    "bindingId":binding,"ownerUserId":owner,
+                    "definitionDigest":request.definition_digest,
+                    "inputDigest":request.normalized_input_digest,
+                }))
+                .map_err(|_| ApiError::bad_request("invalid acceptance receipt"))?
+                .trim_start_matches("sha256:"),
+            )
+            .await
+            .map_err(ApiError::database)?;
+        }
+    } else if let Some(parent) = parent_binding {
         let broker = broker
             .as_ref()
             .ok_or_else(|| ApiError::unauthorized("credential broker unavailable"))?;
@@ -1244,6 +1746,63 @@ async fn start_invocation_with_stage(
         .await
         .map_err(|_| ApiError::unauthorized("workflow run authority rejected"))?;
     }
+    if let Some(approval) = approval.as_ref() {
+        if profile != AdmissionProfile::PortalExecution {
+            return Err(ApiError::unauthorized(
+                "approval admission requires private execution",
+            ));
+        }
+        let requester = identity
+            .end_user_subject
+            .parse::<Uuid>()
+            .map_err(|_| ApiError::unauthorized("approval requester identity is invalid"))?;
+        let accepted_process: Uuid = sqlx::query_scalar(
+            "SELECT process_id FROM workflow_invocation_t WHERE host_id=$1 AND workflow_instance_id=$2",
+        )
+        .bind(identity.host_id)
+        .bind(accepted_run)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+        sqlx::query(
+            "INSERT INTO workflow_tool_access_approval_run_t
+             (host_id,request_id,request_digest,request_version,approval_wf_def_id,
+              approval_definition_digest,requester_user_id,workflow_instance_id,process_id)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING",
+        )
+        .bind(identity.host_id)
+        .bind(approval.request_id)
+        .bind(&approval.request_digest)
+        .bind(approval.request_version)
+        .bind(request.workflow_definition_id)
+        .bind(&request.definition_digest)
+        .bind(requester)
+        .bind(accepted_run)
+        .bind(accepted_process)
+        .execute(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+        let stored: Option<(String, Uuid, String, Uuid, Uuid)> = sqlx::query_as(
+            "SELECT request_digest,approval_wf_def_id,approval_definition_digest,
+                    requester_user_id,workflow_instance_id
+               FROM workflow_tool_access_approval_run_t
+              WHERE host_id=$1 AND request_id=$2",
+        )
+        .bind(identity.host_id)
+        .bind(approval.request_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(ApiError::database)?;
+        if !matches!(stored, Some((ref digest, wf_def, ref definition_digest, owner, run))
+            if digest == &approval.request_digest && wf_def == request.workflow_definition_id
+                && definition_digest == &request.definition_digest && owner == requester
+                && run == accepted_run)
+        {
+            return Err(ApiError::conflict(
+                "approval request is linked to another run",
+            ));
+        }
+    }
     tx.commit().await.map_err(ApiError::database)?;
     let workflow_instance_id = match outcome {
         AcceptOutcome::Accepted {
@@ -1256,6 +1815,25 @@ async fn start_invocation_with_stage(
     };
     let status = load_status(&state.pool, &identity, workflow_instance_id).await?;
     Ok((StatusCode::ACCEPTED, Json(status)))
+}
+
+fn long_admission_error(error: crate::long_authority::LongError) -> ApiError {
+    match error {
+        crate::long_authority::LongError::Denied => auth_denied(
+            "long_registration_denied",
+            ApiError::unauthorized("workflow owner authority denied"),
+        ),
+        crate::long_authority::LongError::Evidence => {
+            ApiError::bad_request("workflow owner authority evidence is invalid")
+        }
+        crate::long_authority::LongError::Retryable | crate::long_authority::LongError::Store => {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                ErrorCode::WorkflowInvocationUnavailable,
+                "workflow owner authority is unavailable",
+            )
+        }
+    }
 }
 
 async fn validate_pinned_dependencies(
@@ -1726,8 +2304,11 @@ async fn cancel_invocation(
                     execution_placement,task_policy_digest,execution_class,deadline_ts,is_compensation)
                  VALUES($1,$2,$3,$4,$5,$6,'A',CURRENT_TIMESTAMP,'N',$7,$8,
                     'host',$9,'standard',(
-                      SELECT deadline_ts FROM workflow_invocation_t
-                       WHERE host_id=$1 AND workflow_instance_id=$10),TRUE)",
+                      SELECT CASE WHEN i.response_policy_snapshot->'privateExecutionProfile'->>'version'='1'
+                                  THEN p.deadline_ts ELSE i.deadline_ts END
+                        FROM workflow_invocation_t i
+                        JOIN process_info_t p ON p.host_id=i.host_id AND p.process_id=i.process_id
+                       WHERE i.host_id=$1 AND i.workflow_instance_id=$10),TRUE)",
             )
             .bind(identity.host_id)
             .bind(Uuid::now_v7())
@@ -1921,20 +2502,29 @@ pub(crate) async fn authenticate(
     headers: &HeaderMap,
 ) -> Result<(InvocationIdentity, Arc<WorkflowConfigGeneration>), ApiError> {
     let generation = state.runtime_config.load();
-    let authorization = header(headers, "authorization")?;
-    bearer_token(authorization, "user Bearer authentication is required")?;
-    let scope_authorization = header(headers, "x-scope-token")?;
+    let authorization =
+        header(headers, "authorization").map_err(|error| auth_denied("user_header", error))?;
+    bearer_token(authorization, "user Bearer authentication is required")
+        .map_err(|error| auth_denied("user_bearer", error))?;
+    let scope_authorization =
+        header(headers, "x-scope-token").map_err(|error| auth_denied("scope_header", error))?;
     let scope_token = bearer_token(
         scope_authorization,
         "X-Scope-Token Bearer authentication is required",
-    )?;
+    )
+    .map_err(|error| auth_denied("scope_bearer", error))?;
     let scope_principal = verify_jwt_token(
         &state.invocation_security,
         scope_token,
         JwtExpiryMode::Enforce,
     )
     .await
-    .map_err(|error| jwt_verification_error("gateway service", error))?;
+    .map_err(|error| {
+        auth_denied(
+            "scope_jwt",
+            jwt_verification_error("gateway service", error),
+        )
+    })?;
     let host_id = scope_principal
         .host
         .as_deref()
@@ -1946,20 +2536,27 @@ pub(crate) async fn authenticate(
                 .and_then(Value::as_str)
         })
         .and_then(|host| host.parse::<Uuid>().ok())
-        .ok_or_else(|| ApiError::unauthorized("X-Scope-Token has no valid Host identity"))?;
+        .ok_or_else(|| {
+            auth_denied(
+                "scope_host_missing",
+                ApiError::unauthorized("X-Scope-Token has no valid Host identity"),
+            )
+        })?;
     validate_invocation_caller(
         &scope_principal,
         host_id,
         &state.invocation_environment,
         &generation.config.invocation_caller_service_ids,
+        &generation.config.invocation_caller_environments,
     )?;
     let user_principal = verify_jwt_token(
         &state.invocation_security,
-        bearer_token(authorization, "user Bearer authentication is required")?,
+        bearer_token(authorization, "user Bearer authentication is required")
+            .map_err(|error| auth_denied("user_bearer", error))?,
         user_jwt_expiry_mode(generation.config.ignore_user_jwt_expiry),
     )
     .await
-    .map_err(|error| jwt_verification_error("user", error))?;
+    .map_err(|error| auth_denied("user_jwt", jwt_verification_error("user", error)))?;
     let user_authorization_exp = validate_invocation_user(&user_principal, host_id)?;
     Ok((
         invocation_identity(
@@ -1967,9 +2564,15 @@ pub(crate) async fn authenticate(
             host_id,
             authorization,
             user_authorization_exp,
-        )?,
+        )
+        .map_err(|error| auth_denied("user_subject", error))?,
         generation,
     ))
+}
+
+fn auth_denied(reason_code: &'static str, error: ApiError) -> ApiError {
+    warn!(reason_code, "workflow invocation authentication denied");
+    error
 }
 
 fn user_jwt_expiry_mode(ignore_user_jwt_expiry: bool) -> JwtExpiryMode {
@@ -2007,6 +2610,7 @@ fn invocation_identity(
         principal_subject: principal_subject.to_string(),
         end_user_subject: end_user_subject.to_string(),
         caller_claims_digest,
+        caller_claims: principal.claims.clone(),
         user_authorization: format!("Bearer {user_token}"),
         user_authorization_exp,
     })
@@ -2041,6 +2645,7 @@ fn validate_invocation_caller(
     host_id: Uuid,
     expected_environment: &str,
     allowed_service_ids: &[String],
+    allowed_environments: &[String],
 ) -> Result<(), ApiError> {
     let service_id = principal.claims.get("sid").and_then(Value::as_str);
     if service_id.is_none_or(|service_id| {
@@ -2048,8 +2653,9 @@ fn validate_invocation_caller(
             .iter()
             .any(|allowed| allowed == service_id)
     }) {
-        return Err(ApiError::unauthorized(
-            "X-Scope-Token is not issued for light-gateway",
+        return Err(auth_denied(
+            "scope_service_id",
+            ApiError::unauthorized("X-Scope-Token is not issued for light-gateway"),
         ));
     }
     if principal
@@ -2058,13 +2664,22 @@ fn validate_invocation_caller(
         .and_then(|host| host.parse::<Uuid>().ok())
         != Some(host_id)
     {
-        return Err(ApiError::unauthorized(
-            "X-Scope-Token host does not match the workflow host",
+        return Err(auth_denied(
+            "scope_host_mismatch",
+            ApiError::unauthorized("X-Scope-Token host does not match the workflow host"),
         ));
     }
-    if principal.claims.get("env").and_then(Value::as_str) != Some(expected_environment) {
-        return Err(ApiError::unauthorized(
-            "X-Scope-Token environment does not match light-workflow",
+    let caller_environment = principal.claims.get("env").and_then(Value::as_str);
+    let environment_allowed = if allowed_environments.is_empty() {
+        caller_environment == Some(expected_environment)
+    } else {
+        caller_environment
+            .is_some_and(|value| allowed_environments.iter().any(|allowed| allowed == value))
+    };
+    if !environment_allowed {
+        return Err(auth_denied(
+            "scope_environment",
+            ApiError::unauthorized("X-Scope-Token environment does not match light-workflow"),
         ));
     }
     Ok(())
@@ -2077,8 +2692,9 @@ fn validate_invocation_user(principal: &AuthPrincipal, host_id: Uuid) -> Result<
         .or_else(|| principal.claims.get("hostId").and_then(Value::as_str))
         .or_else(|| principal.claims.get("host_id").and_then(Value::as_str));
     if user_host.and_then(|host| host.parse::<Uuid>().ok()) != Some(host_id) {
-        return Err(ApiError::unauthorized(
-            "user Authorization host does not match the workflow host",
+        return Err(auth_denied(
+            "user_host_mismatch",
+            ApiError::unauthorized("user Authorization host does not match the workflow host"),
         ));
     }
     principal
@@ -2086,7 +2702,12 @@ fn validate_invocation_user(principal: &AuthPrincipal, host_id: Uuid) -> Result<
         .get("exp")
         .and_then(Value::as_i64)
         .filter(|exp| *exp > 0)
-        .ok_or_else(|| ApiError::unauthorized("user Authorization has no valid exp claim"))
+        .ok_or_else(|| {
+            auth_denied(
+                "user_exp_missing",
+                ApiError::unauthorized("user Authorization has no valid exp claim"),
+            )
+        })
 }
 
 fn jwt_verification_error(credential: &str, error: HandlerRejection) -> ApiError {
@@ -2165,7 +2786,7 @@ fn validate_orchestration_definition(
             validate_phase2_task(task, mode, maximum_parallelism)?;
         }
     }
-    let (task_attempts, nested_calls, cost_units) = phase2_budget_envelope(definition)?;
+    let (task_attempts, nested_calls, cost_units) = budget_envelope(definition, false)?;
     if task_attempts > u64::from(budget.maximum_task_attempts)
         || nested_calls > u64::from(budget.maximum_nested_calls)
         || cost_units > budget.maximum_cost_units
@@ -2175,6 +2796,68 @@ fn validate_orchestration_definition(
         ));
     }
     Ok(())
+}
+
+fn validate_portal_execution_definition(
+    definition: &WorkflowDefinition,
+    mode: InvocationMode,
+    budget: &workflow_invocation_contract::InvocationBudget,
+    maximum_parallelism: usize,
+) -> Result<(), ApiError> {
+    if mode != InvocationMode::Async || definition.do_.entries.is_empty() {
+        return Err(ApiError::definition_mismatch(
+            "private portal execution requires a nonempty asynchronous workflow",
+        ));
+    }
+    validate_runtime_definition(definition, maximum_parallelism)
+        .map_err(ApiError::definition_mismatch)?;
+    let (attempts, nested_calls, cost_units) = budget_envelope(definition, true)?;
+    if attempts > u64::from(budget.maximum_task_attempts)
+        || nested_calls > u64::from(budget.maximum_nested_calls)
+        || cost_units > budget.maximum_cost_units
+    {
+        return Err(ApiError::definition_mismatch(
+            "private workflow declared work exceeds the prepared invocation budget",
+        ));
+    }
+    Ok(())
+}
+
+fn prepare_private_policy(
+    raw_definition: &serde_yaml::Value,
+    definition: &WorkflowDefinition,
+    profiles: &std::collections::BTreeMap<String, ExecutionProfile>,
+) -> Result<ResolvedExecutionPolicy, ApiError> {
+    let security = parse_security_policy(raw_definition)
+        .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
+    let mut initial = None;
+    for entry in &definition.do_.entries {
+        let Some((_, task)) = entry.iter().next() else {
+            return Err(ApiError::definition_mismatch(
+                "workflow task entry is empty",
+            ));
+        };
+        let mut tasks = vec![task];
+        if let TaskDefinition::Fork(fork) = task {
+            tasks.extend(
+                fork.fork
+                    .branches
+                    .entries
+                    .iter()
+                    .filter_map(|branch| branch.values().next()),
+            );
+        }
+        for task in tasks {
+            let kind = policy_task_kind(task)
+                .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
+            let resolved = resolve_policy(kind, security.as_ref(), profiles)
+                .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
+            if initial.is_none() {
+                initial = Some(resolved);
+            }
+        }
+    }
+    initial.ok_or_else(|| ApiError::definition_mismatch("workflow has no initial task"))
 }
 
 fn validate_development_agent_call(
@@ -2228,22 +2911,30 @@ fn validate_development_agent_call(
     Ok(())
 }
 
-fn phase2_budget_envelope(definition: &WorkflowDefinition) -> Result<(u64, u64, u64), ApiError> {
+fn budget_envelope(
+    definition: &WorkflowDefinition,
+    portal_execution: bool,
+) -> Result<(u64, u64, u64), ApiError> {
     fn task_envelope(
         definition: &WorkflowDefinition,
         task: &TaskDefinition,
+        portal_execution: bool,
     ) -> Result<(u64, u64, u64), ApiError> {
-        let common = match task {
-            TaskDefinition::Ask(task) => &task.common,
-            TaskDefinition::Assert(task) => &task.common,
-            TaskDefinition::Call(call) => call.common(),
-            TaskDefinition::Fork(task) => &task.common,
-            TaskDefinition::Set(task) => &task.common,
-            TaskDefinition::Switch(task) => &task.common,
-            _ => {
-                return Err(ApiError::definition_mismatch(
-                    "task type is outside the Phase 2 budget profile",
-                ));
+        let common = if portal_execution {
+            runtime_task_fields(task)
+        } else {
+            match task {
+                TaskDefinition::Ask(task) => &task.common,
+                TaskDefinition::Assert(task) => &task.common,
+                TaskDefinition::Call(call) => call.common(),
+                TaskDefinition::Fork(task) => &task.common,
+                TaskDefinition::Set(task) => &task.common,
+                TaskDefinition::Switch(task) => &task.common,
+                _ => {
+                    return Err(ApiError::definition_mismatch(
+                        "task type is outside the Phase 2 budget profile",
+                    ));
+                }
             }
         };
         let retry = match common.retry.as_ref() {
@@ -2286,7 +2977,7 @@ fn phase2_budget_envelope(definition: &WorkflowDefinition) -> Result<(u64, u64, 
                 let Some((_, branch_task)) = branch.iter().next() else {
                     continue;
                 };
-                let branch = task_envelope(definition, branch_task)?;
+                let branch = task_envelope(definition, branch_task, portal_execution)?;
                 envelope.0 = envelope.0.saturating_add(branch.0);
                 envelope.1 = envelope.1.saturating_add(branch.1);
                 envelope.2 = envelope.2.saturating_add(branch.2);
@@ -2302,7 +2993,7 @@ fn phase2_budget_envelope(definition: &WorkflowDefinition) -> Result<(u64, u64, 
         let Some((_, task)) = entry.iter().next() else {
             continue;
         };
-        let task = task_envelope(definition, task)?;
+        let task = task_envelope(definition, task, portal_execution)?;
         envelope.0 = envelope.0.saturating_add(task.0);
         envelope.1 = envelope.1.saturating_add(task.1);
         envelope.2 = envelope.2.saturating_add(task.2);
@@ -2594,6 +3285,13 @@ impl ApiError {
             message,
         )
     }
+    fn input_invalid(message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            ErrorCode::WorkflowInputInvalid,
+            message,
+        )
+    }
     fn unauthorized(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::UNAUTHORIZED,
@@ -2684,7 +3382,8 @@ async fn evaluate_rule_test(
     }
 
     let mut context = request.input_context;
-    let passed = state.engine
+    let passed = state
+        .engine
         .execute_rule(&rule, &mut context)
         .await
         .map_err(|err| {
@@ -2718,6 +3417,20 @@ fn bad_request<E: std::fmt::Display>(err: E) -> (StatusCode, Json<Value>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_definition_digest_keeps_branch_end_directives() {
+        let source = "document: {dsl: '1.0.3', namespace: test, name: mortgage, version: '1.0.1'}\nevaluate: {language: cel}\ndo:\n  - approve:\n      set: {status: APPROVED}\n      end: true\n";
+        let saved: Value = serde_yaml::from_str(source).expect("saved YAML parses");
+        let typed: WorkflowDefinition = serde_yaml::from_str(source).expect("runtime model parses");
+        let typed_snapshot = serde_json::to_value(typed).expect("runtime model serializes");
+        assert_eq!(saved.pointer("/do/0/approve/end"), Some(&json!(true)));
+        assert!(typed_snapshot.pointer("/do/0/approve/end").is_none());
+        assert_ne!(
+            saved_definition_digest(&saved).expect("saved digest"),
+            saved_definition_digest(&typed_snapshot).expect("typed digest"),
+        );
+    }
 
     #[test]
     fn invocation_binding_query_uses_only_workflow_projection_tables() {
@@ -2796,6 +3509,125 @@ mod tests {
             maximum_intermediate_bytes: 1_048_576,
             maximum_result_bytes: 1_048_576,
             maximum_cost_units: 100,
+        }
+    }
+
+    #[test]
+    fn private_portal_execution_accepts_legacy_corpus_and_large_definitions() {
+        for (name, source) in [
+            (
+                "insurance-rest",
+                include_str!("../examples/insurance-claim-rest-v1.yaml"),
+            ),
+            (
+                "insurance-mcp",
+                include_str!("../examples/insurance-claim-mcp-v1.yaml"),
+            ),
+            (
+                "insurance-headless",
+                include_str!("../examples/insurance-claim-headless-v1.yaml"),
+            ),
+            (
+                "run-shell",
+                include_str!("../examples/run-shell-mock-v1.yaml"),
+            ),
+            (
+                "grant-tools",
+                include_str!("../examples/grant-tools-to-workflow.yaml"),
+            ),
+            (
+                "human-approval",
+                include_str!("../examples/human-approval.yaml"),
+            ),
+        ] {
+            let definition: WorkflowDefinition = serde_yaml::from_str(source).unwrap();
+            let raw: serde_yaml::Value = serde_yaml::from_str(source).unwrap();
+            let profiles: serde_yaml::Value =
+                serde_yaml::from_str(include_str!("../config/runner-execution.mock.yml")).unwrap();
+            let profile: workflow_policy::ExecutionProfile =
+                serde_yaml::from_value(profiles["profiles"][0].clone()).unwrap();
+            let available = std::collections::BTreeMap::from([(profile.id.clone(), profile)]);
+            let mut budget = test_budget();
+            budget.maximum_task_attempts = 100_000;
+            budget.maximum_nested_calls = 100_000;
+            budget.maximum_cost_units = 1_000_000;
+            validate_portal_execution_definition(&definition, InvocationMode::Async, &budget, 64)
+                .unwrap_or_else(|error| panic!("{name}: {}", error.error.message));
+            prepare_private_policy(&raw, &definition, &available)
+                .unwrap_or_else(|error| panic!("{name} policy: {}", error.error.message));
+            if name == "run-shell" {
+                assert!(
+                    validate_orchestration_definition(
+                        &definition,
+                        InvocationMode::Async,
+                        &budget,
+                        64,
+                    )
+                    .is_err()
+                );
+            }
+            if name == "human-approval" {
+                assert!(source.contains("roleId: admin"));
+                assert!(matches!(
+                    definition.do_.entries[0].values().next().unwrap(),
+                    TaskDefinition::Ask(_)
+                ));
+            }
+        }
+
+        let mut large = String::from(
+            "document: {dsl: 1.0.3, namespace: test, name: large, version: 1.0.0}\nevaluate: {language: cel}\ndo:\n",
+        );
+        for index in 0..65 {
+            large.push_str(&format!(
+                "  - step{index}:\n      set: {{value: {index}}}\n"
+            ));
+        }
+        let definition: WorkflowDefinition = serde_yaml::from_str(&large).unwrap();
+        let mut budget = test_budget();
+        budget.maximum_task_attempts = 65;
+        validate_portal_execution_definition(&definition, InvocationMode::Async, &budget, 64)
+            .unwrap();
+        assert!(
+            validate_orchestration_definition(&definition, InvocationMode::Async, &budget, 64)
+                .is_err()
+        );
+        budget.maximum_task_attempts = 64;
+        assert!(
+            validate_portal_execution_definition(&definition, InvocationMode::Async, &budget, 64)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn private_portal_execution_preserves_runner_policy_and_rejects_unsupported_tasks() {
+        let source = include_str!("../examples/run-shell-mock-v1.yaml");
+        let definition: WorkflowDefinition = serde_yaml::from_str(source).unwrap();
+        let raw: serde_yaml::Value = serde_yaml::from_str(source).unwrap();
+        let security = parse_security_policy(&raw).unwrap();
+        let profiles: serde_yaml::Value =
+            serde_yaml::from_str(include_str!("../config/runner-execution.mock.yml")).unwrap();
+        let profile: workflow_policy::ExecutionProfile =
+            serde_yaml::from_value(profiles["profiles"][0].clone()).unwrap();
+        let resolved = resolve_policy(
+            policy_task_kind(definition.do_.entries[0].values().next().unwrap()).unwrap(),
+            security.as_ref(),
+            &std::collections::BTreeMap::from([(profile.id.clone(), profile)]),
+        )
+        .unwrap();
+        assert_eq!(
+            resolved.placement,
+            workflow_policy::ExecutionPlacement::Runner
+        );
+        assert_eq!(resolved.profile.unwrap().id, "mock-ephemeral");
+
+        for task in [
+            "wait: PT1S".to_string(),
+            "call: mcp\n      with:\n        method: tools/list\n        transport:\n          stdio:\n            command: mcp-server".to_string(),
+        ] {
+            let source = format!("document: {{dsl: 1.0.3, namespace: test, name: denied, version: 1.0.0}}\nevaluate: {{language: cel}}\ndo:\n  - denied:\n      {task}\n");
+            let definition: WorkflowDefinition = serde_yaml::from_str(&source).unwrap();
+            assert!(validate_portal_execution_definition(&definition, InvocationMode::Async, &test_budget(), 64).is_err());
         }
     }
 
@@ -3067,6 +3899,7 @@ fork:
             principal_subject: "portal-ui".into(),
             end_user_subject: Uuid::nil().to_string(),
             caller_claims_digest: "sha256:claims".into(),
+            caller_claims: json!({}),
             user_authorization: "Bearer current-user-jwt".into(),
             user_authorization_exp: 2_000_000_000,
         };
@@ -3100,13 +3933,29 @@ fork:
             ..AuthPrincipal::default()
         };
         let allowed = vec!["com.networknt.portal.gateway-1.0.0".to_string()];
-        validate_invocation_caller(&principal, host_id, "dev", &allowed).unwrap();
+        validate_invocation_caller(&principal, host_id, "dev", &allowed, &[]).unwrap();
 
         let mut wrong_service = principal.clone();
         wrong_service.claims["sid"] = json!("com.networknt.other-1.0.0");
-        assert!(validate_invocation_caller(&wrong_service, host_id, "dev", &allowed).is_err());
-        assert!(validate_invocation_caller(&principal, Uuid::new_v4(), "dev", &allowed).is_err());
-        assert!(validate_invocation_caller(&principal, host_id, "prod", &allowed).is_err());
+        assert!(validate_invocation_caller(&wrong_service, host_id, "dev", &allowed, &[]).is_err());
+        assert!(
+            validate_invocation_caller(&principal, Uuid::new_v4(), "dev", &allowed, &[]).is_err()
+        );
+        assert!(validate_invocation_caller(&principal, host_id, "prod", &allowed, &[]).is_err());
+
+        let shared = vec!["dev".to_string(), "loc".to_string()];
+        assert!(validate_invocation_caller(&principal, host_id, "dev", &allowed, &shared).is_ok());
+        let mut loc_caller = principal.clone();
+        loc_caller.claims["env"] = json!("loc");
+        assert!(validate_invocation_caller(&loc_caller, host_id, "dev", &allowed, &[]).is_err());
+        assert!(validate_invocation_caller(&loc_caller, host_id, "dev", &allowed, &shared).is_ok());
+        assert!(
+            validate_invocation_caller(&wrong_service, host_id, "dev", &allowed, &shared).is_err()
+        );
+        assert!(
+            validate_invocation_caller(&loc_caller, Uuid::new_v4(), "dev", &allowed, &shared)
+                .is_err()
+        );
     }
 
     #[test]
@@ -3159,5 +4008,32 @@ fork:
         assert_eq!(invalid.status, StatusCode::UNAUTHORIZED);
         assert_eq!(invalid.error.code, ErrorCode::WorkflowPolicyDenied);
         assert!(!invalid.error.retryable);
+    }
+
+    #[test]
+    fn native_start_accepts_only_public_fields() {
+        let valid = json!({
+            "workflowDefinitionId":Uuid::now_v7(),
+            "input":{},
+            "idempotencyKey":"one-deliberate-start",
+        });
+        assert!(parse_native_start_input(valid.clone()).is_ok());
+        for (field, value) in [
+            ("stableToolRef", json!(Uuid::now_v7())),
+            ("expectedDefinitionDigest", json!(format!("sha256:{}", "a".repeat(64)))),
+            ("hostId", json!(Uuid::now_v7())),
+            ("ownerUserId", json!(Uuid::now_v7())),
+            ("renewableGrantId", json!(Uuid::now_v7())),
+            ("workflowInstanceId", json!(Uuid::now_v7())),
+            ("callerClaims", json!({"roles":["admin"]})),
+            ("deadlineTs", json!("2099-01-01T00:00:00Z")),
+        ] {
+            let mut changed = valid.clone();
+            changed[field] = value;
+            assert!(parse_native_start_input(changed).is_err(), "{field}");
+        }
+        let mut changed = valid;
+        changed["input"] = json!([]);
+        assert!(parse_native_start_input(changed).is_err());
     }
 }

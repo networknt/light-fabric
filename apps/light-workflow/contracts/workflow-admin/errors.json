@@ -1,31 +1,142 @@
 {
   "version": "0.2.0-restoration",
   "errors": [
-    {"code":"UNAUTHENTICATED","httpStatus":401,"retryable":false},
-    {"code":"FORBIDDEN","httpStatus":403,"retryable":false},
-    {"code":"NOT_FOUND","httpStatus":404,"retryable":false},
-    {"code":"INVALID_ARGUMENT","httpStatus":400,"retryable":false},
-    {"code":"VALIDATION_FAILED","httpStatus":422,"retryable":false},
-    {"code":"INVALID_STATE","httpStatus":409,"retryable":false},
-    {"code":"TASK_EXPIRED","httpStatus":409,"retryable":false},
-    {"code":"VERSION_CONFLICT","httpStatus":409,"retryable":true},
-    {"code":"CLAIM_CONFLICT","httpStatus":409,"retryable":true},
-    {"code":"CLAIM_NOT_OWNED","httpStatus":409,"retryable":false},
-    {"code":"ALREADY_COMPLETED","httpStatus":409,"retryable":false},
-    {"code":"AUTHORITY_UNAVAILABLE","httpStatus":503,"retryable":true},
-    {"code":"STORE_UNAVAILABLE","httpStatus":503,"retryable":true},
-    {"code":"EFFECT_UNRESOLVED","httpStatus":503,"retryable":true}
+    {
+      "code": "UNAUTHENTICATED",
+      "httpStatus": 401,
+      "retryable": false
+    },
+    {
+      "code": "FORBIDDEN",
+      "httpStatus": 403,
+      "retryable": false
+    },
+    {
+      "code": "NOT_FOUND",
+      "httpStatus": 404,
+      "retryable": false
+    },
+    {
+      "code": "INVALID_ARGUMENT",
+      "httpStatus": 400,
+      "retryable": false
+    },
+    {
+      "code": "VALIDATION_FAILED",
+      "httpStatus": 422,
+      "retryable": false
+    },
+    {
+      "code": "INVALID_STATE",
+      "httpStatus": 409,
+      "retryable": false
+    },
+    {
+      "code": "TASK_EXPIRED",
+      "httpStatus": 409,
+      "retryable": false
+    },
+    {
+      "code": "VERSION_CONFLICT",
+      "httpStatus": 409,
+      "retryable": true
+    },
+    {"code":"PROCESS_NOT_TERMINAL","httpStatus":409,"retryable":false},
+    {"code":"RESOURCE_HELD","httpStatus":409,"retryable":false},
+    {"code":"IDEMPOTENCY_CONFLICT","httpStatus":409,"retryable":false},
+    {
+      "code": "CLAIM_CONFLICT",
+      "httpStatus": 409,
+      "retryable": true
+    },
+    {
+      "code": "CLAIM_NOT_OWNED",
+      "httpStatus": 409,
+      "retryable": false
+    },
+    {
+      "code": "ALREADY_COMPLETED",
+      "httpStatus": 409,
+      "retryable": false
+    },
+    {
+      "code": "AUTHORITY_UNAVAILABLE",
+      "httpStatus": 503,
+      "retryable": true
+    },
+    {
+      "code": "STORE_UNAVAILABLE",
+      "httpStatus": 503,
+      "retryable": true
+    },
+    {
+      "code": "EFFECT_UNRESOLVED",
+      "httpStatus": 503,
+      "retryable": true
+    },
+    {
+      "code": "WORKFLOW_START_REJECTED",
+      "httpStatus": 400,
+      "retryable": false
+    },
+    {
+      "code": "WORKFLOW_DEFINITION_MISMATCH",
+      "httpStatus": 409,
+      "retryable": false
+    },
+    {
+      "code": "WORKFLOW_IDEMPOTENCY_CONFLICT",
+      "httpStatus": 409,
+      "retryable": false
+    },
+    {
+      "code": "WORKFLOW_CAPACITY_EXHAUSTED",
+      "httpStatus": 429,
+      "retryable": true
+    },
+    {
+      "code": "WORKFLOW_INVOCATION_UNAVAILABLE",
+      "httpStatus": 503,
+      "retryable": true
+    },
+    {
+      "code": "WORKFLOW_INPUT_INVALID",
+      "httpStatus": 400,
+      "retryable": false
+    },
+    {
+      "code": "WORKFLOW_POLICY_DENIED",
+      "httpStatus": 403,
+      "retryable": false
+    }
   ],
   "shape": {
-    "type":"object",
-    "required":["code","message","retryable"],
-    "additionalProperties":false,
-    "properties":{
-      "code":{"type":"string"},
-      "message":{"type":"string","minLength":1},
-      "retryable":{"type":"boolean"},
-      "correlationId":{"type":"string","minLength":1},
-      "details":{"type":"object","additionalProperties":true}
+    "type": "object",
+    "required": [
+      "code",
+      "message",
+      "retryable"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "code": {
+        "type": "string"
+      },
+      "message": {
+        "type": "string",
+        "minLength": 1
+      },
+      "retryable": {
+        "type": "boolean"
+      },
+      "correlationId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "details": {
+        "type": "object",
+        "additionalProperties": true
+      }
     }
   }
 }

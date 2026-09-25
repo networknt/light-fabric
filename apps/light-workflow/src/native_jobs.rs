@@ -47,7 +47,7 @@ pub async fn enqueue_with_artifacts(
     artifacts: Option<&crate::artifact_store::DurableArtifactStore>,
 ) -> Result<Uuid, Box<dyn std::error::Error + Send + Sync>> {
     let mut tx = pool.begin().await?;
-    let row=sqlx::query("SELECT i.principal_subject,i.end_user_subject,p.definition_snapshot FROM workflow_invocation_t i JOIN process_info_t p ON p.host_id=i.host_id AND p.process_id=i.process_id WHERE i.host_id=$1 AND i.process_id=$2 AND i.state IN('ACCEPTED','RUNNING','WAITING') AND i.cancel_requested_ts IS NULL AND i.deadline_ts>now() AND i.deadline_ts>=$3 FOR SHARE OF i")
+    let row=sqlx::query("SELECT i.principal_subject,i.end_user_subject,p.definition_snapshot FROM workflow_invocation_t i JOIN process_info_t p ON p.host_id=i.host_id AND p.process_id=i.process_id WHERE i.host_id=$1 AND i.process_id=$2 AND i.state IN('ACCEPTED','RUNNING','WAITING') AND i.cancel_requested_ts IS NULL AND ((i.deadline_ts>now() AND i.deadline_ts>=$3) OR (i.response_policy_snapshot->'privateExecutionProfile'->>'version'='1' AND (p.deadline_ts IS NULL OR p.deadline_ts>=$3))) FOR SHARE OF i")
         .bind(host).bind(process).bind(deadline).fetch_one(&mut *tx).await?;
     let definition: Value = row.get("definition_snapshot");
     if input.get("managerSnapshot").is_some() {

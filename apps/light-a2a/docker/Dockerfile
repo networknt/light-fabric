@@ -1,5 +1,7 @@
+# syntax=docker/dockerfile:1
 # Build with the light-fabric workspace root as context.
 FROM rust:1.98.0-bookworm AS builder
+ARG CARGO_CACHE_ID=warm
 WORKDIR /usr/src/app
 COPY Cargo.toml Cargo.lock ./
 COPY patches/ patches/
@@ -7,7 +9,12 @@ COPY crates/ crates/
 COPY frameworks/ frameworks/
 COPY apps/ apps/
 COPY contracts/ contracts/
-RUN cargo build --locked --release --package light-a2a --bin light-a2a
+RUN --mount=type=cache,id=light-fabric-rust198-registry-${CARGO_CACHE_ID},target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=light-fabric-rust198-git-${CARGO_CACHE_ID},target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=light-fabric-rust198-target-${CARGO_CACHE_ID}-app-gnu,target=/usr/src/app/target,sharing=locked \
+    cargo build --locked --release --package light-a2a --bin light-a2a \
+    && mkdir -p /out \
+    && cp /usr/src/app/target/release/light-a2a /out/light-a2a
 
 FROM debian:bookworm-slim
 RUN apt-get update \
@@ -19,7 +26,7 @@ RUN apt-get update \
     && chown -R a2a:a2a /app /config /var/lib/light-a2a \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=builder --chown=a2a:a2a /usr/src/app/target/release/light-a2a /app/light-a2a
+COPY --from=builder --chown=a2a:a2a /out/light-a2a /app/light-a2a
 COPY --from=builder --chown=a2a:a2a /usr/src/app/apps/light-a2a/config/ /app/config-defaults/
 EXPOSE 8448
 USER a2a:a2a

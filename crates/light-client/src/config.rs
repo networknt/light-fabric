@@ -253,6 +253,13 @@ pub struct OAuthTokenConfig {
     pub refresh_token: OAuthTokenRefreshTokenConfig,
     #[serde(default, rename = "token_exchange", alias = "tokenExchange")]
     pub token_exchange: OAuthTokenExchangeConfig,
+    #[serde(
+        default,
+        rename = "workflow_long",
+        alias = "workflowLong",
+        alias = "long"
+    )]
+    pub workflow_long: OAuthWorkflowLongConfig,
     #[serde(default)]
     pub key: OAuthKeyConfig,
 }
@@ -273,6 +280,7 @@ impl Default for OAuthTokenConfig {
             client_credentials: OAuthClientCredentialsConfig::default(),
             refresh_token: OAuthTokenRefreshTokenConfig::default(),
             token_exchange: OAuthTokenExchangeConfig::default(),
+            workflow_long: OAuthWorkflowLongConfig::default(),
             key: OAuthKeyConfig::default(),
         }
     }
@@ -371,7 +379,7 @@ impl Default for OAuthTokenRefreshTokenConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OAuthTokenExchangeConfig {
     #[serde(default = "default_token_uri")]
@@ -392,6 +400,24 @@ pub struct OAuthTokenExchangeConfig {
     pub audience: Option<String>,
 }
 
+impl fmt::Debug for OAuthTokenExchangeConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OAuthTokenExchangeConfig")
+            .field("uri", &self.uri)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"[REDACTED]")
+            .field("scope", &self.scope)
+            .field(
+                "subject_token",
+                &self.subject_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("subject_token_type", &self.subject_token_type)
+            .field("requested_token_type", &self.requested_token_type)
+            .field("audience", &self.audience)
+            .finish()
+    }
+}
+
 impl Default for OAuthTokenExchangeConfig {
     fn default() -> Self {
         Self {
@@ -404,6 +430,42 @@ impl Default for OAuthTokenExchangeConfig {
             requested_token_type: None,
             audience: None,
         }
+    }
+}
+
+/// Gateway-only issuer connection for per-work LONG authority.
+/// The credentials are supplied by the calling app's client configuration and
+/// must not be serialized into process context or Portal events.
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthWorkflowLongConfig {
+    #[serde(default, rename = "gateway_url", alias = "gatewayUrl")]
+    pub gateway_url: String,
+    #[serde(default, rename = "provider_id", alias = "providerId")]
+    pub provider_id: String,
+    #[serde(default, rename = "client_id", alias = "clientId")]
+    pub client_id: String,
+    #[serde(default, rename = "client_secret", alias = "clientSecret")]
+    pub client_secret: String,
+    #[serde(default, rename = "database_url_file", alias = "databaseUrlFile")]
+    pub database_url_file: String,
+    #[serde(default, rename = "keyring_file", alias = "keyringFile")]
+    pub keyring_file: String,
+    #[serde(default, rename = "ca_file", alias = "caFile")]
+    pub ca_file: String,
+}
+
+impl fmt::Debug for OAuthWorkflowLongConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OAuthWorkflowLongConfig")
+            .field("gateway_url", &self.gateway_url)
+            .field("provider_id", &self.provider_id)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"[REDACTED]")
+            .field("database_url_file", &self.database_url_file)
+            .field("keyring_file", &self.keyring_file)
+            .field("ca_file", &self.ca_file)
+            .finish()
     }
 }
 
@@ -1026,6 +1088,19 @@ fn yaml_scalar_to_string(value: serde_yaml::Value) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_exchange_debug_redacts_credentials_and_source() {
+        let config = OAuthTokenExchangeConfig {
+            client_secret: "private-client-secret".into(),
+            subject_token: Some("private-owner-token".into()),
+            ..Default::default()
+        };
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("private-client-secret"));
+        assert!(!debug.contains("private-owner-token"));
+        assert!(debug.contains("[REDACTED]"));
+    }
 
     #[test]
     fn parses_nested_tls_verify_hostname() {

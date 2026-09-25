@@ -1,17 +1,425 @@
 {
-  "workflow_list_processes":{"input":{"page":{"pageSize":25},"states":["RUNNING","COMPLETED"],"sort":"createdAt:desc"},"output":{"processes":[{"processId":"018f0000-0000-7000-8000-000000000001","workflowInstanceId":null,"featureRunId":null,"definitionId":"018f0000-0000-7000-8000-000000000002","workflowName":"scheduled-maintenance","workflowVersion":"1.0.0","processState":"COMPLETED","invocationState":null,"invocationStateVersion":null,"createdAt":"2026-09-22T10:00:00Z","updatedAt":"2026-09-22T10:01:00Z","deadline":null,"ownerDisplay":"owner@example.invalid","safeFailureSummary":null,"featureState":null,"vmState":null,"vmGeneration":null,"canCancelInvocation":{"allowed":false,"reason":"NO_LIFECYCLE_INVOCATION"},"canCancelFeature":{"allowed":false,"reason":"NO_FEATURE"}}],"page":{"pageSize":25,"nextCursor":null,"hasMore":false,"authorizedTotal":1}}},
-  "workflow_get_process":{"input":{"processId":"018f0000-0000-7000-8000-000000000001"},"output":{"process":{"processId":"018f0000-0000-7000-8000-000000000001","workflowInstanceId":null,"featureRunId":null,"definitionId":"018f0000-0000-7000-8000-000000000002","workflowName":"scheduled-maintenance","workflowVersion":"1.0.0","processState":"COMPLETED","invocationState":null,"invocationStateVersion":null,"createdAt":"2026-09-22T10:00:00Z","updatedAt":"2026-09-22T10:01:00Z","deadline":null,"ownerDisplay":null,"safeFailureSummary":null,"featureState":null,"vmState":null,"vmGeneration":null,"canCancelInvocation":{"allowed":false,"reason":"NO_LIFECYCLE_INVOCATION"},"canCancelFeature":{"allowed":false,"reason":"NO_FEATURE"}},"tasks":[],"links":{"status":null,"result":null,"feature":null,"audit":"/app/workflow/audit?processId=018f0000-0000-7000-8000-000000000001"}}},
-  "workflow_list_features":{"input":{"page":{"pageSize":25},"holdsVm":true},"output":{"features":[{"featureRunId":"018f0000-0000-7000-8000-000000000010","featureVersion":6,"state":"READY_FOR_NEXT_STAGE","holdsVm":true,"vmState":"RESERVED","vmGeneration":36,"activeWorkflowInstanceId":null,"canCancelFeature":{"allowed":true,"reason":null}}],"page":{"pageSize":25,"nextCursor":null,"hasMore":false,"authorizedTotal":1}}},
-  "workflow_get_feature":{"input":{"featureRunId":"018f0000-0000-7000-8000-000000000010"},"output":{"featureRunId":"018f0000-0000-7000-8000-000000000010","featureVersion":6,"state":"READY_FOR_NEXT_STAGE","holdsVm":true,"vmState":"RESERVED","vmGeneration":36,"activeWorkflowInstanceId":null,"releasePending":false,"releaseEvidence":null,"canCancelFeature":{"allowed":true,"reason":null}}},
-  "workflow_get_status":{"input":{"workflowInstanceId":"018f0000-0000-7000-8000-000000000020"},"output":{"workflowInstanceId":"018f0000-0000-7000-8000-000000000020","state":"CANCELLATION_REQUESTED","invocationStateVersion":4,"cancellationRequested":true,"executionStopped":false}},
-  "workflow_get_result":{"input":{"workflowInstanceId":"018f0000-0000-7000-8000-000000000020"},"output":{"workflowInstanceId":"018f0000-0000-7000-8000-000000000020","state":"COMPLETED","result":{"summary":"completed"},"safeFailureSummary":null}},
-  "workflow_cancel":{"input":{"workflowInstanceId":"018f0000-0000-7000-8000-000000000020","reason":"operator request"},"output":{"operationId":"018f0000-0000-7000-8000-000000000021","accepted":true,"state":"CANCELLATION_REQUESTED","message":"Cancellation accepted; execution stop is pending."}},
-  "workflow_cancel_feature":{"input":{"featureRunId":"018f0000-0000-7000-8000-000000000010","expectedVersion":6,"reason":"abandon feature"},"output":{"operationId":"018f0000-0000-7000-8000-000000000022","accepted":true,"state":"CANCELLED","featureVersion":7,"releasePending":true,"vmReleased":false}},
-  "workflow_get_human_task_inbox_summary":{"input":{},"output":{"tabs":[{"id":"all","label":"All","assignmentType":null,"assignmentId":null,"count":1},{"id":"user:self","label":"Assigned to me","assignmentType":"USER","assignmentId":"018f0000-0000-7000-8000-000000000030","count":1}]}},
-  "workflow_list_human_tasks":{"input":{"page":{"pageSize":25},"tabId":"all","includeClaimed":true,"includeClaimedByOthers":false},"output":{"humanTasks":[{"taskAsstId":"018f0000-0000-7000-8000-000000000031","taskId":"018f0000-0000-7000-8000-000000000032","processId":"018f0000-0000-7000-8000-000000000033","workflowInstanceId":"018f0000-0000-7000-8000-000000000034","assignmentVersion":1,"assignmentType":"USER","assignmentId":"018f0000-0000-7000-8000-000000000030","assignmentLabel":"Owner","assignmentStatus":"ASSIGNED","taskStatus":"WAITING","assignedAt":"2026-09-22T11:00:00Z","claimedBy":null,"claimExpiresAt":null,"deadline":null,"category":"REVIEW","reason":"INPUT_REQUIRED","prompt":"Approve?","canClaim":{"allowed":true,"reason":null},"canRelease":{"allowed":false,"reason":"NOT_CLAIMED"},"canComplete":{"allowed":false,"reason":"CLAIM_REQUIRED"},"readOnly":false}],"page":{"pageSize":25,"nextCursor":null,"hasMore":false,"authorizedTotal":1}}},
-  "workflow_get_human_task":{"input":{"taskAsstId":"018f0000-0000-7000-8000-000000000031"},"output":{"task":{"taskAsstId":"018f0000-0000-7000-8000-000000000031","taskId":"018f0000-0000-7000-8000-000000000032","processId":"018f0000-0000-7000-8000-000000000033","workflowInstanceId":"018f0000-0000-7000-8000-000000000034","assignmentVersion":1,"assignmentType":"USER","assignmentId":"018f0000-0000-7000-8000-000000000030","assignmentLabel":"Owner","assignmentStatus":"ASSIGNED","taskStatus":"WAITING","assignedAt":"2026-09-22T11:00:00Z","claimedBy":null,"claimExpiresAt":null,"deadline":null,"category":"REVIEW","reason":"INPUT_REQUIRED","prompt":"Approve?","canClaim":{"allowed":true,"reason":null},"canRelease":{"allowed":false,"reason":"NOT_CLAIMED"},"canComplete":{"allowed":false,"reason":"CLAIM_REQUIRED"},"readOnly":false},"ask":{"mode":"approval","prompt":"Approve?","required":true,"allowComment":true,"commentRequired":false,"options":[{"value":"APPROVED","label":"Approve"},{"value":"REJECTED","label":"Reject"}]},"contextSummary":{"change":"safe summary"}}},
-  "workflow_claim_human_task":{"input":{"taskAsstId":"018f0000-0000-7000-8000-000000000031","assignmentVersion":1,"claimMinutes":30},"output":{"taskAsstId":"018f0000-0000-7000-8000-000000000031","assignmentVersion":2,"assignmentStatus":"CLAIMED","claimExpiresAt":"2026-09-22T11:30:00Z"}},
-  "workflow_release_human_task":{"input":{"taskAsstId":"018f0000-0000-7000-8000-000000000031","assignmentVersion":2},"output":{"taskAsstId":"018f0000-0000-7000-8000-000000000031","assignmentVersion":3,"assignmentStatus":"ASSIGNED"}},
-  "workflow_complete_human_task":{"input":{"taskAsstId":"018f0000-0000-7000-8000-000000000031","assignmentVersion":2,"decision":"APPROVED","comment":"Reviewed","idempotencyKey":"phase0-example-1"},"output":{"taskAsstId":"018f0000-0000-7000-8000-000000000031","assignmentVersion":3,"assignmentStatus":"COMPLETED","completionId":"018f0000-0000-7000-8000-000000000035","completionRecorded":true}},
-  "workflow_rule_test":{"input":{"ruleBody":{"ruleId":"rule-test","expression":"true"},"inputContext":{},"expectedResult":true,"testMode":"conditions"},"output":{"executor":"rust","passed":true,"expectedResult":true,"success":true,"mutatedContext":{}}}
+  "workflow_delete_process":{"input":{"processId":"00000000-0000-4000-8000-000000000021","expectedLifecycleVersion":4,"reason":"completed fixture cleanup","idempotencyKey":"delete-fixture-001"},"output":{"operationId":"00000000-0000-4000-8000-000000000022","processId":"00000000-0000-4000-8000-000000000021","lifecycleVersion":5,"logicalDeletion":"RECORDED","artifactCleanup":"PENDING","artifacts":{"pending":1,"failed":0,"deleted":0,"legalHold":0,"retained":0}}},
+  "workflow_get_task":{"input":{"taskId":"00000000-0000-4000-8000-000000000023"},"output":{"taskId":"00000000-0000-4000-8000-000000000023","processId":"00000000-0000-4000-8000-000000000021","workflowInstanceId":"00000000-0000-4000-8000-000000000024","workflowTaskId":"review","type":"human","state":"COMPLETED","taskVersion":2,"startedAt":"2026-09-25T10:00:00Z","completedAt":"2026-09-25T10:01:00Z","deadline":null,"resultCode":"APPROVED","effectState":"none","assignments":[]}},
+  "workflow_add_process_note":{"input":{"processId":"00000000-0000-4000-8000-000000000021","taskId":"00000000-0000-4000-8000-000000000023","text":"Operator reviewed the outcome.","idempotencyKey":"note-fixture-001"},"output":{"noteId":"00000000-0000-4000-8000-000000000025","processId":"00000000-0000-4000-8000-000000000021","workflowInstanceId":"00000000-0000-4000-8000-000000000024","taskId":"00000000-0000-4000-8000-000000000023","text":"Operator reviewed the outcome.","actor":"fixture-user","createdAt":"2026-09-25T10:02:00Z"}},
+  "workflow_list_process_notes":{"input":{"processId":"00000000-0000-4000-8000-000000000021","page":{"pageSize":25}},"output":{"notes":[{"noteId":"00000000-0000-4000-8000-000000000025","processId":"00000000-0000-4000-8000-000000000021","workflowInstanceId":"00000000-0000-4000-8000-000000000024","taskId":"00000000-0000-4000-8000-000000000023","text":"Operator reviewed the outcome.","actor":"fixture-user","createdAt":"2026-09-25T10:02:00Z"}],"page":{"pageSize":1,"nextCursor":null,"hasMore":false}}},
+  "workflow_decide_tool_access": {
+    "input": {
+      "taskAsstId": "00000000-0000-4000-8000-000000000006",
+      "assignmentVersion": 2,
+      "requestId": "00000000-0000-4000-8000-000000000007",
+      "requestDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "decision": "APPROVE",
+      "idempotencyKey": "decision-example-001"
+    },
+    "output": {
+      "decisionId": "00000000-0000-4000-8000-000000000008",
+      "requestId": "00000000-0000-4000-8000-000000000007",
+      "taskAsstId": "00000000-0000-4000-8000-000000000006",
+      "state": "PENDING_DELIVERY",
+      "assignmentVersion": 3,
+      "portalCommittedAt": null
+    }
+  },
+  "workflow_list_processes": {
+    "input": {
+      "page": {
+        "pageSize": 25
+      },
+      "states": [
+        "RUNNING",
+        "COMPLETED"
+      ],
+      "sort": "createdAt:desc"
+    },
+    "output": {
+      "processes": [
+        {
+          "processId": "018f0000-0000-7000-8000-000000000001",
+          "workflowInstanceId": null,
+          "featureRunId": null,
+          "definitionId": "018f0000-0000-7000-8000-000000000002",
+          "workflowName": "scheduled-maintenance",
+          "workflowVersion": "1.0.0",
+          "processState": "COMPLETED",
+          "invocationState": null,
+          "invocationStateVersion": null,
+          "createdAt": "2026-09-22T10:00:00Z",
+          "updatedAt": "2026-09-22T10:01:00Z",
+          "deadline": null,
+          "ownerDisplay": "owner@example.invalid",
+          "safeFailureSummary": null,
+          "featureState": null,
+          "vmState": null,
+          "vmGeneration": null,
+          "canCancelInvocation": {
+            "allowed": false,
+            "reason": "NO_LIFECYCLE_INVOCATION"
+          },
+          "canCancelFeature": {
+            "allowed": false,
+            "reason": "NO_FEATURE"
+          }
+        }
+      ],
+      "page": {
+        "pageSize": 25,
+        "nextCursor": null,
+        "hasMore": false,
+        "authorizedTotal": 1
+      }
+    }
+  },
+  "workflow_get_process": {
+    "input": {
+      "processId": "018f0000-0000-7000-8000-000000000001"
+    },
+    "output": {
+      "process": {
+        "processId": "018f0000-0000-7000-8000-000000000001",
+        "workflowInstanceId": null,
+        "featureRunId": null,
+        "definitionId": "018f0000-0000-7000-8000-000000000002",
+        "workflowName": "scheduled-maintenance",
+        "workflowVersion": "1.0.0",
+        "processState": "COMPLETED",
+        "invocationState": null,
+        "invocationStateVersion": null,
+        "createdAt": "2026-09-22T10:00:00Z",
+        "updatedAt": "2026-09-22T10:01:00Z",
+        "deadline": null,
+        "ownerDisplay": null,
+        "safeFailureSummary": null,
+        "featureState": null,
+        "vmState": null,
+        "vmGeneration": null,
+        "canCancelInvocation": {
+          "allowed": false,
+          "reason": "NO_LIFECYCLE_INVOCATION"
+        },
+        "canCancelFeature": {
+          "allowed": false,
+          "reason": "NO_FEATURE"
+        }
+      },
+      "tasks": [],
+      "links": {
+        "status": null,
+        "result": null,
+        "feature": null,
+        "audit": "/app/workflow/audit?processId=018f0000-0000-7000-8000-000000000001"
+      }
+    }
+  },
+  "workflow_list_features": {
+    "input": {
+      "page": {
+        "pageSize": 25
+      },
+      "holdsVm": true
+    },
+    "output": {
+      "features": [
+        {
+          "featureRunId": "018f0000-0000-7000-8000-000000000010",
+          "featureVersion": 6,
+          "state": "READY_FOR_NEXT_STAGE",
+          "holdsVm": true,
+          "vmState": "RESERVED",
+          "vmGeneration": 36,
+          "activeWorkflowInstanceId": null,
+          "canCancelFeature": {
+            "allowed": true,
+            "reason": null
+          }
+        }
+      ],
+      "page": {
+        "pageSize": 25,
+        "nextCursor": null,
+        "hasMore": false,
+        "authorizedTotal": 1
+      }
+    }
+  },
+  "workflow_get_feature": {
+    "input": {
+      "featureRunId": "018f0000-0000-7000-8000-000000000010"
+    },
+    "output": {
+      "featureRunId": "018f0000-0000-7000-8000-000000000010",
+      "featureVersion": 6,
+      "state": "READY_FOR_NEXT_STAGE",
+      "holdsVm": true,
+      "vmState": "RESERVED",
+      "vmGeneration": 36,
+      "activeWorkflowInstanceId": null,
+      "releasePending": false,
+      "releaseEvidence": null,
+      "canCancelFeature": {
+        "allowed": true,
+        "reason": null
+      }
+    }
+  },
+  "workflow_get_status": {
+    "input": {
+      "workflowInstanceId": "018f0000-0000-7000-8000-000000000020"
+    },
+    "output": {
+      "workflowInstanceId": "018f0000-0000-7000-8000-000000000020",
+      "state": "CANCELLATION_REQUESTED",
+      "invocationStateVersion": 4,
+      "cancellationRequested": true,
+      "executionStopped": false
+    }
+  },
+  "workflow_get_result": {
+    "input": {
+      "workflowInstanceId": "018f0000-0000-7000-8000-000000000020"
+    },
+    "output": {
+      "workflowInstanceId": "018f0000-0000-7000-8000-000000000020",
+      "state": "COMPLETED",
+      "result": {
+        "summary": "completed"
+      },
+      "safeFailureSummary": null
+    }
+  },
+  "workflow_cancel": {
+    "input": {
+      "workflowInstanceId": "018f0000-0000-7000-8000-000000000020",
+      "reason": "operator request"
+    },
+    "output": {
+      "operationId": "018f0000-0000-7000-8000-000000000021",
+      "accepted": true,
+      "state": "CANCELLATION_REQUESTED",
+      "message": "Cancellation accepted; execution stop is pending."
+    }
+  },
+  "workflow_cancel_feature": {
+    "input": {
+      "featureRunId": "018f0000-0000-7000-8000-000000000010",
+      "expectedVersion": 6,
+      "reason": "abandon feature"
+    },
+    "output": {
+      "operationId": "018f0000-0000-7000-8000-000000000022",
+      "accepted": true,
+      "state": "CANCELLED",
+      "featureVersion": 7,
+      "releasePending": true,
+      "vmReleased": false
+    }
+  },
+  "workflow_get_human_task_inbox_summary": {
+    "input": {},
+    "output": {
+      "tabs": [
+        {
+          "id": "all",
+          "label": "All",
+          "assignmentType": null,
+          "assignmentId": null,
+          "count": 1
+        },
+        {
+          "id": "user:self",
+          "label": "Assigned to me",
+          "assignmentType": "USER",
+          "assignmentId": "018f0000-0000-7000-8000-000000000030",
+          "count": 1
+        }
+      ]
+    }
+  },
+  "workflow_list_human_tasks": {
+    "input": {
+      "page": {
+        "pageSize": 25
+      },
+      "tabId": "all",
+      "includeClaimed": true,
+      "includeClaimedByOthers": false
+    },
+    "output": {
+      "humanTasks": [
+        {
+          "taskAsstId": "018f0000-0000-7000-8000-000000000031",
+          "taskId": "018f0000-0000-7000-8000-000000000032",
+          "processId": "018f0000-0000-7000-8000-000000000033",
+          "workflowInstanceId": "018f0000-0000-7000-8000-000000000034",
+          "assignmentVersion": 1,
+          "assignmentType": "USER",
+          "assignmentId": "018f0000-0000-7000-8000-000000000030",
+          "assignmentLabel": "Owner",
+          "assignmentStatus": "ASSIGNED",
+          "taskStatus": "WAITING",
+          "assignedAt": "2026-09-22T11:00:00Z",
+          "claimedBy": null,
+          "claimExpiresAt": null,
+          "deadline": null,
+          "category": "REVIEW",
+          "reason": "INPUT_REQUIRED",
+          "prompt": "Approve?",
+          "canClaim": {
+            "allowed": true,
+            "reason": null
+          },
+          "canRelease": {
+            "allowed": false,
+            "reason": "NOT_CLAIMED"
+          },
+          "canComplete": {
+            "allowed": false,
+            "reason": "CLAIM_REQUIRED"
+          },
+          "readOnly": false
+        }
+      ],
+      "page": {
+        "pageSize": 25,
+        "nextCursor": null,
+        "hasMore": false,
+        "authorizedTotal": 1
+      }
+    }
+  },
+  "workflow_get_human_task": {
+    "input": {
+      "taskAsstId": "018f0000-0000-7000-8000-000000000031"
+    },
+    "output": {
+      "task": {
+        "taskAsstId": "018f0000-0000-7000-8000-000000000031",
+        "taskId": "018f0000-0000-7000-8000-000000000032",
+        "processId": "018f0000-0000-7000-8000-000000000033",
+        "workflowInstanceId": "018f0000-0000-7000-8000-000000000034",
+        "assignmentVersion": 1,
+        "assignmentType": "USER",
+        "assignmentId": "018f0000-0000-7000-8000-000000000030",
+        "assignmentLabel": "Owner",
+        "assignmentStatus": "ASSIGNED",
+        "taskStatus": "WAITING",
+        "assignedAt": "2026-09-22T11:00:00Z",
+        "claimedBy": null,
+        "claimExpiresAt": null,
+        "deadline": null,
+        "category": "REVIEW",
+        "reason": "INPUT_REQUIRED",
+        "prompt": "Approve?",
+        "canClaim": {
+          "allowed": true,
+          "reason": null
+        },
+        "canRelease": {
+          "allowed": false,
+          "reason": "NOT_CLAIMED"
+        },
+        "canComplete": {
+          "allowed": false,
+          "reason": "CLAIM_REQUIRED"
+        },
+        "readOnly": false
+      },
+      "ask": {
+        "mode": "approval",
+        "prompt": "Approve?",
+        "required": true,
+        "allowComment": true,
+        "commentRequired": false,
+        "options": [
+          {
+            "value": "APPROVED",
+            "label": "Approve"
+          },
+          {
+            "value": "REJECTED",
+            "label": "Reject"
+          }
+        ]
+      },
+      "contextSummary": {
+        "change": "safe summary"
+      }
+    }
+  },
+  "workflow_claim_human_task": {
+    "input": {
+      "taskAsstId": "018f0000-0000-7000-8000-000000000031",
+      "assignmentVersion": 1,
+      "claimMinutes": 30
+    },
+    "output": {
+      "taskAsstId": "018f0000-0000-7000-8000-000000000031",
+      "assignmentVersion": 2,
+      "assignmentStatus": "CLAIMED",
+      "claimExpiresAt": "2026-09-22T11:30:00Z"
+    }
+  },
+  "workflow_release_human_task": {
+    "input": {
+      "taskAsstId": "018f0000-0000-7000-8000-000000000031",
+      "assignmentVersion": 2
+    },
+    "output": {
+      "taskAsstId": "018f0000-0000-7000-8000-000000000031",
+      "assignmentVersion": 3,
+      "assignmentStatus": "ASSIGNED"
+    }
+  },
+  "workflow_complete_human_task": {
+    "input": {
+      "taskAsstId": "018f0000-0000-7000-8000-000000000031",
+      "assignmentVersion": 2,
+      "decision": "APPROVED",
+      "comment": "Reviewed",
+      "idempotencyKey": "phase0-example-1"
+    },
+    "output": {
+      "taskAsstId": "018f0000-0000-7000-8000-000000000031",
+      "assignmentVersion": 3,
+      "assignmentStatus": "COMPLETED",
+      "completionId": "018f0000-0000-7000-8000-000000000035",
+      "completionRecorded": true
+    }
+  },
+  "workflow_rule_test": {
+    "input": {
+      "ruleBody": {
+        "ruleId": "rule-test",
+        "expression": "true"
+      },
+      "inputContext": {},
+      "expectedResult": true,
+      "testMode": "conditions"
+    },
+    "output": {
+      "executor": "rust",
+      "passed": true,
+      "expectedResult": true,
+      "success": true,
+      "mutatedContext": {}
+    }
+  },
+  "workflow_start": {
+    "input": {
+      "workflowDefinitionId": "00000000-0000-4000-8000-000000000001",
+      "input": {},
+      "idempotencyKey": "start-example-001"
+    },
+    "output": {
+      "accepted": true,
+      "workflowInstanceId": "00000000-0000-4000-8000-000000000003",
+      "processId": "00000000-0000-4000-8000-000000000004",
+      "workflowDefinitionId": "00000000-0000-4000-8000-000000000001",
+      "definitionDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "state": "ACCEPTED",
+      "invocationStateVersion": 1,
+      "acceptedAt": "2026-09-25T00:00:00Z",
+      "replayed": false
+    }
+  }
 }

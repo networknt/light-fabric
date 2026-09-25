@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "ownerStep": 13,
+  "query": ["getProcessInfo","getFreshProcessInfo","getProcessInfoLabel","getTaskInfo","getFreshTaskInfo","getTaskInfoLabel","getTaskAsst","getFreshTaskAsst","getHumanTaskList","getHumanTask","getHumanTaskInboxSummary","getAuditLog","getWorkflowEventFailure"],
+  "conditionalStaleQuery": ["getFreshAuditLog","getAuditLogLabel"],
+  "command": ["startWorkflow","completeTask","claimHumanTask","releaseHumanTask","createProcessInfo","updateProcessInfo","deleteProcessInfo","createTaskInfo","updateTaskInfo","deleteTaskInfo","createTaskAsst","updateTaskAsst","deleteTaskAsst","createAuditLog"],
+  "conditionalStaleCommand": ["updateAuditLog","deleteAuditLog"],
+  "replaceContract": ["requestWorkflowToolAccess"],
+  "restrictCommand": ["decideWorkflowToolAccess"],
+  "retainControlPlane": ["getWorklist","getFreshWorklist","getWorklistLabel","WorklistColumn","definition/access-request queries"]
+}

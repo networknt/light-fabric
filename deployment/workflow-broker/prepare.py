@@ -37,7 +37,7 @@ def prepare(manifest, source, output):
             raise ValueError("invalid HTTPS endpoint: " + key)
     if not m["callbackUri"].endswith("/workflow/credentials/callback"):
         raise ValueError("invalid callback path")
-    if not m["scope"] or not m["sanUri"].startswith("spiffe://"):
+    if "workflow.role.membership.read" not in m["scope"].split() or not m["sanUri"].startswith("spiffe://"):
         raise ValueError("scope and registered workload URI are required")
     # A prepared directory is immutable. Never silently rotate an encryption key.
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
@@ -89,6 +89,7 @@ def prepare(manifest, source, output):
     # Existing registrations must match exactly; retries cannot revive a revoked client.
     h,c,p,o,t = (literal(m[k]) for k in ("authHostId","clientId","providerId","ownerId","tenantId"))
     scope,callback = literal(m["scope"]),literal(m["callbackUri"])
+    previous_scope = literal(" ".join(part for part in m["scope"].split() if part != "workflow.role.membership.read"))
     check = "$a1_" + secrets.token_hex(16) + "$"
     while check in json.dumps(m):
         check = "$a1_" + secrets.token_hex(16) + "$"
@@ -98,6 +99,10 @@ SELECT pg_advisory_xact_lock(hashtextextended('workflow-broker-registration:' ||
 INSERT INTO auth_client_t(host_id,client_id,client_name,owner_id,client_type,client_profile,client_secret,client_scope,redirect_uri)
 VALUES({h},{c},'Workflow unattended broker',{o},'confidential','service','mTLS-only-no-secret-login',{scope},{callback})
 ON CONFLICT(host_id,client_id) DO NOTHING;
+UPDATE auth_client_t SET client_scope={scope}
+ WHERE host_id={h} AND client_id={c} AND active AND owner_id={o}
+   AND client_type='confidential' AND client_profile='service'
+   AND client_scope={previous_scope} AND redirect_uri={callback} AND custom_claim IS NULL;
 DO {check} BEGIN
  IF NOT EXISTS(SELECT 1 FROM auth_client_t WHERE host_id={h} AND client_id={c} AND active
    AND owner_id={o} AND client_type='confidential' AND client_profile='service'

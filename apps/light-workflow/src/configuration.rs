@@ -26,7 +26,9 @@ const SERVICE_ID: &str = "com.networknt.workflow-1.0.0";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowConfiguration {
+    pub approval_portal: Option<crate::approval_portal::Config>,
     pub credential_broker: Option<crate::credential_broker::BrokerSettings>,
+    pub long_keyring_file: Option<PathBuf>,
     pub action_authorization: Option<crate::action_api::ActionSettings>,
     pub environment: String,
     pub http_addr: SocketAddr,
@@ -34,6 +36,7 @@ pub struct WorkflowConfiguration {
     pub operational_store: OperationalStoreProjection,
     pub database_max_connections: u32,
     pub invocation_caller_service_ids: Vec<String>,
+    pub invocation_caller_environments: Vec<String>,
     pub wait_listener_connections: usize,
     pub ignore_user_jwt_expiry: bool,
     pub maximum_parallelism: usize,
@@ -108,7 +111,11 @@ pub struct FixedActionSettings {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WorkflowFile {
     #[serde(default)]
-    credential_broker: Option<crate::credential_broker::BrokerSettings>,
+    approval_portal: Option<crate::approval_portal::Config>,
+    #[serde(default, rename = "credentialBroker")]
+    _retired_credential_broker: Option<serde_yaml::Value>,
+    #[serde(default)]
+    long_keyring_file: Option<String>,
     #[serde(default)]
     action_authorization: Option<crate::action_api::ActionSettings>,
     invocation: InvocationFile,
@@ -125,6 +132,7 @@ struct WorkflowFile {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct InvocationFile {
     allowed_caller_service_ids: Vec<String>,
+    allowed_caller_environments: Vec<String>,
     wait_listener_connections: usize,
     ignore_user_jwt_expiry: bool,
 }
@@ -329,6 +337,11 @@ impl WorkflowConfiguration {
         validate_non_empty_unique_list(
             "workflow.invocation.allowedCallerServiceIds",
             &workflow.invocation.allowed_caller_service_ids,
+            &mut violations,
+        );
+        validate_optional_unique_list(
+            "workflow.invocation.allowedCallerEnvironments",
+            &workflow.invocation.allowed_caller_environments,
             &mut violations,
         );
         range(
@@ -581,7 +594,11 @@ impl WorkflowConfiguration {
         }
 
         Ok(Self {
-            credential_broker: workflow.credential_broker,
+            approval_portal: workflow.approval_portal,
+            credential_broker: None,
+            long_keyring_file: workflow
+                .long_keyring_file
+                .and_then(|value| non_empty(&value).map(PathBuf::from)),
             action_authorization: workflow.action_authorization,
             environment,
             http_addr: http_addr.expect("validated socket address"),
@@ -589,6 +606,7 @@ impl WorkflowConfiguration {
             operational_store: workflow.operational_store,
             database_max_connections: workflow.database.max_connections,
             invocation_caller_service_ids: workflow.invocation.allowed_caller_service_ids,
+            invocation_caller_environments: workflow.invocation.allowed_caller_environments,
             wait_listener_connections: workflow.invocation.wait_listener_connections,
             ignore_user_jwt_expiry,
             maximum_parallelism: workflow.execution.maximum_parallelism,
@@ -641,6 +659,7 @@ pub struct WorkflowRuntimeConfig {
     pub content_digest: String,
     pub snapshot_id: Option<String>,
     pub invocation_caller_service_ids: Vec<String>,
+    pub invocation_caller_environments: Vec<String>,
     pub wait_listener_connections: usize,
     pub ignore_user_jwt_expiry: bool,
     pub maximum_parallelism: usize,
@@ -661,6 +680,7 @@ impl WorkflowRuntimeConfig {
             content_digest: provenance.content_digest.clone(),
             snapshot_id: provenance.snapshot_id.clone(),
             invocation_caller_service_ids: configuration.invocation_caller_service_ids.clone(),
+            invocation_caller_environments: configuration.invocation_caller_environments.clone(),
             wait_listener_connections: configuration.wait_listener_connections,
             ignore_user_jwt_expiry: configuration.ignore_user_jwt_expiry,
             maximum_parallelism: configuration.maximum_parallelism,
@@ -673,6 +693,7 @@ impl WorkflowRuntimeConfig {
 
     fn same_policy(&self, other: &Self) -> bool {
         self.invocation_caller_service_ids == other.invocation_caller_service_ids
+            && self.invocation_caller_environments == other.invocation_caller_environments
             && self.wait_listener_connections == other.wait_listener_connections
             && self.ignore_user_jwt_expiry == other.ignore_user_jwt_expiry
             && self.maximum_parallelism == other.maximum_parallelism
@@ -797,11 +818,17 @@ pub fn restart_required_differences_from_baseline(
     candidate: &WorkflowConfiguration,
 ) -> Vec<String> {
     let mut differences = BTreeSet::new();
+    if active.approval_portal != candidate.approval_portal {
+        differences.insert("workflow.approvalPortal".to_string());
+    }
     if active.action_authorization != candidate.action_authorization {
         differences.insert("workflow.actionAuthorization".to_string());
     }
     if active.credential_broker != candidate.credential_broker {
         differences.insert("workflow.credentialBroker".to_string());
+    }
+    if active.long_keyring_file != candidate.long_keyring_file {
+        differences.insert("workflow.longKeyringFile".to_string());
     }
     if active_runtime.bootstrap
         != serde_json::to_value(&candidate_runtime.bootstrap)
@@ -915,6 +942,13 @@ fn validate_non_empty_unique_list(path: &str, values: &[String], violations: &mu
     if normalized.len() != values.len() || normalized.is_empty() {
         violations.push(format!("{path}: must contain unique non-empty values"));
     }
+}
+
+fn validate_optional_unique_list(path: &str, values: &[String], violations: &mut Vec<String>) {
+    if values.is_empty() {
+        return;
+    }
+    validate_non_empty_unique_list(path, values, violations);
 }
 
 fn validate_absolute_path(path: &str, value: &Path, violations: &mut Vec<String>) {
@@ -1233,7 +1267,9 @@ mod tests {
 
     fn workflow_configuration() -> WorkflowConfiguration {
         WorkflowConfiguration {
+            approval_portal: None,
             credential_broker: None,
+            long_keyring_file: None,
             action_authorization: None,
             environment: "dev".to_string(),
             http_addr: "0.0.0.0:8436".parse().unwrap(),
@@ -1256,6 +1292,7 @@ mod tests {
             },
             database_max_connections: 32,
             invocation_caller_service_ids: vec!["caller-a".to_string()],
+            invocation_caller_environments: Vec::new(),
             wait_listener_connections: 2,
             ignore_user_jwt_expiry: false,
             maximum_parallelism: 16,
@@ -1516,6 +1553,7 @@ commandTemplates: []
             external_dir.path().join("values.yml"),
             r#"
 workflow.invocation.allowedCallerServiceIds: [com.networknt.portal.gateway-1.0.0]
+workflow.invocation.allowedCallerEnvironments: [dev, loc]
 workflow.invocation.waitListenerConnections: 8
 workflow.invocation.ignoreUserJwtExpiry: false
 workflow.execution.maximumParallelism: 64
@@ -1605,6 +1643,24 @@ workflow.runner.originId: workflow-dev
                 &restart_candidate,
             ),
             vec!["workflow.database.maxConnections"]
+        );
+        let mut approval_candidate = remote.clone();
+        approval_candidate.approval_portal = Some(crate::approval_portal::Config {
+            gateway_url: "https://gateway.example/".into(),
+            provider_id: "portal".into(),
+            client_id: "workflow-approval".into(),
+            client_secret_file: "/run/secrets/workflow-approval-client".into(),
+            ca_file: "/run/secrets/gateway-ca".into(),
+            signing_key_file: "/run/secrets/workflow-approval-signing".into(),
+        });
+        assert_eq!(
+            restart_required_differences(
+                &remote_runtime,
+                &remote,
+                &remote_runtime,
+                &approval_candidate,
+            ),
+            vec!["workflow.approvalPortal"]
         );
         let mut security_candidates = Vec::new();
         let mut candidate = remote.clone();

@@ -17,6 +17,11 @@ pub const DEVELOPMENT_MIGRATION_ID: &str = "0008_development_workflow";
 pub const AGENT_DISPATCH_MIGRATION_ID: &str = "0009_workflow_agent_dispatch";
 pub const ACTION_PRIVILEGES_MIGRATION_ID: &str = "0010_workflow_action_runtime_privileges";
 pub const HUMAN_TASK_MIGRATION_ID: &str = "0011_workflow_human_task_assignment";
+pub const PRIVATE_LIFETIME_MIGRATION_ID: &str = "0012_private_execution_lifetime";
+pub const LONG_OWNER_BINDING_MIGRATION_ID: &str = "0013_workflow_long_owner_binding";
+pub const TOOL_ACCESS_APPROVAL_MIGRATION_ID: &str = "0014_workflow_tool_access_approval_run";
+pub const NATIVE_PROCESS_OPERATIONS_MIGRATION_ID: &str = "0015_native_process_operations";
+pub const DEFINITION_NATIVE_START_MIGRATION_ID: &str = "0016_definition_native_start";
 pub const ACTION_TABLES: &[&str] = &[
     "workflow_action_authority_t",
     "workflow_action_permit_t",
@@ -31,6 +36,16 @@ pub const DEVELOPMENT_MIGRATION_SQL: &str =
     include_str!("../migrations/workflow-postgres/0008_development_workflow.sql");
 pub const HUMAN_TASK_MIGRATION_SQL: &str =
     include_str!("../migrations/workflow-postgres/0011_workflow_human_task_assignment.sql");
+pub const PRIVATE_LIFETIME_MIGRATION_SQL: &str =
+    include_str!("../migrations/workflow-postgres/0012_private_execution_lifetime.sql");
+pub const LONG_OWNER_BINDING_MIGRATION_SQL: &str =
+    include_str!("../migrations/workflow-postgres/0013_workflow_long_owner_binding.sql");
+pub const TOOL_ACCESS_APPROVAL_MIGRATION_SQL: &str =
+    include_str!("../migrations/workflow-postgres/0014_workflow_tool_access_approval_run.sql");
+pub const NATIVE_PROCESS_OPERATIONS_MIGRATION_SQL: &str =
+    include_str!("../migrations/workflow-postgres/0015_native_process_operations.sql");
+pub const DEFINITION_NATIVE_START_MIGRATION_SQL: &str =
+    include_str!("../migrations/workflow-postgres/0016_definition_native_start.sql");
 pub const DEVELOPMENT_TABLES: &[&str] = &[
     "development_vm_t",
     "development_feature_t",
@@ -69,6 +84,10 @@ pub const AUTHORITY_TABLES: &[&str] = &[
     "workflow_invocation_event_quarantine_t",
     "workflow_invocation_idempotency_t",
     "workflow_invocation_t",
+    "workflow_long_owner_binding_t",
+    "workflow_tool_access_approval_run_t",
+    "workflow_process_deletion_t",
+    "workflow_process_note_t",
     "workflow_task_effect_t",
     "workflow_tool_access_request_item_t",
     "workflow_tool_access_request_t",
@@ -272,6 +291,49 @@ pub async fn validate(
             "Workflow human-task assignment migration is missing".into(),
         ));
     }
+    let private_lifetime_ready: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t
+                       WHERE migration_owner='workflow-store' AND schema_name='workflow_ops' AND migration_id=$1)
+                AND EXISTS(SELECT 1 FROM information_schema.columns
+                            WHERE table_schema='workflow_ops' AND table_name='workflow_invocation_budget_t'
+                              AND column_name='lifetime_version')
+                AND EXISTS(SELECT 1 FROM information_schema.columns
+                            WHERE table_schema='workflow_ops' AND table_name='workflow_invocation_budget_t'
+                              AND column_name='deadline_ts' AND is_nullable='YES')",
+    ).bind(PRIVATE_LIFETIME_MIGRATION_ID).fetch_one(pool).await?;
+    if !private_lifetime_ready {
+        return Err(ValidationError::Scope(
+            "Workflow private lifetime migration is missing".into(),
+        ));
+    }
+    let long_owner_ready: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t
+                       WHERE migration_owner='workflow-store' AND schema_name='workflow_ops' AND migration_id=$1)
+                AND to_regclass('workflow_ops.workflow_long_owner_binding_t') IS NOT NULL",
+    )
+    .bind(LONG_OWNER_BINDING_MIGRATION_ID)
+    .fetch_one(pool)
+    .await?;
+    if !long_owner_ready {
+        return Err(ValidationError::Scope(
+            "Workflow LONG owner binding migration is missing".into(),
+        ));
+    }
+    let native_start_ready: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t
+          WHERE migration_owner='workflow-store' AND schema_name='workflow_ops' AND migration_id=$1)
+         AND EXISTS(SELECT 1 FROM information_schema.columns
+          WHERE table_schema='workflow_ops' AND table_name='workflow_invocation_t'
+            AND column_name='binding_id' AND is_nullable='YES')",
+    )
+    .bind(DEFINITION_NATIVE_START_MIGRATION_ID)
+    .fetch_one(pool)
+    .await?;
+    if !native_start_ready {
+        return Err(ValidationError::Scope(
+            "Workflow definition native start migration is missing".into(),
+        ));
+    }
     let denied: Vec<String> = sqlx::query_scalar(
         "SELECT t FROM unnest($1::text[]) AS t WHERE NOT (
             has_table_privilege(current_user,'workflow_ops.' || t,'SELECT') AND
@@ -296,16 +358,40 @@ mod tests {
 
     #[test]
     fn workflow_inventory_and_boundary_are_frozen() {
-        assert_eq!(AUTHORITY_TABLES.len(), 19);
+        assert_eq!(AUTHORITY_TABLES.len(), 23);
         assert_eq!(PROJECTION_TABLES.len(), 7);
         for table in AUTHORITY_TABLES
             .iter()
             .skip(1)
-            .filter(|table| **table != "task_asst_t")
+            .filter(|table| {
+                !matches!(
+                    **table,
+                    "task_asst_t"
+                        | "workflow_long_owner_binding_t"
+                        | "workflow_tool_access_approval_run_t"
+                        | "workflow_process_deletion_t"
+                        | "workflow_process_note_t"
+                )
+            })
             .chain(PROJECTION_TABLES.iter().take(6))
         {
             assert!(MIGRATION_SQL.contains(&format!("workflow_ops.{table}")));
         }
+        assert!(
+            LONG_OWNER_BINDING_MIGRATION_SQL.contains("workflow_ops.workflow_long_owner_binding_t")
+        );
+        assert!(
+            TOOL_ACCESS_APPROVAL_MIGRATION_SQL
+                .contains("workflow_ops.workflow_tool_access_approval_run_t")
+        );
+        assert!(
+            NATIVE_PROCESS_OPERATIONS_MIGRATION_SQL
+                .contains("workflow_ops.workflow_process_deletion_t")
+        );
+        assert!(
+            NATIVE_PROCESS_OPERATIONS_MIGRATION_SQL
+                .contains("workflow_ops.workflow_process_note_t")
+        );
         assert!(!MIGRATION_SQL.contains("configserver."));
         assert!(!MIGRATION_SQL.contains("REFERENCES public."));
         assert!(A2A_BINDING_MIGRATION_SQL.contains("workflow_ops.workflow_a2a_binding_t"));

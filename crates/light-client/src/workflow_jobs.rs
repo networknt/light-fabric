@@ -2,6 +2,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 use uuid::Uuid;
@@ -23,6 +24,117 @@ pub struct Client {
     http: reqwest::Client,
     endpoint: String,
     scope: String,
+}
+
+/// App-token-only Agent bridge through Gateway. The target Workflow client ID
+/// selects one backend; this Agent uses its own LONG client for its app token.
+pub struct GatewayClient {
+    issuer: Arc<crate::long_binding::LongBindingClient>,
+    target_workflow_client_id: Uuid,
+}
+
+impl GatewayClient {
+    pub fn new(
+        issuer: Arc<crate::long_binding::LongBindingClient>,
+        target_workflow_client_id: Uuid,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            !target_workflow_client_id.is_nil(),
+            "invalid Workflow target"
+        );
+        Ok(Self {
+            issuer,
+            target_workflow_client_id,
+        })
+    }
+
+    fn request(&self, action: &str) -> anyhow::Result<reqwest::RequestBuilder> {
+        Ok(self.issuer.gateway_post(&format!(
+            "internal/workflow/{}/jobs/{action}",
+            self.target_workflow_client_id,
+        ))?)
+    }
+
+    pub async fn pending(
+        &self,
+        host_id: Uuid,
+    ) -> anyhow::Result<Vec<crate::workflow_job_transport::JobDelivery>> {
+        let app = self.issuer.workload_token().await?;
+        let response = self
+            .request("poll")?
+            .header("X-Scope-Token", format!("Bearer {app}"))
+            .json(&crate::workflow_job_transport::Poll { host_id })
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status() == reqwest::StatusCode::OK,
+            "Workflow job polling unavailable"
+        );
+        let mut response = response;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            anyhow::ensure!(
+                bytes.len().saturating_add(chunk.len()) <= 1024 * 1024,
+                "Workflow job poll exceeds bound"
+            );
+            bytes.extend_from_slice(&chunk);
+        }
+        let deliveries: Vec<crate::workflow_job_transport::JobDelivery> =
+            serde_json::from_slice(&bytes)?;
+        anyhow::ensure!(
+            deliveries.len() <= 4,
+            "Workflow job poll exceeds batch bound"
+        );
+        for delivery in &deliveries {
+            delivery.job.validate()?;
+            anyhow::ensure!(
+                delivery.job.host_id == host_id,
+                "Workflow job Host mismatch"
+            );
+            anyhow::ensure!(
+                delivery.job.cancellation_requested
+                    || delivery
+                        .owner_token
+                        .as_deref()
+                        .is_some_and(|v| !v.is_empty() && v.len() <= 16_384),
+                "Workflow job owner handoff unavailable"
+            );
+        }
+        Ok(deliveries)
+    }
+
+    pub async fn authorized(&self, host_id: Uuid, job_id: Uuid) -> anyhow::Result<bool> {
+        let app = self.issuer.workload_token().await?;
+        let response = self
+            .request("authorize")?
+            .header("X-Scope-Token", format!("Bearer {app}"))
+            .json(&Check { host_id, job_id })
+            .send()
+            .await?;
+        match response.status() {
+            reqwest::StatusCode::NO_CONTENT => Ok(true),
+            reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::UNAUTHORIZED => Ok(false),
+            _ => Err(anyhow::anyhow!("Workflow job authorization unavailable")),
+        }
+    }
+
+    pub async fn report(
+        &self,
+        report: &crate::workflow_job_transport::Report,
+    ) -> anyhow::Result<()> {
+        let app = self.issuer.workload_token().await?;
+        let response = self
+            .request("report")?
+            .header("X-Scope-Token", format!("Bearer {app}"))
+            .json(report)
+            .send()
+            .await?;
+        anyhow::ensure!(
+            response.status() == reqwest::StatusCode::NO_CONTENT,
+            "Workflow job report unavailable"
+        );
+        Ok(())
+    }
 }
 impl Client {
     pub async fn pending(

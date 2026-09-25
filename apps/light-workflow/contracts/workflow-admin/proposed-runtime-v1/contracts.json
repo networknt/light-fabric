@@ -1,0 +1,123 @@
+{
+  "contractVersion": "1.0.0-proposed",
+  "protocolTarget": "2026-07-28",
+  "publicIngress": "Gateway POST /mcp",
+  "privateNativeIngress": "Workflow POST /mcp",
+  "identitySource": "authenticated Gateway and Workflow context",
+  "tools": [
+    {
+      "name": "workflow_start",
+      "permission": "workflow.instance.start",
+      "input": "StartInput",
+      "output": "StartReceipt",
+      "ownerStep": 5
+    },
+    {
+      "name": "workflow_decide_tool_access",
+      "permission": "workflow.tool_access.decide",
+      "input": "DecisionInput",
+      "output": "DecisionReceipt",
+      "ownerStep": 7
+    },
+    {
+      "name": "workflow_delete_process",
+      "permission": "workflow.process.delete",
+      "input": "NativeDeleteInput",
+      "output": "NativeDeleteReceipt",
+      "ownerStep": 8
+    },
+    {
+      "name": "workflow_get_task",
+      "permission": "workflow.process.read",
+      "input": "NativeTaskGetInput",
+      "output": "NativeTaskDetail",
+      "ownerStep": 8
+    },
+    {
+      "name": "workflow_add_process_note",
+      "permission": "workflow.process.note",
+      "input": "NativeNoteInput",
+      "output": "NativeNote",
+      "ownerStep": 8
+    },
+    {
+      "name": "workflow_list_process_notes",
+      "permission": "workflow.process.read",
+      "input": "NativeNotesQuery",
+      "output": "NativeNotesPage",
+      "ownerStep": 8
+    },
+    {
+      "name": "workflow_list_audit",
+      "permission": "workflow.audit.read",
+      "input": "AuditListInput",
+      "output": "AuditListOutput",
+      "ownerStep": 15
+    }
+  ],
+  "existingRoleTools": [
+    "workflow_get_human_task_inbox_summary",
+    "workflow_list_human_tasks",
+    "workflow_get_human_task",
+    "workflow_claim_human_task",
+    "workflow_release_human_task",
+    "workflow_complete_human_task"
+  ],
+  "serviceOperations": [
+    {
+      "name": "getCurrentWorkflowRoles",
+      "input": "RoleSnapshotInput",
+      "output": "RoleMembershipSnapshot",
+      "serviceId": "light-workflow",
+      "audience": "portal-workflow-authority",
+      "scope": "portal.r",
+      "ownerStep": 2
+    },
+    {
+      "name": "getWorkflowToolAccessRequestForExecution",
+      "input": "ApprovalReadInput",
+      "output": "ApprovalReadOutput",
+      "serviceId": "light-workflow-approval",
+      "audience": "portal-workflow-approval",
+      "scope": "portal.r",
+      "ownerStep": 6
+    },
+    {
+      "name": "deliverWorkflowToolAccessDecision",
+      "input": "ApprovalDeliveryInput",
+      "output": "ApprovalDeliveryOutput",
+      "serviceId": "light-workflow-approval",
+      "audience": "portal-workflow-approval",
+      "scope": "portal.w",
+      "ownerStep": 7
+    }
+  ],
+  "internalContracts": [
+    "TrustedStartContext",
+    "PrivateExecutionProfile",
+    "RoleMembershipDecision",
+    "ApprovalServiceEvidence"
+  ],
+  "errors": {
+    "AUTHENTICATION_REQUIRED": "missing or invalid authenticated principal",
+    "PERMISSION_DENIED": "Gateway operation or binding authorization denied",
+    "HOST_MISMATCH": "authenticated Host differs from stored or selected Host",
+    "AUTHORITY_UNAVAILABLE": "current role or service authority cannot be verified",
+    "ROLE_NOT_CURRENT": "no current membership in exact Host and role",
+    "BINDING_NOT_READY": "expected saved revision is not active at Gateway",
+    "DEFINITION_PIN_MISMATCH": "saved definition digest differs from active binding",
+    "VALIDATION_FAILED": "schema or supported task validation failed",
+    "IDEMPOTENCY_CONFLICT": "same idempotency key with different accepted input",
+    "ACCEPTANCE_UNCONFIRMED": "start outcome requires authorized same-key recovery",
+    "VERSION_CONFLICT": "expected lifecycle or assignment version differs",
+    "CLAIM_CONFLICT": "assignment has a winning active claim",
+    "TASK_EXPIRED": "human assignment is expired or inactive",
+    "APPROVAL_LINK_PENDING": "accepted approval is fenced until Portal linkage is confirmed",
+    "APPROVAL_STALE": "request, grant pins, role or linkage became stale",
+    "DECISION_PENDING_DELIVERY": "Workflow decision is durable but Portal has not committed",
+    "PROCESS_NOT_TERMINAL": "native process or invocation has not reached a terminal state",
+    "RESOURCE_HELD": "outstanding task, job, action, feature or approval delivery prevents deletion",
+    "LEGAL_HOLD": "the logical deletion is recorded while held artifacts remain retained",
+    "STORE_UNAVAILABLE": "required operational store is unavailable"
+  }
+}

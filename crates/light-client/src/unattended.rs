@@ -59,7 +59,18 @@ pub struct GrantStatus {
 pub struct UnattendedProvider {
     config: UnattendedProviderConfig,
     client: reqwest::Client,
+    current_roles_url: url::Url,
     jwks: tokio::sync::Mutex<Option<(std::time::Instant, jsonwebtoken::jwk::JwkSet)>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CurrentWorkflowRoles {
+    pub host_id: uuid::Uuid,
+    pub user_id: uuid::Uuid,
+    pub current_role_ids: Vec<String>,
+    pub checked_at: String,
+    pub authority: String,
 }
 
 impl UnattendedProvider {
@@ -93,6 +104,7 @@ impl UnattendedProvider {
         if config.issuer.is_empty() || config.audience.is_empty() || config.client_id.is_empty() {
             return Err(ProviderFailure::Configuration);
         }
+        let current_roles_url = role_authority_url(&config.enrollment_url, &config.client_id)?;
         let identity = tokio::fs::read(dir.join(&config.client_identity_file))
             .await
             .map_err(|_| ProviderFailure::Configuration)?;
@@ -123,6 +135,7 @@ impl UnattendedProvider {
         }
         Ok(Self {
             config,
+            current_roles_url,
             jwks: tokio::sync::Mutex::new(None),
             client: builder
                 .build()
@@ -132,6 +145,40 @@ impl UnattendedProvider {
 
     pub fn client_id(&self) -> &str {
         &self.config.client_id
+    }
+
+    /// One mTLS issuer round trip per authority decision. Never reuse token role claims.
+    pub async fn current_workflow_roles(
+        &self,
+        user_authorization: &str,
+    ) -> Result<CurrentWorkflowRoles, ProviderFailure> {
+        let response = self
+            .client
+            .post(self.current_roles_url.clone())
+            .header(reqwest::header::AUTHORIZATION, user_authorization)
+            .header("X-Workflow-Service-Id", "light-workflow")
+            .header("X-Workflow-Role-Audience", "portal-workflow-authority")
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .map_err(|_| ProviderFailure::Uncertain)?;
+        if response.status() == reqwest::StatusCode::BAD_REQUEST
+            || response.status() == reqwest::StatusCode::UNAUTHORIZED
+            || response.status() == reqwest::StatusCode::FORBIDDEN
+        {
+            return Err(ProviderFailure::ReauthorizationRequired);
+        }
+        if response.status() != reqwest::StatusCode::OK {
+            return Err(ProviderFailure::Uncertain);
+        }
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|_| ProviderFailure::Uncertain)?;
+        if bytes.len() > 65_536 {
+            return Err(ProviderFailure::Uncertain);
+        }
+        serde_json::from_slice(&bytes).map_err(|_| ProviderFailure::Uncertain)
     }
 
     pub fn authorization_url(&self, enrollment: uuid::Uuid, state: &str) -> String {
@@ -371,6 +418,46 @@ impl UnattendedProvider {
             .map_err(|_| ProviderFailure::Uncertain)?;
         checked(response).await?;
         Ok(())
+    }
+}
+
+fn role_authority_url(enrollment_url: &str, client_id: &str) -> Result<url::Url, ProviderFailure> {
+    if !enrollment_url.ends_with("/workflow/enrollments") {
+        return Err(ProviderFailure::Configuration);
+    }
+    let mut url = url::Url::parse(enrollment_url).map_err(|_| ProviderFailure::Configuration)?;
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|_| ProviderFailure::Configuration)?;
+        segments.pop();
+        segments
+            .push("clients")
+            .push(client_id)
+            .push("current-roles");
+    }
+    Ok(url)
+}
+
+#[cfg(test)]
+mod role_authority_tests {
+    use super::*;
+
+    #[test]
+    fn role_lookup_stays_on_the_configured_private_issuer_origin() {
+        let url = role_authority_url(
+            "https://issuer.internal:7443/oauth2/lightapi/workflow/enrollments",
+            "client-id",
+        )
+        .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://issuer.internal:7443/oauth2/lightapi/workflow/clients/client-id/current-roles"
+        );
+        assert!(
+            role_authority_url("https://issuer.internal/oauth2/lightapi/token", "client-id")
+                .is_err()
+        );
     }
 }
 

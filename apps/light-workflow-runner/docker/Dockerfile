@@ -1,4 +1,6 @@
+# syntax=docker/dockerfile:1
 FROM rust:1.98.0-bookworm AS builder
+ARG CARGO_CACHE_ID=warm
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY patches/ patches/
@@ -6,7 +8,13 @@ COPY crates/ crates/
 COPY frameworks/ frameworks/
 COPY apps/ apps/
 COPY contracts/ contracts/
-RUN cargo build --locked --release -p light-workflow-runner -p light-agent-worker
+RUN --mount=type=cache,id=light-fabric-rust198-registry-${CARGO_CACHE_ID},target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=light-fabric-rust198-git-${CARGO_CACHE_ID},target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=light-fabric-rust198-target-${CARGO_CACHE_ID}-src-gnu,target=/src/target,sharing=locked \
+    cargo build --locked --release -p light-workflow-runner -p light-agent-worker \
+    && mkdir -p /out \
+    && cp /src/target/release/light-workflow-runner /out/light-workflow-runner \
+    && cp /src/target/release/light-agent-worker /out/light-agent-worker
 
 FROM node:24-bookworm AS codex
 RUN mkdir /codex \
@@ -21,8 +29,8 @@ RUN apt-get update \
     && groupadd --system --gid 10001 runner \
     && useradd --system --uid 10001 --gid runner --home-dir /var/lib/light-workflow-runner --shell /usr/sbin/nologin runner \
     && install -d -o runner -g runner -m 0700 /var/lib/light-workflow-runner
-COPY --from=builder /src/target/release/light-workflow-runner /usr/local/bin/light-workflow-runner
-COPY --from=builder /src/target/release/light-agent-worker /usr/local/bin/light-agent-worker
+COPY --from=builder /out/light-workflow-runner /usr/local/bin/light-workflow-runner
+COPY --from=builder /out/light-agent-worker /usr/local/bin/light-agent-worker
 COPY --from=codex /codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex /usr/local/bin/codex
 COPY --from=codex /codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex-code-mode-host /usr/local/bin/codex-code-mode-host
 COPY --from=codex /codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex-resources /usr/local/codex-resources

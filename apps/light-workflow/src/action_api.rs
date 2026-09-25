@@ -1,7 +1,7 @@
 //! Fixed A2 service API. Mount ONLY on the dedicated verified-mTLS listener.
 //! Runtime integration must supply admitted permits and live per-boot owners;
 //! no public endpoint can create either authority.
-use crate::credential_broker::CredentialBroker;
+use crate::run_authority::RunAuthority;
 use axum::{
     Json, Router,
     extract::{ConnectInfo, State},
@@ -23,7 +23,7 @@ use workflow_action::{
 #[derive(Clone)]
 pub struct ActionApi {
     pub ledger: Ledger,
-    pub broker: Arc<CredentialBroker>,
+    pub broker: Arc<dyn RunAuthority>,
     pub security: Arc<SecurityRuntime>,
     pub policy: RoutePolicy,
     /// Administrator-approved certificate to service/replica mapping. Boot

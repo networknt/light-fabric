@@ -1,5 +1,5 @@
 {
-  "bundleVersion": "2.2.0",
+  "bundleVersion": "2.4.0",
   "contractGeneration": 2,
   "postgresMinimumVersion": "17",
   "postgresMaximumTestedVersion": "17",
@@ -227,7 +227,36 @@
       "migrationId": "0005_workflow_job_owner",
       "path": "crates/agent-store/migrations/agent-postgres/0005_workflow_job_owner.sql",
       "sha256": "0686196df779bcf7fe57a11b8a4a61472e1ce6353a334376afc80106e26a023b"
+    },
+    {
+      "order": 29,
+      "owner": "workflow-store",
+      "schema": "workflow_ops",
+      "migrationId": "0011_workflow_human_task_assignment",
+      "path": "crates/workflow-store/migrations/workflow-postgres/0011_workflow_human_task_assignment.sql",
+      "sha256": "7ec51978be73b082faebe81176a1dc2f509023c47ccf14589651dc3e007fe1ba"
+    },
+    {
+      "order": 30,
+      "owner": "workflow-store",
+      "schema": "workflow_ops",
+      "migrationId": "0012_private_execution_lifetime",
+      "path": "crates/workflow-store/migrations/workflow-postgres/0012_private_execution_lifetime.sql",
+      "sha256": "d773cbb71bb20d94065288c2f7c422a6a27e3fd91308bf3779e51c90112ced1d"
+    },
+    {
+      "order": 31,
+      "owner": "workflow-store",
+      "schema": "workflow_ops",
+      "migrationId": "0013_workflow_long_owner_binding",
+      "path": "crates/workflow-store/migrations/workflow-postgres/0013_workflow_long_owner_binding.sql",
+      "sha256": "9377f9e3e5d799b7527ebf1a36d32d45d2a1c6ad5c7f253f3fa1ecf0cc1216e2"
     }
+  ,{"order":32,"owner":"agent-store","schema":"agent_ops","migrationId":"0006_long_work_binding","path":"crates/agent-store/migrations/agent-postgres/0006_long_work_binding.sql","sha256":"20e480d267931c8d841563925d05891b26bdcf6fe20b2be75116debd7e641f33"}
+  ,{"order":33,"owner":"workflow-store","schema":"workflow_ops","migrationId":"0014_workflow_tool_access_approval_run","path":"crates/workflow-store/migrations/workflow-postgres/0014_workflow_tool_access_approval_run.sql","sha256":"320de5765200cefbc2d50002f35324ece7f252eac6a0bdfc6db929fa7b8b7f4f"}
+  ,{"order":34,"owner":"workflow-store","schema":"workflow_ops","migrationId":"0015_native_process_operations","path":"crates/workflow-store/migrations/workflow-postgres/0015_native_process_operations.sql","sha256":"250f7c0f8bdff183adecab24e47d3c6ccd81553b9e8a6bcf6d1022a585d80c74"}
+  ,{"order":35,"owner":"workflow-store","schema":"workflow_ops","migrationId":"0016_definition_native_start","path":"crates/workflow-store/migrations/workflow-postgres/0016_definition_native_start.sql","sha256":"0b6ad8256c2d2c06c55aa2980890e661fef18d0b77bf02ee7c4d00ae71f2f298"}
+  ,{"order":36,"owner":"workflow-store","schema":"workflow_ops","migrationId":"0017_workflow_long_credentials","path":"crates/workflow-store/migrations/workflow-postgres/0017_workflow_long_credentials.sql","sha256":"6e686096aaf28986dfa1e897900ef80ec5e2ff68acfedff5a85664b08af8d5fe"}
   ],
   "roleProfileVersion": 1,
   "scopeRootVersion": 2,

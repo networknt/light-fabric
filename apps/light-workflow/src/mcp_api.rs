@@ -5,7 +5,7 @@ use crate::rule_api::{RuleApiState, dispatch_native_tool};
 use axum::{
     Json, Router,
     body::to_bytes,
-    extract::State,
+    extract::{Extension, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::post,
@@ -107,9 +107,10 @@ async fn handler_error(id: Value, response: Response) -> Result<Value, Response>
     );
     if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
         let mut denied = rpc_error(id, status, -32001, "workflow authorization denied");
-        if let Some(value) = challenge {
-            denied.headers_mut().insert("www-authenticate", value);
-        }
+        denied.headers_mut().insert(
+            "www-authenticate",
+            challenge.unwrap_or_else(|| "Bearer".parse().unwrap()),
+        );
         return Err(denied);
     }
     let mut result = json!({"resultType":"complete","content":[{"type":"text","text":detail.to_string()}],"structuredContent":{"status":status.as_u16(),"error":detail},"isError":true});
@@ -245,6 +246,8 @@ fn validate(headers: &HeaderMap, request: &Value) -> Result<(Value, String, Valu
 
 async fn handle(
     State(state): State<RuleApiState>,
+    settings: Option<Extension<crate::action_api::ActionSettings>>,
+    approval_portal: Option<Extension<std::sync::Arc<crate::approval_portal::Client>>>,
     headers: HeaderMap,
     Json(request): Json<Value>,
 ) -> Response {
@@ -280,7 +283,16 @@ async fn handle(
                     "workflow tool is unavailable",
                 );
             }
-            match dispatch_native_tool(name, state, headers, arguments).await {
+            match dispatch_native_tool(
+                name,
+                state,
+                headers,
+                arguments,
+                settings.map(|value| value.0),
+                approval_portal.map(|value| value.0),
+            )
+            .await
+            {
                 Ok(value) => {
                     json!({"resultType":"complete","content":[{"type":"text","text":value.to_string()}],"structuredContent":value,"isError":false})
                 }
@@ -324,7 +336,7 @@ mod tests {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(names.len(), 15);
+        assert_eq!(names.len(), 21);
         assert_eq!(names.len(), tools.len());
     }
 
@@ -334,7 +346,7 @@ mod tests {
         let examples: Value =
             serde_json::from_str(include_str!("../contracts/workflow-admin/examples.json"))
                 .unwrap();
-        assert_eq!(tools.len(), 15);
+        assert_eq!(tools.len(), 21);
         for tool in tools {
             let name = tool["name"].as_str().unwrap();
             for (schema_name, example_name) in
@@ -366,5 +378,37 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(response.headers()["www-authenticate"], "Bearer");
         assert_eq!(response.headers()["mcp-protocol-version"], VERSION);
+        let source = (StatusCode::UNAUTHORIZED, Json(json!({"code":"DENIED"}))).into_response();
+        let response = handler_error(json!(8), source).await.unwrap_err();
+        assert_eq!(response.headers()["www-authenticate"], "Bearer");
+    }
+
+    #[test]
+    fn native_start_requires_matching_protocol_and_tool_headers() {
+        let request = json!({
+            "jsonrpc":"2.0","id":7,"method":"tools/call",
+            "params":{
+                "name":"workflow_start",
+                "arguments":{},
+                "_meta":{
+                    "io.modelcontextprotocol/clientCapabilities":{},
+                    "io.modelcontextprotocol/protocolVersion":VERSION
+                }
+            }
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert("mcp-protocol-version", VERSION.parse().unwrap());
+        headers.insert(
+            "accept",
+            "application/json, text/event-stream".parse().unwrap(),
+        );
+        headers.insert("mcp-method", "tools/call".parse().unwrap());
+        headers.insert("mcp-name", "workflow_start".parse().unwrap());
+        assert!(validate(&headers, &request).is_ok());
+        headers.insert("mcp-name", "workflow_cancel".parse().unwrap());
+        assert!(validate(&headers, &request).is_err());
+        headers.insert("mcp-name", "workflow_start".parse().unwrap());
+        headers.remove("mcp-protocol-version");
+        assert!(validate(&headers, &request).is_err());
     }
 }

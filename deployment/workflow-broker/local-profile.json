@@ -5,7 +5,7 @@
   "providerId": "AZZRJE52eXu3t1hseacnGQ",
   "clientId": "01a09c88-7df1-7928-b6b5-a9e697fded3b",
   "ownerId": "15ca57dd-11fb-4b46-829d-d8a8fde248e7",
-  "scope": "portal.r portal.w",
+  "scope": "portal.r portal.w workflow.role.membership.read",
   "maximumGrantSeconds": 86400,
   "sanUri": "spiffe://lightapi.local/workflow/credential-broker",
   "authorizationBaseUrl": "https://localhost:6881",

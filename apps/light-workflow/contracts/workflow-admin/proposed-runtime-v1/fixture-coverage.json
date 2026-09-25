@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "setupRule": "Use supported saved-definition preparation, Gateway MCP start, Portal commands/events and existing fixture helpers; never insert Portal domain projections or reset the shared stack",
+  "cleanupRule": "Cancel/complete fixture-owned active work through supported tools, then terminal-delete only eligible fixture processes; leave unrelated state intact",
+  "cases": [
+    {"id":"parity-insurance-rest","source":"light-fabric/apps/light-workflow/examples/insurance-claim-rest-v1.yaml","step":3,"gate":"workflow private-profile component parity and real task dispatch"},
+    {"id":"parity-insurance-mcp","source":"light-fabric/apps/light-workflow/examples/insurance-claim-mcp-v1.yaml","step":3,"gate":"workflow private-profile component parity and real MCP task dispatch"},
+    {"id":"parity-insurance-headless","source":"light-fabric/apps/light-workflow/examples/insurance-claim-headless-v1.yaml","step":3,"gate":"workflow private-profile component parity and real headless task dispatch"},
+    {"id":"parity-run-shell","source":"light-fabric/apps/light-workflow/examples/run-shell-mock-v1.yaml","step":3,"gate":"private run-shell admission and runner placement"},
+    {"id":"role-human-approval","source":"light-fabric/apps/light-workflow/examples/human-approval.yaml","step":2,"gate":"real PostgreSQL and Step 10 Gateway: exact ROLE assignment, count/list/detail, two-member claim race, release/reclaim, old-token revocation, completion once"},
+    {"id":"role-user-ask","source":"light-portal-test/workflow-admin-runtime/assigned-ask/workflow.json","step":2,"gate":"real PostgreSQL and Step 10 Gateway USER regression and once-only continuation"},
+    {"id":"role-legacy-ask","source":"light-fabric/apps/light-workflow/examples/human-approval.yaml","step":8,"gate":"process-only legacy ROLE ask via supported legacy start fixture; no fabricated invocation; native claim/release/complete then terminal delete"},
+    {"id":"approval-role-workflow","source":"light-fabric/apps/light-workflow/examples/grant-tools-to-workflow.yaml","step":7,"gate":"request-only event, Gateway acceptance, verified linkage and typed role decision"},
+    {"id":"approval-crash-before-start","source":"light-fabric/apps/light-workflow/examples/grant-tools-to-workflow.yaml","step":7,"gate":"REQUESTED survives browser loss; same request/key resumes one acceptance"},
+    {"id":"approval-crash-link-ack","source":"light-fabric/apps/light-workflow/examples/grant-tools-to-workflow.yaml","step":7,"gate":"lost acceptance/linkage acknowledgement recovers one linked instance and fences task until confirmed"},
+    {"id":"approval-crash-portal-commit","source":"light-fabric/apps/light-workflow/examples/grant-tools-to-workflow.yaml","step":7,"gate":"Portal grant/request commit followed by lost ack recovers same decision without duplicate grants"},
+    {"id":"approval-crash-workflow-ack","source":"light-fabric/apps/light-workflow/examples/grant-tools-to-workflow.yaml","step":7,"gate":"Workflow delivery acknowledgement and continuation once after retry/restart"},
+    {"id":"approval-stale-cancel-race","source":"light-fabric/apps/light-workflow/examples/grant-tools-to-workflow.yaml","step":7,"gate":"cancelled/stale request after pre-read denies linkage or grant; all-or-none pins"},
+    {"id":"legacy-deleted-publication","source":"light-portal-event/config/20260915-gateway-publication-reconciliation/events.json","step":14,"gate":"fresh and upgrade replay exclude every retired query/command/alias and keep revised request-only contract"},
+    {"id":"audit-separate-gate","source":"light-fabric/apps/light-workflow/contracts/workflow-admin/proposed-runtime-v1/contracts.json","step":15,"gate":"Workflow-owned paginated redacted operational audit and operator notes; old Portal audit unavailable before gate"}
+  ]
+}

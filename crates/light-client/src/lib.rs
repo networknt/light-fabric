@@ -1,5 +1,7 @@
 pub mod config;
 pub mod http;
+pub mod long_binding;
+pub mod long_source;
 pub mod oauth;
 pub mod provider;
 pub mod unattended;

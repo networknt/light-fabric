@@ -52,6 +52,38 @@ pub enum InvocationMode {
     Async,
 }
 
+/// A private root's durable wait is separate from this finite admission and
+/// action authority window. Existing workflow-backed bindings keep their
+/// seven-day async cap; a private lease may last longer but must be renewed or
+/// reacquired before work continues after it expires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorityLeaseProfile {
+    WorkflowBacked,
+    PortalExecutionV1,
+}
+
+pub const WORKFLOW_BACKED_MAX_ASYNC_LEASE_MS: u64 = 604_800_000;
+pub const PRIVATE_MAX_AUTHORITY_LEASE_MS: u64 = 2_592_000_000;
+
+pub fn authority_lease_allowed(
+    profile: AuthorityLeaseProfile,
+    mode: InvocationMode,
+    duration_ms: u64,
+) -> bool {
+    match (profile, mode) {
+        (AuthorityLeaseProfile::WorkflowBacked, InvocationMode::Sync) => {
+            (1..=30_000).contains(&duration_ms)
+        }
+        (AuthorityLeaseProfile::WorkflowBacked, InvocationMode::Async) => {
+            (1..=WORKFLOW_BACKED_MAX_ASYNC_LEASE_MS).contains(&duration_ms)
+        }
+        (AuthorityLeaseProfile::PortalExecutionV1, InvocationMode::Async) => {
+            (1..=PRIVATE_MAX_AUTHORITY_LEASE_MS).contains(&duration_ms)
+        }
+        (AuthorityLeaseProfile::PortalExecutionV1, InvocationMode::Sync) => false,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ExecutionClass {
@@ -770,6 +802,41 @@ impl<'de> de::Visitor<'de> for StrictValueVisitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_authority_lease_extends_past_seven_days_without_unbounded_authority() {
+        let eight_days = 8 * 24 * 60 * 60 * 1000;
+        assert!(!authority_lease_allowed(
+            AuthorityLeaseProfile::WorkflowBacked,
+            InvocationMode::Async,
+            eight_days
+        ));
+        assert!(authority_lease_allowed(
+            AuthorityLeaseProfile::PortalExecutionV1,
+            InvocationMode::Async,
+            eight_days
+        ));
+        assert!(!authority_lease_allowed(
+            AuthorityLeaseProfile::PortalExecutionV1,
+            InvocationMode::Async,
+            0
+        ));
+        assert!(!authority_lease_allowed(
+            AuthorityLeaseProfile::PortalExecutionV1,
+            InvocationMode::Async,
+            PRIVATE_MAX_AUTHORITY_LEASE_MS + 1
+        ));
+        assert!(!authority_lease_allowed(
+            AuthorityLeaseProfile::PortalExecutionV1,
+            InvocationMode::Sync,
+            30_000
+        ));
+        assert!(authority_lease_allowed(
+            AuthorityLeaseProfile::WorkflowBacked,
+            InvocationMode::Sync,
+            30_000
+        ));
+    }
     use chrono::Duration;
     use serde_json::json;
 

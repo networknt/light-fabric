@@ -186,6 +186,15 @@ pub struct EnrollmentChallenge {
 }
 
 impl CredentialBroker {
+    pub async fn current_workflow_roles(
+        &self,
+        user_authorization: &str,
+    ) -> Result<light_client::unattended::CurrentWorkflowRoles, ProviderFailure> {
+        self.provider
+            .current_workflow_roles(user_authorization)
+            .await
+    }
+
     /// Acquire a broker-bound credential from existing Portal scope authorization.
     /// The one-time code and PKCE material never leave this backend coordinator.
     pub async fn acquire_for_user(

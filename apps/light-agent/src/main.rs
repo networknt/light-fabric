@@ -6079,8 +6079,42 @@ async fn build_agent_state(
                 .map_err(|_| {
                     RuntimeError::Config("invalid Workflow job authorization client".into())
                 })?;
-        domain =
-            domain.with_workflow_job_authorizer(Arc::new(workflow_origin::JobAuthorizer(client)));
+        domain = domain
+            .with_workflow_job_authorizer(Arc::new(workflow_origin::JobAuthorizer::Legacy(client)));
+        domain
+            .initialize_workflow_policy(&agent_config.agent_policy.policy_snapshot)
+            .await
+            .map_err(|_| {
+                RuntimeError::Config(
+                    "Workflow Agent policy persistence rejected accepted runtime authority".into(),
+                )
+            })?;
+    }
+    if let Some(job_config) = workflow_origin
+        .as_ref()
+        .and_then(|origin| origin.long_job_authorization.as_ref())
+    {
+        let config = runtime_config
+            .client
+            .as_ref()
+            .ok_or_else(|| RuntimeError::Config("Agent LONG client.yml is required".into()))?;
+        let long = Arc::new(
+            light_agent::long_authority::AgentLongAuthority::open(
+                &config.oauth.token,
+                &runtime_config.config_dir,
+                domain.pool(),
+            )
+            .await
+            .map_err(|_| RuntimeError::Config("Agent LONG authority unavailable".into()))?,
+        );
+        let bridge = light_client::workflow_jobs::GatewayClient::new(
+            long.client(),
+            job_config.workflow_client_id,
+        )
+        .map_err(|_| RuntimeError::Config("Agent LONG Workflow target invalid".into()))?;
+        domain = domain
+            .with_long_authority(long)
+            .with_workflow_job_authorizer(Arc::new(workflow_origin::JobAuthorizer::Long(bridge)));
         domain
             .initialize_workflow_policy(&agent_config.agent_policy.policy_snapshot)
             .await

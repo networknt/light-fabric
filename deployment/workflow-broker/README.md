@@ -1,5 +1,7 @@
 # A1 local issuer / Workflow broker profile
 
+This README documents the **existing internal mTLS profile** and its finite issuer grant. It does not implement or qualify the customer-hosted `LONG` owner-token design in [the Workflow MCP main plan](../../../implementation/light-workflow/2026-09-24-GatewayMcpWorkflowStartImplementationPlan.md#471-customer-hosted-long-owner-authority). In that topology, customer Workflow reaches Light OAuth only through HTTPS Gateway with confidential-client authentication, and registration/exchange/revocation plus per-instance binding require new source and component/live qualification. Do not expose this mTLS-only endpoint through Gateway unchanged or infer that its local Compose success proves the external path.
+
 The profile is opt-in. It does not enable A2 action dispatch or admit personal
 orchestration Phase 1. `local-profile.json` reserves a new broker client ID;
 it is not one of the existing Workflow application clients.
@@ -35,6 +37,12 @@ it is not one of the existing Workflow application clients.
    to the database server named in `database-url`. Apply `register.sql` to the
    issuer database with its selected schema `search_path`. Both are replayable;
    existing inactive/conflicting registrations fail rather than revive.
+   The Step 02 ROLE authority endpoint requires the additional
+   `workflow.role.membership.read` client scope. The generated SQL upgrades only
+   the exact earlier active broker registration with all other identity fields
+   unchanged; it refuses a different scope or client. Apply it before expecting
+   ROLE inbox or completion to work. The endpoint also checks the registered
+   mTLS certificate and the original verified user token on every lookup.
    Test a runtime connection with the supplied URL before activation. The
    runtime role must not be a member of the schema owner or operational roles.
 6. Import the catalog events in `light-portal-event/config/20260913-workflow-broker`.

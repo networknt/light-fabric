@@ -23,6 +23,7 @@ pub const NATIVE_A2A_MIGRATION_ID: &str = "0002_native_a2a_aliases";
 pub const NATIVE_A2A_PHASE4_MIGRATION_ID: &str = "0003_native_a2a_phase4";
 pub const WORKFLOW_JOB_TRANSPORT_MIGRATION_ID: &str = "0004_workflow_job_transport";
 pub const WORKFLOW_JOB_OWNER_MIGRATION_ID: &str = "0005_workflow_job_owner";
+pub const LONG_WORK_BINDING_MIGRATION_ID: &str = "0006_long_work_binding";
 pub const MIGRATIONS: &[(&str, &str)] = &[
     (
         MIGRATION_ID,
@@ -43,6 +44,10 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     (
         WORKFLOW_JOB_OWNER_MIGRATION_ID,
         include_str!("../migrations/agent-postgres/0005_workflow_job_owner.sql"),
+    ),
+    (
+        LONG_WORK_BINDING_MIGRATION_ID,
+        include_str!("../migrations/agent-postgres/0006_long_work_binding.sql"),
     ),
 ];
 
@@ -820,7 +825,7 @@ mod tests {
     fn frozen_agent_inventory_is_exact() {
         assert_eq!(AUTHORITY_TABLES.len(), 21);
         assert_eq!(SUPPORT_TABLES.len(), 4);
-        assert_eq!(MIGRATIONS.len(), 5);
+        assert_eq!(MIGRATIONS.len(), 6);
         let sql = MIGRATIONS[0].1;
         for table in AUTHORITY_TABLES.iter().chain(SUPPORT_TABLES) {
             assert!(sql.contains(&format!("agent_ops.{table}")));

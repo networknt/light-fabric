@@ -159,13 +159,29 @@ Build and publish every image with one Docker tag:
 
 Every image is built before publishing begins. Versioned tags are pushed first;
 `latest` tags are pushed only after all versioned tags have succeeded. For local
-validation or a single-image build:
+validation or a single-image build, use `--local` or `--app`:
 
 ```bash
 ./build.sh 0.3.0 --local
 ./build.sh 0.3.0 --app light-gateway --local --no-cache
 ./build.sh 0.3.0 --skip-latest
 ```
+
+To build only images affected by local staged, unstaged, and untracked files,
+add `--changed`. The selector follows Cargo dependencies, so a shared crate
+edit can select multiple images. A clean tree or changes that do not affect an
+image result in no build and no publish. Review the selected image list before
+publishing; a changed-only publish updates tags only for the selected images.
+
+```bash
+./build.sh 0.3.0 --changed --local
+./build.sh 0.3.0 --changed --app light-gateway --local
+```
+
+Image builds use BuildKit Cargo caches for warm rebuilds. `--no-cache` uses a
+fresh Cargo cache namespace as well as bypassing Docker's layer cache. The
+binary is built inside the pinned container toolchain; the script does not
+perform a duplicate host-side Cargo compile.
 
 The app-level `build.sh` entrypoints remain available and delegate to the root
 script with their app selected.

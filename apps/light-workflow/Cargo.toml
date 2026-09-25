@@ -12,6 +12,7 @@ light-client = { path = "../../crates/light-client" }
 oauth-workflow-contract = { path = "../../crates/oauth-workflow-contract" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+zeroize = "1"
 agent-delegation = { path = "../../crates/agent-delegation" }
 a2a-core = { path = "../../crates/a2a-core" }
 base64 = "0.22"
@@ -49,6 +50,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 url = { workspace = true }
 reqwest = { workspace = true }
+jsonwebtoken = "9.3"
 regex = "1"
 jsonschema = { workspace = true }
 

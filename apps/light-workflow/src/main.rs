@@ -305,15 +305,6 @@ impl AxumApp for WorkflowApp {
             &self.compatibility_environment,
         )
         .map_err(|error| Self::runtime_error("workflow configuration", error))?;
-        if workflow_config.action_authorization.is_some()
-            && (workflow_config.credential_broker.is_none()
-                || workflow_config.ignore_user_jwt_expiry)
-        {
-            return Err(Self::runtime_error(
-                "workflow action authorization",
-                "requires a credential broker and enforced user expiry",
-            ));
-        }
         if workflow_config.ignore_user_jwt_expiry {
             warn!(
                 environment = %workflow_config.environment,
@@ -506,6 +497,7 @@ impl AxumApp for WorkflowApp {
                             policy: settings.policy.clone(),
                             agents: settings.workflow_agents.clone(),
                             artifacts: artifact_store.clone(),
+                            long: None,
                         },
                     )
                     .map_err(|e| Self::runtime_error("workflow job API", e))?,
@@ -518,6 +510,9 @@ impl AxumApp for WorkflowApp {
                         invocation_security.clone(),
                         workflow_config.environment.clone(),
                         health.clone(),
+                        Some(broker.clone()),
+                        runner_config.profiles.clone(),
+                        None,
                     )
                     .layer(axum::Extension(
                         light_workflow::artifact_store::DevelopmentArtifactAccess(
@@ -620,6 +615,106 @@ impl AxumApp for WorkflowApp {
                     Ok::<(), light_workflow::credential_broker::BrokerError>(())
                 },
             )?;
+        }
+
+        let mut active_long = None;
+        if let Some(client) = context.runtime_config.client.as_ref() {
+            let token = &client.oauth.token;
+            let provider_id = token
+                .token_exchange
+                .uri
+                .strip_prefix("/oauth2/")
+                .and_then(|path| path.strip_suffix("/token"))
+                .filter(|value| !value.is_empty() && !value.contains('/'));
+            let long_config = light_client::config::OAuthWorkflowLongConfig {
+                gateway_url: token.server_url.clone().unwrap_or_default(),
+                provider_id: provider_id.unwrap_or_default().to_string(),
+                client_id: token.token_exchange.client_id.clone(),
+                client_secret: token.token_exchange.client_secret.clone(),
+                database_url_file: String::new(),
+                keyring_file: String::new(),
+                ca_file: client
+                    .tls
+                    .ca_cert_path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            };
+            if long_config.gateway_url.is_empty()
+                || long_config.provider_id.is_empty()
+                || long_config.client_id.is_empty()
+                || long_config.client_secret.is_empty()
+            {
+                warn!(
+                    "Workflow LONG authority is not configured: set client.tokenServerUrl to the Gateway origin and client.tokenExUri/client ID/client secret for its OAuth provider"
+                );
+            } else {
+                if let Some(long) = light_workflow::long_authority::LongAuthority::open(
+                    &long_config,
+                    &context.runtime_config.config_dir,
+                    pool.clone(),
+                    workflow_config.long_keyring_file.as_deref(),
+                    &token.token_exchange.scope,
+                )
+                .await
+                .map_err(|error| Self::runtime_error("workflow LONG authority", error))?
+                {
+                    if active_broker.is_some() {
+                        return Err(Self::runtime_error(
+                            "workflow LONG authority",
+                            "LONG and finite mTLS broker profiles cannot share one Workflow action dispatcher",
+                        ));
+                    }
+                    let long = Arc::new(long);
+                    active_long = Some(long.clone());
+                    if let Some(settings) = workflow_config.action_authorization.as_ref() {
+                        credential_routes = credential_routes.merge(
+                            light_workflow::job_authorization::long_router(
+                                light_workflow::job_authorization::JobApi {
+                                    pool: pool.clone(),
+                                    broker: long.clone(),
+                                    security: invocation_security.clone(),
+                                    policy: settings.policy.clone(),
+                                    agents: settings.workflow_agents.clone(),
+                                    artifacts: artifact_store.clone(),
+                                    long: Some(long.clone()),
+                                },
+                            )
+                            .map_err(|e| Self::runtime_error("workflow LONG job API", e))?,
+                        );
+                        let outgoing = light_workflow::bound_mcp::Runtime::new_long(
+                            pool.clone(),
+                            Arc::clone(&long),
+                            &settings.outbound,
+                            &context.runtime_config.config_dir,
+                        )
+                        .await
+                        .map_err(|error| {
+                            Self::runtime_error("workflow LONG action client", error)
+                        })?;
+                        executor
+                            .bound_mcp
+                            .set(Arc::new(
+                                outgoing.with_agent_services(settings.workflow_agents.clone()),
+                            ))
+                            .map_err(|_| {
+                                Self::runtime_error(
+                                    "workflow LONG action client",
+                                    "already initialized",
+                                )
+                            })?;
+                    }
+                    let reconciler =
+                        light_workflow::long_lifecycle::Reconciler::new(pool.clone(), long);
+                    self.register_task(
+                        &context,
+                        "light-workflow-long-binding-reconciler",
+                        &cancellation,
+                        &health,
+                        move |shutdown| async move { reconciler.run(shutdown).await },
+                    )?;
+                }
+            }
         }
 
         let metadata_observer = self.operational_metadata.clone();
@@ -759,6 +854,28 @@ impl AxumApp for WorkflowApp {
             maximumParallelism = workflow_config.maximum_parallelism,
             "Light Workflow API lifecycle initialized"
         );
+        let approval_portal = if let Some(config) = workflow_config.approval_portal.as_ref() {
+            match light_workflow::approval_portal::Client::open(
+                config,
+                &context.runtime_config.config_dir,
+            )
+            .await
+            {
+                Ok(client) => Some(Arc::new(client)),
+                Err(error) => {
+                    warn!(error = %error, "Workflow approval Portal client unavailable");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(client) = approval_portal.as_ref() {
+            tokio::spawn(light_workflow::approval_delivery::run(
+                pool.clone(),
+                client.clone(),
+            ));
+        }
         let mut router = build_rule_api_router(
             pool,
             workflow_config.database_url,
@@ -766,6 +883,11 @@ impl AxumApp for WorkflowApp {
             invocation_security,
             workflow_config.environment,
             health,
+            active_broker
+                .clone()
+                .map(|broker| broker as Arc<dyn light_workflow::admin_api::RoleAuthority>),
+            runner_config.profiles.clone(),
+            active_long,
         )
         .layer(axum::Extension(
             light_workflow::artifact_store::DevelopmentArtifactAccess(artifact_store),
@@ -776,6 +898,9 @@ impl AxumApp for WorkflowApp {
         }
         if let Some(settings) = workflow_config.action_authorization {
             router = router.layer(axum::Extension(settings));
+        }
+        if let Some(client) = approval_portal {
+            router = router.layer(axum::Extension(client));
         }
         router = router.layer(axum::Extension(
             light_workflow::publication_dispatch::PublicationProviderAccess(
@@ -885,7 +1010,9 @@ mod tests {
 
     fn workflow_configuration() -> WorkflowConfiguration {
         WorkflowConfiguration {
+            approval_portal: None,
             credential_broker: None,
+            long_keyring_file: None,
             action_authorization: None,
             environment: "dev".to_string(),
             http_addr: "127.0.0.1:8436".parse().unwrap(),
@@ -908,6 +1035,7 @@ mod tests {
             },
             database_max_connections: 8,
             invocation_caller_service_ids: vec!["gateway".to_string()],
+            invocation_caller_environments: Vec::new(),
             wait_listener_connections: 4,
             ignore_user_jwt_expiry: false,
             maximum_parallelism: 16,

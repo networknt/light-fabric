@@ -5029,7 +5029,9 @@ dependencies = [
 name = "light-client"
 version = "0.2.1"
 dependencies = [
+ "aes-gcm",
  "anyhow",
+ "async-trait",
  "base64",
  "config-loader",
  "jsonwebtoken",
@@ -5039,11 +5041,13 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "url",
  "uuid",
  "workflow-action",
+ "zeroize",
 ]
 
 [[package]]
@@ -5428,6 +5432,7 @@ dependencies = [
  "futures-util",
  "hex",
  "jsonschema",
+ "jsonwebtoken",
  "light-axum",
  "light-client",
  "light-rule",
@@ -5458,6 +5463,7 @@ dependencies = [
  "workflow-policy",
  "workflow-store",
  "workspace-execution-protocol",
+ "zeroize",
 ]
 
 [[package]]

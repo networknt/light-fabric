@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 
 FROM rust:1.98.0-bookworm AS builder
+ARG CARGO_CACHE_ID=warm
 WORKDIR /usr/src/light-fabric
 
 RUN apt-get update && \
@@ -13,7 +14,12 @@ COPY crates crates
 COPY frameworks frameworks
 COPY apps apps
 
-RUN cargo build --locked --release -p light-deployer
+RUN --mount=type=cache,id=light-fabric-rust198-registry-${CARGO_CACHE_ID},target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=light-fabric-rust198-git-${CARGO_CACHE_ID},target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=light-fabric-rust198-target-${CARGO_CACHE_ID}-fabric-gnu,target=/usr/src/light-fabric/target,sharing=locked \
+    cargo build --locked --release -p light-deployer \
+    && mkdir -p /out \
+    && cp /usr/src/light-fabric/target/release/light-deployer /out/light-deployer
 
 FROM debian:bookworm-slim
 RUN apt-get update && \
@@ -21,7 +27,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/* && \
     useradd -r -u 10001 -g root light
 
-COPY --from=builder /usr/src/light-fabric/target/release/light-deployer /usr/local/bin/light-deployer
+COPY --from=builder /out/light-deployer /usr/local/bin/light-deployer
 COPY --from=builder /usr/src/light-fabric/apps/light-deployer/config /app/config
 
 USER 10001

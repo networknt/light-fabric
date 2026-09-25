@@ -149,6 +149,26 @@ struct RetryTaskState {
     deadline_ts: Option<chrono::DateTime<Utc>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InvocationAdmissionProfile {
+    LegacyEvent,
+    WorkflowBacked,
+    PortalExecution,
+}
+
+fn invocation_admission_profile(
+    stored: Option<Option<&str>>,
+) -> Result<InvocationAdmissionProfile, sqlx::Error> {
+    match stored {
+        None => Ok(InvocationAdmissionProfile::LegacyEvent),
+        Some(None | Some("workflow_backed")) => Ok(InvocationAdmissionProfile::WorkflowBacked),
+        Some(Some("portal_execution")) => Ok(InvocationAdmissionProfile::PortalExecution),
+        Some(Some(_)) => Err(sqlx::Error::Protocol(
+            "unknown stored workflow admission profile".into(),
+        )),
+    }
+}
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct AgentDefinitionRecord {
     agent_def_id: Uuid,
@@ -191,7 +211,7 @@ struct AgentCatalog {
 
 pub struct TaskExecutor {
     review_artifacts: Option<crate::artifact_store::DurableArtifactStore>,
-    pub bound_mcp: std::sync::OnceLock<Arc<crate::bound_mcp::Runtime>>,
+    pub bound_mcp: std::sync::OnceLock<Arc<dyn crate::bound_mcp::Dispatch>>,
     pool: PgPool,
     http_client: reqwest::Client,
     rule_executor: Arc<MultiThreadRuleExecutor>,
@@ -565,6 +585,11 @@ impl TaskExecutor {
                         tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = sleep(Duration::from_millis(250)) => {} }
                         continue;
                     }
+                    if let Err(error) = self.expire_private_explicit_deadlines().await {
+                        error!(worker_id = %worker_id, "Error expiring declared private workflow deadlines: {error}");
+                        tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = sleep(Duration::from_millis(250)) => {} }
+                        continue;
+                    }
                     tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = tokio::time::timeout(Duration::from_millis(500), listener.recv()) => {} }
                 }
                 Err(e) => {
@@ -587,6 +612,49 @@ impl TaskExecutor {
               WHERE execution_class='interactive' AND deadline_ts<=CURRENT_TIMESTAMP
                 AND state IN ('ACCEPTED','RUNNING','WAITING')
               RETURNING host_id,process_id",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        for (host_id, process_id) in expired {
+            sqlx::query(
+                "UPDATE process_info_t SET status_code='F',custom_status_code='WORKFLOW_TIMEOUT',
+                        completed_ts=CURRENT_TIMESTAMP
+                  WHERE host_id=$1 AND process_id=$2 AND status_code IN ('A','W')",
+            )
+            .bind(host_id)
+            .bind(process_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE task_info_t SET status_code='F',result_code='WORKFLOW_TIMEOUT',
+                        locked='N',lease_owner=NULL,lease_expires_ts=NULL,
+                        completed_ts=CURRENT_TIMESTAMP
+                  WHERE host_id=$1 AND process_id=$2 AND status_code IN ('A','W')",
+            )
+            .bind(host_id)
+            .bind(process_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn expire_private_explicit_deadlines(&self) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let expired: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "UPDATE workflow_invocation_t i SET state='FAILED',terminal_ts=CURRENT_TIMESTAMP,
+                    user_authorization=NULL,user_authorization_exp=NULL,
+                    updated_ts=CURRENT_TIMESTAMP,state_version=i.state_version+1,
+                    normalized_error=jsonb_build_object(
+                      'code','WORKFLOW_TIMEOUT','message','declared private workflow deadline expired',
+                      'retryable',false)
+               FROM process_info_t p
+              WHERE p.host_id=i.host_id AND p.process_id=i.process_id
+                AND i.response_policy_snapshot->'privateExecutionProfile'->>'version'='1'
+                AND p.deadline_ts IS NOT NULL AND p.deadline_ts<=CURRENT_TIMESTAMP
+                AND i.state IN ('ACCEPTED','RUNNING','WAITING')
+              RETURNING i.host_id,i.process_id",
         )
         .fetch_all(&mut *tx)
         .await?;
@@ -715,8 +783,52 @@ impl TaskExecutor {
                     self.execute_task(&claimed).await
                 }
             };
-            match execution.await {
+            let execution_result = execution.await;
+            if execution_result.as_ref().err().is_some_and(|error| {
+                matches!(
+                    error.downcast_ref::<crate::long_authority::LongError>(),
+                    Some(
+                        crate::long_authority::LongError::Retryable
+                            | crate::long_authority::LongError::Store
+                    )
+                )
+            }) {
+                if let Some(stop) = heartbeat_stop {
+                    let _ = stop.send(());
+                }
+                if let Some(handle) = heartbeat_handle {
+                    handle.await.map_err(|error| {
+                        io::Error::other(format!(
+                            "host task lease heartbeat failed to join: {error}"
+                        ))
+                    })??;
+                }
+                self.defer_retryable_authority(&claimed, attempt_budget.as_ref())
+                    .await?;
+                return Ok(true);
+            }
+            match execution_result {
                 Ok(result) => result,
+                Err(e)
+                    if matches!(
+                        e.downcast_ref::<crate::long_authority::LongError>(),
+                        Some(
+                            crate::long_authority::LongError::Denied
+                                | crate::long_authority::LongError::Evidence
+                        )
+                    ) =>
+                {
+                    TaskExecutionResult {
+                        status_code: "F",
+                        task_output: json!({
+                            "code":"AUTHORITY_BLOCKED",
+                            "message":"owner authority is unavailable or denied",
+                            "retryable":false
+                        }),
+                        next_task: None,
+                        context_data: None,
+                    }
+                }
                 Err(e) => TaskExecutionResult {
                     status_code: "F",
                     task_output: json!({ "error": e.to_string() }),
@@ -812,6 +924,86 @@ impl TaskExecutor {
         tx.commit().await?;
 
         Ok(true)
+    }
+
+    /// A temporary issuer/Gateway failure happened before an external action
+    /// was sent. Return the task to the fenced queue and refund this attempt's
+    /// reservation; the next claim obtains fresh owner authority.
+    async fn defer_retryable_authority(
+        &self,
+        claimed: &ClaimedTask,
+        reservation: Option<&(Uuid, Uuid, i64, i64, i64, Uuid, i64)>,
+    ) -> Result<(), DynError> {
+        let lease = claimed.host_lease.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::PermissionDenied, "host task lease missing")
+        })?;
+        let mut tx = self.pool.begin().await?;
+        let changed = sqlx::query(
+            "UPDATE task_info_t SET locked='N',lease_owner=NULL,lease_expires_ts=NULL,
+                    next_attempt_ts=CURRENT_TIMESTAMP+INTERVAL '15 seconds',
+                    result_code='WORKFLOW_AUTHORITY_RETRYABLE',update_ts=CURRENT_TIMESTAMP
+              WHERE host_id=$1 AND task_id=$2 AND status_code='A' AND locked='Y'
+                AND lease_owner=$3 AND lease_fencing_token=$4 AND lease_expires_ts>CURRENT_TIMESTAMP",
+        )
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.task_id)
+        .bind(lease.owner)
+        .bind(lease.fencing_token)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if changed != 1 {
+            return Err(io::Error::other("WORKFLOW_STALE_HOST_TASK_FENCE").into());
+        }
+        if let Some((host, id, fence, _, _, ledger, generation)) = reservation {
+            let released = sqlx::query(
+                "WITH released AS (
+                    UPDATE workflow_invocation_budget_reservation_t
+                       SET state='RELEASED',reconciled_ts=CURRENT_TIMESTAMP
+                     WHERE host_id=$1 AND reservation_id=$2 AND ledger_id=$3
+                       AND generation=$4 AND fencing_token=$5 AND state='RESERVED'
+                     RETURNING task_attempts,nested_calls,reserved_bytes,reserved_cost_units
+                 ) UPDATE workflow_invocation_budget_t b SET
+                    task_attempt_reserved=b.task_attempt_reserved-r.task_attempts,
+                    nested_call_reserved=b.nested_call_reserved-r.nested_calls,
+                    byte_reserved=b.byte_reserved-r.reserved_bytes,
+                    cost_unit_reserved=b.cost_unit_reserved-r.reserved_cost_units,
+                    updated_ts=CURRENT_TIMESTAMP
+                   FROM released r WHERE b.host_id=$1 AND b.ledger_id=$3 AND b.generation=$4",
+            )
+            .bind(host)
+            .bind(id)
+            .bind(ledger)
+            .bind(generation)
+            .bind(fence)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            if released != 1 {
+                return Err(io::Error::other("WORKFLOW_BUDGET_RELEASE_CONFLICT").into());
+            }
+        }
+        sqlx::query(
+            "UPDATE process_info_t SET custom_status_code='WORKFLOW_AUTHORITY_RETRYABLE'
+              WHERE host_id=$1 AND process_id=$2 AND status_code='A'",
+        )
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.process_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE workflow_invocation_t SET normalized_error=jsonb_build_object(
+                    'code','WORKFLOW_AUTHORITY_RETRYABLE',
+                    'message','owner authority temporarily unavailable','retryable',true),
+                    updated_ts=CURRENT_TIMESTAMP,state_version=state_version+1
+              WHERE host_id=$1 AND process_id=$2 AND state IN ('ACCEPTED','RUNNING','WAITING')",
+        )
+        .bind(claimed.task.host_id)
+        .bind(claimed.task.process_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     async fn fail_invocation_budget(
@@ -1274,6 +1466,22 @@ impl TaskExecutor {
         }))
     }
 
+    async fn admission_profile_for_process(
+        &self,
+        host_id: Uuid,
+        process_id: Uuid,
+    ) -> Result<InvocationAdmissionProfile, sqlx::Error> {
+        let stored: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT response_policy_snapshot->>'acceptedAdmissionProfile'
+               FROM workflow_invocation_t WHERE host_id=$1 AND process_id=$2",
+        )
+        .bind(host_id)
+        .bind(process_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        invocation_admission_profile(stored.as_ref().map(|value| value.as_deref()))
+    }
+
     async fn execute_task(&self, claimed: &ClaimedTask) -> Result<TaskExecutionResult, DynError> {
         let task_def = self
             .find_task_definition(&claimed.definition, &claimed.task.wf_task_id)
@@ -1284,12 +1492,48 @@ impl TaskExecutor {
                 )
             })?;
 
+        if matches!(task_def, TaskDefinition::Call(_) | TaskDefinition::Run(_))
+            && !claimed.task.process_id.is_nil()
+            && self
+                .admission_profile_for_process(claimed.task.host_id, claimed.task.process_id)
+                .await?
+                == InvocationAdmissionProfile::PortalExecution
+        {
+            let runtime = self.bound_mcp.get().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "private execution authority is unavailable",
+                )
+            })?;
+            runtime
+                .authorize_private_run(claimed.task.host_id, claimed.task.process_id)
+                .await?;
+        }
+
         if self.bound_mcp.get().is_some()
             && matches!(task_def,TaskDefinition::Call(call) if !matches!(call,CallTaskDefinition::Mcp(_) | CallTaskDefinition::Agent(_)))
+            && self
+                .admission_profile_for_process(claimed.task.host_id, claimed.task.process_id)
+                .await?
+                != InvocationAdmissionProfile::PortalExecution
         {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "A2 external action transport is not yet qualified for this task type",
+            )
+            .into());
+        }
+
+        if self
+            .bound_mcp
+            .get()
+            .and_then(|runtime| runtime.long_gateway_origin())
+            .is_some()
+            && matches!(task_def,TaskDefinition::Call(call) if !matches!(call,CallTaskDefinition::Http(_) | CallTaskDefinition::Mcp(_)))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "LONG owner-token handoff for this external task is not yet available",
             )
             .into());
         }
@@ -1480,18 +1724,27 @@ impl TaskExecutor {
                 } else {
                     None
                 };
-                let invocation_authorization: Option<(Option<String>, String)> = sqlx::query_as(
-                    "SELECT user_authorization,state FROM workflow_invocation_t
+                let invocation_authorization: Option<(Option<String>, String, Option<String>)> = sqlx::query_as(
+                    "SELECT user_authorization,state,response_policy_snapshot->>'acceptedAdmissionProfile' FROM workflow_invocation_t
                       WHERE host_id=$1 AND process_id=$2",
                 )
                 .bind(claimed.task.host_id)
                 .bind(claimed.task.process_id)
                 .fetch_optional(&self.pool)
                 .await?;
-                let workflow_backed = invocation_authorization.is_some();
-                if invocation_authorization.as_ref().is_some_and(|(_, state)| {
-                    matches!(state.as_str(), "CANCELLED" | "COMPLETED" | "FAILED")
-                }) {
+                let admission_profile = invocation_admission_profile(
+                    invocation_authorization
+                        .as_ref()
+                        .map(|(_, _, profile)| profile.as_deref()),
+                )?;
+                let workflow_backed =
+                    admission_profile == InvocationAdmissionProfile::WorkflowBacked;
+                if invocation_authorization
+                    .as_ref()
+                    .is_some_and(|(_, state, _)| {
+                        matches!(state.as_str(), "CANCELLED" | "COMPLETED" | "FAILED")
+                    })
+                {
                     return Err(io::Error::new(
                         io::ErrorKind::Interrupted,
                         "workflow invocation became terminal before HTTP task dispatch",
@@ -1500,7 +1753,7 @@ impl TaskExecutor {
                 }
                 let user_authorization = invocation_authorization
                     .as_ref()
-                    .and_then(|(authorization, _)| authorization.as_deref());
+                    .and_then(|(authorization, _, _)| authorization.as_deref());
                 if workflow_http_requires_registered_target(
                     workflow_backed,
                     granted_uri.is_some(),
@@ -1509,6 +1762,20 @@ impl TaskExecutor {
                     return Err(io::Error::new(
                         io::ErrorKind::PermissionDenied,
                         "workflow-backed direct HTTP call requires an active registered endpointRef and allowed method",
+                    )
+                    .into());
+                }
+                let protected_target = granted_uri.is_some() || registered_uri.is_some();
+                if self
+                    .bound_mcp
+                    .get()
+                    .and_then(|runtime| runtime.long_gateway_origin())
+                    .is_some()
+                    && !protected_target
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "LONG HTTP task requires a Gateway-protected target",
                     )
                     .into());
                 }
@@ -1542,10 +1809,74 @@ impl TaskExecutor {
                     http_call.with.headers.as_ref(),
                     &claimed.context_data,
                 );
-                let workflow_authorization = if workflow_backed {
-                    let scope_authorization = self.service_authorization.as_deref();
+                // A private inline endpoint must never receive the caller's
+                // bearer. Registered/Tool-granted targets retain protected
+                // Workflow authorization on the trusted dispatch path.
+                let long_owner_authorization = if admission_profile
+                    == InvocationAdmissionProfile::PortalExecution
+                    && protected_target
+                {
+                    if let Some(runtime) = self.bound_mcp.get() {
+                        if let Some(gateway) = runtime.long_gateway_origin() {
+                            let gateway = reqwest::Url::parse(&gateway)?;
+                            if validated_uri.origin() != gateway.origin() {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::PermissionDenied,
+                                    "private protected HTTP target must traverse Gateway",
+                                )
+                                .into());
+                            }
+                            let token = runtime
+                                .long_owner_token(claimed.task.host_id, claimed.task.process_id)
+                                .await?
+                                .ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::PermissionDenied,
+                                        "LONG owner authority unavailable",
+                                    )
+                                })?;
+                            Some(format!("Bearer {token}"))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let workflow_authorization = if workflow_backed
+                    || (admission_profile == InvocationAdmissionProfile::PortalExecution
+                        && protected_target)
+                {
+                    let long_scope_authorization = if long_owner_authorization.is_some() {
+                        Some(format!(
+                            "Bearer {}",
+                            self.bound_mcp
+                                .get()
+                                .ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::PermissionDenied,
+                                        "LONG app authority unavailable",
+                                    )
+                                })?
+                                .long_workload_token()
+                                .await?
+                                .ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::PermissionDenied,
+                                        "LONG app authority unavailable",
+                                    )
+                                })?
+                        ))
+                    } else {
+                        None
+                    };
+                    let scope_authorization = long_scope_authorization
+                        .as_deref()
+                        .or(self.service_authorization.as_deref());
                     Some(workflow_http_authorization_headers(
-                        user_authorization,
+                        long_owner_authorization.as_deref().or(user_authorization),
                         scope_authorization,
                     )?)
                 } else {
@@ -1606,7 +1937,8 @@ impl TaskExecutor {
                             )
                         },
                     )?;
-                    if is_protected_workflow_http_header(&name, workflow_backed) {
+                    if is_protected_workflow_http_header(&name, invocation_authorization.is_some())
+                    {
                         return Err(io::Error::new(
                             io::ErrorKind::PermissionDenied,
                             format!("workflow HTTP call cannot override protected header '{name}'"),
@@ -1968,7 +2300,24 @@ impl TaskExecutor {
                 .flatten()
         });
 
-        if let Some(runtime) = self.bound_mcp.get() {
+        let admission_profile = self
+            .admission_profile_for_process(claimed.task.host_id, claimed.task.process_id)
+            .await?;
+
+        if admission_profile == InvocationAdmissionProfile::PortalExecution
+            && tool_alias.is_some()
+            && self.bound_mcp.get().is_none()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "private MCP tool dispatch requires bound Gateway authority",
+            )
+            .into());
+        }
+        if let Some(runtime) = self.bound_mcp.get()
+            && !(admission_profile == InvocationAdmissionProfile::PortalExecution
+                && tool_alias.is_none())
+        {
             let alias = tool_alias.as_deref().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::PermissionDenied,
@@ -2376,7 +2725,12 @@ impl TaskExecutor {
                 context_data: None,
             });
         }
-        if self.bound_mcp.get().is_some() {
+        if self.bound_mcp.get().is_some()
+            && self
+                .admission_profile_for_process(*host_id, process_id)
+                .await?
+                != InvocationAdmissionProfile::PortalExecution
+        {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "A2 Agent calls require a bound coding service job",
@@ -4177,6 +4531,7 @@ impl TaskExecutor {
                 code.starts_with("WORKFLOW_BUDGET_EXHAUSTED")
                     || code == "WORKFLOW_TASK_TIMEOUT"
                     || code == "WORKFLOW_OUTPUT_INVALID_AFTER_EFFECT"
+                    || code == "AUTHORITY_BLOCKED"
             })
         {
             return Ok(false);
@@ -4462,8 +4817,11 @@ impl TaskExecutor {
             .await?;
             sqlx::query(
                 "UPDATE task_info_t SET fork_join_id=$1,branch_name=$2,
-                        deadline_ts=(SELECT deadline_ts FROM workflow_invocation_t
-                                      WHERE host_id=$3 AND process_id=$4)
+                        deadline_ts=(SELECT CASE WHEN i.response_policy_snapshot->'privateExecutionProfile'->>'version'='1'
+                                                   THEN p.deadline_ts ELSE i.deadline_ts END
+                                       FROM workflow_invocation_t i
+                                       JOIN process_info_t p ON p.host_id=i.host_id AND p.process_id=i.process_id
+                                      WHERE i.host_id=$3 AND i.process_id=$4)
                   WHERE host_id=$3 AND task_id=$5",
             )
             .bind(join_id)
@@ -4681,6 +5039,34 @@ impl TaskExecutor {
             })
         });
         let mut state = state;
+        if state == "FAILED"
+            && task_output.get("code").and_then(Value::as_str) == Some("AUTHORITY_BLOCKED")
+        {
+            normalized_error = Some(json!({
+                "code":"AUTHORITY_BLOCKED",
+                "message":"owner authority is unavailable or denied",
+                "retryable":false
+            }));
+            sqlx::query(
+                "UPDATE process_info_t SET custom_status_code='AUTHORITY_BLOCKED'
+                WHERE host_id=$1 AND process_id=$2 AND status_code='F'",
+            )
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.process_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        if state != "FAILED" {
+            sqlx::query(
+                "UPDATE process_info_t SET custom_status_code=NULL
+                WHERE host_id=$1 AND process_id=$2
+                  AND custom_status_code='WORKFLOW_AUTHORITY_RETRYABLE'",
+            )
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.process_id)
+            .execute(&mut **tx)
+            .await?;
+        }
         if state == "COMPLETED" {
             let context: Value = sqlx::query_scalar(
                 "SELECT context_data FROM process_info_t WHERE host_id=$1 AND process_id=$2",
@@ -4733,7 +5119,9 @@ impl TaskExecutor {
             .fetch_optional(&mut **tx)
             .await?
             .flatten();
-            if let Some(schema) = output_schema {
+            // An omitted output schema is stored as JSON null in the admission
+            // snapshot. Only a real schema document should be compiled here.
+            if let Some(schema) = output_schema.filter(|schema| !schema.is_null()) {
                 match jsonschema::Validator::new(&schema) {
                     Ok(validator) if validator.is_valid(&public_result) => {}
                     Ok(_) => {
@@ -4807,7 +5195,9 @@ impl TaskExecutor {
                     user_authorization=CASE WHEN $2 THEN NULL ELSE user_authorization END,
                     user_authorization_exp=CASE WHEN $2 THEN NULL ELSE user_authorization_exp END,
                     public_result=CASE WHEN $1='COMPLETED' THEN $3 ELSE public_result END,
-                    normalized_error=CASE WHEN $1='FAILED' THEN $4 ELSE normalized_error END
+                    normalized_error=CASE WHEN $1='FAILED' THEN $4
+                      WHEN normalized_error->>'code'='WORKFLOW_AUTHORITY_RETRYABLE' THEN NULL
+                      ELSE normalized_error END
               WHERE host_id=$5 AND process_id=$6 AND state NOT IN ('CANCELLED','COMPLETED','FAILED')",
         )
         .bind(state)
@@ -5244,7 +5634,11 @@ impl TaskExecutor {
             }
         });
         let deadline: Option<chrono::DateTime<Utc>> = sqlx::query_scalar(
-            "SELECT deadline_ts FROM workflow_invocation_t WHERE host_id=$1 AND process_id=$2",
+            "SELECT CASE WHEN i.response_policy_snapshot->'privateExecutionProfile'->>'version'='1'
+                         THEN p.deadline_ts ELSE i.deadline_ts END
+               FROM workflow_invocation_t i
+               JOIN process_info_t p ON p.host_id=i.host_id AND p.process_id=i.process_id
+              WHERE i.host_id=$1 AND i.process_id=$2",
         )
         .bind(claimed.task.host_id)
         .bind(claimed.task.process_id)
@@ -6072,6 +6466,49 @@ mod tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
 
+    struct ComponentGateway {
+        calls: std::sync::Mutex<Vec<(Uuid, Uuid, Uuid, String, Value)>>,
+        denied: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::bound_mcp::Dispatch for ComponentGateway {
+        async fn authorize_private_run(&self, _host: Uuid, _process: Uuid) -> Result<(), DynError> {
+            if self.denied.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "private run authority revoked",
+                )
+                .into());
+            }
+            Ok(())
+        }
+
+        async fn authorize_agent(
+            &self,
+            _host: Uuid,
+            _process: Uuid,
+            _agent: Uuid,
+        ) -> Result<(chrono::DateTime<Utc>, i32, i32), DynError> {
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "not configured").into())
+        }
+
+        async fn call(
+            &self,
+            host: Uuid,
+            process: Uuid,
+            attempt: Uuid,
+            alias: &str,
+            params: Value,
+        ) -> Result<Value, DynError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((host, process, attempt, alias.into(), params));
+            Ok(json!({"structuredContent":{"decision":"REVIEW"}}))
+        }
+    }
+
     fn executor() -> TaskExecutor {
         let pool = PgPoolOptions::new()
             .connect_lazy("postgres://characterization:characterization@localhost/characterization")
@@ -6117,6 +6554,440 @@ mod tests {
             raw_definition: serde_yaml::from_str(yaml).expect("fixture must be YAML"),
             host_lease: None,
         }
+    }
+
+    #[test]
+    fn stored_admission_profile_fails_closed_on_unknown_values() {
+        assert_eq!(
+            invocation_admission_profile(None).unwrap(),
+            InvocationAdmissionProfile::LegacyEvent
+        );
+        assert_eq!(
+            invocation_admission_profile(Some(None)).unwrap(),
+            InvocationAdmissionProfile::WorkflowBacked
+        );
+        assert_eq!(
+            invocation_admission_profile(Some(Some("portal_execution"))).unwrap(),
+            InvocationAdmissionProfile::PortalExecution
+        );
+        assert!(invocation_admission_profile(Some(Some("unrecognized"))).is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires WORKFLOW_ROLE_TEST_DATABASE_URL for isolated PostgreSQL component schema"]
+    async fn deadline_sweeper_expires_interactive_only_after_long_wait() {
+        let url = std::env::var("WORKFLOW_ROLE_TEST_DATABASE_URL").unwrap();
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+        let schema = format!("workflow_step04_sweeper_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(&format!("SET search_path TO {schema}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE workflow_invocation_t (host_id uuid,process_id uuid,execution_class text,deadline_ts timestamptz,state text,terminal_ts timestamptz,user_authorization text,user_authorization_exp bigint,updated_ts timestamptz,state_version bigint,normalized_error jsonb,response_policy_snapshot jsonb DEFAULT '{}'::jsonb)",
+            "CREATE TABLE process_info_t (host_id uuid,process_id uuid,status_code text,custom_status_code text,completed_ts timestamptz,deadline_ts timestamptz)",
+            "CREATE TABLE task_info_t (host_id uuid,process_id uuid,status_code text,result_code text,locked text,lease_owner uuid,lease_expires_ts timestamptz,completed_ts timestamptz)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        let host = Uuid::now_v7();
+        let interactive = Uuid::now_v7();
+        let private_wait = Uuid::now_v7();
+        let private_explicit = Uuid::now_v7();
+        for (process, class) in [
+            (interactive, "interactive"),
+            (private_wait, "standard"),
+            (private_explicit, "standard"),
+        ] {
+            sqlx::query("INSERT INTO workflow_invocation_t(host_id,process_id,execution_class,deadline_ts,state,state_version) VALUES($1,$2,$3,CURRENT_TIMESTAMP-interval '8 days','WAITING',1)")
+                .bind(host).bind(process).bind(class).execute(&pool).await.unwrap();
+            sqlx::query(
+                "INSERT INTO process_info_t(host_id,process_id,status_code) VALUES($1,$2,'W')",
+            )
+            .bind(host)
+            .bind(process)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO task_info_t(host_id,process_id,status_code) VALUES($1,$2,'W')",
+            )
+            .bind(host)
+            .bind(process)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query("UPDATE workflow_invocation_t SET response_policy_snapshot=$1 WHERE host_id=$2 AND process_id IN ($3,$4)")
+            .bind(json!({"privateExecutionProfile":{"version":1}}))
+            .bind(host).bind(private_wait).bind(private_explicit).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE process_info_t SET deadline_ts=CURRENT_TIMESTAMP-interval '1 second' WHERE host_id=$1 AND process_id=$2")
+            .bind(host).bind(private_explicit).execute(&pool).await.unwrap();
+        let executor = TaskExecutor::new(pool.clone());
+        executor.expire_interactive_deadlines().await.unwrap();
+        executor.expire_private_explicit_deadlines().await.unwrap();
+        let states: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT process_id,state FROM workflow_invocation_t ORDER BY process_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert!(states.contains(&(interactive, "FAILED".into())));
+        assert!(states.contains(&(private_wait, "WAITING".into())));
+        assert!(states.contains(&(private_explicit, "FAILED".into())));
+        pool.close().await;
+        let cleanup = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(&cleanup)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires WORKFLOW_ROLE_TEST_DATABASE_URL for isolated PostgreSQL component schema"]
+    async fn retryable_owner_authority_requeues_and_refunds_before_dispatch() {
+        let url = std::env::var("WORKFLOW_ROLE_TEST_DATABASE_URL").unwrap();
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+        let schema = format!("workflow_step04_authority_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(&format!("SET search_path TO {schema}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE task_info_t(host_id uuid,task_id uuid,status_code text,locked text,lease_owner uuid,lease_fencing_token bigint,lease_expires_ts timestamptz,next_attempt_ts timestamptz,result_code text,update_ts timestamptz)",
+            "CREATE TABLE process_info_t(host_id uuid,process_id uuid,status_code text,custom_status_code text)",
+            "CREATE TABLE workflow_invocation_t(host_id uuid,process_id uuid,state text,normalized_error jsonb,updated_ts timestamptz,state_version bigint)",
+            "CREATE TABLE workflow_invocation_budget_t(host_id uuid,ledger_id uuid,generation bigint,task_attempt_reserved bigint,nested_call_reserved bigint,byte_reserved bigint,cost_unit_reserved bigint,updated_ts timestamptz)",
+            "CREATE TABLE workflow_invocation_budget_reservation_t(host_id uuid,reservation_id uuid,ledger_id uuid,generation bigint,fencing_token bigint,task_attempts bigint,nested_calls bigint,reserved_bytes bigint,reserved_cost_units bigint,state text,reconciled_ts timestamptz)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        let (host, task, process, owner, ledger, reservation) = (
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        );
+        sqlx::query("INSERT INTO task_info_t(host_id,task_id,status_code,locked,lease_owner,lease_fencing_token,lease_expires_ts) VALUES($1,$2,'A','Y',$3,7,CURRENT_TIMESTAMP+INTERVAL '1 minute')")
+            .bind(host).bind(task).bind(owner).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO process_info_t VALUES($1,$2,'A',NULL)")
+            .bind(host)
+            .bind(process)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO workflow_invocation_t(host_id,process_id,state,state_version) VALUES($1,$2,'RUNNING',1)")
+            .bind(host).bind(process).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO workflow_invocation_budget_t(host_id,ledger_id,generation,task_attempt_reserved,nested_call_reserved,byte_reserved,cost_unit_reserved) VALUES($1,$2,1,1,0,100,2)")
+            .bind(host).bind(ledger).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO workflow_invocation_budget_reservation_t(host_id,reservation_id,ledger_id,generation,fencing_token,task_attempts,nested_calls,reserved_bytes,reserved_cost_units,state) VALUES($1,$2,$3,1,7,1,0,100,2,'RESERVED')")
+            .bind(host).bind(reservation).bind(ledger).execute(&pool).await.unwrap();
+        let mut claimed = claimed_from_yaml(
+            include_str!("../examples/human-approval.yaml"),
+            "recordDecision",
+            "set",
+        );
+        claimed.task.host_id = host;
+        claimed.task.task_id = task;
+        claimed.task.process_id = process;
+        claimed.host_lease = Some(HostTaskLease {
+            owner,
+            fencing_token: 7,
+        });
+        TaskExecutor::new(pool.clone())
+            .defer_retryable_authority(&claimed, Some(&(host, reservation, 7, 100, 2, ledger, 1)))
+            .await
+            .unwrap();
+        let (locked, code, delayed): (String, String, bool) = sqlx::query_as(
+            "SELECT locked,result_code,next_attempt_ts>CURRENT_TIMESTAMP FROM task_info_t WHERE task_id=$1",
+        ).bind(task).fetch_one(&pool).await.unwrap();
+        assert_eq!(
+            (locked.as_str(), code.as_str(), delayed),
+            ("N", "WORKFLOW_AUTHORITY_RETRYABLE", true)
+        );
+        let counters: (i64,i64,i64) = sqlx::query_as("SELECT task_attempt_reserved,byte_reserved,cost_unit_reserved FROM workflow_invocation_budget_t WHERE ledger_id=$1")
+            .bind(ledger).fetch_one(&pool).await.unwrap();
+        assert_eq!(counters, (0, 0, 0));
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM workflow_invocation_budget_reservation_t WHERE reservation_id=$1",
+        )
+        .bind(reservation)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state, "RELEASED");
+        let retryable: bool = sqlx::query_scalar("SELECT normalized_error->>'retryable'='true' FROM workflow_invocation_t WHERE process_id=$1")
+            .bind(process).fetch_one(&pool).await.unwrap();
+        assert!(retryable);
+        pool.close().await;
+        let cleanup = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(&cleanup)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires WORKFLOW_ROLE_TEST_DATABASE_URL for isolated PostgreSQL component schema"]
+    async fn private_operational_dispatch_executes_http_mcp_and_agent_without_ordinary_bypass() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let url = std::env::var("WORKFLOW_ROLE_TEST_DATABASE_URL").unwrap();
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+        let schema = format!("workflow_step03_dispatch_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(&format!("SET search_path TO {schema}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE workflow_invocation_t (host_id uuid,process_id uuid,binding_id uuid,response_policy_snapshot jsonb,user_authorization text,state text,deadline_ts timestamptz)",
+            "CREATE TABLE process_info_t (host_id uuid,process_id uuid,deadline_ts timestamptz)",
+            "CREATE TABLE agent_definition_t (host_id uuid,agent_def_id uuid,active boolean,model_provider text,model_name text,api_key_ref text,temperature float8,max_tokens integer,aggregate_version bigint)",
+            "CREATE TABLE api_version_t (host_id uuid,api_version_id uuid,api_id uuid,active boolean)",
+            "CREATE TABLE api_t (host_id uuid,api_id uuid,api_name text,active boolean)",
+            "CREATE TABLE agent_skill_t (host_id uuid,agent_def_id uuid,skill_id uuid,active boolean,priority integer,sequence_id integer,aggregate_version bigint)",
+            "CREATE TABLE skill_t (host_id uuid,skill_id uuid,name text,description text,content_markdown text,active boolean,aggregate_version bigint)",
+            "CREATE TABLE skill_tool_t (host_id uuid,skill_id uuid,tool_id uuid,active boolean,access_level text)",
+            "CREATE TABLE tool_t (host_id uuid,tool_id uuid,name text,description text,response_schema jsonb,active boolean)",
+            "CREATE TABLE tool_param_t (host_id uuid,tool_id uuid,param_id uuid,name text,param_type text,required boolean,description text,validation_schema jsonb,order_index integer,active boolean)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        let host = Uuid::now_v7();
+        let process = Uuid::now_v7();
+        sqlx::query("INSERT INTO workflow_invocation_t VALUES ($1,$2,$3,$4,$5,'RUNNING',CURRENT_TIMESTAMP-interval '8 days')")
+            .bind(host)
+            .bind(process)
+            .bind(Uuid::now_v7())
+            .bind(json!({"acceptedAdmissionProfile":"portal_execution","privateExecutionProfile":{"version":1}}))
+            .bind("Bearer caller-secret")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO process_info_t VALUES ($1,$2,NULL)")
+            .bind(host)
+            .bind(process)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let gateway = Arc::new(ComponentGateway {
+            calls: std::sync::Mutex::new(Vec::new()),
+            denied: std::sync::atomic::AtomicBool::new(false),
+        });
+        let mut executor = TaskExecutor::new(pool.clone());
+        executor.bound_mcp.set(gateway.clone()).ok().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let receiver = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = [0u8; 4096];
+            let length = stream.read(&mut bytes).await.unwrap();
+            let request = String::from_utf8_lossy(&bytes[..length]).to_ascii_lowercase();
+            stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 16\r\n\r\n{\"ok\":\"private\"}").await.unwrap();
+            request
+        });
+        let http_yaml = format!(
+            "document: {{ dsl: '1.0.3', namespace: test, name: private-http, version: '1.0.0' }}\ndo:\n  - fetch:\n      call: http\n      with:\n        method: GET\n        endpoint: {{ uri: '{endpoint}/customer' }}\n"
+        );
+        let mut http = claimed_from_yaml(&http_yaml, "fetch", "call");
+        http.task.host_id = host;
+        http.task.process_id = process;
+        http.task.task_id = Uuid::now_v7();
+        assert_eq!(
+            executor.execute_task(&http).await.unwrap().task_output["ok"],
+            "private"
+        );
+        let request = receiver.await.unwrap();
+        assert!(!request.contains("caller-secret"));
+        assert!(!request.contains("authorization:"));
+        let protected_yaml = http_yaml.replace(
+            "method: GET",
+            "method: GET\n        headers: { authorization: 'Bearer injected' }",
+        );
+        let protected = claimed_from_yaml(&protected_yaml, "fetch", "call");
+        let mut protected = protected;
+        protected.task.host_id = host;
+        protected.task.process_id = process;
+        assert!(
+            executor
+                .execute_task(&protected)
+                .await
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("protected header")
+        );
+
+        let mcp_yaml = "document: { dsl: '1.0.3', namespace: test, name: private-mcp, version: '1.0.0' }\nuse:\n  mcpSessions:\n    gateway:\n      server:\n        endpoint: { uri: 'https://light-gateway:8443/mcp' }\n        transport: http\ndo:\n  - evaluate:\n      call: mcp\n      with:\n        session: gateway\n        tool: evaluateCoverage\n        arguments: { claimId: CLM-1 }\n";
+        let mut mcp = claimed_from_yaml(mcp_yaml, "evaluate", "call");
+        mcp.task.host_id = host;
+        mcp.task.process_id = process;
+        mcp.task.task_id = Uuid::now_v7();
+        assert_eq!(
+            executor.execute_task(&mcp).await.unwrap().task_output["structuredContent"]["decision"],
+            "REVIEW"
+        );
+        let calls = gateway.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            (calls[0].0, calls[0].1, calls[0].2, calls[0].3.as_str()),
+            (host, process, mcp.task.task_id, "evaluateCoverage")
+        );
+        assert_eq!(calls[0].4["arguments"]["claimId"], "CLM-1");
+        drop(calls);
+        let mut unbound = TaskExecutor::new(pool.clone());
+        assert!(
+            unbound
+                .execute_task(&mcp)
+                .await
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("private execution authority")
+        );
+
+        let agent_id = Uuid::now_v7();
+        let skill_id = Uuid::now_v7();
+        let api_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO agent_definition_t VALUES ($1,$2,true,'mock','mock',NULL,0.7,NULL,1)",
+        )
+        .bind(host)
+        .bind(agent_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO api_version_t VALUES ($1,$2,$3,true)")
+            .bind(host)
+            .bind(agent_id)
+            .bind(api_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO api_t VALUES ($1,$2,'claim-intake-agent',true)")
+            .bind(host)
+            .bind(api_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agent_skill_t VALUES ($1,$2,$3,true,1,1,1)")
+            .bind(host)
+            .bind(agent_id)
+            .bind(skill_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO skill_t VALUES ($1,$2,'claim-intake',NULL,'Review claim',true,1)")
+            .bind(host)
+            .bind(skill_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let agent_yaml = "document: { dsl: '1.0.3', namespace: test, name: private-agent, version: '1.0.0' }\ndo:\n  - review:\n      call: agent\n      with:\n        agent: claim-intake-agent\n        skill: claim-intake\n        mockOutput: { decision: REVIEW }\n";
+        let mut agent = claimed_from_yaml(agent_yaml, "review", "call");
+        agent.task.host_id = host;
+        agent.task.process_id = process;
+        assert_eq!(
+            executor.execute_task(&agent).await.unwrap().task_output["decision"],
+            "REVIEW"
+        );
+        assert!(
+            executor
+                .task_execution_timeout(&agent)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        sqlx::query("UPDATE process_info_t SET deadline_ts=CURRENT_TIMESTAMP+interval '10 minutes' WHERE host_id=$1 AND process_id=$2")
+            .bind(host).bind(process).execute(&pool).await.unwrap();
+        let remaining = executor
+            .task_execution_timeout(&agent)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(remaining <= Duration::from_secs(600) && remaining > Duration::from_secs(590));
+        gateway
+            .denied
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            executor
+                .execute_task(&agent)
+                .await
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("authority revoked")
+        );
+        gateway
+            .denied
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+
+        sqlx::query("UPDATE workflow_invocation_t SET response_policy_snapshot=$1 WHERE host_id=$2 AND process_id=$3")
+            .bind(json!({"acceptedAdmissionProfile":"workflow_backed"})).bind(host).bind(process).execute(&pool).await.unwrap();
+        assert!(
+            executor
+                .execute_task(&http)
+                .await
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("not yet qualified")
+        );
+        assert!(
+            executor
+                .execute_task(&agent)
+                .await
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("bound coding service")
+        );
+        sqlx::query("UPDATE workflow_invocation_t SET response_policy_snapshot=$1 WHERE host_id=$2 AND process_id=$3")
+            .bind(json!({"acceptedAdmissionProfile":"unknown"})).bind(host).bind(process).execute(&pool).await.unwrap();
+        assert!(executor.execute_task(&mcp).await.is_err());
+        pool.close().await;
+        let cleanup = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(&cleanup)
+            .await
+            .unwrap();
     }
 
     #[test]
@@ -6236,6 +7107,22 @@ mod tests {
         let completed = executor.completed_ask_result(&claimed);
         assert_eq!(completed.status_code, "C");
         assert_eq!(completed.task_output["decision"], "APPROVED");
+    }
+
+    #[tokio::test]
+    async fn private_corpus_set_task_executes_on_existing_local_dispatch() {
+        let executor = executor();
+        let claimed = claimed_from_yaml(
+            include_str!("../examples/human-approval.yaml"),
+            "recordDecision",
+            "set",
+        );
+        let result = executor
+            .execute_task(&claimed)
+            .await
+            .expect("set execution is local");
+        assert_eq!(result.status_code, "C");
+        assert_eq!(result.task_output["status"], "RECORDED");
     }
 
     #[tokio::test]
