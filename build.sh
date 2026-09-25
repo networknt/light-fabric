@@ -168,10 +168,12 @@ fi
 cd "$REPO_ROOT"
 
 if $CHANGED_ONLY; then
+  # Restrict selection to the candidate set so optional images are chosen only
+  # when named with --app, matching the full build.
   selector_args=(--root "$REPO_ROOT")
-  if $APP_SELECTED; then
-    selector_args+=(--only "$APP")
-  fi
+  for release_app in "${BUILD_APPS[@]}"; do
+    selector_args+=(--only "$release_app")
+  done
   changed_output="$(python3 "$SCRIPT_DIR/scripts/select-changed-apps.py" "${selector_args[@]}")" \
     || fail "Unable to select changed apps"
   if [[ -z "$changed_output" ]]; then
@@ -183,6 +185,13 @@ if $CHANGED_ONLY; then
   echo "Changed image selection: ${BUILD_APPS[*]}"
 fi
 
+# BuildKit keeps cache mounts after the build, so a cold build's unique Cargo
+# caches are pruned on exit instead of accumulating in the builder store.
+COLD_CACHE_PREFIX="cold-${BASHPID}-${RANDOM}"
+if $NO_CACHE; then
+  trap 'docker builder prune --force --filter "description~=${COLD_CACHE_PREFIX}-" >/dev/null 2>&1 || true' EXIT
+fi
+
 # Finish every local build before publishing any tag. This prevents a compile
 # failure in a later app from publishing an incomplete release unnecessarily.
 for release_app in "${BUILD_APPS[@]}"; do
@@ -192,7 +201,7 @@ for release_app in "${BUILD_APPS[@]}"; do
   version_image="${IMAGE_NAMESPACE}/${release_app}:${VERSION}"
   docker_args=(build "${BUILD_ARGS[@]}" --tag "$version_image")
   if $NO_CACHE; then
-    cache_id="cold-${BASHPID}-${RANDOM}-${release_app}"
+    cache_id="${COLD_CACHE_PREFIX}-${release_app}"
   else
     cache_id="warm"
   fi

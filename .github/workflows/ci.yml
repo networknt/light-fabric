@@ -29,6 +29,8 @@ jobs:
         run: npm ci --ignore-scripts && npm test
       - name: Shared client template parity
         run: python3 scripts/sync-client-config.py --check
+      - name: Image build orchestration
+        run: python3 scripts/test_select_changed_apps.py && scripts/test-build.sh
       - name: Install worker test dependencies
         run: |
           sudo apt-get update

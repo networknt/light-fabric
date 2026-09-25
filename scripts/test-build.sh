@@ -24,10 +24,12 @@ chmod +x "${TEST_ROOT}/bin/docker"
 export PATH="${TEST_ROOT}/bin:${PATH}"
 export DOCKER_LOG="${TEST_ROOT}/docker.log"
 
-grep -Fxq '!target/release/light-knowledge-admin' "${REPO_ROOT}/.dockerignore" || {
-  echo "FAIL: light-knowledge-admin release binary is excluded from the Docker build context" >&2
+# Images compile inside their builder stage, so host Cargo output must never
+# enter the Docker context or invalidate `COPY . .` layers.
+if grep -Eq '^!.*target' "${REPO_ROOT}/.dockerignore"; then
+  echo "FAIL: .dockerignore re-includes host Cargo output in the Docker build context" >&2
   exit 1
-}
+fi
 
 KNOWLEDGE_ADMIN_DOCKERFILE="${REPO_ROOT}/apps/light-knowledge-admin/docker/Dockerfile"
 grep -Eq '^FROM rust:[^ ]+-bookworm AS builder$' "$KNOWLEDGE_ADMIN_DOCKERFILE" || {
@@ -84,6 +86,10 @@ if grep -q '^push ' "$DOCKER_LOG"; then
   echo "FAIL: --local attempted to push an image" >&2
   exit 1
 fi
+grep -Eq '^builder prune --force --filter description~=cold-[0-9]+-[0-9]+-$' "$DOCKER_LOG" || {
+  echo "FAIL: --no-cache did not prune its cold Cargo cache mounts" >&2
+  exit 1
+}
 for app in "${APPS[@]}"; do
   dockerfile="$(dockerfile_for_app "$app")"
   assert_build_line "$app" "9.8.7" "$dockerfile" \
@@ -93,19 +99,19 @@ done
 : > "$DOCKER_LOG"
 "${REPO_ROOT}/apps/light-a2a/build.sh" 9.8.8 --local --skip-latest
 assert_build_line "light-a2a" "9.8.8" "apps/light-a2a/docker/Dockerfile" \
-  '^build --build-arg CARGO_CACHE_ID=warm --tag networknt/light-a2a:9\.8\.8 --file apps/light-a2a/docker/Dockerfile \.$'
+  '^build --tag networknt/light-a2a:9\.8\.8 --build-arg CARGO_CACHE_ID=warm --file apps/light-a2a/docker/Dockerfile \.$'
 [[ "$(wc -l < "$DOCKER_LOG")" -eq 1 ]]
 
 : > "$DOCKER_LOG"
 "${REPO_ROOT}/apps/light-gateway/build.sh" 9.8.8 --local --skip-latest
 assert_build_line "light-gateway" "9.8.8" "apps/light-gateway/docker/Dockerfile" \
-  '^build --build-arg CARGO_CACHE_ID=warm --tag networknt/light-gateway:9\.8\.8 --file apps/light-gateway/docker/Dockerfile \.$'
+  '^build --tag networknt/light-gateway:9\.8\.8 --build-arg CARGO_CACHE_ID=warm --file apps/light-gateway/docker/Dockerfile \.$'
 [[ "$(wc -l < "$DOCKER_LOG")" -eq 1 ]]
 
 : > "$DOCKER_LOG"
 "${REPO_ROOT}/apps/light-knowledge-admin/build.sh" 9.8.8 --local --skip-latest
 assert_build_line "light-knowledge-admin" "9.8.8" "apps/light-knowledge-admin/docker/Dockerfile" \
-  '^build --build-arg CARGO_CACHE_ID=warm --tag networknt/light-knowledge-admin:9\.8\.8 --file apps/light-knowledge-admin/docker/Dockerfile \.$'
+  '^build --tag networknt/light-knowledge-admin:9\.8\.8 --build-arg CARGO_CACHE_ID=warm --file apps/light-knowledge-admin/docker/Dockerfile \.$'
 [[ "$(wc -l < "$DOCKER_LOG")" -eq 1 ]]
 
 : > "$DOCKER_LOG"
@@ -137,5 +143,53 @@ if "${REPO_ROOT}/apps/light-gateway/build.sh" 9.9.2 --local --app light-agent >/
   echo "FAIL: app wrapper silently overrode a caller-supplied --app" >&2
   exit 1
 fi
+
+# --changed orchestration, with the selector replaced by a stub. Selection
+# itself is covered by scripts/test_select_changed_apps.py.
+mkdir -p "${TEST_ROOT}/changed-bin"
+cat > "${TEST_ROOT}/changed-bin/python3" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${SELECTOR_LOG:?}"
+printf '%s' "${SELECTOR_OUTPUT:-}"
+STUB
+cat > "${TEST_ROOT}/changed-bin/cargo" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "${TEST_ROOT}/changed-bin/python3" "${TEST_ROOT}/changed-bin/cargo"
+export SELECTOR_LOG="${TEST_ROOT}/selector.log"
+
+: > "$DOCKER_LOG"
+: > "$SELECTOR_LOG"
+SELECTOR_OUTPUT="" PATH="${TEST_ROOT}/changed-bin:${PATH}" \
+  "${REPO_ROOT}/build.sh" 9.9.3 --changed >/dev/null
+if [[ -s "$DOCKER_LOG" ]]; then
+  echo "FAIL: --changed with no selected images invoked Docker" >&2
+  exit 1
+fi
+for app in "${APPS[@]}"; do
+  grep -Fq -- "--only ${app}" "$SELECTOR_LOG" || {
+    echo "FAIL: --changed did not offer release app ${app} to the selector" >&2
+    exit 1
+  }
+done
+if grep -Fq -- "--only light-knowledge-worker" "$SELECTOR_LOG"; then
+  echo "FAIL: --changed offered the optional light-knowledge-worker image" >&2
+  exit 1
+fi
+
+: > "$DOCKER_LOG"
+SELECTOR_OUTPUT=$'light-gateway\nlight-agent' PATH="${TEST_ROOT}/changed-bin:${PATH}" \
+  "${REPO_ROOT}/build.sh" 9.9.4 --changed >/dev/null
+[[ "$(grep -c '^build ' "$DOCKER_LOG")" -eq 2 ]]
+grep -q '^build .*networknt/light-gateway:9\.9\.4' "$DOCKER_LOG"
+grep -q '^build .*networknt/light-agent:9\.9\.4' "$DOCKER_LOG"
+[[ "$(grep -c '^push ' "$DOCKER_LOG")" -eq 4 ]]
+
+: > "$SELECTOR_LOG"
+SELECTOR_OUTPUT="" PATH="${TEST_ROOT}/changed-bin:${PATH}" \
+  "${REPO_ROOT}/build.sh" 9.9.5 --changed --app light-knowledge-worker --local >/dev/null
+[[ "$(cat "$SELECTOR_LOG")" == "${REPO_ROOT}/scripts/select-changed-apps.py --root ${REPO_ROOT} --only light-knowledge-worker" ]]
 
 echo "PASS: root Docker build orchestration"

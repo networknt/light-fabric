@@ -169,8 +169,10 @@ validation or a single-image build, use `--local` or `--app`:
 
 To build only images affected by local staged, unstaged, and untracked files,
 add `--changed`. The selector follows Cargo dependencies, so a shared crate
-edit can select multiple images. A clean tree or changes that do not affect an
-image result in no build and no publish. Review the selected image list before
+edit can select multiple images, and a change under the root `contracts/`
+directory selects the images whose sources embed it. Only release images are
+considered unless an optional image is named with `--app`. A clean tree or
+changes that do not affect an image result in no build and no publish. Review the selected image list before
 publishing; a changed-only publish updates tags only for the selected images.
 
 ```bash
@@ -179,7 +181,8 @@ publishing; a changed-only publish updates tags only for the selected images.
 ```
 
 Image builds use BuildKit Cargo caches for warm rebuilds. `--no-cache` uses a
-fresh Cargo cache namespace as well as bypassing Docker's layer cache. The
+fresh Cargo cache namespace as well as bypassing Docker's layer cache, and
+prunes that namespace when the script exits. The
 binary is built inside the pinned container toolchain; the script does not
 perform a duplicate host-side Cargo compile.
 
