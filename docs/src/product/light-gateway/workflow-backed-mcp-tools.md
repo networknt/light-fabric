@@ -437,6 +437,10 @@ those canonical spellings rather than normalize them ad hoc.
 
 ## Workflow Start and Invocation API
 
+> The proposed replacement for workflow-backed Tools, `workflow_invoke` with
+> binding publication through Workflow MCP, is described in
+> [Workflow Invoke And Tool Binding Publication](../light-workflow/workflow-invoke.md).
+
 Every root launch, including launches from the Workflow Editor and
 workflow-backed Tools, enters through the native `workflow_start` MCP tool on
 `light-workflow`. Gateway applies the caller's Tool ACL, then forwards the

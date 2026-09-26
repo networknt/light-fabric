@@ -5,7 +5,8 @@ root Workflow start. The Workflow Editor and workflow-backed Tools use this
 same Gateway route. Gateway forwards the original user Authorization token and
 its Workflow app scope token; Workflow creates the process in its native start
 handler. The legacy Portal `startWorkflow` command and its event-based launch
-path are retired.
+path are retired. Workflow-backed Tools are moving to `workflow_invoke`; see
+[Workflow Invoke And Tool Binding Publication](workflow-invoke.md).
 
 The remaining examples in this archived guide describe the former Portal
 event path. They are retained for historical context and must not be used to
