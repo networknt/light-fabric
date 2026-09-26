@@ -7,20 +7,129 @@
   "backendCredentialMode": "workflow",
   "sessionIndependent": true,
   "tools": [
-    {"name":"workflow_start","permission":"workflow.instance.start","endpoint":"workflow_start@call"},
-    {"name":"workflow_decide_tool_access","permission":"workflow.tool_access.decide","endpoint":"workflow_decide_tool_access@call"},
-    {"name":"workflow_delete_process","permission":"workflow.process.delete","endpoint":"workflow_delete_process@call"},
-    {"name":"workflow_get_task","permission":"workflow.process.read","endpoint":"workflow_get_task@call"},
-    {"name":"workflow_add_process_note","permission":"workflow.process.note","endpoint":"workflow_add_process_note@call"},
-    {"name":"workflow_list_process_notes","permission":"workflow.process.read","endpoint":"workflow_list_process_notes@call"}
+    {
+      "name": "workflow_start",
+      "permission": "workflow.instance.start",
+      "endpoint": "workflow_start@call"
+    },
+    {
+      "name": "workflow_decide_tool_access",
+      "permission": "workflow.tool_access.decide",
+      "endpoint": "workflow_decide_tool_access@call"
+    },
+    {
+      "name": "workflow_delete_process",
+      "permission": "workflow.process.delete",
+      "endpoint": "workflow_delete_process@call"
+    },
+    {
+      "name": "workflow_get_task",
+      "permission": "workflow.process.read",
+      "endpoint": "workflow_get_task@call"
+    },
+    {
+      "name": "workflow_add_process_note",
+      "permission": "workflow.process.note",
+      "endpoint": "workflow_add_process_note@call"
+    },
+    {
+      "name": "workflow_list_process_notes",
+      "permission": "workflow.process.read",
+      "endpoint": "workflow_list_process_notes@call"
+    },
+    {
+      "name": "workflow_definition_save",
+      "permission": "workflow.definition.publish",
+      "endpoint": "workflow_definition_save@call"
+    },
+    {
+      "name": "workflow_definition_publish",
+      "permission": "workflow.definition.publish",
+      "endpoint": "workflow_definition_publish@call"
+    },
+    {
+      "name": "workflow_definition_retire",
+      "permission": "workflow.definition.publish",
+      "endpoint": "workflow_definition_retire@call"
+    },
+    {
+      "name": "workflow_definition_grants_sync",
+      "permission": "workflow.definition.publish",
+      "endpoint": "workflow_definition_grants_sync@call"
+    },
+    {
+      "name": "workflow_binding_publish",
+      "permission": "workflow.binding.publish",
+      "endpoint": "workflow_binding_publish@call"
+    },
+    {
+      "name": "workflow_binding_retire",
+      "permission": "workflow.binding.publish",
+      "endpoint": "workflow_binding_retire@call"
+    },
+    {
+      "name": "workflow_binding_get",
+      "permission": "workflow.binding.read",
+      "endpoint": "workflow_binding_get@call"
+    },
+    {
+      "name": "workflow_binding_list",
+      "permission": "workflow.binding.read",
+      "endpoint": "workflow_binding_list@call"
+    },
+    {
+      "name": "workflow_binding_decide",
+      "permission": "workflow.binding.approve",
+      "endpoint": "workflow_binding_decide@call"
+    },
+    {
+      "name": "workflow_binding_revoke",
+      "permission": "workflow.binding.approve",
+      "endpoint": "workflow_binding_revoke@call"
+    }
   ],
   "restrictedRoutes": [
-    {"method":"POST","path":"/oauth2/{providerId}/long/v1/bindings","target":"light-oauth","authentication":"confidential-client"},
-    {"method":"POST","path":"/oauth2/{providerId}/long/v1/bindings/{bindingId}/activate","target":"light-oauth","authentication":"confidential-client"},
-    {"method":"POST","path":"/oauth2/{providerId}/long/v1/bindings/{bindingId}/close","target":"light-oauth","authentication":"confidential-client"},
-    {"method":"POST","path":"/oauth2/{providerId}/token","target":"light-oauth","authentication":"confidential-client"},
-    {"method":"POST","path":"/oauth2/{providerId}/workflow/bindings/{bindingId}/revoke","target":"light-oauth","authentication":"authorized-portal-actor"},
-    {"method":"GET","path":"/portal/query","target":"portal-bff-loc","authentication":"approval-service-and-actor"},
-    {"method":"POST","path":"/portal/command","target":"portal-bff-loc","authentication":"approval-service-and-actor"}
+    {
+      "method": "POST",
+      "path": "/oauth2/{providerId}/long/v1/bindings",
+      "target": "light-oauth",
+      "authentication": "confidential-client"
+    },
+    {
+      "method": "POST",
+      "path": "/oauth2/{providerId}/long/v1/bindings/{bindingId}/activate",
+      "target": "light-oauth",
+      "authentication": "confidential-client"
+    },
+    {
+      "method": "POST",
+      "path": "/oauth2/{providerId}/long/v1/bindings/{bindingId}/close",
+      "target": "light-oauth",
+      "authentication": "confidential-client"
+    },
+    {
+      "method": "POST",
+      "path": "/oauth2/{providerId}/token",
+      "target": "light-oauth",
+      "authentication": "confidential-client"
+    },
+    {
+      "method": "POST",
+      "path": "/oauth2/{providerId}/workflow/bindings/{bindingId}/revoke",
+      "target": "light-oauth",
+      "authentication": "authorized-portal-actor"
+    },
+    {
+      "method": "GET",
+      "path": "/portal/query",
+      "target": "portal-bff-loc",
+      "authentication": "approval-service-and-actor"
+    },
+    {
+      "method": "POST",
+      "path": "/portal/command",
+      "target": "portal-bff-loc",
+      "authentication": "approval-service-and-actor"
+    }
   ]
 }

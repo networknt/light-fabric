@@ -1,59 +1,6 @@
 {
-  "version": "0.2.0-restoration",
+  "version": "0.3.0-workflow-invoke",
   "errors": [
-    {
-      "code": "UNAUTHENTICATED",
-      "httpStatus": 401,
-      "retryable": false
-    },
-    {
-      "code": "FORBIDDEN",
-      "httpStatus": 403,
-      "retryable": false
-    },
-    {
-      "code": "NOT_FOUND",
-      "httpStatus": 404,
-      "retryable": false
-    },
-    {
-      "code": "INVALID_ARGUMENT",
-      "httpStatus": 400,
-      "retryable": false
-    },
-    {
-      "code": "VALIDATION_FAILED",
-      "httpStatus": 422,
-      "retryable": false
-    },
-    {
-      "code": "INVALID_STATE",
-      "httpStatus": 409,
-      "retryable": false
-    },
-    {
-      "code": "TASK_EXPIRED",
-      "httpStatus": 409,
-      "retryable": false
-    },
-    {
-      "code": "VERSION_CONFLICT",
-      "httpStatus": 409,
-      "retryable": true
-    },
-    {"code":"PROCESS_NOT_TERMINAL","httpStatus":409,"retryable":false},
-    {"code":"RESOURCE_HELD","httpStatus":409,"retryable":false},
-    {"code":"IDEMPOTENCY_CONFLICT","httpStatus":409,"retryable":false},
-    {
-      "code": "CLAIM_CONFLICT",
-      "httpStatus": 409,
-      "retryable": true
-    },
-    {
-      "code": "CLAIM_NOT_OWNED",
-      "httpStatus": 409,
-      "retryable": false
-    },
     {
       "code": "ALREADY_COMPLETED",
       "httpStatus": 409,
@@ -65,9 +12,14 @@
       "retryable": true
     },
     {
-      "code": "STORE_UNAVAILABLE",
-      "httpStatus": 503,
+      "code": "CLAIM_CONFLICT",
+      "httpStatus": 409,
       "retryable": true
+    },
+    {
+      "code": "CLAIM_NOT_OWNED",
+      "httpStatus": 409,
+      "retryable": false
     },
     {
       "code": "EFFECT_UNRESOLVED",
@@ -75,17 +27,82 @@
       "retryable": true
     },
     {
-      "code": "WORKFLOW_START_REJECTED",
-      "httpStatus": 400,
+      "code": "FORBIDDEN",
+      "httpStatus": 403,
       "retryable": false
     },
     {
-      "code": "WORKFLOW_DEFINITION_MISMATCH",
+      "code": "IDEMPOTENCY_CONFLICT",
       "httpStatus": 409,
       "retryable": false
     },
     {
-      "code": "WORKFLOW_IDEMPOTENCY_CONFLICT",
+      "code": "INVALID_ARGUMENT",
+      "httpStatus": 400,
+      "retryable": false
+    },
+    {
+      "code": "INVALID_STATE",
+      "httpStatus": 409,
+      "retryable": false
+    },
+    {
+      "code": "NOT_FOUND",
+      "httpStatus": 404,
+      "retryable": false
+    },
+    {
+      "code": "PROCESS_NOT_TERMINAL",
+      "httpStatus": 409,
+      "retryable": false
+    },
+    {
+      "code": "RESOURCE_HELD",
+      "httpStatus": 409,
+      "retryable": false
+    },
+    {
+      "code": "STORE_UNAVAILABLE",
+      "httpStatus": 503,
+      "retryable": true
+    },
+    {
+      "code": "TASK_EXPIRED",
+      "httpStatus": 409,
+      "retryable": false
+    },
+    {
+      "code": "UNAUTHENTICATED",
+      "httpStatus": 401,
+      "retryable": false
+    },
+    {
+      "code": "VALIDATION_FAILED",
+      "httpStatus": 422,
+      "retryable": false
+    },
+    {
+      "code": "VERSION_CONFLICT",
+      "httpStatus": 409,
+      "retryable": true
+    },
+    {
+      "code": "WORKFLOW_BINDING_LIMIT_EXCEEDED",
+      "httpStatus": 422,
+      "retryable": false
+    },
+    {
+      "code": "WORKFLOW_BUDGET_EXHAUSTED",
+      "httpStatus": 422,
+      "retryable": false
+    },
+    {
+      "code": "WORKFLOW_BUDGET_EXHAUSTED_AFTER_EFFECT",
+      "httpStatus": 422,
+      "retryable": false
+    },
+    {
+      "code": "WORKFLOW_CANCELLED",
       "httpStatus": 409,
       "retryable": false
     },
@@ -95,9 +112,19 @@
       "retryable": true
     },
     {
-      "code": "WORKFLOW_INVOCATION_UNAVAILABLE",
-      "httpStatus": 503,
-      "retryable": true
+      "code": "WORKFLOW_DEFINITION_MISMATCH",
+      "httpStatus": 409,
+      "retryable": false
+    },
+    {
+      "code": "WORKFLOW_DEFINITION_RETIRED",
+      "httpStatus": 409,
+      "retryable": false
+    },
+    {
+      "code": "WORKFLOW_IDEMPOTENCY_CONFLICT",
+      "httpStatus": 409,
+      "retryable": false
     },
     {
       "code": "WORKFLOW_INPUT_INVALID",
@@ -105,9 +132,39 @@
       "retryable": false
     },
     {
+      "code": "WORKFLOW_INVOCATION_UNAVAILABLE",
+      "httpStatus": 503,
+      "retryable": true
+    },
+    {
+      "code": "WORKFLOW_OUTPUT_INVALID",
+      "httpStatus": 422,
+      "retryable": false
+    },
+    {
+      "code": "WORKFLOW_OUTPUT_INVALID_AFTER_EFFECT",
+      "httpStatus": 422,
+      "retryable": false
+    },
+    {
       "code": "WORKFLOW_POLICY_DENIED",
       "httpStatus": 403,
       "retryable": false
+    },
+    {
+      "code": "WORKFLOW_START_REJECTED",
+      "httpStatus": 400,
+      "retryable": false
+    },
+    {
+      "code": "WORKFLOW_TASK_FAILED",
+      "httpStatus": 500,
+      "retryable": false
+    },
+    {
+      "code": "WORKFLOW_TIMEOUT",
+      "httpStatus": 504,
+      "retryable": true
     }
   ],
   "shape": {

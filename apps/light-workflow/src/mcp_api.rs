@@ -68,6 +68,7 @@ fn advertised_tools() -> Vec<Value> {
         .cloned()
         .unwrap_or_default()
         .into_iter()
+        .filter(|tool| tool.get("visibility").and_then(Value::as_str) != Some("gateway-internal"))
         .map(|tool| {
             json!({
                 "name":tool["name"],
@@ -95,7 +96,7 @@ fn rpc_error(id: Value, status: StatusCode, code: i64, message: &str) -> Respons
     response
 }
 
-async fn handler_error(id: Value, response: Response) -> Result<Value, Response> {
+pub(crate) async fn handler_error(id: Value, response: Response) -> Result<Value, Response> {
     let status = response.status();
     let challenge = response.headers().get("www-authenticate").cloned();
     let retry_after = response.headers().get("retry-after").cloned();
@@ -105,7 +106,7 @@ async fn handler_error(id: Value, response: Response) -> Result<Value, Response>
     let detail: Value = serde_json::from_slice(&bytes).unwrap_or_else(
         |_| json!({"code":"WORKFLOW_REJECTED","message":"workflow operation was rejected"}),
     );
-    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+    if status == StatusCode::UNAUTHORIZED {
         let mut denied = rpc_error(id, status, -32001, "workflow authorization denied");
         denied.headers_mut().insert(
             "www-authenticate",
@@ -113,9 +114,32 @@ async fn handler_error(id: Value, response: Response) -> Result<Value, Response>
         );
         return Err(denied);
     }
-    let mut result = json!({"resultType":"complete","content":[{"type":"text","text":detail.to_string()}],"structuredContent":{"status":status.as_u16(),"error":detail},"isError":true});
+    let code = detail.get("code").and_then(Value::as_str).unwrap_or("WORKFLOW_REJECTED");
+    let message = detail.get("message").and_then(Value::as_str).unwrap_or("workflow operation was rejected");
+    let mut error = json!({
+        "code": code,
+        "message": message,
+        "retryable": detail.get("retryable").and_then(Value::as_bool).unwrap_or(false),
+        "afterEffect": detail.get("afterEffect").and_then(Value::as_bool).unwrap_or(false),
+    });
+    if let Some(value) = detail.get("retryAfterMs") { error["retryAfterMs"] = value.clone(); }
+    if let Some(value) = detail.get("details").filter(|value| value.is_object()) { error["details"] = value.clone(); }
+    let error_status = match detail.get("status").and_then(Value::as_str) {
+        Some("failed" | "timeout" | "cancelled" | "rejected") => detail["status"].as_str().unwrap(),
+        _ => match code {
+        "WORKFLOW_TIMEOUT" => "timeout",
+        "WORKFLOW_CANCELLED" => "cancelled",
+        "WORKFLOW_POLICY_DENIED" | "WORKFLOW_START_REJECTED" | "WORKFLOW_INPUT_INVALID" => "rejected",
+        _ => "failed",
+        },
+    };
+    let after_effect = detail.get("afterEffect").and_then(Value::as_bool).unwrap_or(false);
+    let mut structured = json!({"status":error_status,"error":error});
+    structured["error"]["afterEffect"] = json!(after_effect);
+    if let Some(value) = detail.get("workflowInstanceId") { structured["workflowInstanceId"] = value.clone(); }
+    let mut result = json!({"resultType":"complete","content":[{"type":"text","text":format!("{code}: {message}")}],"structuredContent":structured,"isError":true});
     if let Some(value) = retry_after.and_then(|value| value.to_str().ok().map(str::to_owned)) {
-        result["_meta"] = json!({"retryAfter":value});
+        if let Ok(seconds) = value.parse::<u64>() { result["structuredContent"]["error"]["retryAfterMs"] = json!(seconds.saturating_mul(1000)); }
     }
     Ok(result)
 }
@@ -336,8 +360,10 @@ mod tests {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(names.len(), 21);
+        assert_eq!(names.len(), 33);
         assert_eq!(names.len(), tools.len());
+        assert!(names.contains("workflow_wait_result"));
+        assert!(names.contains("workflow_invoke"));
     }
 
     #[test]
@@ -346,7 +372,11 @@ mod tests {
         let examples: Value =
             serde_json::from_str(include_str!("../contracts/workflow-admin/examples.json"))
                 .unwrap();
-        assert_eq!(tools.len(), 21);
+        assert_eq!(tools.len(), 32);
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == "workflow_wait_result"));
+        assert!(!tools.iter().any(|tool| tool["name"] == "workflow_invoke"));
         for tool in tools {
             let name = tool["name"].as_str().unwrap();
             for (schema_name, example_name) in
@@ -378,9 +408,37 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(response.headers()["www-authenticate"], "Bearer");
         assert_eq!(response.headers()["mcp-protocol-version"], VERSION);
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let rpc: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(rpc["jsonrpc"], "2.0");
+        assert_eq!(rpc["id"], 7);
+        assert_eq!(rpc["error"]["code"], -32001);
         let source = (StatusCode::UNAUTHORIZED, Json(json!({"code":"DENIED"}))).into_response();
         let response = handler_error(json!(8), source).await.unwrap_err();
         assert_eq!(response.headers()["www-authenticate"], "Bearer");
+    }
+
+    #[tokio::test]
+    async fn handler_errors_use_workflow_error_result_and_round_trip_details() {
+        let details = json!({"appliedRevision":7,"definitionDigest":"sha256:abc"});
+        let source = (StatusCode::CONFLICT, Json(json!({"code":"WORKFLOW_DEFINITION_MISMATCH","message":"revision conflict","retryable":false,"details":details}))).into_response();
+        let result = handler_error(json!(9), source).await.unwrap();
+        assert_eq!(result["isError"], true);
+        assert_eq!(result["structuredContent"]["status"], "failed");
+        assert_eq!(result["structuredContent"]["error"]["details"], details);
+        assert_eq!(result["content"][0]["text"], "WORKFLOW_DEFINITION_MISMATCH: revision conflict");
+        assert!(result["structuredContent"]["error"].get("workflowInstanceId").is_none());
+    }
+
+    #[tokio::test]
+    async fn forbidden_and_other_failures_are_tool_results() {
+        for status in [StatusCode::FORBIDDEN, StatusCode::BAD_REQUEST, StatusCode::INTERNAL_SERVER_ERROR] {
+            let source = (status, Json(json!({"code":"WORKFLOW_POLICY_DENIED","message":"denied","retryable":false}))).into_response();
+            let result = handler_error(json!(10), source).await.unwrap();
+            assert_eq!(result["isError"], true);
+            assert_eq!(result["structuredContent"]["error"]["code"], "WORKFLOW_POLICY_DENIED");
+            assert!(result["structuredContent"]["error"].get("details").is_none());
+        }
     }
 
     #[test]

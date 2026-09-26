@@ -22,6 +22,7 @@ pub const LONG_OWNER_BINDING_MIGRATION_ID: &str = "0013_workflow_long_owner_bind
 pub const TOOL_ACCESS_APPROVAL_MIGRATION_ID: &str = "0014_workflow_tool_access_approval_run";
 pub const NATIVE_PROCESS_OPERATIONS_MIGRATION_ID: &str = "0015_native_process_operations";
 pub const DEFINITION_NATIVE_START_MIGRATION_ID: &str = "0016_definition_native_start";
+pub const TOOL_BINDING_REVISIONS_MIGRATION_ID: &str = "0018_workflow_tool_binding_revisions";
 pub const ACTION_TABLES: &[&str] = &[
     "workflow_action_authority_t",
     "workflow_action_permit_t",
@@ -46,6 +47,8 @@ pub const NATIVE_PROCESS_OPERATIONS_MIGRATION_SQL: &str =
     include_str!("../migrations/workflow-postgres/0015_native_process_operations.sql");
 pub const DEFINITION_NATIVE_START_MIGRATION_SQL: &str =
     include_str!("../migrations/workflow-postgres/0016_definition_native_start.sql");
+pub const TOOL_BINDING_REVISIONS_MIGRATION_SQL: &str =
+    include_str!("../migrations/workflow-postgres/0018_workflow_tool_binding_revisions.sql");
 pub const DEVELOPMENT_TABLES: &[&str] = &[
     "development_vm_t",
     "development_feature_t",
@@ -86,12 +89,15 @@ pub const AUTHORITY_TABLES: &[&str] = &[
     "workflow_invocation_t",
     "workflow_long_owner_binding_t",
     "workflow_tool_access_approval_run_t",
+    "workflow_publication_operation_t",
     "workflow_process_deletion_t",
     "workflow_process_note_t",
     "workflow_task_effect_t",
     "workflow_tool_access_request_item_t",
     "workflow_tool_access_request_t",
     "workflow_tool_approval_evidence_t",
+    "workflow_run_credential_t",
+    "workflow_tool_binding_decision_t",
 ];
 
 /// Accepted immutable/local projections. These rows are not Portal authoring
@@ -104,6 +110,9 @@ pub const PROJECTION_TABLES: &[&str] = &[
     "workflow_tool_dependency_t",
     "workflow_tool_grant_t",
     "workflow_a2a_binding_t",
+    "wf_definition_version_t",
+    "workflow_tool_publication_t",
+    "workflow_definition_grant_sync_t",
 ];
 
 #[derive(Debug, Clone)]
@@ -358,8 +367,8 @@ mod tests {
 
     #[test]
     fn workflow_inventory_and_boundary_are_frozen() {
-        assert_eq!(AUTHORITY_TABLES.len(), 23);
-        assert_eq!(PROJECTION_TABLES.len(), 7);
+        assert_eq!(AUTHORITY_TABLES.len(), 26);
+        assert_eq!(PROJECTION_TABLES.len(), 10);
         for table in AUTHORITY_TABLES
             .iter()
             .skip(1)
@@ -369,6 +378,9 @@ mod tests {
                     "task_asst_t"
                         | "workflow_long_owner_binding_t"
                         | "workflow_tool_access_approval_run_t"
+                        | "workflow_publication_operation_t"
+                        | "workflow_run_credential_t"
+                        | "workflow_tool_binding_decision_t"
                         | "workflow_process_deletion_t"
                         | "workflow_process_note_t"
                 )
@@ -399,6 +411,18 @@ mod tests {
         assert!(CONSUMER_OFFSETS_MIGRATION_SQL.contains("workflow_ops.consumer_offsets"));
         assert!(CATALOG_PROJECTION_MIGRATION_SQL.contains("tool_name"));
         assert!(ENDPOINT_RESOLUTION_MIGRATION_SQL.contains("resolution_document"));
+        for table in [
+            "wf_definition_version_t",
+            "workflow_tool_publication_t",
+            "workflow_publication_operation_t",
+            "workflow_tool_binding_decision_t",
+            "workflow_run_credential_t",
+            "workflow_definition_grant_sync_t",
+        ] {
+            assert!(
+                TOOL_BINDING_REVISIONS_MIGRATION_SQL.contains(&format!("workflow_ops.{table}"))
+            );
+        }
         for table in DEVELOPMENT_TABLES {
             assert!(
                 DEVELOPMENT_MIGRATION_SQL.contains(&format!("CREATE TABLE workflow_ops.{table}"))

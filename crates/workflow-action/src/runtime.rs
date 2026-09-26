@@ -103,7 +103,7 @@ impl Ledger {
         if row.get::<String, _>("end_user_subject") != user.to_string() {
             return Err(Error::Denied);
         }
-        sqlx::query("INSERT INTO workflow_ops.workflow_action_authority_t(host_id,run_id,grant_id,user_id,grant_generation,run_generation,budget_generation,active,deadline,action_limit) VALUES($1,$2,$3,$4,1,1,$5,true,$6,$7) ON CONFLICT DO NOTHING")
+        sqlx::query("INSERT INTO workflow_ops.workflow_action_authority_t(host_id,run_id,grant_id,user_id,grant_generation,run_generation,budget_generation,active,deadline,action_limit,credential_kind) VALUES($1,$2,$3,$4,1,1,$5,true,$6,$7,'broker') ON CONFLICT DO NOTHING")
             .bind(host).bind(run).bind(grant).bind(user).bind(row.get::<i64,_>("generation"))
             .bind(row.get::<DateTime<Utc>,_>("deadline_ts")).bind(row.get::<i64,_>("nested_call_limit")).execute(&mut **tx).await?;
         let stored:(Uuid,Uuid)=sqlx::query_as("SELECT grant_id,user_id FROM workflow_ops.workflow_action_authority_t WHERE host_id=$1 AND run_id=$2")
@@ -163,12 +163,20 @@ impl Ledger {
         {
             return Err(Error::Denied);
         }
-        sqlx::query("INSERT INTO workflow_ops.workflow_action_authority_t(host_id,run_id,grant_id,user_id,grant_generation,run_generation,budget_generation,active,deadline,action_limit,parent_action_id,parent_run_id,depth,maximum_depth) VALUES($1,$2,$3,$4,$5,$6,$7,true,$8,$9,$10,$11,$12,$13) ON CONFLICT DO NOTHING")
+        let parent_credential_kind: String = sqlx::query_scalar(
+            "SELECT credential_kind FROM workflow_ops.workflow_action_authority_t WHERE host_id=$1 AND run_id=$2",
+        )
+        .bind(host)
+        .bind(parent.run_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        sqlx::query("INSERT INTO workflow_ops.workflow_action_authority_t(host_id,run_id,grant_id,user_id,grant_generation,run_generation,budget_generation,active,deadline,action_limit,parent_action_id,parent_run_id,depth,maximum_depth,credential_kind) VALUES($1,$2,$3,$4,$5,$6,$7,true,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT DO NOTHING")
             .bind(host).bind(child_run).bind(parent.grant_id).bind(user)
             .bind(parent.grant_generation).bind(parent.run_generation)
             .bind(child.get::<i64,_>("generation")).bind(child.get::<DateTime<Utc>,_>("deadline_ts"))
             .bind(child.get::<i64,_>("nested_call_limit")).bind(parent.action_id).bind(parent.run_id)
-            .bind(i32::from(expected_depth)).bind(i32::from(parent.maximum_depth)).execute(&mut **tx).await?;
+            .bind(i32::from(expected_depth)).bind(i32::from(parent.maximum_depth)).bind(parent_credential_kind)
+            .execute(&mut **tx).await?;
         let stored:(Uuid,Uuid,Option<Uuid>,Option<Uuid>,i32,i32)=sqlx::query_as("SELECT grant_id,user_id,parent_action_id,parent_run_id,depth,maximum_depth FROM workflow_ops.workflow_action_authority_t WHERE host_id=$1 AND run_id=$2")
             .bind(host).bind(child_run).fetch_one(&mut **tx).await?;
         if stored

@@ -60,15 +60,37 @@ const MAX_WAIT_MS: u64 = 20_000;
 pub struct RuleApiState {
     engine: Arc<RuleEngine>,
     pub(crate) pool: PgPool,
-    invocation_security: Arc<SecurityRuntime>,
-    invocation_environment: Arc<str>,
-    runtime_config: Arc<WorkflowConfigManager>,
+    pub(crate) invocation_security: Arc<SecurityRuntime>,
+    pub(crate) invocation_environment: Arc<str>,
+    pub(crate) runtime_config: Arc<WorkflowConfigManager>,
     database_url: Arc<str>,
     health: WorkflowHealth,
     pub(crate) role_authority: Option<Arc<dyn crate::admin_api::RoleAuthority>>,
     private_execution_profiles:
         Arc<std::collections::BTreeMap<String, workflow_policy::ExecutionProfile>>,
     long_authority: Option<Arc<crate::long_authority::LongAuthority>>,
+}
+
+#[cfg(test)]
+impl RuleApiState {
+    pub(crate) fn for_publication_test(
+        security: light_security::SecurityRuntime,
+        host: Uuid,
+    ) -> Self {
+        let pool = PgPool::connect_lazy("postgres://unused:unused@127.0.0.1:1/unused").unwrap();
+        Self {
+            engine: Arc::new(RuleEngine::new(Arc::new(ActionRegistry::new()))),
+            pool,
+            invocation_security: Arc::new(security),
+            invocation_environment: "dev".into(),
+            runtime_config: Arc::new(WorkflowConfigManager::for_publication_test(host)),
+            database_url: "postgres://unused".into(),
+            health: WorkflowHealth::default(),
+            role_authority: None,
+            private_execution_profiles: Arc::new(Default::default()),
+            long_authority: None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -429,9 +451,27 @@ pub(crate) async fn dispatch_native_tool(
     state: RuleApiState,
     headers: HeaderMap,
     arguments: Value,
-    _settings: Option<crate::action_api::ActionSettings>,
+    settings: Option<crate::action_api::ActionSettings>,
     approval_portal: Option<Arc<crate::approval_portal::Client>>,
 ) -> Result<Value, axum::response::Response> {
+    let cel_validator = |text: &str| -> Result<(), ApiError> {
+        let snapshot: Value = serde_yaml::from_str(text)
+            .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
+        validate_cel_expressions(&state.engine, &snapshot)
+    };
+    match crate::publication_api::dispatch(name, &state, &headers, &arguments, settings.as_ref(), &cel_validator).await {
+        Ok(Some(value)) => return Ok(value),
+        Ok(None) => {}
+        Err(error) => return Err(error.into_response()),
+    }
+    if matches!(name,
+        "workflow_definition_save" | "workflow_definition_publish" | "workflow_definition_retire" |
+        "workflow_definition_grants_sync" | "workflow_binding_publish" | "workflow_binding_retire" |
+        "workflow_binding_get" | "workflow_binding_list" | "workflow_binding_decide" |
+        "workflow_binding_revoke" | "workflow_invoke")
+    {
+        return Err(ApiError::bad_request("not implemented").into_response());
+    }
     if name == "workflow_start" {
         return start_native_workflow(state, headers, arguments, approval_portal)
             .await
@@ -773,7 +813,7 @@ fn parse_native_start_input(arguments: Value) -> Result<NativeStartInput, ApiErr
     Ok(input)
 }
 
-fn saved_definition_digest(snapshot: &Value) -> Result<String, ApiError> {
+pub(crate) fn saved_definition_digest(snapshot: &Value) -> Result<String, ApiError> {
     Ok(format!(
         "sha256:{}",
         execution_runner_protocol::canonical_sha256(snapshot)
@@ -878,27 +918,15 @@ async fn start_native_workflow(
     } else {
         None
     };
-    let (workflow_version, definition_text): (String, String) = sqlx::query_as(
-        "SELECT version,definition FROM wf_definition_t
-         WHERE host_id=$1 AND wf_def_id=$2 AND active",
-    )
-    .bind(identity.host_id)
-    .bind(input.workflow_definition_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(ApiError::database)?
-    .ok_or_else(|| ApiError::definition_mismatch("saved workflow definition is unavailable"))?;
+    let (workflow_version, definition_text) = load_saved_head_for_start(
+        &state.pool,
+        identity.host_id,
+        input.workflow_definition_id,
+        input.expected_definition_digest.as_deref(),
+    ).await?;
     let (definition_digest, schema_digest, policy_digest, response_policy_digest) =
         native_definition_pins(&definition_text, &state.private_execution_profiles)?;
-    if input
-        .expected_definition_digest
-        .as_deref()
-        .is_some_and(|expected| expected != definition_digest)
-    {
-        return Err(ApiError::definition_mismatch(
-            "published workflow definition changed before start",
-        ));
-    }
+    verify_expected_definition_digest(input.expected_definition_digest.as_deref(), &definition_digest)?;
     if let Some(approval) = approval.as_ref() {
         if approval.definition_digest != definition_digest {
             return Err(ApiError::definition_mismatch("approval definition revision changed"));
@@ -1265,6 +1293,75 @@ async fn cancel_development_feature(
     Ok(Json(feature))
 }
 
+/// Reject a saved-head change between Portal acknowledgement and Workflow start.
+pub fn verify_expected_definition_digest(expected: Option<&str>, actual: &str) -> Result<(), ApiError> {
+    if expected.is_some_and(|expected| expected != actual) {
+        return Err(ApiError::definition_mismatch(
+            "published workflow definition changed before start",
+        ));
+    }
+    Ok(())
+}
+
+/// Load the active saved head and enforce the Portal acknowledged digest.
+/// `workflow_start` uses this before constructing its invocation request.
+pub async fn load_saved_head_for_start(
+    pool: &PgPool,
+    host_id: Uuid,
+    wf_def_id: Uuid,
+    expected_digest: Option<&str>,
+) -> Result<(String, String), ApiError> {
+    let (version, definition): (String, String) = sqlx::query_as(
+        "SELECT version,definition FROM wf_definition_t
+         WHERE host_id=$1 AND wf_def_id=$2 AND active",
+    )
+    .bind(host_id)
+    .bind(wf_def_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(ApiError::database)?
+    .ok_or_else(|| ApiError::definition_mismatch("saved workflow definition is unavailable"))?;
+    let digest = crate::publication_api::definition_digest(&definition)?;
+    verify_expected_definition_digest(expected_digest, &digest)?;
+    Ok((version, definition))
+}
+
+/// Resolve a Tool through its immutable binding version for admission.
+pub async fn read_admissible_pinned_binding(
+    pool: &PgPool,
+    host_id: Uuid,
+    tool_id: Uuid,
+) -> Result<sqlx::postgres::PgRow, ApiError> {
+    let row = sqlx::query(
+        "SELECT b.binding_id,b.wf_def_id,b.workflow_version,b.definition_digest AS binding_definition_digest,
+                b.schema_digest,b.policy_digest,b.response_policy_digest,v.definition,
+                b.tool_name,v.version_status,v.definition_digest AS version_definition_digest
+           FROM workflow_tool_binding_t b
+           JOIN wf_definition_version_t v
+             ON v.host_id=b.host_id AND v.wf_def_id=b.wf_def_id
+            AND v.version=b.workflow_version
+          WHERE b.host_id=$1 AND b.tool_id=$2 AND b.active
+            AND b.tool_name IS NOT NULL",
+    )
+    .bind(host_id)
+    .bind(tool_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(ApiError::database)?
+    .ok_or_else(|| ApiError::definition_mismatch("workflow binding or published version is unavailable"))?;
+    let version_status: String = row.try_get("version_status").map_err(ApiError::database)?;
+    if version_status == "retired" {
+        return Err(publication_error(StatusCode::CONFLICT, ErrorCode::WorkflowDefinitionRetired,
+            "workflow definition version is retired", None));
+    }
+    let binding_digest: String = row.try_get("binding_definition_digest").map_err(ApiError::database)?;
+    let version_digest: String = row.try_get("version_definition_digest").map_err(ApiError::database)?;
+    if binding_digest != version_digest {
+        return Err(ApiError::definition_mismatch("workflow binding definition digest does not match its published version"));
+    }
+    Ok(row)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn start_invocation_with_stage(
     State(state): State<RuleApiState>,
@@ -1397,21 +1494,19 @@ async fn start_invocation_with_stage(
             tool_name: "workflow".to_string(),
         }
     } else {
-    sqlx::query_as::<_, BindingRow>(
-        "SELECT b.binding_id,b.wf_def_id,b.workflow_version,b.definition_digest,
-                b.schema_digest,b.policy_digest,b.response_policy_digest,w.definition,
-                b.tool_name
-           FROM workflow_tool_binding_t b
-           JOIN wf_definition_t w ON w.host_id=b.host_id AND w.wf_def_id=b.wf_def_id
-          WHERE b.host_id=$1 AND b.tool_id=$2 AND b.active AND w.active
-            AND b.tool_name IS NOT NULL",
-    )
-    .bind(identity.host_id)
-    .bind(request.stable_tool_ref)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(ApiError::database)?
-    .ok_or_else(|| ApiError::definition_mismatch("workflow binding is unavailable"))?
+        let row = read_admissible_pinned_binding(&state.pool, identity.host_id, request.stable_tool_ref).await?;
+        let binding_digest: String = row.try_get("binding_definition_digest").map_err(ApiError::database)?;
+        BindingRow {
+            binding_id: Some(row.try_get("binding_id").map_err(ApiError::database)?),
+            wf_def_id: row.try_get("wf_def_id").map_err(ApiError::database)?,
+            workflow_version: row.try_get("workflow_version").map_err(ApiError::database)?,
+            definition_digest: binding_digest,
+            schema_digest: row.try_get("schema_digest").map_err(ApiError::database)?,
+            policy_digest: row.try_get("policy_digest").map_err(ApiError::database)?,
+            response_policy_digest: row.try_get("response_policy_digest").map_err(ApiError::database)?,
+            definition: row.try_get("definition").map_err(ApiError::database)?,
+            tool_name: row.try_get("tool_name").map_err(ApiError::database)?,
+        }
     };
     verify_binding(&request, &binding)?;
     let definition: WorkflowDefinition = serde_yaml::from_str(&binding.definition)
@@ -1686,8 +1781,8 @@ async fn start_invocation_with_stage(
             sqlx::query(
                 "INSERT INTO workflow_action_authority_t
                 (host_id,run_id,grant_id,user_id,grant_generation,run_generation,
-                 budget_generation,active,deadline,action_limit,maximum_depth)
-                VALUES($1,$2,$3,$4,1,1,1,true,$5,$6,$7)",
+                 budget_generation,active,deadline,action_limit,maximum_depth,credential_kind)
+                VALUES($1,$2,$3,$4,1,1,1,true,$5,$6,$7,'long')",
             )
             .bind(identity.host_id)
             .bind(accepted_run)
@@ -3293,15 +3388,23 @@ fn parse_state(value: &str) -> Result<InvocationState, ApiError> {
 }
 
 #[derive(Debug)]
-pub(crate) struct ApiError {
-    status: StatusCode,
+pub struct ApiError {
+    http_status: StatusCode,
     error: InvocationError,
+    status: &'static str,
+    after_effect: bool,
+    retry_after_ms: Option<u64>,
+    details: Option<Value>,
 }
 
 impl ApiError {
     fn new(status: StatusCode, code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
-            status,
+            http_status: status,
+            status: "rejected",
+            after_effect: false,
+            retry_after_ms: None,
+            details: None,
             error: InvocationError {
                 code,
                 message: message.into(),
@@ -3310,6 +3413,11 @@ impl ApiError {
                 correlation_id: "unavailable".to_string(),
             },
         }
+    }
+    fn with_details(mut self, details: Value) -> Self {
+        assert!(details.is_object(), "Workflow error details must be an object");
+        self.details = Some(details);
+        self
     }
     fn bad_request(message: impl Into<String>) -> Self {
         Self::new(
@@ -3325,14 +3433,17 @@ impl ApiError {
             message,
         )
     }
-    fn unauthorized(message: impl Into<String>) -> Self {
+    pub(crate) fn unauthorized(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::UNAUTHORIZED,
             ErrorCode::WorkflowPolicyDenied,
             message,
         )
     }
-    fn definition_mismatch(message: impl Into<String>) -> Self {
+    pub(crate) fn policy_denied(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, ErrorCode::WorkflowPolicyDenied, message)
+    }
+    pub(crate) fn definition_mismatch(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::CONFLICT,
             ErrorCode::WorkflowDefinitionMismatch,
@@ -3372,8 +3483,32 @@ impl ApiError {
 
 impl axum::response::IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
-        (self.status, Json(self.error)).into_response()
+        let mut error = serde_json::to_value(self.error).unwrap_or_else(|_| json!({}));
+        error["status"] = json!(self.status);
+        error["afterEffect"] = json!(self.after_effect);
+        if let Some(retry_after_ms) = self.retry_after_ms { error["retryAfterMs"] = json!(retry_after_ms); }
+        if let Some(details) = self.details {
+            error["details"] = details;
+        }
+        (self.http_status, Json(error)).into_response()
     }
+}
+
+pub(crate) fn publication_error(
+    status: StatusCode,
+    code: ErrorCode,
+    message: impl Into<String>,
+    details: Option<Value>,
+) -> ApiError {
+    let error = ApiError::new(status, code, message);
+    match details {
+        Some(details) => error.with_details(details),
+        None => error,
+    }
+}
+
+pub(crate) fn publication_database_error(error: sqlx::Error) -> ApiError {
+    ApiError::database(error)
 }
 
 async fn run_mcp_rule_test(
@@ -3450,6 +3585,18 @@ fn bad_request<E: std::fmt::Display>(err: E) -> (StatusCode, Json<Value>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn api_error_details_round_trip_through_mcp_envelope() {
+        let details = json!({"appliedRevision":9,"definitionDigest":"sha256:stored"});
+        let response = ApiError::definition_mismatch("stale definition head")
+            .with_details(details.clone())
+            .into_response();
+        let result = crate::mcp_api::handler_error(json!(77), response)
+            .await
+            .expect("non-authentication failures remain tool results");
+        assert_eq!(result["structuredContent"]["error"]["details"], details);
+    }
 
     #[test]
     fn saved_definition_digest_keeps_branch_end_directives() {
@@ -4027,7 +4174,7 @@ fork:
             "gateway service",
             HandlerRejection::new(502, "ERR10056", "failed to request JWKS"),
         );
-        assert_eq!(unavailable.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(unavailable.http_status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             unavailable.error.code,
             ErrorCode::WorkflowInvocationUnavailable
@@ -4038,7 +4185,7 @@ fork:
             "user",
             HandlerRejection::new(401, "ERR10002", "JWT validation failed"),
         );
-        assert_eq!(invalid.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(invalid.http_status, StatusCode::UNAUTHORIZED);
         assert_eq!(invalid.error.code, ErrorCode::WorkflowPolicyDenied);
         assert!(!invalid.error.retryable);
     }
@@ -4051,9 +4198,12 @@ fork:
             "idempotencyKey":"one-deliberate-start",
         });
         assert!(parse_native_start_input(valid.clone()).is_ok());
+        let mut valid_with_digest = valid.clone();
+        valid_with_digest["expectedDefinitionDigest"] =
+            json!(format!("sha256:{}", "a".repeat(64)));
+        assert!(parse_native_start_input(valid_with_digest).is_ok());
         for (field, value) in [
             ("stableToolRef", json!(Uuid::now_v7())),
-            ("expectedDefinitionDigest", json!(format!("sha256:{}", "a".repeat(64)))),
             ("hostId", json!(Uuid::now_v7())),
             ("ownerUserId", json!(Uuid::now_v7())),
             ("renewableGrantId", json!(Uuid::now_v7())),
@@ -4064,6 +4214,15 @@ fork:
             let mut changed = valid.clone();
             changed[field] = value;
             assert!(parse_native_start_input(changed).is_err(), "{field}");
+        }
+        for malformed_digest in [
+            "sha256:abc".to_string(),
+            format!("sha256:{}g", "a".repeat(63)),
+            format!("sha256-{}", "a".repeat(64)),
+        ] {
+            let mut changed = valid.clone();
+            changed["expectedDefinitionDigest"] = json!(malformed_digest);
+            assert!(parse_native_start_input(changed).is_err());
         }
         let mut changed = valid;
         changed["input"] = json!([]);

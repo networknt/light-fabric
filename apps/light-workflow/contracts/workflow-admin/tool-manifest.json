@@ -20,13 +20,61 @@
       "description": "Reserve a claimed Tool access approval decision for Portal grant delivery",
       "permission": "workflow.tool_access.decide",
       "sideEffect": true,
-      "inputSchema": {"$ref": "schemas.json#/$defs/DecisionInput"},
-      "outputSchema": {"$ref": "schemas.json#/$defs/DecisionReceipt"}
+      "inputSchema": {
+        "$ref": "schemas.json#/$defs/DecisionInput"
+      },
+      "outputSchema": {
+        "$ref": "schemas.json#/$defs/DecisionReceipt"
+      }
     },
-    {"name":"workflow_delete_process","description":"Logically delete an owned terminal native process and schedule eligible artifact cleanup","permission":"workflow.process.delete","sideEffect":true,"inputSchema":{"$ref":"schemas.json#/$defs/NativeDeleteInput"},"outputSchema":{"$ref":"schemas.json#/$defs/NativeDeleteReceipt"}},
-    {"name":"workflow_get_task","description":"Read a safe task detail for an owned native process","permission":"workflow.process.read","sideEffect":false,"inputSchema":{"$ref":"schemas.json#/$defs/NativeTaskGetInput"},"outputSchema":{"$ref":"schemas.json#/$defs/NativeTaskDetail"}},
-    {"name":"workflow_add_process_note","description":"Append an operator note to an owned native process","permission":"workflow.process.note","sideEffect":true,"inputSchema":{"$ref":"schemas.json#/$defs/NativeNoteInput"},"outputSchema":{"$ref":"schemas.json#/$defs/NativeNote"}},
-    {"name":"workflow_list_process_notes","description":"Read operator notes for an owned native process","permission":"workflow.process.read","sideEffect":false,"inputSchema":{"$ref":"schemas.json#/$defs/NativeNotesQuery"},"outputSchema":{"$ref":"schemas.json#/$defs/NativeNotesPage"}},
+    {
+      "name": "workflow_delete_process",
+      "description": "Logically delete an owned terminal native process and schedule eligible artifact cleanup",
+      "permission": "workflow.process.delete",
+      "sideEffect": true,
+      "inputSchema": {
+        "$ref": "schemas.json#/$defs/NativeDeleteInput"
+      },
+      "outputSchema": {
+        "$ref": "schemas.json#/$defs/NativeDeleteReceipt"
+      }
+    },
+    {
+      "name": "workflow_get_task",
+      "description": "Read a safe task detail for an owned native process",
+      "permission": "workflow.process.read",
+      "sideEffect": false,
+      "inputSchema": {
+        "$ref": "schemas.json#/$defs/NativeTaskGetInput"
+      },
+      "outputSchema": {
+        "$ref": "schemas.json#/$defs/NativeTaskDetail"
+      }
+    },
+    {
+      "name": "workflow_add_process_note",
+      "description": "Append an operator note to an owned native process",
+      "permission": "workflow.process.note",
+      "sideEffect": true,
+      "inputSchema": {
+        "$ref": "schemas.json#/$defs/NativeNoteInput"
+      },
+      "outputSchema": {
+        "$ref": "schemas.json#/$defs/NativeNote"
+      }
+    },
+    {
+      "name": "workflow_list_process_notes",
+      "description": "Read operator notes for an owned native process",
+      "permission": "workflow.process.read",
+      "sideEffect": false,
+      "inputSchema": {
+        "$ref": "schemas.json#/$defs/NativeNotesQuery"
+      },
+      "outputSchema": {
+        "$ref": "schemas.json#/$defs/NativeNotesPage"
+      }
+    },
     {
       "name": "workflow_list_processes",
       "permission": "workflow.process.read",
@@ -946,6 +994,145 @@
         },
         "additionalProperties": false
       }
+    },
+    {
+      "name": "workflow_definition_save",
+      "description": "workflow definition save",
+      "permission": "workflow.definition.publish",
+      "sideEffect": true,
+      "inputSchema": {
+        "$ref": "schemas.json#/$defs/DefinitionSaveInput"
+      },
+      "outputSchema": {
+        "$ref": "schemas.json#/$defs/DefinitionSaveOutput"
+      },
+      "publisherToken": "authorization"
+    },
+    {
+      "name": "workflow_definition_publish",
+      "description": "workflow definition publish",
+      "permission": "workflow.definition.publish",
+      "sideEffect": true,
+      "inputSchema": {
+        "$ref": "schemas.json#/$defs/DefinitionPublishInput"
+      },
+      "outputSchema": {
+        "$ref": "schemas.json#/$defs/DefinitionPublishOutput"
+      },
+      "publisherToken": "header"
+    },
+    {
+      "name": "workflow_definition_retire",
+      "description": "workflow definition retire",
+      "permission": "workflow.definition.publish",
+      "sideEffect": true,
+      "inputSchema": {
+        "$ref": "schemas.json#/$defs/DefinitionRetireInput"
+      },
+      "outputSchema": {
+        "$ref": "schemas.json#/$defs/DefinitionRetireOutput"
+      },
+      "publisherToken": "header"
+    },
+    {
+      "name": "workflow_definition_grants_sync",
+      "description": "workflow definition grants sync",
+      "permission": "workflow.definition.publish",
+      "sideEffect": true,
+      "inputSchema": {
+        "$ref": "schemas.json#/$defs/DefinitionGrantsSyncInput"
+      },
+      "outputSchema": {
+        "$ref": "schemas.json#/$defs/DefinitionGrantsSyncOutput"
+      },
+      "publisherToken": "authorization"
+    },
+    {
+      "name": "workflow_binding_publish",
+      "description": "workflow binding publish",
+      "permission": "workflow.binding.publish",
+      "sideEffect": true,
+      "inputSchema": {
+        "$ref": "schemas.json#/$defs/BindingPublishInput"
+      },
+      "outputSchema": {
+        "$ref": "schemas.json#/$defs/BindingPublishOutput"
+      },
+      "publisherToken": "header"
+    },
+    {
+      "name": "workflow_binding_retire",
+      "description": "workflow binding retire",
+      "permission": "workflow.binding.publish",
+      "sideEffect": true,
+      "inputSchema": {
+        "$ref": "schemas.json#/$defs/BindingRetireInput"
+      },
+      "outputSchema": {
+        "$ref": "schemas.json#/$defs/BindingRetireOutput"
+      },
+      "publisherToken": "header"
+    },
+    {
+      "name": "workflow_binding_get",
+      "description": "workflow binding get",
+      "permission": "workflow.binding.read",
+      "sideEffect": false,
+      "inputSchema": {
+        "$ref": "schemas.json#/$defs/BindingGetInput"
+      },
+      "outputSchema": {
+        "$ref": "schemas.json#/$defs/BindingGetOutput"
+      }
+    },
+    {
+      "name": "workflow_binding_list",
+      "description": "workflow binding list",
+      "permission": "workflow.binding.read",
+      "sideEffect": false,
+      "inputSchema": {
+        "$ref": "schemas.json#/$defs/BindingListInput"
+      },
+      "outputSchema": {
+        "$ref": "schemas.json#/$defs/BindingListOutput"
+      }
+    },
+    {
+      "name": "workflow_binding_decide",
+      "description": "workflow binding decide",
+      "permission": "workflow.binding.approve",
+      "sideEffect": true,
+      "inputSchema": {
+        "$ref": "schemas.json#/$defs/BindingDecideInput"
+      },
+      "outputSchema": {
+        "$ref": "schemas.json#/$defs/BindingDecideOutput"
+      }
+    },
+    {
+      "name": "workflow_binding_revoke",
+      "description": "workflow binding revoke",
+      "permission": "workflow.binding.approve",
+      "sideEffect": true,
+      "inputSchema": {
+        "$ref": "schemas.json#/$defs/BindingRevokeInput"
+      },
+      "outputSchema": {
+        "$ref": "schemas.json#/$defs/BindingRevokeOutput"
+      }
+    },
+    {
+      "name": "workflow_invoke",
+      "description": "workflow invoke",
+      "permission": "workflow.instance.invoke",
+      "sideEffect": true,
+      "inputSchema": {
+        "$ref": "schemas.json#/$defs/WorkflowInvokeInput"
+      },
+      "outputSchema": {
+        "$ref": "schemas.json#/$defs/WorkflowInvokeOutput"
+      },
+      "visibility": "gateway-internal"
     }
   ]
 }

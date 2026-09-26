@@ -2184,7 +2184,7 @@ mod native_process_postgres_tests {
         sqlx::query(
             "INSERT INTO workflow_action_authority_t(host_id,run_id,grant_id,
             user_id,grant_generation,run_generation,budget_generation,active,deadline,
-            action_limit,reserved) VALUES($1,$2,$3,$4,1,1,1,true,now()+interval '1 hour',2,1)",
+            action_limit,reserved,credential_kind) VALUES($1,$2,$3,$4,1,1,1,true,now()+interval '1 hour',2,1,'broker')",
         )
         .bind(host)
         .bind(instance)

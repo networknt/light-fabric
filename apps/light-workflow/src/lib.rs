@@ -26,6 +26,7 @@ pub mod mcp_api;
 pub mod native_jobs;
 mod native_result;
 pub mod provenance;
+pub mod publication_api;
 pub mod publication_dispatch;
 pub mod publication_journal;
 pub mod repositories;

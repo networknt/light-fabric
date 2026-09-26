@@ -55,6 +55,7 @@ regex = "1"
 jsonschema = { workspace = true }
 
 [dev-dependencies]
+light-security = { path = "../../crates/light-security", features = ["test-support"] }
 tempfile = "3"
 
 [build-dependencies]

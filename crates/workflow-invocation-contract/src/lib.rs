@@ -141,6 +141,7 @@ pub enum ErrorCode {
     WorkflowInputInvalid,
     WorkflowStartRejected,
     WorkflowDefinitionMismatch,
+    WorkflowDefinitionRetired,
     WorkflowTimeout,
     WorkflowCancelled,
     WorkflowTaskFailed,

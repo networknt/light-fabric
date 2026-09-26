@@ -1033,6 +1033,7 @@ mod tests {
             },
             database_max_connections: 8,
             invocation_caller_service_ids: vec!["gateway".to_string()],
+            publisher_client_ids: Vec::new(),
             invocation_caller_environments: Vec::new(),
             wait_listener_connections: 4,
             ignore_user_jwt_expiry: false,

@@ -174,6 +174,32 @@ pub struct SecurityRuntime {
 }
 
 impl SecurityRuntime {
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub async fn with_test_hs256_key(key_id: &str, secret: &[u8]) -> Self {
+        use base64::Engine;
+        let client = ClientTokenConfig::default();
+        let mut runtime = Self {
+            config: SecurityConfig::default(),
+            jwk_source: Some(Arc::new(JwkSource {
+                request: client.request.clone(),
+                tls: client.tls.clone(),
+                client,
+                direct_registry: Default::default(),
+                registry_client: None,
+            })),
+            jwks: Arc::new(RwLock::new(BTreeMap::new())),
+            cache: Arc::new(Mutex::new(BTreeMap::new())),
+        };
+        runtime.config.enable_jwt_cache = false;
+        let jwk: Jwk = serde_json::from_value(serde_json::json!({
+            "kty":"oct", "kid":key_id, "alg":"HS256",
+            "k":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret)
+        })).expect("test JWK");
+        runtime.jwks.write().await.insert(key_id.to_owned(), jwk);
+        runtime
+    }
+
     fn new(config: SecurityConfig, runtime_config: &RuntimeConfig) -> Result<Self, RuntimeError> {
         let jwk_source = load_jwk_source(runtime_config)?;
         Ok(Self {

@@ -343,7 +343,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore = "requires an isolated PostgreSQL database with Workflow migrations 0001, 0007 and 0013"]
+    #[ignore = "requires an isolated PostgreSQL database with Workflow migrations 0001, 0007, 0013 and 0018"]
     async fn accepted_owner_is_fenced_until_ack_and_terminal_commit_records_close() {
         let url = std::env::var("WORKFLOW_ROLE_TEST_DATABASE_URL").unwrap();
         let pool = PgPool::connect(&url).await.unwrap();
@@ -405,8 +405,8 @@ mod tests {
             .bind(&digest).bind(owner.to_string()).execute(&mut *tx).await.unwrap();
         sqlx::query(
             "INSERT INTO workflow_ops.workflow_action_authority_t(host_id,run_id,grant_id,user_id,
-            grant_generation,run_generation,budget_generation,active,deadline,action_limit)
-            VALUES($1,$2,$3,$4,1,1,1,true,now()+interval '1 hour',10)",
+            grant_generation,run_generation,budget_generation,active,deadline,action_limit,credential_kind)
+            VALUES($1,$2,$3,$4,1,1,1,true,now()+interval '1 hour',10,'long')",
         )
         .bind(host)
         .bind(run)

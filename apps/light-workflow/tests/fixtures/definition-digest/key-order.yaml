@@ -1,0 +1,6 @@
+name: example
+dsl: 1.0.0
+input:
+  schema:
+    document:
+      type: object

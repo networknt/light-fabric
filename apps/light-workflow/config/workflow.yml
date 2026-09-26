@@ -6,6 +6,8 @@ invocation:
   allowedCallerEnvironments: ${workflow.invocation.allowedCallerEnvironments:[]}
   waitListenerConnections: ${workflow.invocation.waitListenerConnections:8}
   ignoreUserJwtExpiry: ${workflow.invocation.ignoreUserJwtExpiry:false}
+publication:
+  publisherClientIds: ${workflow.publication.publisherClientIds:[]}
 execution:
   maximumParallelism: ${workflow.execution.maximumParallelism:64}
   hostExecutorConcurrency: ${workflow.execution.hostExecutorConcurrency:8}

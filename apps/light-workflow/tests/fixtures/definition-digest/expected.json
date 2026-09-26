@@ -1,0 +1,13 @@
+{
+  "duplicate-keys.yaml": null,
+  "explicit-null.yaml": "sha256:62faba5c6b37436df73346dc65a66ecb29e36982b600db1c72fb9e21cf967e71",
+  "key-order-reversed.yaml": "sha256:70b9132110a26cf76cec0a8792d82eea506150ac5ee10a6b8308a86aec9e14a4",
+  "key-order.yaml": "sha256:70b9132110a26cf76cec0a8792d82eea506150ac5ee10a6b8308a86aec9e14a4",
+  "merge-keys.yaml": "sha256:fb49c77714ef6e632d3d06907e6e4120e765827db9f54f2bef7333eb4c869076",
+  "numeric-types.yaml": "sha256:108cff958d80207dcf1bb2f8fdf4cb86a0409b5fdf43c7cc4e82f53d90d3d5af",
+  "omitted-null.yaml": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+  "unquoted-timestamp.yaml": "sha256:c38aa8e30a41429e49f62aa88da4cd340781ed3aea31a0116ffbfd6f0b5ccc71",
+  "whitespace-and-comments.yaml": "sha256:6790608bf6a72c93e416c51d319f0d5e48f12c224fa4dc887db6817fc7173730",
+  "whitespace-normalized.yaml": "sha256:6790608bf6a72c93e416c51d319f0d5e48f12c224fa4dc887db6817fc7173730",
+  "yaml-11-words.yaml": "sha256:fce686a21cffada8b8e09c4d6884732213f840e60397597a6e0a28ca33f29b36"
+}

@@ -36,6 +36,7 @@ pub struct WorkflowConfiguration {
     pub operational_store: OperationalStoreProjection,
     pub database_max_connections: u32,
     pub invocation_caller_service_ids: Vec<String>,
+    pub publisher_client_ids: Vec<String>,
     pub invocation_caller_environments: Vec<String>,
     pub wait_listener_connections: usize,
     pub ignore_user_jwt_expiry: bool,
@@ -119,6 +120,8 @@ struct WorkflowFile {
     #[serde(default)]
     action_authorization: Option<crate::action_api::ActionSettings>,
     invocation: InvocationFile,
+    #[serde(default)]
+    publication: PublicationFile,
     execution: ExecutionFile,
     operational_store: OperationalStoreProjection,
     database: DatabaseFile,
@@ -126,6 +129,13 @@ struct WorkflowFile {
     artifact: ArtifactFile,
     fixed_actions: FixedActionsFile,
     a2a: A2aFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PublicationFile {
+    #[serde(default)]
+    publisher_client_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -292,6 +302,9 @@ impl WorkflowConfiguration {
             environment_value,
             &mut violations,
         );
+        let publisher_client_ids = environment_value("WORKFLOW_PUBLICATION_PUBLISHER_CLIENT_IDS")
+            .map(|value| value.split(',').map(str::trim).filter(|id| !id.is_empty()).map(str::to_string).collect())
+            .unwrap_or_else(|| workflow.publication.publisher_client_ids.clone());
 
         required("server.environment", &environment, &mut violations);
         if runtime.server.service_id != SERVICE_ID {
@@ -342,6 +355,11 @@ impl WorkflowConfiguration {
         validate_optional_unique_list(
             "workflow.invocation.allowedCallerEnvironments",
             &workflow.invocation.allowed_caller_environments,
+            &mut violations,
+        );
+        validate_optional_unique_list(
+            "workflow.publication.publisherClientIds",
+            &publisher_client_ids,
             &mut violations,
         );
         range(
@@ -606,6 +624,7 @@ impl WorkflowConfiguration {
             operational_store: workflow.operational_store,
             database_max_connections: workflow.database.max_connections,
             invocation_caller_service_ids: workflow.invocation.allowed_caller_service_ids,
+            publisher_client_ids,
             invocation_caller_environments: workflow.invocation.allowed_caller_environments,
             wait_listener_connections: workflow.invocation.wait_listener_connections,
             ignore_user_jwt_expiry,
@@ -659,6 +678,7 @@ pub struct WorkflowRuntimeConfig {
     pub content_digest: String,
     pub snapshot_id: Option<String>,
     pub invocation_caller_service_ids: Vec<String>,
+    pub publisher_client_ids: Vec<String>,
     pub invocation_caller_environments: Vec<String>,
     pub wait_listener_connections: usize,
     pub ignore_user_jwt_expiry: bool,
@@ -680,6 +700,7 @@ impl WorkflowRuntimeConfig {
             content_digest: provenance.content_digest.clone(),
             snapshot_id: provenance.snapshot_id.clone(),
             invocation_caller_service_ids: configuration.invocation_caller_service_ids.clone(),
+            publisher_client_ids: configuration.publisher_client_ids.clone(),
             invocation_caller_environments: configuration.invocation_caller_environments.clone(),
             wait_listener_connections: configuration.wait_listener_connections,
             ignore_user_jwt_expiry: configuration.ignore_user_jwt_expiry,
@@ -693,6 +714,7 @@ impl WorkflowRuntimeConfig {
 
     fn same_policy(&self, other: &Self) -> bool {
         self.invocation_caller_service_ids == other.invocation_caller_service_ids
+            && self.publisher_client_ids == other.publisher_client_ids
             && self.invocation_caller_environments == other.invocation_caller_environments
             && self.wait_listener_connections == other.wait_listener_connections
             && self.ignore_user_jwt_expiry == other.ignore_user_jwt_expiry
@@ -717,6 +739,23 @@ pub struct WorkflowConfigManager {
 }
 
 impl WorkflowConfigManager {
+    #[cfg(test)]
+    pub(crate) fn for_publication_test(host_id: Uuid) -> Self {
+        let config = WorkflowRuntimeConfig {
+            generation: 1, content_digest: String::new(), snapshot_id: None,
+            invocation_caller_service_ids: vec!["gateway-a".into()],
+            publisher_client_ids: vec!["publisher-a".into()],
+            invocation_caller_environments: Vec::new(), wait_listener_connections: 1,
+            ignore_user_jwt_expiry: false, maximum_parallelism: 16,
+            host_executor_concurrency: 4, interactive_estimated_task_ms: 100,
+            operational_host_id: host_id, a2a_bindings: Vec::new(),
+        };
+        let (updates, _) = tokio::sync::watch::channel(1);
+        Self { current: ConfigManager::new(WorkflowConfigGeneration {
+            config, wait_listener_permits: Arc::new(tokio::sync::Semaphore::new(1)),
+        }), updates }
+    }
+
     pub fn new(configuration: &WorkflowConfiguration, provenance: &ConfigProvenance) -> Self {
         let config = WorkflowRuntimeConfig::from_configuration(configuration, provenance, 1);
         let wait_listener_permits = Arc::new(tokio::sync::Semaphore::new(
@@ -1292,6 +1331,7 @@ mod tests {
             },
             database_max_connections: 32,
             invocation_caller_service_ids: vec!["caller-a".to_string()],
+            publisher_client_ids: Vec::new(),
             invocation_caller_environments: Vec::new(),
             wait_listener_connections: 2,
             ignore_user_jwt_expiry: false,
@@ -1494,8 +1534,9 @@ commandTemplates: []
                         generation.config.maximum_parallelism,
                         generation.config.host_executor_concurrency,
                         generation.config.interactive_estimated_task_ms,
+                        generation.config.publisher_client_ids.clone(),
                     );
-                    assert!(tuple == (16, 4, 100) || tuple == (32, 8, 200));
+                    assert!(tuple == (16, 4, 100, Vec::new()) || tuple == (32, 8, 200, vec!["publisher-a".to_string()]));
                 }
             })
         };
@@ -1505,6 +1546,7 @@ commandTemplates: []
                 candidate.maximum_parallelism = 32;
                 candidate.host_executor_concurrency = 8;
                 candidate.interactive_estimated_task_ms = 200;
+                candidate.publisher_client_ids = vec!["publisher-a".to_string()];
             }
             manager.activate(
                 &candidate,
@@ -1556,6 +1598,7 @@ workflow.invocation.allowedCallerServiceIds: [com.networknt.portal.gateway-1.0.0
 workflow.invocation.allowedCallerEnvironments: [dev, loc]
 workflow.invocation.waitListenerConnections: 8
 workflow.invocation.ignoreUserJwtExpiry: false
+workflow.publication.publisherClientIds: [publisher-config]
 workflow.execution.maximumParallelism: 64
 workflow.execution.hostExecutorConcurrency: 8
 workflow.execution.interactiveEstimatedTaskMs: 500
@@ -1620,6 +1663,14 @@ workflow.runner.originId: workflow-dev
             remote.wait_listener_connections
         );
         assert_eq!(local.runner.origin_id, remote.runner.origin_id);
+        assert!(local.publisher_client_ids.is_empty());
+        assert_eq!(remote.publisher_client_ids, vec!["publisher-config"]);
+
+        let mut env_values=values.clone();
+        env_values.insert("WORKFLOW_PUBLICATION_PUBLISHER_CLIENT_IDS".to_string(),"publisher-env-a,publisher-env-b".to_string());
+        let env_resolver=|name:&str| env_values.get(name).cloned();
+        let env_candidate=WorkflowConfiguration::build_with_environment(&remote_runtime,true,"dev",&env_resolver,100).unwrap();
+        assert_eq!(env_candidate.publisher_client_ids,vec!["publisher-env-a","publisher-env-b"]);
 
         let mut reloadable_candidate = remote.clone();
         reloadable_candidate.maximum_parallelism = 32;

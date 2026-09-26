@@ -1,7 +1,7 @@
 use crate::events::{CloudEventEnvelope, ProcessInfoDeletedPayload};
 use serde_json::from_str;
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Postgres, Transaction, postgres::PgListener};
+use sqlx::{postgres::PgListener, PgPool, Postgres, Transaction};
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
@@ -473,7 +473,9 @@ fn event_aggregate_identity(event: &RawEvent) -> (String, i64) {
 mod tests {
     use super::*;
     use crate::configuration::DEFAULT_MAXIMUM_PARALLELISM;
-    use crate::runtime_definition::validate_runtime_definition;
+    use crate::runtime_definition::{
+        policy_task_kind, supported_task_type, validate_runtime_definition,
+    };
     use serde_yaml;
     use workflow_core::models::workflow::WorkflowDefinition;
 
