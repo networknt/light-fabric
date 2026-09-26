@@ -737,9 +737,7 @@ impl AxumApp for WorkflowApp {
         {
             let consumer =
                 EventConsumer::new(pool.clone(), "workflow-engine-group".to_string(), 0, 1, 10)
-                    .with_database_url(workflow_config.database_url.clone())
-                    .with_runtime_config(Arc::clone(&runtime_config))
-                    .with_execution_profiles(runner_config.profiles.clone());
+                    .with_database_url(workflow_config.database_url.clone());
             consumer
                 .initialize()
                 .await
@@ -755,7 +753,7 @@ impl AxumApp for WorkflowApp {
             info!(
                 event = "workflow.legacy_event_consumer.disabled",
                 reason = "local_event_source_unavailable",
-                "Legacy WorkflowStartedEvent consumer is disabled; direct invocation admission remains active"
+                "Workflow projection event consumer is disabled; native workflow_start MCP admission remains active"
             );
         }
 

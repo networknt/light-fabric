@@ -447,6 +447,60 @@
       }
     },
     {
+      "name": "workflow_wait_result",
+      "permission": "workflow.result.read",
+      "sideEffect": false,
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "workflowInstanceId",
+          "waitMs"
+        ],
+        "properties": {
+          "workflowInstanceId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          },
+          "waitMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20000
+          }
+        },
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "workflowInstanceId",
+          "state",
+          "ready",
+          "result"
+        ],
+        "properties": {
+          "workflowInstanceId": {
+            "$ref": "schemas.json#/$defs/Uuid"
+          },
+          "state": {
+            "type": "string"
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "result": {
+            "type": [
+              "object",
+              "array",
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "workflow_cancel",
       "permission": "workflow.instance.cancel",
       "sideEffect": true,

@@ -1,7 +1,10 @@
 # Light Workflow Examples
 
 This directory contains workflow definitions that can be imported into the
-portal workflow definition table and started from the portal UI or command API.
+Workflow definition store. Start them through Gateway MCP `workflow_start`,
+which is the single root start path used by the Workflow Editor, workflow-backed
+Tools, and other callers. The legacy Portal `startWorkflow` event command is
+retired and no longer starts a Workflow.
 
 ## Prerequisites
 
@@ -75,8 +78,8 @@ binding, run:
 cargo run -p light-workflow --example workflow_definition_digest -- <definition.yaml>
 ```
 
-The `startWorkflow` command must send `input` as a JSON object, not as a JSON
-string.
+Send workflow input as a JSON object inside the native `workflow_start` MCP
+arguments.
 
 ## Find the Workflow Id
 
@@ -92,34 +95,44 @@ Replace the workflow name in the query for the other examples.
 
 ## Start a Workflow
 
-From the UI, open the workflow definition and use the start action. Paste one of
-the JSON input examples below.
-
-From curl or Postman, call the portal command endpoint. Replace `<host-id>`,
-`<workflow-definition-id>`, and `<access-token>`.
+From the UI, open the workflow definition and use the start action. For an API
+client, call Gateway MCP with the original user access token. Gateway applies
+the start Tool ACL and forwards the user token plus its app scope token to
+Workflow.
 
 ```bash
-curl -k -X POST "https://localhost:8443/portal/command" \
+curl -k -X POST "<gateway-url>/mcp" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <access-token>" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2026-07-28" \
+  -H "Mcp-Method: tools/call" \
+  -H "Mcp-Name: workflow_start" \
+  -H "Authorization: Bearer <user-access-token>" \
   -d '{
-    "host": "lightapi.net",
-    "service": "workflow",
-    "action": "startWorkflow",
-    "version": "0.1.0",
-    "data": {
-      "hostId": "<host-id>",
-      "wfDefId": "<workflow-definition-id>",
-      "input": {
-        "customerId": "CUST-1001",
-        "channel": "portal"
+    "jsonrpc": "2.0",
+    "id": "start-offer-001",
+    "method": "tools/call",
+    "params": {
+      "name": "workflow_start",
+      "arguments": {
+        "workflowDefinitionId": "<workflow-definition-id>",
+        "idempotencyKey": "start-offer-001",
+        "input": {
+          "customerId": "CUST-1001",
+          "channel": "portal"
+        }
+      },
+      "_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": {
+          "name": "workflow-example",
+          "version": "1.0.0"
+        }
       }
     }
   }'
 ```
-
-If the local UI uses a browser session instead of a bearer token, copy the
-authorization header from the browser network request or use the UI start form.
 
 ## Verify Execution
 
@@ -262,7 +275,7 @@ imported agent catalog data, and uploaded API metadata intact.
 
 | Symptom | Check |
 | ------- | ----- |
-| `startWorkflow` succeeds but fields resolve as `${ .customerId }` | The command sent `input` as a string. Send it as a JSON object. |
+| Portal reports that `startWorkflow` is retired | Call native `workflow_start` through Gateway MCP. |
 | `loadCustomerProfile` fails | Verify `demo-customer-profile-api` is reachable from `light-workflow`; Docker runs should use the Compose service name. |
 | `triageClaim` or `recommendSettlement` fails | Verify `demo-offer-decision-api` is running and the phase 2 endpoints are present. |
 | Agent task fails before a human task | Confirm `agent-catalog-events.json` was imported for the same `hostId`; inspect `_agentAudit` with `insurance-claim-demo-queries.sql`. |

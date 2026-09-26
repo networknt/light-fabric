@@ -4985,8 +4985,6 @@ impl ProxyHttp for GatewayProxy {
                         .handle_request_with_context(
                             request,
                             McpRequestContext {
-                                renewable_grant_id: request_header(session, "x-workflow-grant")
-                                    .and_then(|v| v.parse::<uuid::Uuid>().ok()),
                                 action,
                                 auth: ctx.auth.clone(),
                                 authorization: request_header(session, "authorization"),
@@ -12240,7 +12238,6 @@ tools:
         let mcp = mcp.as_ref().as_ref().expect("mcp runtime");
         let request_context = || light_pingora::McpRequestContext {
             action: None,
-            renewable_grant_id: None,
             anonymous_binding: Some("test-peer:192.0.2.1".to_string()),
             ..light_pingora::McpRequestContext::default()
         };

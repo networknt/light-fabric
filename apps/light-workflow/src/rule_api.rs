@@ -375,7 +375,6 @@ pub fn build_rule_api_router(
         .route("/health", get(liveness))
         .route("/ready", get(readiness))
         .route("/metrics", get(metrics))
-        .route("/v1/workflow-invocations", post(start_invocation))
         .route(
             "/v1/workflow-invocations/development-stage",
             post(start_development_stage),
@@ -472,6 +471,50 @@ pub(crate) async fn dispatch_native_tool(
             get_invocation_result(State(state), headers, Path(id)).await
                 .map(|Json(result)| json!({"workflowInstanceId":id,"state":"COMPLETED","result":result,"safeFailureSummary":Value::Null}))
                 .map_err(IntoResponse::into_response)
+        }
+        "workflow_wait_result" => {
+            let id = uuid("workflowInstanceId")?;
+            let wait_ms = arguments
+                .get("waitMs")
+                .and_then(Value::as_u64)
+                .filter(|value| *value > 0 && *value <= MAX_WAIT_MS)
+                .ok_or_else(|| ApiError::bad_request("waitMs is outside the supported range").into_response())?;
+            let (identity, _) = authenticate(&state, &headers)
+                .await
+                .map_err(IntoResponse::into_response)?;
+            let mut status = load_status(&state.pool, &identity, id)
+                .await
+                .map_err(IntoResponse::into_response)?;
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms);
+            while !status.state.is_terminal() {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let chunk_ms = remaining.as_millis().min(MAX_WAIT_MS as u128) as u64;
+                status = wait_for_invocation(
+                    State(state.clone()),
+                    headers.clone(),
+                    Path(id),
+                    Json(WaitRequest {
+                        wait_ms: chunk_ms.max(1),
+                        observed_version: status.state_version,
+                    }),
+                )
+                .await
+                .map_err(IntoResponse::into_response)?
+                .0;
+            }
+            let ready = status.state.is_terminal();
+            let result = (status.state == InvocationState::Completed)
+                .then(|| status.public_result.unwrap_or_else(|| json!({})))
+                .unwrap_or(Value::Null);
+            Ok(json!({
+                "workflowInstanceId": id,
+                "state": status.state,
+                "ready": ready,
+                "result": result
+            }))
         }
         "workflow_cancel" => {
             let id = uuid("workflowInstanceId")?;
@@ -633,30 +676,6 @@ async fn repair_quarantined_event(
     Ok(StatusCode::ACCEPTED)
 }
 
-async fn start_invocation(
-    State(state): State<RuleApiState>,
-    artifacts: Option<axum::Extension<crate::artifact_store::DevelopmentArtifactAccess>>,
-    broker: Option<axum::Extension<Arc<crate::credential_broker::CredentialBroker>>>,
-    peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
-    policy: Option<axum::Extension<crate::action_api::ActionSettings>>,
-    headers: HeaderMap,
-    Json(request): Json<StartInvocationRequest>,
-) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
-    start_invocation_with_stage(
-        State(state),
-        broker,
-        peer,
-        policy,
-        headers,
-        request,
-        None,
-        artifacts.and_then(|a| a.0.0),
-        AdmissionProfile::WorkflowBacked,
-        None,
-    )
-    .await
-}
-
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DevelopmentStageStart {
@@ -721,6 +740,7 @@ struct NativeStartInput {
     workflow_definition_id: Uuid,
     input: Value,
     idempotency_key: String,
+    expected_definition_digest: Option<String>,
 }
 
 #[derive(Clone)]
@@ -742,6 +762,11 @@ fn parse_native_start_input(arguments: Value) -> Result<NativeStartInput, ApiErr
         || input.idempotency_key.is_empty()
         || input.idempotency_key.len() > 128
         || input.idempotency_key.chars().any(char::is_control)
+        || input.expected_definition_digest.as_ref().is_some_and(|digest| {
+            digest.len() != 71
+                || !digest.starts_with("sha256:")
+                || !digest[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
     {
         return Err(ApiError::input_invalid("invalid workflow_start arguments"));
     }
@@ -865,6 +890,15 @@ async fn start_native_workflow(
     .ok_or_else(|| ApiError::definition_mismatch("saved workflow definition is unavailable"))?;
     let (definition_digest, schema_digest, policy_digest, response_policy_digest) =
         native_definition_pins(&definition_text, &state.private_execution_profiles)?;
+    if input
+        .expected_definition_digest
+        .as_deref()
+        .is_some_and(|expected| expected != definition_digest)
+    {
+        return Err(ApiError::definition_mismatch(
+            "published workflow definition changed before start",
+        ));
+    }
     if let Some(approval) = approval.as_ref() {
         if approval.definition_digest != definition_digest {
             return Err(ApiError::definition_mismatch("approval definition revision changed"));
@@ -1314,10 +1348,9 @@ async fn start_invocation_with_stage(
             None => {
                 if caller.origin != light_security::dual_identity::Origin::Gateway
                     || caller.action_reference.is_some()
-                    || request.renewable_grant_id.is_none()
                 {
                     return Err(ApiError::unauthorized(
-                        "root workflow renewable grant required",
+                        "root workflow caller identity rejected",
                     ));
                 }
             }

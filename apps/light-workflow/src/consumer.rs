@@ -1,25 +1,11 @@
-use crate::configuration::DEFAULT_MAXIMUM_PARALLELISM;
-use crate::configuration::WorkflowConfigManager;
-use crate::events::{CloudEventEnvelope, ProcessInfoDeletedPayload, WorkflowStartedPayload};
-use crate::repositories::{NewProcess, NewTask, WorkflowRepository};
-use crate::runtime_definition::{
-    policy_task_kind, supported_task_type, validate_runtime_definition,
-};
-use execution_runner_protocol::canonical_sha256;
-use serde_json::{Value, from_str, json};
-use serde_yaml;
+use crate::events::{CloudEventEnvelope, ProcessInfoDeletedPayload};
+use serde_json::from_str;
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction, postgres::PgListener};
-use std::collections::BTreeMap;
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-use workflow_core::models::workflow::WorkflowDefinition;
-use workflow_policy::{
-    ExecutionPlacement, ExecutionProfile, ResolvedExecutionPolicy, parse_security_policy,
-    resolve_policy,
-};
 
 #[derive(sqlx::FromRow)]
 pub struct RawEvent {
@@ -34,9 +20,6 @@ pub struct EventConsumer {
     partition_id: i32,
     total_partitions: i32,
     batch_size: i64,
-    maximum_parallelism: usize,
-    runtime_config: Option<Arc<WorkflowConfigManager>>,
-    execution_profiles: BTreeMap<String, ExecutionProfile>,
     database_url: Option<String>,
 }
 
@@ -73,33 +56,12 @@ impl EventConsumer {
             partition_id,
             total_partitions,
             batch_size,
-            maximum_parallelism: DEFAULT_MAXIMUM_PARALLELISM,
-            runtime_config: None,
-            execution_profiles: BTreeMap::new(),
             database_url: None,
         }
     }
 
-    pub fn with_maximum_parallelism(mut self, maximum_parallelism: usize) -> Self {
-        self.maximum_parallelism = maximum_parallelism;
-        self
-    }
-
-    pub fn with_runtime_config(mut self, runtime_config: Arc<WorkflowConfigManager>) -> Self {
-        self.runtime_config = Some(runtime_config);
-        self
-    }
-
     pub fn with_database_url(mut self, database_url: String) -> Self {
         self.database_url = Some(database_url);
-        self
-    }
-
-    pub fn with_execution_profiles(
-        mut self,
-        execution_profiles: BTreeMap<String, ExecutionProfile>,
-    ) -> Self {
-        self.execution_profiles = execution_profiles;
         self
     }
 
@@ -468,153 +430,11 @@ impl EventConsumer {
         })?;
 
         if ce.r#type == "WorkflowStartedEvent" {
-            if let Some(data) = ce.data.clone() {
-                let payload: WorkflowStartedPayload =
-                    serde_json::from_value(data).map_err(|error| {
-                        sqlx::Error::Protocol(format!("invalid WorkflowStartedPayload: {error}"))
-                    })?;
-
-                // 1. Generate ids
-                let wf_instance_id = payload.wf_instance_id.unwrap_or_else(Uuid::new_v4);
-                let process_id = Uuid::new_v4();
-                let host_id: Uuid = event.host_id.parse()?;
-                let input_data = payload.input.clone().unwrap_or_else(|| json!({}));
-
-                if payload.host_id != host_id {
-                    error!(
-                        "WorkflowStartedEvent host_id mismatch: payload={}, envelope={}",
-                        payload.host_id, host_id
-                    );
-                    return Err(sqlx::Error::Protocol(
-                        "WorkflowStartedEvent host_id mismatch".to_string(),
-                    )
-                    .into());
-                }
-
-                if let Some(existing_process_id) = WorkflowRepository::find_process_by_source_event(
-                    tx,
-                    host_id,
-                    payload.wf_def_id,
-                    &ce.id,
-                )
-                .await?
-                {
-                    info!(
-                        source_event_id = %ce.id,
-                        process_id = %existing_process_id,
-                        "WorkflowStartedEvent was already projected"
-                    );
-                    return Ok(());
-                }
-
-                info!(
-                    ">>> Workflow Triggered: host_id={}, wf_def_id={}",
-                    host_id, payload.wf_def_id
-                );
-
-                // 2. Fetch Workflow Definition (DSL)
-                let dsl_yaml = self
-                    .get_workflow_definition(tx, &host_id, &payload.wf_def_id)
-                    .await?;
-                let definition: WorkflowDefinition = serde_yaml::from_str(&dsl_yaml)?;
-                let maximum_parallelism = self
-                    .runtime_config
-                    .as_ref()
-                    .map_or(self.maximum_parallelism, |manager| {
-                        manager.load().config.maximum_parallelism
-                    });
-                validate_runtime_definition(&definition, maximum_parallelism)
-                    .map_err(sqlx::Error::Protocol)?;
-                let raw_definition: serde_yaml::Value = serde_yaml::from_str(&dsl_yaml)?;
-                let definition_snapshot: Value = serde_yaml::from_str(&dsl_yaml)?;
-                let definition_digest = canonical_sha256(&definition_snapshot)
-                    .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
-
-                let (task_name, task_def) = definition
-                    .do_
-                    .entries
-                    .first()
-                    .and_then(|entry| entry.iter().next())
-                    .ok_or_else(|| {
-                        sqlx::Error::Protocol("workflow has no initial task".to_string())
-                    })?;
-                let task_type = supported_task_type(task_def).ok_or_else(|| {
-                    let message = format!(
-                        "unsupported initial task type for workflow {}: first task '{}' must be ask/assert/call/set/switch/run",
-                        payload.wf_def_id, task_name
-                    );
-                    error!("{}", message);
-                    sqlx::Error::Protocol(message)
-                })?;
-                let task_kind = policy_task_kind(task_def)?;
-                let security = parse_security_policy(&raw_definition)
-                    .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
-                let resolved_policy: ResolvedExecutionPolicy =
-                    resolve_policy(task_kind, security.as_ref(), &self.execution_profiles)
-                        .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
-                let policy_snapshot_id = WorkflowRepository::store_policy_snapshot(
-                    tx,
-                    host_id,
-                    &definition_digest,
-                    &resolved_policy,
-                    ce.user.as_deref().unwrap_or("light-workflow"),
-                )
-                .await?;
-                let execution_profile_id = resolved_policy
-                    .profile
-                    .as_ref()
-                    .map(|profile| profile.id.as_str())
-                    .unwrap_or("host");
-
-                // 3. Persist to process_info_t (Generic Projection)
-                let inserted = self
-                    .persist_process_info(
-                        tx,
-                        &host_id,
-                        &process_id,
-                        &payload.wf_def_id,
-                        &wf_instance_id,
-                        ce.source.as_str(),
-                        &input_data,
-                        &definition_snapshot,
-                        &definition_digest,
-                        policy_snapshot_id,
-                        &resolved_policy.policy_digest,
-                        &ce.id,
-                        execution_profile_id,
-                    )
-                    .await?;
-                if !inserted {
-                    info!(
-                        source_event_id = %ce.id,
-                        "WorkflowStartedEvent lost an idempotent insert race"
-                    );
-                    return Ok(());
-                }
-
-                // 4. Identify and Initialize First Task
-                let task_id = Uuid::new_v4();
-                self.persist_task_info(
-                    tx,
-                    &host_id,
-                    &task_id,
-                    task_type,
-                    &process_id,
-                    &wf_instance_id,
-                    task_name,
-                    &input_data,
-                    resolved_policy.placement,
-                    &resolved_policy.policy_digest,
-                )
-                .await?;
-
-                info!(
-                    ">>> First Task initialized: {} ({}, {:?})",
-                    task_name, task_type, resolved_policy.placement
-                );
-
-                info!(">>> Workflow instance started: {}", wf_instance_id);
-            }
+            warn!(
+                event_id = %ce.id,
+                "Ignoring retired WorkflowStartedEvent; root starts must use Gateway MCP workflow_start"
+            );
+            return Ok(());
         }
 
         if ce.r#type == "ProcessInfoDeletedEvent" {
@@ -632,87 +452,6 @@ impl EventConsumer {
         Ok(())
     }
 
-    async fn persist_process_info(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-        host_id: &Uuid,
-        process_id: &Uuid,
-        wf_def_id: &Uuid,
-        wf_instance_id: &Uuid,
-        app_id: &str,
-        input_data: &Value,
-        definition_snapshot: &Value,
-        definition_digest: &str,
-        policy_snapshot_id: Uuid,
-        policy_digest: &str,
-        source_event_id: &str,
-        execution_profile_id: &str,
-    ) -> Result<bool, sqlx::Error> {
-        WorkflowRepository::insert_process_if_absent(
-            tx,
-            &NewProcess {
-                host_id: *host_id,
-                process_id: *process_id,
-                wf_def_id: *wf_def_id,
-                wf_instance_id: wf_instance_id.to_string(),
-                app_id,
-                input_data,
-                definition_snapshot,
-                definition_digest,
-                policy_snapshot_id,
-                policy_digest,
-                source_event_id,
-                execution_profile_id,
-            },
-        )
-        .await
-    }
-
-    async fn get_workflow_definition(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-        host_id: &Uuid,
-        wf_def_id: &Uuid,
-    ) -> Result<String, sqlx::Error> {
-        let row: (String,) = sqlx::query_as(
-            "SELECT definition FROM wf_definition_t WHERE host_id = $1 AND wf_def_id = $2",
-        )
-        .bind(host_id)
-        .bind(wf_def_id)
-        .fetch_one(&mut **tx)
-        .await?;
-        Ok(row.0)
-    }
-
-    async fn persist_task_info(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-        host_id: &Uuid,
-        task_id: &Uuid,
-        task_type: &str,
-        process_id: &Uuid,
-        wf_instance_id: &Uuid,
-        wf_task_id: &str,
-        task_input: &Value,
-        placement: ExecutionPlacement,
-        policy_digest: &str,
-    ) -> Result<(), sqlx::Error> {
-        WorkflowRepository::insert_task(
-            tx,
-            &NewTask {
-                host_id: *host_id,
-                task_id: *task_id,
-                task_type,
-                process_id: *process_id,
-                wf_instance_id: wf_instance_id.to_string(),
-                wf_task_id,
-                task_input,
-                placement,
-                policy_digest,
-            },
-        )
-        .await
-    }
 }
 
 fn event_aggregate_identity(event: &RawEvent) -> (String, i64) {
@@ -733,6 +472,10 @@ fn event_aggregate_identity(event: &RawEvent) -> (String, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::configuration::DEFAULT_MAXIMUM_PARALLELISM;
+    use crate::runtime_definition::validate_runtime_definition;
+    use serde_yaml;
+    use workflow_core::models::workflow::WorkflowDefinition;
 
     #[test]
     fn event_retry_classification_separates_infrastructure_from_poison() {

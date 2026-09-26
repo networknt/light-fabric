@@ -435,81 +435,34 @@ The existing metadata contract intentionally uses `read_only`, `idempotent`,
 and `destructive` together with `humanApprovalRequired`; projection must retain
 those canonical spellings rather than normalize them ad hoc.
 
-## Workflow Invocation API
+## Workflow Start and Invocation API
 
-The gateway needs a stable internal API instead of calling `/portal/command`,
-polling Portal query handlers, or querying workflow tables.
+Every root launch, including launches from the Workflow Editor and
+workflow-backed Tools, enters through the native `workflow_start` MCP tool on
+`light-workflow`. Gateway applies the caller's Tool ACL, then forwards the
+original user Authorization token and its Workflow app scope token to that MCP
+call. Workflow authenticates the caller and creates the process through its
+single native start handler. Root starts do not enroll renewable grants or
+call the invocation admission endpoint directly.
 
-Required operations:
+The Gateway uses these internal operations only after start, to read or wait
+for the process and to cancel it:
 
 ```text
-POST   /v1/workflow-invocations
 GET    /v1/workflow-invocations/{workflowInstanceId}
 GET    /v1/workflow-invocations/{workflowInstanceId}/result
 POST   /v1/workflow-invocations/{workflowInstanceId}/wait
 DELETE /v1/workflow-invocations/{workflowInstanceId}
 ```
 
-The API may initially adapt the existing command/event/query implementation,
-but those details remain behind the workflow service boundary described in
-[Workflow Client Architecture](../../design/workflow-client-architecture.md).
+The native `workflow_start` receipt identifies the durably created process
+and workflow instance. The lifecycle endpoints must scope reads, waits and
+cancellation to the same authenticated user identity.
 
-### Start Request
-
-```http
-POST /v1/workflow-invocations
-Authorization: Bearer <workflow-delegation-token>
-Idempotency-Key: <gateway-derived-key>
-X-Correlation-Id: <correlation-id>
-Content-Type: application/json
-```
-
-```json
-{
-  "stableToolRef": "019f0000-0000-7000-8000-000000000001",
-  "workflowRef": {
-    "wfDefId": "2695cdee-cb82-4b34-a2d8-f69093c733e3",
-    "version": "1.0.0",
-    "definitionDigest": "sha256:0123456789abcdef"
-  },
-  "mode": "sync",
-  "deadlineTs": "2026-08-12T20:00:30Z",
-  "input": {
-    "requestId": "OFFER-REQUEST-9001",
-    "customerId": "CUST-1001",
-    "channel": "portal"
-  }
-}
-```
-
-Tenant and caller identity come from the authenticated delegation token. If a
-tenant identifier is also carried in the body or transport metadata, it must
-match the authenticated identity and fail closed on disagreement.
-
-### Durable Start Path
-
-The invocation service allocates `workflowInstanceId` before durable
-acceptance. In one database transaction it must:
-
-1. reserve the idempotency key under its unique scope;
-2. store the normalized input digest, caller binding, definition, policy, and
-   response-filter snapshots;
-3. create the process and initial task rows; and
-4. append an invocation-accepted audit/projection event to the outbox.
-
-`POST /v1/workflow-invocations` returns the allocated instance ID only after
-that transaction commits. `GET /v1/workflow-invocations/{id}` must immediately
-return at least `ACCEPTED`; it must never return `404` merely because an
-asynchronous projection has not caught up.
-
-Gateway-initiated synchronous starts must not depend on consuming the shared,
-ordered Portal event log. The current consumer claims global offset ranges and
-rolls back a complete batch when event handling fails, so unrelated backlog or
-a poison event could otherwise consume the interactive wait budget or block a
-tenant partition indefinitely. The acceptance event emitted above is for
-audit and projections; it is not the command that creates the process. Use a
-distinct event type, or make its handler explicitly recognize a pre-created
-instance, so it cannot start a duplicate workflow.
+The invocation and process records are created by the native start handler.
+Any later audit or projection event records that accepted start; the legacy
+`WorkflowStartedEvent` consumer ignores start events and cannot create a second
+process.
 
 Event consumers still require poison-event isolation for non-start
 projections. Deterministic parse, schema, and contract failures are poison and

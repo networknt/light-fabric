@@ -445,6 +445,9 @@
         },
         "idempotencyKey": {
           "$ref": "#/$defs/StartKey"
+        },
+        "expectedDefinitionDigest": {
+          "$ref": "#/$defs/Digest"
         }
       },
       "additionalProperties": false
