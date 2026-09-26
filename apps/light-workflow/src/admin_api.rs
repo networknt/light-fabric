@@ -2306,7 +2306,7 @@ async fn lock_assignment(
     subject: &str,
     roles: &[String],
 ) -> Result<sqlx::postgres::PgRow, AdminError> {
-    sqlx::query("SELECT a.*,t.task_output,t.deadline_ts,t.reason_code FROM task_asst_t a JOIN task_info_t t ON t.host_id=a.host_id AND t.task_id=a.task_id WHERE a.host_id=$1 AND a.task_asst_id=$2 AND ((a.assignment_type='USER' AND a.assignment_id=$3) OR (a.assignment_type='ROLE' AND a.assignment_id=ANY($4::text[]))) FOR UPDATE OF a,t").bind(host_id).bind(id).bind(subject).bind(roles).fetch_optional(&mut **tx).await.map_err(AdminError::database)?.ok_or_else(AdminError::not_found)
+    sqlx::query("SELECT a.*,t.task_output,t.deadline_ts FROM task_asst_t a JOIN task_info_t t ON t.host_id=a.host_id AND t.task_id=a.task_id WHERE a.host_id=$1 AND a.task_asst_id=$2 AND ((a.assignment_type='USER' AND a.assignment_id=$3) OR (a.assignment_type='ROLE' AND a.assignment_id=ANY($4::text[]))) FOR UPDATE OF a,t").bind(host_id).bind(id).bind(subject).bind(roles).fetch_optional(&mut **tx).await.map_err(AdminError::database)?.ok_or_else(AdminError::not_found)
 }
 
 #[cfg(test)]
