@@ -10,6 +10,8 @@ Step 09 adds `gateway-publication.json` as the exact additive native Tool and re
 
 Contract version `0.3.0-definition-start` removes the workflow-backed Tool binding from native `workflow_start`. Native callers provide the saved definition ID, object input and idempotency key; Workflow derives execution policy from the saved definition and runtime configuration. Workflow-backed Tool calls use this same start operation and may supply `expectedDefinitionDigest` so the active saved definition must still match the published Tool binding. A successful human-task mutation reports that its completion was durably recorded; asynchronous executor continuation remains observable through process/task reads. Changing names, required fields, identifier meanings, error codes, or bounds requires a reviewed contract version and updated consumers/fixtures.
 
+`workflow_wait_result` returns its documented output for completed and still running instances. Failed and cancelled instances return an MCP `isError` result whose `structuredContent` follows `WorkflowErrorResult`; the examples include both terminal states. `workflow_start` rejects `stableToolRef` with `WORKFLOW_INPUT_INVALID`; use the workflow-backed Tool for binding-based invocation. `workflow_start` remains asynchronous and retains its v1 unlimited result replay window.
+
 
 ### Workflow error results
 

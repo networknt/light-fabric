@@ -97,6 +97,10 @@ for (const tool of manifest.tools) {
   if (examples[tool.name]?.errorResult) validateExample(examples[tool.name].errorResult, { $ref:'schemas.json#/$defs/WorkflowErrorResult' }, `${tool.name}.errorResult`);
   for (const violation of scanResolvedInput(tool.inputSchema, tool.name, '', `${tool.name}.inputSchema`)) fail(violation);
 }
+for (const state of ['failed', 'cancelled']) {
+  const value = examples.workflow_wait_result[`${state}Error`];
+  validateExample(value, {$ref:'schemas.json#/$defs/WorkflowErrorResult'}, `workflow_wait_result.${state}Error`);
+}
 for (const toolName of hostTools) {
   const tool = manifest.tools.find(item => item.name === toolName);
   const input = tool && resolve(tool.inputSchema.$ref);

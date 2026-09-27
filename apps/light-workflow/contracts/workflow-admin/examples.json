@@ -280,6 +280,26 @@
       "result": {
         "summary": "completed"
       }
+    },
+    "failedError": {
+      "status": "failed",
+      "workflowInstanceId": "018f0000-0000-7000-8000-000000000020",
+      "error": {
+        "code": "WORKFLOW_TASK_FAILED",
+        "message": "stored terminal failure",
+        "retryable": false,
+        "afterEffect": true
+      }
+    },
+    "cancelledError": {
+      "status": "cancelled",
+      "workflowInstanceId": "018f0000-0000-7000-8000-000000000020",
+      "error": {
+        "code": "WORKFLOW_CANCELLED",
+        "message": "workflow invocation was cancelled",
+        "retryable": false,
+        "afterEffect": false
+      }
     }
   },
   "workflow_cancel": {

@@ -572,16 +572,7 @@ pub(crate) async fn dispatch_native_tool(
             let status = wait_for_terminal_until(&state, &identity, &generation, status, wait_ms)
                 .await
                 .map_err(IntoResponse::into_response)?;
-            let ready = status.state.is_terminal();
-            let result = (status.state == InvocationState::Completed)
-                .then(|| status.public_result.unwrap_or_else(|| json!({})))
-                .unwrap_or(Value::Null);
-            Ok(json!({
-                "workflowInstanceId": id,
-                "state": status.state,
-                "ready": ready,
-                "result": result
-            }))
+            native_wait_result(status).map_err(IntoResponse::into_response)
         }
         "workflow_cancel" => {
             let id = uuid("workflowInstanceId")?;
@@ -640,6 +631,25 @@ pub(crate) async fn dispatch_native_tool(
         }
         _ => Err(ApiError::not_found("workflow tool is unavailable").into_response()),
     }
+}
+
+fn native_wait_result(status: InvocationStatus) -> Result<Value, ApiError> {
+    if matches!(
+        status.state,
+        InvocationState::Failed | InvocationState::Cancelled
+    ) {
+        return Err(ApiError::run_failure(status));
+    }
+    let ready = status.state.is_terminal();
+    let result = (status.state == InvocationState::Completed)
+        .then(|| status.public_result.unwrap_or_else(|| json!({})))
+        .unwrap_or(Value::Null);
+    Ok(json!({
+        "workflowInstanceId": status.workflow_instance_id,
+        "state": status.state,
+        "ready": ready,
+        "result": result
+    }))
 }
 
 async fn enforce_action_receiver(
@@ -3662,6 +3672,98 @@ mod tests {
         assert_eq!(result["structuredContent"]["error"]["details"], details);
     }
 
+    #[tokio::test]
+    async fn native_wait_result_uses_stored_terminal_error_envelopes() {
+        let id = Uuid::now_v7();
+        for (state, effect_state, expected_status, after_effect) in [
+            ("FAILED", "none", "failed", false),
+            ("FAILED", "possible", "failed", true),
+            ("CANCELLED", "none", "cancelled", false),
+            ("CANCELLED", "confirmed", "cancelled", true),
+        ] {
+            let status: InvocationStatus = serde_json::from_value(json!({
+                "contractVersion": 1,
+                "workflowInstanceId": id,
+                "stableToolRef": Uuid::now_v7(),
+                "definitionDigest": format!("sha256:{}", "a".repeat(64)),
+                "state": state,
+                "stateVersion": 2,
+                "acceptedTs": "2026-09-27T00:00:00Z",
+                "updatedTs": "2026-09-27T00:00:01Z",
+                "deadlineTs": "2026-09-27T00:01:00Z",
+                "retryable": false,
+                "effectState": effect_state,
+                "error": {
+                    "code": "WORKFLOW_TASK_FAILED",
+                    "message": "stored terminal failure",
+                    "retryable": true,
+                    "workflowInstanceId": id,
+                    "correlationId": "stored-correlation"
+                }
+            }))
+            .unwrap();
+            let response = native_wait_result(status).unwrap_err().into_response();
+            let mcp = crate::mcp_api::handler_error(json!(42), response)
+                .await
+                .unwrap();
+            assert_eq!(mcp["isError"], true);
+            assert_eq!(mcp["resultType"], "complete");
+            assert_eq!(mcp["structuredContent"]["status"], expected_status);
+            assert_eq!(
+                mcp["structuredContent"]["workflowInstanceId"],
+                id.to_string()
+            );
+            assert_eq!(
+                mcp["structuredContent"]["error"]["code"],
+                "WORKFLOW_TASK_FAILED"
+            );
+            assert_eq!(
+                mcp["structuredContent"]["error"]["message"],
+                "stored terminal failure"
+            );
+            assert_eq!(mcp["structuredContent"]["error"]["retryable"], true);
+            assert_eq!(
+                mcp["structuredContent"]["error"]["afterEffect"],
+                after_effect
+            );
+            assert_eq!(
+                mcp["content"][0]["text"],
+                "WORKFLOW_TASK_FAILED: stored terminal failure"
+            );
+        }
+    }
+
+    #[test]
+    fn native_wait_result_preserves_completed_and_nonterminal_shapes() {
+        for (state, ready, expected_result) in [
+            ("COMPLETED", true, json!({"answer": 42})),
+            ("RUNNING", false, Value::Null),
+        ] {
+            let status: InvocationStatus = serde_json::from_value(json!({
+                "contractVersion": 1,
+                "workflowInstanceId": Uuid::now_v7(),
+                "stableToolRef": Uuid::now_v7(),
+                "definitionDigest": format!("sha256:{}", "a".repeat(64)),
+                "state": state,
+                "stateVersion": 2,
+                "acceptedTs": "2026-09-27T00:00:00Z",
+                "updatedTs": "2026-09-27T00:00:01Z",
+                "deadlineTs": "2026-09-27T00:01:00Z",
+                "retryable": false,
+                "publicResult": {"answer": 42}
+            }))
+            .unwrap();
+            let value = native_wait_result(status.clone()).unwrap();
+            assert_eq!(
+                value["workflowInstanceId"],
+                status.workflow_instance_id.to_string()
+            );
+            assert_eq!(value["state"], state);
+            assert_eq!(value["ready"], ready);
+            assert_eq!(value["result"], expected_result);
+        }
+    }
+
     #[test]
     fn saved_definition_digest_keeps_branch_end_directives() {
         let source = "document: {dsl: '1.0.3', namespace: test, name: mortgage, version: '1.0.1'}\nevaluate: {language: cel}\ndo:\n  - approve:\n      set: {status: APPROVED}\n      end: true\n";
@@ -4276,7 +4378,8 @@ fork:
         ] {
             let mut changed = valid.clone();
             changed[field] = value;
-            assert!(parse_native_start_input(changed).is_err(), "{field}");
+            let error = parse_native_start_input(changed).err().expect(field);
+            assert_eq!(error.error.code, ErrorCode::WorkflowInputInvalid, "{field}");
         }
         for malformed_digest in [
             "sha256:abc".to_string(),
@@ -4290,5 +4393,18 @@ fork:
         let mut changed = valid;
         changed["input"] = json!([]);
         assert!(parse_native_start_input(changed).is_err());
+    }
+
+    #[test]
+    fn native_start_keeps_unlimited_v1_replay_window() {
+        let source = include_str!("rule_api.rs");
+        let start = source.find("async fn start_native_workflow(").unwrap();
+        let body = start + "async fn ".len();
+        let end = source[body..]
+            .find("async fn ")
+            .map(|offset| body + offset)
+            .unwrap();
+        assert!(source[start..end].contains("result_replay_until: DateTime::<Utc>::MAX_UTC"));
+        assert!(source[start..end].contains("mode: InvocationMode::Async"));
     }
 }
