@@ -17,7 +17,9 @@ use chrono::{DateTime, Utc};
 use light_rule::{ActionRegistry, Rule, RuleEngine};
 use light_runtime::{ConfigProvenance, ConfigSource};
 use light_security::{
-    AuthPrincipal, HandlerRejection, JwtExpiryMode, SecurityRuntime, verify_jwt_token,
+    AuthPrincipal, HandlerRejection, JwtExpiryMode, SecurityRuntime,
+    token_purpose::{TokenUse, validate_verified_purpose},
+    verify_jwt_token,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -69,6 +71,7 @@ pub struct RuleApiState {
     private_execution_profiles:
         Arc<std::collections::BTreeMap<String, workflow_policy::ExecutionProfile>>,
     long_authority: Option<Arc<crate::long_authority::LongAuthority>>,
+    pub(crate) run_credential_vault: Option<Arc<crate::run_credential::RunCredentialVault>>,
 }
 
 #[cfg(test)]
@@ -89,7 +92,20 @@ impl RuleApiState {
             role_authority: None,
             private_execution_profiles: Arc::new(Default::default()),
             long_authority: None,
+            run_credential_vault: None,
         }
+    }
+
+    pub(crate) fn for_invoke_test(
+        security: light_security::SecurityRuntime,
+        host: Uuid,
+        pool: PgPool,
+        vault: Arc<crate::run_credential::RunCredentialVault>,
+    ) -> Self {
+        let mut state = Self::for_publication_test(security, host);
+        state.pool = pool;
+        state.run_credential_vault = Some(vault);
+        state
     }
 }
 
@@ -379,6 +395,7 @@ pub fn build_rule_api_router(
         workflow_policy::ExecutionProfile,
     >,
     long_authority: Option<Arc<crate::long_authority::LongAuthority>>,
+    run_credential_vault: Option<Arc<crate::run_credential::RunCredentialVault>>,
 ) -> Router {
     let state = RuleApiState {
         engine: Arc::new(RuleEngine::new(Arc::new(ActionRegistry::new()))),
@@ -391,6 +408,7 @@ pub fn build_rule_api_router(
         role_authority,
         private_execution_profiles: Arc::new(private_execution_profiles),
         long_authority,
+        run_credential_vault,
     };
 
     Router::new()
@@ -485,12 +503,16 @@ pub(crate) async fn dispatch_native_tool(
             | "workflow_binding_list"
             | "workflow_binding_decide"
             | "workflow_binding_revoke"
-            | "workflow_invoke"
     ) {
         return Err(ApiError::bad_request("not implemented").into_response());
     }
     if name == "workflow_start" {
         return start_native_workflow(state, headers, arguments, approval_portal)
+            .await
+            .map_err(IntoResponse::into_response);
+    }
+    if name == "workflow_invoke" {
+        return crate::invoke_api::invoke(state, headers, arguments)
             .await
             .map_err(IntoResponse::into_response);
     }
@@ -762,6 +784,7 @@ async fn start_development_stage(
         artifacts.and_then(|a| a.0.0),
         AdmissionProfile::WorkflowBacked,
         None,
+        None,
     )
     .await
 }
@@ -789,6 +812,7 @@ pub(crate) async fn start_private_portal_execution(
         None,
         AdmissionProfile::PortalExecution,
         approval,
+        None,
     )
     .await
 }
@@ -1373,8 +1397,11 @@ pub async fn read_admissible_pinned_binding(
 ) -> Result<sqlx::postgres::PgRow, ApiError> {
     let row = sqlx::query(
         "SELECT b.binding_id,b.wf_def_id,b.workflow_version,b.definition_digest AS binding_definition_digest,
-                b.schema_digest,b.policy_digest,b.response_policy_digest,v.definition,
-                b.tool_name,v.version_status,v.definition_digest AS version_definition_digest
+                 b.schema_digest,b.policy_digest,b.response_policy_digest,v.definition,
+                 b.tool_name,b.binding_digest,b.invocation_mode,b.sync_wait_ms,b.total_deadline_ms,
+                 b.execution_class,b.cancellation_policy,b.idempotency_policy,b.delegation_policy,
+                 b.runtime_bounds,b.admission_limits,b.caller_policy,
+                 v.version_status,v.definition_digest AS version_definition_digest
            FROM workflow_tool_binding_t b
            JOIN wf_definition_version_t v
              ON v.host_id=b.host_id AND v.wf_def_id=b.wf_def_id
@@ -1397,8 +1424,20 @@ pub async fn read_admissible_pinned_binding(
                            WHERE b.host_id=h.host_id AND b.tool_id=h.tool_id
                            ORDER BY b.requested_ts DESC NULLS LAST,b.binding_id DESC LIMIT 1)='revoked')")
                 .bind(host_id).bind(tool_id).fetch_one(pool).await.map_err(ApiError::database)?;
-            if revoked { return Err(ApiError::policy_denied("binding revoked by workflow owner")); }
-            return Err(ApiError::definition_mismatch("workflow binding or published version is unavailable"));
+            if revoked {
+                return Err(ApiError::policy_denied("binding revoked by workflow owner"));
+            }
+            let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_tool_binding_t WHERE host_id=$1 AND tool_id=$2 AND revision_status='pendingApproval')")
+                .bind(host_id).bind(tool_id).fetch_one(pool).await.map_err(ApiError::database)?;
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                ErrorCode::WorkflowStartRejected,
+                if pending {
+                    "binding is waiting for workflow owner approval"
+                } else {
+                    "active workflow Tool binding is unavailable"
+                },
+            ));
         }
     };
     let version_status: String = row.try_get("version_status").map_err(ApiError::database)?;
@@ -1408,6 +1447,13 @@ pub async fn read_admissible_pinned_binding(
             ErrorCode::WorkflowDefinitionRetired,
             "workflow definition version is retired",
             None,
+        ));
+    }
+    if version_status != "active" {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            ErrorCode::WorkflowStartRejected,
+            "workflow definition version is not published",
         ));
     }
     let binding_digest: String = row
@@ -1425,7 +1471,7 @@ pub async fn read_admissible_pinned_binding(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn start_invocation_with_stage(
+pub(crate) async fn start_invocation_with_stage(
     State(state): State<RuleApiState>,
     broker: Option<axum::Extension<Arc<crate::credential_broker::CredentialBroker>>>,
     peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
@@ -1436,6 +1482,7 @@ async fn start_invocation_with_stage(
     artifacts: Option<crate::artifact_store::DurableArtifactStore>,
     profile: AdmissionProfile,
     approval: Option<ApprovalAdmission>,
+    invoke_admission: Option<crate::invoke_api::InvokeAdmission>,
 ) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
     let (identity, generation) = authenticate(&state, &headers).await?;
     let mut parent_binding = None;
@@ -1560,6 +1607,13 @@ async fn start_invocation_with_stage(
         let row =
             read_admissible_pinned_binding(&state.pool, identity.host_id, request.stable_tool_ref)
                 .await?;
+        if let Some(admission) = invoke_admission.as_ref() {
+            admission.verify_loaded_revision(
+                row.try_get("binding_id").map_err(ApiError::database)?,
+                &row.try_get::<String, _>("binding_digest")
+                    .map_err(ApiError::database)?,
+            )?;
+        }
         let binding_digest: String = row
             .try_get("binding_definition_digest")
             .map_err(ApiError::database)?;
@@ -1582,7 +1636,7 @@ async fn start_invocation_with_stage(
     verify_binding(&request, &binding)?;
     let definition: WorkflowDefinition = serde_yaml::from_str(&binding.definition)
         .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
-    if profile == AdmissionProfile::PortalExecution {
+    {
         if let Some(schema) = definition
             .input
             .as_ref()
@@ -1761,6 +1815,11 @@ async fn start_invocation_with_stage(
         user_authorization_exp: stored_user_authorization_exp,
     };
     let mut tx = state.pool.begin().await.map_err(ApiError::database)?;
+    if let Some(admission) = invoke_admission.as_ref() {
+        admission
+            .fence_revision(&mut tx, identity.host_id, request.stable_tool_ref)
+            .await?;
+    }
     if let Some(private_policy) = private_policy.as_ref() {
         prepared.policy_snapshot_id = Some(
             crate::repositories::WorkflowRepository::store_policy_snapshot(
@@ -1820,6 +1879,17 @@ async fn start_invocation_with_stage(
             ..
         } => *workflow_instance_id,
     };
+    if let Some(admission) = invoke_admission.as_ref() {
+        admission
+            .apply(
+                &mut tx,
+                identity.host_id,
+                &identity.end_user_subject,
+                &request,
+                &outcome,
+            )
+            .await?;
+    }
     if profile == AdmissionProfile::PortalExecution {
         if matches!(outcome, AcceptOutcome::Accepted { .. }) {
             let long = state.long_authority.as_ref().ok_or_else(|| {
@@ -2454,7 +2524,7 @@ async fn cancel_invocation(
     ))
 }
 
-async fn load_status(
+pub(crate) async fn load_status(
     pool: &PgPool,
     identity: &InvocationIdentity,
     workflow_instance_id: Uuid,
@@ -2645,6 +2715,27 @@ pub(crate) async fn authenticate(
         .map_err(|error| auth_denied("user_subject", error))?,
         generation,
     ))
+}
+
+/// Invoke requires a signed end-user token. The shared authenticate path also
+/// serves app-token operations, so purpose is enforced here before any Tool read.
+pub(crate) async fn authenticate_invoke(
+    state: &RuleApiState,
+    headers: &HeaderMap,
+) -> Result<(InvocationIdentity, Arc<WorkflowConfigGeneration>), ApiError> {
+    let (identity, generation) = authenticate(state, headers).await?;
+    let authorization = header(headers, "authorization")?;
+    let token = bearer_token(authorization, "user Bearer authentication is required")?;
+    let principal = verify_jwt_token(
+        &state.invocation_security,
+        token,
+        user_jwt_expiry_mode(generation.config.ignore_user_jwt_expiry),
+    )
+    .await
+    .map_err(|error| jwt_verification_error("user", error))?;
+    validate_verified_purpose(token, &principal, TokenUse::User, &[])
+        .map_err(|_| ApiError::unauthorized("user access token purpose is required"))?;
+    Ok((identity, generation))
 }
 
 fn auth_denied(reason_code: &'static str, error: ApiError) -> ApiError {
@@ -3347,7 +3438,7 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    fn new(status: StatusCode, code: ErrorCode, message: impl Into<String>) -> Self {
+    pub(crate) fn new(status: StatusCode, code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
             http_status: status,
             status: "rejected",
@@ -3373,6 +3464,10 @@ impl ApiError {
         self.details = Some(details);
         self
     }
+    pub(crate) fn with_retry_after(mut self, milliseconds: u64) -> Self {
+        self.retry_after_ms = Some(milliseconds);
+        self
+    }
     fn bad_request(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::BAD_REQUEST,
@@ -3380,7 +3475,7 @@ impl ApiError {
             message,
         )
     }
-    fn input_invalid(message: impl Into<String>) -> Self {
+    pub(crate) fn input_invalid(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::BAD_REQUEST,
             ErrorCode::WorkflowInputInvalid,
@@ -3418,7 +3513,7 @@ impl ApiError {
     fn conflict(message: impl Into<String>) -> Self {
         Self::new(StatusCode::CONFLICT, ErrorCode::WorkflowTaskFailed, message)
     }
-    fn database(error: sqlx::Error) -> Self {
+    pub(crate) fn database(error: sqlx::Error) -> Self {
         error!("workflow invocation database failure: {error}");
         Self::new(
             StatusCode::SERVICE_UNAVAILABLE,

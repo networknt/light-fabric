@@ -672,7 +672,11 @@ impl TaskExecutor {
                 Ok(false) => {
                     if last_publication_sweep.elapsed() >= Duration::from_secs(3600) {
                         if let Err(error) = Self::sweep_publication_operations(
-                            &self.pool, Utc::now() - chrono::Duration::days(30)).await {
+                            &self.pool,
+                            Utc::now() - chrono::Duration::days(30),
+                        )
+                        .await
+                        {
                             error!(worker_id = %worker_id, "Error sweeping publication operations: {error}");
                         } else {
                             last_publication_sweep = tokio::time::Instant::now();
@@ -702,11 +706,15 @@ impl TaskExecutor {
     }
 
     pub async fn sweep_publication_operations(
-    pool: &PgPool, cutoff: chrono::DateTime<Utc>,
-) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query("DELETE FROM workflow_publication_operation_t WHERE created_ts < $1")
-        .bind(cutoff).execute(pool).await?;
-    Ok(result.rows_affected())
+        pool: &PgPool,
+        cutoff: chrono::DateTime<Utc>,
+    ) -> Result<u64, sqlx::Error> {
+        let result =
+            sqlx::query("DELETE FROM workflow_publication_operation_t WHERE created_ts < $1")
+                .bind(cutoff)
+                .execute(pool)
+                .await?;
+        Ok(result.rows_affected())
     }
 
     async fn expire_interactive_deadlines(&self) -> Result<(), sqlx::Error> {
@@ -745,6 +753,9 @@ impl TaskExecutor {
             .execute(&mut *tx)
             .await?;
         }
+        sqlx::query("DELETE FROM workflow_run_credential_t WHERE expires_ts < CURRENT_TIMESTAMP")
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(())
     }

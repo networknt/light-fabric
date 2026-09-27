@@ -111,25 +111,26 @@ pub(crate) async fn accept_invocation_in(
         }))
     };
 
-    let (outcome, instance_id, generation): (String, Uuid, i64) = sqlx::query_as(
-        "SELECT outcome,accepted_workflow_instance_id,accepted_generation
-           FROM workflow_claim_idempotency_v1(
-             $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
-    )
-    .bind(auth.host_id)
-    .bind(Uuid::now_v7())
-    .bind(&request.idempotency.scoped_key_digest)
-    .bind(idempotency_kind(request.idempotency.kind))
-    .bind(request.stable_tool_ref)
-    .bind(auth.principal_subject)
-    .bind(auth.end_user_subject)
-    .bind(request.workflow_instance_id)
-    .bind(&request.definition_digest)
-    .bind(&request.normalized_input_digest)
-    .bind(request.idempotency.in_flight_until)
-    .bind(request.idempotency.result_replay_until)
-    .fetch_one(&mut **tx)
-    .await?;
+    let claim_sql = if prepared.admission_profile == "workflow_backed" {
+        "SELECT outcome,accepted_workflow_instance_id,accepted_generation FROM workflow_claim_idempotency_v2($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"
+    } else {
+        "SELECT outcome,accepted_workflow_instance_id,accepted_generation FROM workflow_claim_idempotency_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"
+    };
+    let (outcome, instance_id, generation): (String, Uuid, i64) = sqlx::query_as(claim_sql)
+        .bind(auth.host_id)
+        .bind(Uuid::now_v7())
+        .bind(&request.idempotency.scoped_key_digest)
+        .bind(idempotency_kind(request.idempotency.kind))
+        .bind(request.stable_tool_ref)
+        .bind(auth.principal_subject)
+        .bind(auth.end_user_subject)
+        .bind(request.workflow_instance_id)
+        .bind(&request.definition_digest)
+        .bind(&request.normalized_input_digest)
+        .bind(request.idempotency.in_flight_until)
+        .bind(request.idempotency.result_replay_until)
+        .fetch_one(&mut **tx)
+        .await?;
 
     match outcome.as_str() {
         "REPLAY" => {
@@ -226,8 +227,8 @@ pub(crate) async fn accept_invocation_in(
     .bind(auth.principal_subject)
     .bind(auth.end_user_subject)
     .bind(&subject_claims)
-    .bind(auth.user_authorization)
-    .bind(auth.user_authorization_exp)
+    .bind((prepared.admission_profile != "workflow_backed").then_some(auth.user_authorization).flatten())
+    .bind((prepared.admission_profile != "workflow_backed").then_some(auth.user_authorization_exp).flatten())
     .bind(&request.input)
     .bind(&request.normalized_input_digest)
     .bind(&request.canonical_input_profile)
@@ -442,6 +443,7 @@ mod private_profile_tests {
             "CREATE TABLE workflow_invocation_budget_t (host_id uuid,ledger_id uuid,workflow_instance_id uuid,task_attempt_limit bigint,nested_call_limit bigint,request_byte_limit bigint,byte_limit bigint,result_byte_limit bigint,cost_unit_limit bigint,deadline_ts timestamptz,lifetime_version smallint)",
             "CREATE TABLE workflow_invocation_audit_outbox_t (host_id uuid,event_id uuid,workflow_instance_id uuid,event_type text,payload jsonb,correlation_id text)",
             "CREATE FUNCTION workflow_claim_idempotency_v1(uuid,uuid,text,text,uuid,text,text,uuid,text,text,timestamptz,timestamptz) RETURNS TABLE(outcome text,accepted_workflow_instance_id uuid,accepted_generation bigint) LANGUAGE sql AS 'SELECT ''ACCEPTED''::text,$8,1::bigint'",
+            "CREATE FUNCTION workflow_claim_idempotency_v2(uuid,uuid,text,text,uuid,text,text,uuid,text,text,timestamptz,timestamptz) RETURNS TABLE(outcome text,accepted_workflow_instance_id uuid,accepted_generation bigint) LANGUAGE sql AS 'SELECT ''ACCEPTED''::text,$8,1::bigint'",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
         }

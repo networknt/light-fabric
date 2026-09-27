@@ -303,7 +303,14 @@ impl WorkflowConfiguration {
             &mut violations,
         );
         let publisher_client_ids = environment_value("WORKFLOW_PUBLICATION_PUBLISHER_CLIENT_IDS")
-            .map(|value| value.split(',').map(str::trim).filter(|id| !id.is_empty()).map(str::to_string).collect())
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
             .unwrap_or_else(|| workflow.publication.publisher_client_ids.clone());
 
         required("server.environment", &environment, &mut violations);
@@ -616,6 +623,7 @@ impl WorkflowConfiguration {
             credential_broker: None,
             long_keyring_file: workflow
                 .long_keyring_file
+                .or_else(|| environment_value("WORKFLOW_LONG_KEYRING_FILE"))
                 .and_then(|value| non_empty(&value).map(PathBuf::from)),
             action_authorization: workflow.action_authorization,
             environment,
@@ -742,18 +750,28 @@ impl WorkflowConfigManager {
     #[cfg(test)]
     pub(crate) fn for_publication_test(host_id: Uuid) -> Self {
         let config = WorkflowRuntimeConfig {
-            generation: 1, content_digest: String::new(), snapshot_id: None,
+            generation: 1,
+            content_digest: String::new(),
+            snapshot_id: None,
             invocation_caller_service_ids: vec!["gateway-a".into()],
             publisher_client_ids: vec!["publisher-a".into()],
-            invocation_caller_environments: Vec::new(), wait_listener_connections: 1,
-            ignore_user_jwt_expiry: false, maximum_parallelism: 16,
-            host_executor_concurrency: 4, interactive_estimated_task_ms: 100,
-            operational_host_id: host_id, a2a_bindings: Vec::new(),
+            invocation_caller_environments: Vec::new(),
+            wait_listener_connections: 1,
+            ignore_user_jwt_expiry: false,
+            maximum_parallelism: 16,
+            host_executor_concurrency: 4,
+            interactive_estimated_task_ms: 100,
+            operational_host_id: host_id,
+            a2a_bindings: Vec::new(),
         };
         let (updates, _) = tokio::sync::watch::channel(1);
-        Self { current: ConfigManager::new(WorkflowConfigGeneration {
-            config, wait_listener_permits: Arc::new(tokio::sync::Semaphore::new(1)),
-        }), updates }
+        Self {
+            current: ConfigManager::new(WorkflowConfigGeneration {
+                config,
+                wait_listener_permits: Arc::new(tokio::sync::Semaphore::new(1)),
+            }),
+            updates,
+        }
     }
 
     pub fn new(configuration: &WorkflowConfiguration, provenance: &ConfigProvenance) -> Self {
@@ -1536,7 +1554,10 @@ commandTemplates: []
                         generation.config.interactive_estimated_task_ms,
                         generation.config.publisher_client_ids.clone(),
                     );
-                    assert!(tuple == (16, 4, 100, Vec::new()) || tuple == (32, 8, 200, vec!["publisher-a".to_string()]));
+                    assert!(
+                        tuple == (16, 4, 100, Vec::new())
+                            || tuple == (32, 8, 200, vec!["publisher-a".to_string()])
+                    );
                 }
             })
         };
@@ -1666,11 +1687,24 @@ workflow.runner.originId: workflow-dev
         assert!(local.publisher_client_ids.is_empty());
         assert_eq!(remote.publisher_client_ids, vec!["publisher-config"]);
 
-        let mut env_values=values.clone();
-        env_values.insert("WORKFLOW_PUBLICATION_PUBLISHER_CLIENT_IDS".to_string(),"publisher-env-a,publisher-env-b".to_string());
-        let env_resolver=|name:&str| env_values.get(name).cloned();
-        let env_candidate=WorkflowConfiguration::build_with_environment(&remote_runtime,true,"dev",&env_resolver,100).unwrap();
-        assert_eq!(env_candidate.publisher_client_ids,vec!["publisher-env-a","publisher-env-b"]);
+        let mut env_values = values.clone();
+        env_values.insert(
+            "WORKFLOW_PUBLICATION_PUBLISHER_CLIENT_IDS".to_string(),
+            "publisher-env-a,publisher-env-b".to_string(),
+        );
+        let env_resolver = |name: &str| env_values.get(name).cloned();
+        let env_candidate = WorkflowConfiguration::build_with_environment(
+            &remote_runtime,
+            true,
+            "dev",
+            &env_resolver,
+            100,
+        )
+        .unwrap();
+        assert_eq!(
+            env_candidate.publisher_client_ids,
+            vec!["publisher-env-a", "publisher-env-b"]
+        );
 
         let mut reloadable_candidate = remote.clone();
         reloadable_candidate.maximum_parallelism = 32;

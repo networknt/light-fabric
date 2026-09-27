@@ -345,6 +345,13 @@ impl AxumApp for WorkflowApp {
             .fetch_one(&pool)
             .await
             .map_err(|error| Self::runtime_error("workflow database readiness", error))?;
+        let run_credential_vault = light_workflow::run_credential::RunCredentialVault::load(
+            &context.runtime_config.config_dir,
+            workflow_config.long_keyring_file.as_deref(),
+        )
+        .await
+        .map_err(|error| Self::runtime_error("workflow run credential vault", error))?
+        .map(Arc::new);
         workflow_store::validate(
             &pool,
             &workflow_store::ExpectedBinding {
@@ -513,6 +520,7 @@ impl AxumApp for WorkflowApp {
                         Some(broker.clone()),
                         runner_config.profiles.clone(),
                         None,
+                        run_credential_vault.clone(),
                     )
                     .layer(axum::Extension(
                         light_workflow::artifact_store::DevelopmentArtifactAccess(
@@ -886,6 +894,7 @@ impl AxumApp for WorkflowApp {
                 .map(|broker| broker as Arc<dyn light_workflow::admin_api::RoleAuthority>),
             runner_config.profiles.clone(),
             active_long,
+            run_credential_vault,
         )
         .layer(axum::Extension(
             light_workflow::artifact_store::DevelopmentArtifactAccess(artifact_store),
