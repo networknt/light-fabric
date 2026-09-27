@@ -767,7 +767,6 @@ struct DevelopmentStageStart {
 async fn start_development_stage(
     state: State<RuleApiState>,
     artifacts: Option<axum::Extension<crate::artifact_store::DevelopmentArtifactAccess>>,
-    broker: Option<axum::Extension<Arc<crate::credential_broker::CredentialBroker>>>,
     peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
     policy: Option<axum::Extension<crate::action_api::ActionSettings>>,
     headers: HeaderMap,
@@ -775,7 +774,6 @@ async fn start_development_stage(
 ) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
     start_invocation_with_stage(
         state,
-        broker,
         peer,
         policy,
         headers,
@@ -794,7 +792,6 @@ async fn start_development_stage(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_private_portal_execution(
     state: State<RuleApiState>,
-    broker: Option<axum::Extension<Arc<crate::credential_broker::CredentialBroker>>>,
     peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
     policy: Option<axum::Extension<crate::action_api::ActionSettings>>,
     headers: HeaderMap,
@@ -803,7 +800,6 @@ pub(crate) async fn start_private_portal_execution(
 ) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
     start_invocation_with_stage(
         state,
-        broker,
         peer,
         policy,
         headers,
@@ -1058,7 +1054,6 @@ async fn start_native_workflow(
     };
     let (_, Json(status)) = start_private_portal_execution(
         State(state.clone()),
-        None,
         None,
         None,
         headers,
@@ -1473,7 +1468,6 @@ pub async fn read_admissible_pinned_binding(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_invocation_with_stage(
     State(state): State<RuleApiState>,
-    broker: Option<axum::Extension<Arc<crate::credential_broker::CredentialBroker>>>,
     peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
     policy: Option<axum::Extension<crate::action_api::ActionSettings>>,
     headers: HeaderMap,
@@ -1961,64 +1955,12 @@ pub(crate) async fn start_invocation_with_stage(
             .await
             .map_err(ApiError::database)?;
         }
-    } else if let Some(parent) = parent_binding {
-        let broker = broker
-            .as_ref()
-            .ok_or_else(|| ApiError::unauthorized("credential broker unavailable"))?;
-        let user = identity
-            .end_user_subject
-            .parse::<Uuid>()
-            .map_err(|_| ApiError::unauthorized("workflow user identity is invalid"))?;
-        broker
-            .0
-            .inherit_run(
-                parent.run_id,
-                accepted_run,
-                identity.host_id,
-                user,
-                request.deadline_ts,
-            )
-            .await
-            .map_err(|_| ApiError::unauthorized("parent workflow grant rejected"))?;
-        workflow_action::ledger::Ledger::admit_child_run_in(
-            &mut tx,
-            identity.host_id,
-            accepted_run,
-            user,
-            parent.action_id,
-        )
-        .await
-        .map_err(|_| ApiError::unauthorized("child workflow authority rejected"))?;
-    } else if let Some(grant) = request.renewable_grant_id {
-        let broker = broker
-            .as_ref()
-            .ok_or_else(|| ApiError::unauthorized("credential broker unavailable"))?;
-        let user = identity
-            .end_user_subject
-            .parse::<Uuid>()
-            .map_err(|_| ApiError::unauthorized("workflow user identity is invalid"))?;
-        let binding = serde_json::json!({"profile":"workflow-action-v1","workflowDefinitionId":request.workflow_definition_id,"definitionDigest":request.definition_digest,"policyDigest":request.policy_digest,"responsePolicyDigest":request.response_policy_digest});
-        broker
-            .0
-            .bind_run(
-                accepted_run,
-                grant,
-                identity.host_id,
-                user,
-                &binding,
-                request.deadline_ts,
-            )
-            .await
-            .map_err(|_| ApiError::unauthorized("workflow grant binding rejected"))?;
-        workflow_action::ledger::Ledger::admit_run_in(
-            &mut tx,
-            identity.host_id,
-            accepted_run,
-            grant,
-            user,
-        )
-        .await
-        .map_err(|_| ApiError::unauthorized("workflow run authority rejected"))?;
+    } else if invoke_admission.is_none()
+        && (parent_binding.is_some() || request.renewable_grant_id.is_some())
+    {
+        return Err(ApiError::unauthorized(
+            "retired broker authority is unavailable",
+        ));
     }
     if let Some(approval) = approval.as_ref() {
         if profile != AdmissionProfile::PortalExecution {

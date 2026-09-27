@@ -799,20 +799,39 @@ struct CarryOverBasis {
 }
 
 fn write_task_keys(tasks: &[TaskEffect]) -> HashSet<(String, String, String)> {
-    tasks.iter().filter(|task| matches!(task.effect, Effect::Write | Effect::Destructive))
-        .map(|task| (task.name.clone(), task.kind.clone(), task.target.clone())).collect()
+    tasks
+        .iter()
+        .filter(|task| matches!(task.effect, Effect::Write | Effect::Destructive))
+        .map(|task| (task.name.clone(), task.kind.clone(), task.target.clone()))
+        .collect()
 }
 fn dependency_keys(dependencies: &[Dependency]) -> HashSet<(Uuid, String, String, String)> {
-    dependencies.iter().map(|dep| (dep.nested_tool_id, dep.nested_tool_version.clone(),
-        dep.contract_digest.clone(), dep.authorization_tool_name.clone())).collect()
+    dependencies
+        .iter()
+        .map(|dep| {
+            (
+                dep.nested_tool_id,
+                dep.nested_tool_version.clone(),
+                dep.contract_digest.clone(),
+                dep.authorization_tool_name.clone(),
+            )
+        })
+        .collect()
 }
 fn endpoint_keys(targets: &[EndpointTarget]) -> HashSet<(String, String, Vec<String>)> {
-    targets.iter().map(|target| {
-        let mut methods = target.allowed_methods.clone();
-        methods.sort();
-        methods.dedup();
-        (target.endpoint_ref.clone(), target.endpoint_uri.clone(), methods)
-    }).collect()
+    targets
+        .iter()
+        .map(|target| {
+            let mut methods = target.allowed_methods.clone();
+            methods.sort();
+            methods.dedup();
+            (
+                target.endpoint_ref.clone(),
+                target.endpoint_uri.clone(),
+                methods,
+            )
+        })
+        .collect()
 }
 
 fn carry_over_allowed(
@@ -826,7 +845,12 @@ fn carry_over_allowed(
     version_approval: &str,
 ) -> Result<(), &'static str> {
     if (basis.host_id, basis.tool_id, basis.wf_def_id)
-        != (input.host_id, input.binding.tool_id, input.binding.wf_def_id) {
+        != (
+            input.host_id,
+            input.binding.tool_id,
+            input.binding.wf_def_id,
+        )
+    {
         return Err("active revision belongs to a different host, Tool or definition");
     }
     if basis.owner_user != owner_user || basis.owner_position.as_deref() != owner_position {
@@ -836,7 +860,8 @@ fn carry_over_allowed(
         return Err("approval policy changed");
     }
     if !dependency_keys(&input.dependencies).is_subset(&dependency_keys(&basis.dependencies))
-        || !endpoint_keys(&input.endpoint_targets).is_subset(&endpoint_keys(&basis.endpoints)) {
+        || !endpoint_keys(&input.endpoint_targets).is_subset(&endpoint_keys(&basis.endpoints))
+    {
         return Err("dependency or endpoint reach expanded");
     }
     if !write_task_keys(tasks).is_subset(&write_task_keys(&basis.tasks)) {
@@ -852,7 +877,9 @@ fn carry_over_allowed(
 }
 
 async fn carry_over_basis(
-    tx: &mut Transaction<'_, Postgres>, host: Uuid, revision: Uuid,
+    tx: &mut Transaction<'_, Postgres>,
+    host: Uuid,
+    revision: Uuid,
 ) -> Result<CarryOverBasis, ApiError> {
     let (tool_id,wf_def_id,owner_user,owner_position,approval_digest,definition_text):
         (Uuid,Uuid,Option<Uuid>,Option<String>,String,String) = sqlx::query_as(
@@ -863,31 +890,61 @@ async fn carry_over_basis(
         .bind(host).bind(revision).fetch_one(&mut **tx).await.map_err(database_error)?;
     let dep_rows = sqlx::query("SELECT nested_tool_id,nested_tool_version,contract_digest,compatibility_policy,authorization_tool_name,authorization_endpoint_key,authorization_policy_digest,lifecycle_status,dispatch_target FROM workflow_tool_dependency_t WHERE host_id=$1 AND outer_binding_id=$2")
         .bind(host).bind(revision).fetch_all(&mut **tx).await.map_err(database_error)?;
-    let dependencies: Vec<Dependency> = dep_rows.into_iter().map(|row| Ok(Dependency {
-        nested_tool_id: row.try_get("nested_tool_id").map_err(database_error)?,
-        nested_tool_version: row.try_get("nested_tool_version").map_err(database_error)?,
-        contract_digest: row.try_get("contract_digest").map_err(database_error)?,
-        compatibility_policy: row.try_get("compatibility_policy").map_err(database_error)?,
-        authorization_tool_name: row.try_get("authorization_tool_name").map_err(database_error)?,
-        authorization_endpoint_key: row.try_get("authorization_endpoint_key").map_err(database_error)?,
-        authorization_policy_digest: row.try_get("authorization_policy_digest").map_err(database_error)?,
-        lifecycle_status: row.try_get("lifecycle_status").map_err(database_error)?,
-        dispatch_target: row.try_get("dispatch_target").map_err(database_error)?,
-    })).collect::<Result<_, ApiError>>()?;
+    let dependencies: Vec<Dependency> = dep_rows
+        .into_iter()
+        .map(|row| {
+            Ok(Dependency {
+                nested_tool_id: row.try_get("nested_tool_id").map_err(database_error)?,
+                nested_tool_version: row.try_get("nested_tool_version").map_err(database_error)?,
+                contract_digest: row.try_get("contract_digest").map_err(database_error)?,
+                compatibility_policy: row
+                    .try_get("compatibility_policy")
+                    .map_err(database_error)?,
+                authorization_tool_name: row
+                    .try_get("authorization_tool_name")
+                    .map_err(database_error)?,
+                authorization_endpoint_key: row
+                    .try_get("authorization_endpoint_key")
+                    .map_err(database_error)?,
+                authorization_policy_digest: row
+                    .try_get("authorization_policy_digest")
+                    .map_err(database_error)?,
+                lifecycle_status: row.try_get("lifecycle_status").map_err(database_error)?,
+                dispatch_target: row.try_get("dispatch_target").map_err(database_error)?,
+            })
+        })
+        .collect::<Result<_, ApiError>>()?;
     let target_rows = sqlx::query("SELECT endpoint_ref,endpoint_uri,allowed_methods,authorization_policy_digest,resolution_document FROM workflow_endpoint_target_t WHERE host_id=$1 AND binding_id=$2")
         .bind(host).bind(revision).fetch_all(&mut **tx).await.map_err(database_error)?;
-    let endpoints: Vec<EndpointTarget> = target_rows.into_iter().map(|row| Ok(EndpointTarget {
-        endpoint_ref: row.try_get("endpoint_ref").map_err(database_error)?,
-        endpoint_uri: row.try_get("endpoint_uri").map_err(database_error)?,
-        allowed_methods: row.try_get("allowed_methods").map_err(database_error)?,
-        authorization_policy_digest: row.try_get("authorization_policy_digest").map_err(database_error)?,
-        resolution_document: row.try_get("resolution_document").map_err(database_error)?,
-    })).collect::<Result<_, ApiError>>()?;
+    let endpoints: Vec<EndpointTarget> = target_rows
+        .into_iter()
+        .map(|row| {
+            Ok(EndpointTarget {
+                endpoint_ref: row.try_get("endpoint_ref").map_err(database_error)?,
+                endpoint_uri: row.try_get("endpoint_uri").map_err(database_error)?,
+                allowed_methods: row.try_get("allowed_methods").map_err(database_error)?,
+                authorization_policy_digest: row
+                    .try_get("authorization_policy_digest")
+                    .map_err(database_error)?,
+                resolution_document: row.try_get("resolution_document").map_err(database_error)?,
+            })
+        })
+        .collect::<Result<_, ApiError>>()?;
     let definition: WorkflowDefinition = serde_yaml::from_str(&definition_text)
         .map_err(|e| ApiError::definition_mismatch(e.to_string()))?;
     let tasks = classify_tasks(&definition, &dependencies)?;
-    Ok(CarryOverBasis { binding_id: revision, host_id: host, tool_id, wf_def_id,
-        owner_user, owner_position, approval_digest, dependencies, endpoints, tasks })
+    Ok(CarryOverBasis {
+        binding_id: revision,
+        host_id: host,
+        tool_id,
+        wf_def_id,
+        owner_user,
+        owner_position,
+        approval_digest,
+        dependencies,
+        endpoints,
+        tasks,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1104,9 +1161,10 @@ pub async fn publish_binding_verified(
     }
     let version:Option<(String,String,String,String,String)>=sqlx::query_as("SELECT definition,definition_digest,schema_digest,version_status,binding_approval FROM wf_definition_version_t WHERE host_id=$1 AND wf_def_id=$2 AND version=$3 FOR SHARE")
         .bind(input.host_id).bind(b.wf_def_id).bind(&b.workflow_version).fetch_optional(&mut *tx).await.map_err(database_error)?;
-    let (definition_text, stored_digest, stored_schema, status, version_approval) = version.ok_or_else(|| {
-        ApiError::definition_mismatch("published definition version is unavailable")
-    })?;
+    let (definition_text, stored_digest, stored_schema, status, version_approval) = version
+        .ok_or_else(|| {
+            ApiError::definition_mismatch("published definition version is unavailable")
+        })?;
     if status != "active" {
         return Err(error(
             StatusCode::CONFLICT,
@@ -1135,7 +1193,8 @@ pub async fn publish_binding_verified(
     for existing in [active, pending].into_iter().flatten() {
         let row:Option<(String,String,Uuid,String,String,String,Option<String>)>=sqlx::query_as("SELECT binding_digest,revision_status,source_binding_id,workflow_version,definition_digest,approval_digest,carry_over_denied_reason FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2")
             .bind(input.host_id).bind(existing).fetch_optional(&mut *tx).await.map_err(database_error)?;
-        if let Some((digest, revision_status, source, version, definition, approval, denial)) = row {
+        if let Some((digest, revision_status, source, version, definition, approval, denial)) = row
+        {
             if digest == binding_digest {
                 let status = if revision_status == "approved" {
                     "active"
@@ -1146,7 +1205,9 @@ pub async fn publish_binding_verified(
                     "sourceBindingId":source,"workflowVersion":version,"definitionDigest":definition,
                     "bindingDigest":digest,"approvalDigest":approval,"aggregateVersion":current});
                 if status == "pendingApproval" {
-                    if let Some(reason) = denial { receipt["carryOverDeniedReason"] = json!(reason); }
+                    if let Some(reason) = denial {
+                        receipt["carryOverDeniedReason"] = json!(reason);
+                    }
                 }
                 operation_finish(&mut tx, input.host_id, input.operation_id, &receipt).await?;
                 tx.commit().await.map_err(database_error)?;
@@ -1159,16 +1220,31 @@ pub async fn publish_binding_verified(
         Some(revision) => Some(carry_over_basis(&mut tx, input.host_id, revision).await?),
         None => None,
     };
-    let carry_result = basis.as_ref().map_or(Err("no active approval to carry over"), |basis|
-        carry_over_allowed(basis, &input, &approval_digest, &tasks, &requirements,
-            owner_user, owner_position.as_deref(), &version_approval));
+    let carry_result = basis
+        .as_ref()
+        .map_or(Err("no active approval to carry over"), |basis| {
+            carry_over_allowed(
+                basis,
+                &input,
+                &approval_digest,
+                &tasks,
+                &requirements,
+                owner_user,
+                owner_position.as_deref(),
+                &version_approval,
+            )
+        });
     let carry_over = !owner && carry_result.is_ok();
     let status = publication_status(owner, carry_over);
     let carry_over_denied_reason = if status == PublicationStatus::PendingApproval {
         carry_result.as_ref().err().copied()
-    } else { None };
-    let approved_by = owner_user.map(|id| id.to_string())
-        .or_else(|| owner_position.clone()).unwrap_or_else(|| actor.to_string());
+    } else {
+        None
+    };
+    let approved_by = owner_user
+        .map(|id| id.to_string())
+        .or_else(|| owner_position.clone())
+        .unwrap_or_else(|| actor.to_string());
     let revision_status = if status == PublicationStatus::Approved {
         "approved"
     } else {
@@ -1223,7 +1299,11 @@ pub async fn publish_binding_verified(
                 input.host_id,
                 b.tool_id,
                 revision,
-                if carry_over { "carryOver" } else { "selfApprove" },
+                if carry_over {
+                    "carryOver"
+                } else {
+                    "selfApprove"
+                },
                 if carry_over { &approved_by } else { actor },
                 &approval_digest,
                 input.operation_id,
@@ -1426,11 +1506,17 @@ struct ReviewInput {
     operation_id: Uuid,
 }
 
-pub(super) async fn user_identity(state: &RuleApiState, headers: &HeaderMap, args: &Value)
-    -> Result<(String, Vec<String>), ApiError> {
+pub(super) async fn user_identity(
+    state: &RuleApiState,
+    headers: &HeaderMap,
+    args: &Value,
+) -> Result<(String, Vec<String>), ApiError> {
     let (identity, _) = crate::rule_api::authenticate(state, headers).await?;
     assert_body_host(args, identity.host_id)?;
-    Ok((verified_user_id(&identity)?.to_string(), verified_positions(&identity.caller_claims)))
+    Ok((
+        verified_user_id(&identity)?.to_string(),
+        verified_positions(&identity.caller_claims),
+    ))
 }
 
 fn camel_row(value: Value, columns: &[(&str, &str)]) -> Value {
@@ -1438,54 +1524,117 @@ fn camel_row(value: Value, columns: &[(&str, &str)]) -> Value {
     let mut result = serde_json::Map::new();
     for (db_name, json_name) in columns {
         if let Some(value) = source.remove(*db_name) {
-            if !value.is_null() { result.insert((*json_name).to_string(), value); }
+            if !value.is_null() {
+                result.insert((*json_name).to_string(), value);
+            }
         }
     }
     Value::Object(result)
 }
 
-async fn stored_input(tx: &mut Transaction<'_, Postgres>, host: Uuid, revision: Uuid)
-    -> Result<PublishInput, ApiError> {
-    let row: Value = sqlx::query_scalar("SELECT to_jsonb(b) FROM workflow_tool_binding_t b WHERE host_id=$1 AND binding_id=$2")
-        .bind(host).bind(revision).fetch_one(&mut **tx).await.map_err(database_error)?;
-    let binding = camel_row(row, &[
-        ("source_binding_id","sourceBindingId"),("tool_id","toolId"),("tool_name","toolName"),
-        ("wf_def_id","wfDefId"),("workflow_version","workflowVersion"),
-        ("definition_digest","definitionDigest"),("schema_digest","schemaDigest"),
-        ("invocation_mode","invocationMode"),("sync_wait_ms","syncWaitMs"),
-        ("total_deadline_ms","totalDeadlineMs"),("execution_class","executionClass"),
-        ("result_text_mode","resultTextMode"),("cancellation_policy","cancellationPolicy"),
-        ("idempotency_policy","idempotencyPolicy"),("delegation_policy","delegationPolicy"),
-        ("runtime_bounds","runtimeBounds"),("admission_limits","admissionLimits"),
-        ("caller_policy","callerPolicy"),("tool_annotations","toolAnnotations"),
-        ("policy_digest","policyDigest"),("response_policy_digest","responsePolicyDigest"),
-        ("input_schema","inputSchema"),("output_schema","outputSchema")]);
+async fn stored_input(
+    tx: &mut Transaction<'_, Postgres>,
+    host: Uuid,
+    revision: Uuid,
+) -> Result<PublishInput, ApiError> {
+    let row: Value = sqlx::query_scalar(
+        "SELECT to_jsonb(b) FROM workflow_tool_binding_t b WHERE host_id=$1 AND binding_id=$2",
+    )
+    .bind(host)
+    .bind(revision)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(database_error)?;
+    let binding = camel_row(
+        row,
+        &[
+            ("source_binding_id", "sourceBindingId"),
+            ("tool_id", "toolId"),
+            ("tool_name", "toolName"),
+            ("wf_def_id", "wfDefId"),
+            ("workflow_version", "workflowVersion"),
+            ("definition_digest", "definitionDigest"),
+            ("schema_digest", "schemaDigest"),
+            ("invocation_mode", "invocationMode"),
+            ("sync_wait_ms", "syncWaitMs"),
+            ("total_deadline_ms", "totalDeadlineMs"),
+            ("execution_class", "executionClass"),
+            ("result_text_mode", "resultTextMode"),
+            ("cancellation_policy", "cancellationPolicy"),
+            ("idempotency_policy", "idempotencyPolicy"),
+            ("delegation_policy", "delegationPolicy"),
+            ("runtime_bounds", "runtimeBounds"),
+            ("admission_limits", "admissionLimits"),
+            ("caller_policy", "callerPolicy"),
+            ("tool_annotations", "toolAnnotations"),
+            ("policy_digest", "policyDigest"),
+            ("response_policy_digest", "responsePolicyDigest"),
+            ("input_schema", "inputSchema"),
+            ("output_schema", "outputSchema"),
+        ],
+    );
     let binding: Binding = serde_json::from_value(binding).map_err(|e| invalid(e.to_string()))?;
     let dep_rows: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(d) FROM workflow_tool_dependency_t d WHERE host_id=$1 AND outer_binding_id=$2 ORDER BY authorization_tool_name,nested_tool_id,nested_tool_version")
         .bind(host).bind(revision).fetch_all(&mut **tx).await.map_err(database_error)?;
-    let dependencies = dep_rows.into_iter().map(|row| serde_json::from_value(camel_row(row, &[
-        ("nested_tool_id","nestedToolId"),("nested_tool_version","nestedToolVersion"),
-        ("contract_digest","contractDigest"),("compatibility_policy","compatibilityPolicy"),
-        ("authorization_tool_name","authorizationToolName"),
-        ("authorization_endpoint_key","authorizationEndpointKey"),
-        ("authorization_policy_digest","authorizationPolicyDigest"),
-        ("lifecycle_status","lifecycleStatus"),("dispatch_target","dispatchTarget")]))
-        .map_err(|e| invalid(e.to_string()))).collect::<Result<Vec<Dependency>,_>>()?;
+    let dependencies = dep_rows
+        .into_iter()
+        .map(|row| {
+            serde_json::from_value(camel_row(
+                row,
+                &[
+                    ("nested_tool_id", "nestedToolId"),
+                    ("nested_tool_version", "nestedToolVersion"),
+                    ("contract_digest", "contractDigest"),
+                    ("compatibility_policy", "compatibilityPolicy"),
+                    ("authorization_tool_name", "authorizationToolName"),
+                    ("authorization_endpoint_key", "authorizationEndpointKey"),
+                    ("authorization_policy_digest", "authorizationPolicyDigest"),
+                    ("lifecycle_status", "lifecycleStatus"),
+                    ("dispatch_target", "dispatchTarget"),
+                ],
+            ))
+            .map_err(|e| invalid(e.to_string()))
+        })
+        .collect::<Result<Vec<Dependency>, _>>()?;
     let target_rows: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(t) FROM workflow_endpoint_target_t t WHERE host_id=$1 AND binding_id=$2 ORDER BY endpoint_ref")
         .bind(host).bind(revision).fetch_all(&mut **tx).await.map_err(database_error)?;
-    let endpoint_targets = target_rows.into_iter().map(|row| serde_json::from_value(camel_row(row, &[
-        ("endpoint_ref","endpointRef"),("endpoint_uri","endpointUri"),
-        ("allowed_methods","allowedMethods"),
-        ("authorization_policy_digest","authorizationPolicyDigest"),
-        ("resolution_document","resolutionDocument")]))
-        .map_err(|e| invalid(e.to_string()))).collect::<Result<Vec<EndpointTarget>,_>>()?;
-    Ok(PublishInput { host_id: host, binding, dependencies, endpoint_targets,
-        expected_aggregate_version: 0, operation_id: Uuid::nil() })
+    let endpoint_targets = target_rows
+        .into_iter()
+        .map(|row| {
+            serde_json::from_value(camel_row(
+                row,
+                &[
+                    ("endpoint_ref", "endpointRef"),
+                    ("endpoint_uri", "endpointUri"),
+                    ("allowed_methods", "allowedMethods"),
+                    ("authorization_policy_digest", "authorizationPolicyDigest"),
+                    ("resolution_document", "resolutionDocument"),
+                ],
+            ))
+            .map_err(|e| invalid(e.to_string()))
+        })
+        .collect::<Result<Vec<EndpointTarget>, _>>()?;
+    Ok(PublishInput {
+        host_id: host,
+        binding,
+        dependencies,
+        endpoint_targets,
+        expected_aggregate_version: 0,
+        operation_id: Uuid::nil(),
+    })
 }
 
-async fn review_decision(tx: &mut Transaction<'_, Postgres>, host: Uuid, tool: Uuid,
-    revision: Uuid, action: &str, actor: &str, comment: Option<&str>, approval_digest: &str,
-    operation: Uuid) -> Result<(Uuid, chrono::DateTime<chrono::Utc>), ApiError> {
+async fn review_decision(
+    tx: &mut Transaction<'_, Postgres>,
+    host: Uuid,
+    tool: Uuid,
+    revision: Uuid,
+    action: &str,
+    actor: &str,
+    comment: Option<&str>,
+    approval_digest: &str,
+    operation: Uuid,
+) -> Result<(Uuid, chrono::DateTime<chrono::Utc>), ApiError> {
     let id = Uuid::new_v4();
     let decided_ts: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
         "INSERT INTO workflow_tool_binding_decision_t(host_id,decision_id,tool_id,binding_id,action,actor,comment,approval_digest,operation_id)
@@ -1495,25 +1644,46 @@ async fn review_decision(tx: &mut Transaction<'_, Postgres>, host: Uuid, tool: U
     Ok((id, decided_ts))
 }
 
-pub(super) async fn decide(state: &RuleApiState, headers: &HeaderMap, args: &Value)
-    -> Result<Value, ApiError> {
+pub(super) async fn decide(
+    state: &RuleApiState,
+    headers: &HeaderMap,
+    args: &Value,
+) -> Result<Value, ApiError> {
     let (actor, positions) = user_identity(state, headers, args).await?;
-    decide_verified(&state.pool, args, &actor, &positions,
-        state.runtime_config.load().config.maximum_parallelism).await
+    decide_verified(
+        &state.pool,
+        args,
+        &actor,
+        &positions,
+        state.runtime_config.load().config.maximum_parallelism,
+    )
+    .await
 }
-pub async fn decide_verified(pool: &sqlx::PgPool, args: &Value, actor: &str,
-    positions: &[String], maximum_parallelism: usize) -> Result<Value, ApiError> {
-    let input: ReviewInput = serde_json::from_value(args.clone()).map_err(|e| invalid(e.to_string()))?;
+pub async fn decide_verified(
+    pool: &sqlx::PgPool,
+    args: &Value,
+    actor: &str,
+    positions: &[String],
+    maximum_parallelism: usize,
+) -> Result<Value, ApiError> {
+    let input: ReviewInput =
+        serde_json::from_value(args.clone()).map_err(|e| invalid(e.to_string()))?;
     check_digest(&input.expected_binding_digest, "expectedBindingDigest")?;
-    let action = input.decision.as_deref().ok_or_else(|| invalid("decision is required"))?;
-    if !matches!(action, "approve" | "reject") { return Err(invalid("decision must be approve or reject")); }
+    let action = input
+        .decision
+        .as_deref()
+        .ok_or_else(|| invalid("decision is required"))?;
+    if !matches!(action, "approve" | "reject") {
+        return Err(invalid("decision must be approve or reject"));
+    }
     if action == "reject" && input.comment.as_deref().is_none_or(|c| c.trim().is_empty()) {
         return Err(invalid("rejection requires a comment"));
     }
     let mut tx = pool.begin().await.map_err(database_error)?;
     let pin: Option<(Uuid,Uuid,String)> = sqlx::query_as("SELECT tool_id,wf_def_id,workflow_version FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2")
         .bind(input.host_id).bind(input.binding_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
-    let (tool,wf,version) = pin.ok_or_else(|| ApiError::definition_mismatch("binding changed since review"))?;
+    let (tool, wf, version) =
+        pin.ok_or_else(|| ApiError::definition_mismatch("binding changed since review"))?;
     let (definition_text, version_status):(String,String) = sqlx::query_as("SELECT definition,version_status FROM wf_definition_version_t WHERE host_id=$1 AND wf_def_id=$2 AND version=$3 FOR SHARE")
         .bind(input.host_id).bind(wf).bind(&version).fetch_one(&mut *tx).await.map_err(database_error)?;
     let (owner_user,owner_position):(Option<Uuid>,Option<String>) = sqlx::query_as("SELECT owner_user_id,owner_position_id FROM wf_definition_t WHERE host_id=$1 AND wf_def_id=$2 FOR SHARE")
@@ -1522,41 +1692,89 @@ pub async fn decide_verified(pool: &sqlx::PgPool, args: &Value, actor: &str,
     let recorded: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_publication_operation_t WHERE host_id=$1 AND operation_id=$2)")
         .bind(input.host_id).bind(input.operation_id).fetch_one(&mut *tx).await.map_err(database_error)?;
     if !recorded && !owner {
-        return Err(ApiError::policy_denied("only the current definition owner may decide"));
+        return Err(ApiError::policy_denied(
+            "only the current definition owner may decide",
+        ));
     }
-    if let Some(receipt) = operation_begin(&mut tx,input.host_id,input.operation_id,
-        "workflow_binding_decide",args).await? {
+    if let Some(receipt) = operation_begin(
+        &mut tx,
+        input.host_id,
+        input.operation_id,
+        "workflow_binding_decide",
+        args,
+    )
+    .await?
+    {
         let original_actor: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_tool_binding_decision_t WHERE host_id=$1 AND operation_id=$2 AND actor=$3)")
             .bind(input.host_id).bind(input.operation_id).bind(actor).fetch_one(&mut *tx).await.map_err(database_error)?;
-        if !original_actor { return Err(ApiError::policy_denied("only the original decision actor may replay")); }
-        tx.commit().await.map_err(database_error)?; return Ok(receipt);
+        if !original_actor {
+            return Err(ApiError::policy_denied(
+                "only the original decision actor may replay",
+            ));
+        }
+        tx.commit().await.map_err(database_error)?;
+        return Ok(receipt);
     }
-    if !owner { return Err(ApiError::policy_denied("only the current definition owner may decide")); }
-    let (current,active,pending) = head_lock(&mut tx,input.host_id,tool).await?;
+    if !owner {
+        return Err(ApiError::policy_denied(
+            "only the current definition owner may decide",
+        ));
+    }
+    let (current, active, pending) = head_lock(&mut tx, input.host_id, tool).await?;
     let (digest,status,approval_digest):(String,String,String) = sqlx::query_as(
         "SELECT binding_digest,revision_status,approval_digest FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2")
         .bind(input.host_id).bind(input.binding_id).fetch_one(&mut *tx).await.map_err(database_error)?;
-    if pending != Some(input.binding_id) || status != "pendingApproval" || digest != input.expected_binding_digest {
-        return Err(ApiError::definition_mismatch("binding changed since review"));
+    if pending != Some(input.binding_id)
+        || status != "pendingApproval"
+        || digest != input.expected_binding_digest
+    {
+        return Err(ApiError::definition_mismatch(
+            "binding changed since review",
+        ));
     }
     if action == "approve" {
-        if version_status != "active" { return Err(error(StatusCode::CONFLICT,
-            ErrorCode::WorkflowDefinitionRetired,"definition version is retired")); }
-        let stored = stored_input(&mut tx,input.host_id,input.binding_id).await?;
-        let tasks = validate_payload(&stored,&definition_text,maximum_parallelism)?;
+        if version_status != "active" {
+            return Err(error(
+                StatusCode::CONFLICT,
+                ErrorCode::WorkflowDefinitionRetired,
+                "definition version is retired",
+            ));
+        }
+        let stored = stored_input(&mut tx, input.host_id, input.binding_id).await?;
+        let tasks = validate_payload(&stored, &definition_text, maximum_parallelism)?;
         if let Some(old) = active {
-            supersede(&mut tx,input.host_id,tool,old,actor,input.operation_id).await?;
+            supersede(&mut tx, input.host_id, tool, old, actor, input.operation_id).await?;
         }
         sqlx::query("UPDATE workflow_tool_binding_t SET revision_status='approved',active=true,approved_by=$3,approved_ts=CURRENT_TIMESTAMP WHERE host_id=$1 AND binding_id=$2")
             .bind(input.host_id).bind(input.binding_id).bind(actor).execute(&mut *tx).await.map_err(database_error)?;
-        write_task_evidence(&mut tx,input.host_id,input.binding_id,&tasks,owner_user,&owner_position).await?;
+        write_task_evidence(
+            &mut tx,
+            input.host_id,
+            input.binding_id,
+            &tasks,
+            owner_user,
+            &owner_position,
+        )
+        .await?;
     } else {
         sqlx::query("UPDATE workflow_tool_binding_t SET revision_status='rejected',active=false WHERE host_id=$1 AND binding_id=$2")
             .bind(input.host_id).bind(input.binding_id).execute(&mut *tx).await.map_err(database_error)?;
     }
-    let (decision_id,decided_ts) = review_decision(&mut tx,input.host_id,tool,input.binding_id,
-        action,actor,input.comment.as_deref(),&approval_digest,input.operation_id).await?;
-    let next = current.checked_add(1).ok_or_else(|| invalid("aggregate version overflow"))?;
+    let (decision_id, decided_ts) = review_decision(
+        &mut tx,
+        input.host_id,
+        tool,
+        input.binding_id,
+        action,
+        actor,
+        input.comment.as_deref(),
+        &approval_digest,
+        input.operation_id,
+    )
+    .await?;
+    let next = current
+        .checked_add(1)
+        .ok_or_else(|| invalid("aggregate version overflow"))?;
     sqlx::query("UPDATE workflow_tool_publication_t SET active_binding_id=$3,pending_binding_id=NULL,aggregate_version=$4,updated_ts=CURRENT_TIMESTAMP WHERE host_id=$1 AND tool_id=$2")
         .bind(input.host_id).bind(tool).bind(if action=="approve" {Some(input.binding_id)} else {active})
         .bind(next).execute(&mut *tx).await.map_err(database_error)?;
@@ -1564,101 +1782,178 @@ pub async fn decide_verified(pool: &sqlx::PgPool, args: &Value, actor: &str,
         "toolId":tool,"bindingId":input.binding_id,"revisionStatus":if action=="approve" {"approved"}else{"rejected"},
         "bindingDigest":digest,"aggregateVersion":next,"decisionId":decision_id,
         "decidedBy":actor,"decidedTs":decided_ts});
-    operation_finish(&mut tx,input.host_id,input.operation_id,&receipt).await?;
+    operation_finish(&mut tx, input.host_id, input.operation_id, &receipt).await?;
     tx.commit().await.map_err(database_error)?;
     Ok(receipt)
 }
 
-pub(super) async fn revoke(state: &RuleApiState, headers: &HeaderMap, args: &Value)
-    -> Result<Value, ApiError> {
+pub(super) async fn revoke(
+    state: &RuleApiState,
+    headers: &HeaderMap,
+    args: &Value,
+) -> Result<Value, ApiError> {
     let (actor, positions) = user_identity(state, headers, args).await?;
-    revoke_verified(&state.pool,args,&actor,&positions).await
+    revoke_verified(&state.pool, args, &actor, &positions).await
 }
-pub async fn revoke_verified(pool: &sqlx::PgPool,args: &Value,actor: &str,
-    positions: &[String]) -> Result<Value,ApiError> {
-    let input: ReviewInput = serde_json::from_value(args.clone()).map_err(|e| invalid(e.to_string()))?;
-    check_digest(&input.expected_binding_digest,"expectedBindingDigest")?;
+pub async fn revoke_verified(
+    pool: &sqlx::PgPool,
+    args: &Value,
+    actor: &str,
+    positions: &[String],
+) -> Result<Value, ApiError> {
+    let input: ReviewInput =
+        serde_json::from_value(args.clone()).map_err(|e| invalid(e.to_string()))?;
+    check_digest(&input.expected_binding_digest, "expectedBindingDigest")?;
     if input.comment.as_deref().is_none_or(|c| c.trim().is_empty()) {
         return Err(invalid("revocation requires a comment"));
     }
     let mut tx = pool.begin().await.map_err(database_error)?;
     let pin: Option<(Uuid,Uuid,String)> = sqlx::query_as("SELECT tool_id,wf_def_id,workflow_version FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2")
         .bind(input.host_id).bind(input.binding_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
-    let (tool,wf,version) = pin.ok_or_else(|| ApiError::definition_mismatch("binding changed since review"))?;
+    let (tool, wf, version) =
+        pin.ok_or_else(|| ApiError::definition_mismatch("binding changed since review"))?;
     sqlx::query("SELECT version_status FROM wf_definition_version_t WHERE host_id=$1 AND wf_def_id=$2 AND version=$3 FOR SHARE")
         .bind(input.host_id).bind(wf).bind(&version).fetch_one(&mut *tx).await.map_err(database_error)?;
     let (owner_user,owner_position):(Option<Uuid>,Option<String>) = sqlx::query_as("SELECT owner_user_id,owner_position_id FROM wf_definition_t WHERE host_id=$1 AND wf_def_id=$2 FOR SHARE")
         .bind(input.host_id).bind(wf).fetch_one(&mut *tx).await.map_err(database_error)?;
-    let owner = is_definition_owner(actor,positions,owner_user,owner_position.as_deref());
+    let owner = is_definition_owner(actor, positions, owner_user, owner_position.as_deref());
     let recorded: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_publication_operation_t WHERE host_id=$1 AND operation_id=$2)")
         .bind(input.host_id).bind(input.operation_id).fetch_one(&mut *tx).await.map_err(database_error)?;
     if !recorded && !owner {
-        return Err(ApiError::policy_denied("only the current definition owner may revoke"));
+        return Err(ApiError::policy_denied(
+            "only the current definition owner may revoke",
+        ));
     }
-    if let Some(receipt) = operation_begin(&mut tx,input.host_id,input.operation_id,
-        "workflow_binding_revoke",args).await? {
+    if let Some(receipt) = operation_begin(
+        &mut tx,
+        input.host_id,
+        input.operation_id,
+        "workflow_binding_revoke",
+        args,
+    )
+    .await?
+    {
         let original_actor: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_tool_binding_decision_t WHERE host_id=$1 AND operation_id=$2 AND actor=$3)")
             .bind(input.host_id).bind(input.operation_id).bind(actor).fetch_one(&mut *tx).await.map_err(database_error)?;
-        if !original_actor { return Err(ApiError::policy_denied("only the original decision actor may replay")); }
-        tx.commit().await.map_err(database_error)?; return Ok(receipt);
+        if !original_actor {
+            return Err(ApiError::policy_denied(
+                "only the original decision actor may replay",
+            ));
+        }
+        tx.commit().await.map_err(database_error)?;
+        return Ok(receipt);
     }
-    if !owner { return Err(ApiError::policy_denied("only the current definition owner may revoke")); }
-    let (current,active,pending) = head_lock(&mut tx,input.host_id,tool).await?;
+    if !owner {
+        return Err(ApiError::policy_denied(
+            "only the current definition owner may revoke",
+        ));
+    }
+    let (current, active, pending) = head_lock(&mut tx, input.host_id, tool).await?;
     let (digest,status,approval_digest):(String,String,String) = sqlx::query_as(
         "SELECT binding_digest,revision_status,approval_digest FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2")
         .bind(input.host_id).bind(input.binding_id).fetch_one(&mut *tx).await.map_err(database_error)?;
-    if active != Some(input.binding_id) || status != "approved" || digest != input.expected_binding_digest {
-        return Err(ApiError::definition_mismatch("binding changed since review"));
+    if active != Some(input.binding_id)
+        || status != "approved"
+        || digest != input.expected_binding_digest
+    {
+        return Err(ApiError::definition_mismatch(
+            "binding changed since review",
+        ));
     }
     sqlx::query("UPDATE workflow_tool_binding_t SET revision_status='revoked',active=false WHERE host_id=$1 AND binding_id=$2")
         .bind(input.host_id).bind(input.binding_id).execute(&mut *tx).await.map_err(database_error)?;
-    let (decision_id,decided_ts) = review_decision(&mut tx,input.host_id,tool,input.binding_id,
-        "revoke",actor,input.comment.as_deref(),&approval_digest,input.operation_id).await?;
-    let next = current.checked_add(1).ok_or_else(|| invalid("aggregate version overflow"))?;
+    let (decision_id, decided_ts) = review_decision(
+        &mut tx,
+        input.host_id,
+        tool,
+        input.binding_id,
+        "revoke",
+        actor,
+        input.comment.as_deref(),
+        &approval_digest,
+        input.operation_id,
+    )
+    .await?;
+    let next = current
+        .checked_add(1)
+        .ok_or_else(|| invalid("aggregate version overflow"))?;
     sqlx::query("UPDATE workflow_tool_publication_t SET active_binding_id=NULL,pending_binding_id=$3,aggregate_version=$4,updated_ts=CURRENT_TIMESTAMP WHERE host_id=$1 AND tool_id=$2")
         .bind(input.host_id).bind(tool).bind(pending).bind(next).execute(&mut *tx).await.map_err(database_error)?;
     let receipt = json!({"result":"revoked","toolId":tool,"bindingId":input.binding_id,
         "revisionStatus":"revoked","bindingDigest":digest,"aggregateVersion":next,
         "decisionId":decision_id,"decidedBy":actor,"decidedTs":decided_ts});
-    operation_finish(&mut tx,input.host_id,input.operation_id,&receipt).await?;
+    operation_finish(&mut tx, input.host_id, input.operation_id, &receipt).await?;
     tx.commit().await.map_err(database_error)?;
     Ok(receipt)
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct GetInput { host_id: Uuid, #[serde(default)] binding_id: Option<Uuid>,
-    #[serde(default)] tool_id: Option<Uuid> }
+struct GetInput {
+    host_id: Uuid,
+    #[serde(default)]
+    binding_id: Option<Uuid>,
+    #[serde(default)]
+    tool_id: Option<Uuid>,
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ListInput { host_id: Uuid, #[serde(default)] wf_def_id: Option<Uuid>,
-    #[serde(default)] status: Option<String>, role: String, limit: i64,
-    #[serde(default)] cursor: Option<String> }
+struct ListInput {
+    host_id: Uuid,
+    #[serde(default)]
+    wf_def_id: Option<Uuid>,
+    #[serde(default)]
+    status: Option<String>,
+    role: String,
+    limit: i64,
+    #[serde(default)]
+    cursor: Option<String>,
+}
 
-async fn revision_json(tx: &mut Transaction<'_,Postgres>,host: Uuid,revision: Uuid)
-    -> Result<Value,ApiError> {
-    let input = stored_input(tx,host,revision).await?;
-    let row = sqlx::query("SELECT revision_status,binding_digest,approval_digest,requested_by,requested_ts,
+async fn revision_json(
+    tx: &mut Transaction<'_, Postgres>,
+    host: Uuid,
+    revision: Uuid,
+) -> Result<Value, ApiError> {
+    let input = stored_input(tx, host, revision).await?;
+    let row = sqlx::query(
+        "SELECT revision_status,binding_digest,approval_digest,requested_by,requested_ts,
         approved_by,approved_ts,owner_user_id,owner_position_id,update_ts
-        FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2")
-        .bind(host).bind(revision).fetch_one(&mut **tx).await.map_err(database_error)?;
+        FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2",
+    )
+    .bind(host)
+    .bind(revision)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(database_error)?;
     let definition_text: String = sqlx::query_scalar("SELECT definition FROM wf_definition_version_t WHERE host_id=$1 AND wf_def_id=$2 AND version=$3")
         .bind(host).bind(input.binding.wf_def_id).bind(&input.binding.workflow_version)
         .fetch_one(&mut **tx).await.map_err(database_error)?;
     let definition: WorkflowDefinition = serde_yaml::from_str(&definition_text)
         .map_err(|e| ApiError::definition_mismatch(e.to_string()))?;
-    let tasks = classify_tasks(&definition,&input.dependencies)?;
-    let write_tasks: Vec<Value> = tasks.iter()
-        .filter(|task| matches!(task.effect,Effect::Write|Effect::Destructive))
-        .map(|task| json!({"taskName":task.name,"kind":task.kind,"target":task.target,
-            "approvalEvidenceDigest":task.evidence_digest})).collect();
+    let tasks = classify_tasks(&definition, &input.dependencies)?;
+    let write_tasks: Vec<Value> = tasks
+        .iter()
+        .filter(|task| matches!(task.effect, Effect::Write | Effect::Destructive))
+        .map(|task| {
+            json!({"taskName":task.name,"kind":task.kind,"target":task.target,
+            "approvalEvidenceDigest":task.evidence_digest})
+        })
+        .collect();
     let mut owner = serde_json::Map::new();
     let owner_user: Option<Uuid> = row.try_get("owner_user_id").map_err(database_error)?;
-    let owner_position: Option<String> = row.try_get("owner_position_id").map_err(database_error)?;
-    if let Some(value) = owner_user { owner.insert("userId".into(),json!(value)); }
-    if let Some(value) = owner_position { owner.insert("positionId".into(),json!(value)); }
-    let requested_ts: Option<chrono::DateTime<chrono::Utc>> = row.try_get("requested_ts").map_err(database_error)?;
-    let update_ts: chrono::DateTime<chrono::Utc> = row.try_get("update_ts").map_err(database_error)?;
+    let owner_position: Option<String> =
+        row.try_get("owner_position_id").map_err(database_error)?;
+    if let Some(value) = owner_user {
+        owner.insert("userId".into(), json!(value));
+    }
+    if let Some(value) = owner_position {
+        owner.insert("positionId".into(), json!(value));
+    }
+    let requested_ts: Option<chrono::DateTime<chrono::Utc>> =
+        row.try_get("requested_ts").map_err(database_error)?;
+    let update_ts: chrono::DateTime<chrono::Utc> =
+        row.try_get("update_ts").map_err(database_error)?;
     let mut result = json!({"bindingId":revision,"toolId":input.binding.tool_id,
         "toolName":input.binding.tool_name,"wfDefId":input.binding.wf_def_id,
         "workflowVersion":input.binding.workflow_version,
@@ -1671,88 +1966,155 @@ async fn revision_json(tx: &mut Transaction<'_,Postgres>,host: Uuid,revision: Uu
         "binding":input.binding,"dependencies":input.dependencies,
         "endpointTargets":input.endpoint_targets,"writeTasks":write_tasks});
     let approved_by: Option<String> = row.try_get("approved_by").map_err(database_error)?;
-    let approved_ts: Option<chrono::DateTime<chrono::Utc>> = row.try_get("approved_ts").map_err(database_error)?;
-    if let Some(value) = approved_by { result["approvedBy"] = json!(value); }
-    if let Some(value) = approved_ts { result["approvedTs"] = json!(value); }
+    let approved_ts: Option<chrono::DateTime<chrono::Utc>> =
+        row.try_get("approved_ts").map_err(database_error)?;
+    if let Some(value) = approved_by {
+        result["approvedBy"] = json!(value);
+    }
+    if let Some(value) = approved_ts {
+        result["approvedTs"] = json!(value);
+    }
     Ok(result)
 }
 
-pub(super) async fn get(state: &RuleApiState,headers: &HeaderMap,args: &Value)
-    -> Result<Value,ApiError> {
-    let (actor,positions) = user_identity(state,headers,args).await?;
-    get_verified(&state.pool,args,&actor,&positions).await
+pub(super) async fn get(
+    state: &RuleApiState,
+    headers: &HeaderMap,
+    args: &Value,
+) -> Result<Value, ApiError> {
+    let (actor, positions) = user_identity(state, headers, args).await?;
+    get_verified(&state.pool, args, &actor, &positions).await
 }
-pub async fn get_verified(pool: &sqlx::PgPool,args: &Value,actor: &str,
-    positions: &[String]) -> Result<Value,ApiError> {
-    let input: GetInput = serde_json::from_value(args.clone()).map_err(|e| invalid(e.to_string()))?;
+pub async fn get_verified(
+    pool: &sqlx::PgPool,
+    args: &Value,
+    actor: &str,
+    positions: &[String],
+) -> Result<Value, ApiError> {
+    let input: GetInput =
+        serde_json::from_value(args.clone()).map_err(|e| invalid(e.to_string()))?;
     if input.binding_id.is_some() == input.tool_id.is_some() {
         return Err(invalid("exactly one of bindingId or toolId is required"));
     }
     let mut tx = pool.begin().await.map_err(database_error)?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-        .execute(&mut *tx).await.map_err(database_error)?;
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
     let revision: Option<Uuid> = if let Some(id) = input.binding_id {
-        sqlx::query_scalar("SELECT binding_id FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2")
-            .bind(input.host_id).bind(id).fetch_optional(&mut *tx).await.map_err(database_error)?
+        sqlx::query_scalar(
+            "SELECT binding_id FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2",
+        )
+        .bind(input.host_id)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database_error)?
     } else {
         sqlx::query_scalar("SELECT binding_id FROM workflow_tool_binding_t WHERE host_id=$1 AND tool_id=$2 ORDER BY requested_ts DESC NULLS LAST,binding_id DESC LIMIT 1")
             .bind(input.host_id).bind(input.tool_id.unwrap()).fetch_optional(&mut *tx).await.map_err(database_error)?
     };
-    let revision = revision.ok_or_else(|| ApiError::definition_mismatch("binding revision is unavailable"))?;
-    let (tool,wf):(Uuid,Uuid) = sqlx::query_as("SELECT tool_id,wf_def_id FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2")
-        .bind(input.host_id).bind(revision).fetch_one(&mut *tx).await.map_err(database_error)?;
+    let revision =
+        revision.ok_or_else(|| ApiError::definition_mismatch("binding revision is unavailable"))?;
+    let (tool, wf): (Uuid, Uuid) = sqlx::query_as(
+        "SELECT tool_id,wf_def_id FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2",
+    )
+    .bind(input.host_id)
+    .bind(revision)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(database_error)?;
     let (owner_user,owner_position):(Option<Uuid>,Option<String>) = sqlx::query_as("SELECT owner_user_id,owner_position_id FROM wf_definition_t WHERE host_id=$1 AND wf_def_id=$2")
         .bind(input.host_id).bind(wf).fetch_one(&mut *tx).await.map_err(database_error)?;
     let requester: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_tool_binding_t WHERE host_id=$1 AND tool_id=$2 AND requested_by=$3)")
         .bind(input.host_id).bind(tool).bind(actor).fetch_one(&mut *tx).await.map_err(database_error)?;
-    if !is_definition_owner(actor,positions,owner_user,owner_position.as_deref()) && !requester {
-        return Err(ApiError::policy_denied("binding is visible only to its owner or requester"));
+    if !is_definition_owner(actor, positions, owner_user, owner_position.as_deref()) && !requester {
+        return Err(ApiError::policy_denied(
+            "binding is visible only to its owner or requester",
+        ));
     }
     let (aggregate,active):(i64,Option<Uuid>) = sqlx::query_as("SELECT aggregate_version,active_binding_id FROM workflow_tool_publication_t WHERE host_id=$1 AND tool_id=$2")
         .bind(input.host_id).bind(tool).fetch_one(&mut *tx).await.map_err(database_error)?;
-    let revision_value = revision_json(&mut tx,input.host_id,revision).await?;
+    let revision_value = revision_json(&mut tx, input.host_id, revision).await?;
     let decision_rows: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(d) FROM workflow_tool_binding_decision_t d WHERE host_id=$1 AND tool_id=$2 ORDER BY decided_ts,decision_id")
         .bind(input.host_id).bind(tool).fetch_all(&mut *tx).await.map_err(database_error)?;
-    let decisions: Vec<Value> = decision_rows.into_iter().map(|row| camel_row(row,&[
-        ("decision_id","decisionId"),("binding_id","bindingId"),("action","action"),
-        ("actor","actor"),("comment","comment"),("approval_digest","approvalDigest"),
-        ("decided_ts","decidedTs"),("operation_id","operationId")])).collect();
-    let mut view = json!({"revision":revision_value,"aggregateVersion":aggregate,"decisions":decisions});
+    let decisions: Vec<Value> = decision_rows
+        .into_iter()
+        .map(|row| {
+            camel_row(
+                row,
+                &[
+                    ("decision_id", "decisionId"),
+                    ("binding_id", "bindingId"),
+                    ("action", "action"),
+                    ("actor", "actor"),
+                    ("comment", "comment"),
+                    ("approval_digest", "approvalDigest"),
+                    ("decided_ts", "decidedTs"),
+                    ("operation_id", "operationId"),
+                ],
+            )
+        })
+        .collect();
+    let mut view =
+        json!({"revision":revision_value,"aggregateVersion":aggregate,"decisions":decisions});
     if let Some(active) = active.filter(|active| *active != revision) {
-        view["activeRevision"] = revision_json(&mut tx,input.host_id,active).await?;
+        view["activeRevision"] = revision_json(&mut tx, input.host_id, active).await?;
     }
     if view["revision"]["revisionStatus"] == "pendingApproval" {
         let denial: Option<String> = sqlx::query_scalar("SELECT carry_over_denied_reason FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2")
             .bind(input.host_id).bind(revision).fetch_one(&mut *tx).await.map_err(database_error)?;
-        if let Some(reason) = denial { view["carryOverDeniedReason"] = json!(reason); }
+        if let Some(reason) = denial {
+            view["carryOverDeniedReason"] = json!(reason);
+        }
     }
     tx.commit().await.map_err(database_error)?;
     Ok(view)
 }
 
-pub(super) async fn list(state: &RuleApiState,headers: &HeaderMap,args: &Value)
-    -> Result<Value,ApiError> {
-    let (actor,positions) = user_identity(state,headers,args).await?;
-    list_verified(&state.pool,args,&actor,&positions).await
+pub(super) async fn list(
+    state: &RuleApiState,
+    headers: &HeaderMap,
+    args: &Value,
+) -> Result<Value, ApiError> {
+    let (actor, positions) = user_identity(state, headers, args).await?;
+    list_verified(&state.pool, args, &actor, &positions).await
 }
-pub async fn list_verified(pool: &sqlx::PgPool,args: &Value,actor: &str,
-    positions: &[String]) -> Result<Value,ApiError> {
-    let input: ListInput = serde_json::from_value(args.clone()).map_err(|e| invalid(e.to_string()))?;
-    if !matches!(input.role.as_str(),"owner"|"requester") || !(1..=200).contains(&input.limit) {
+pub async fn list_verified(
+    pool: &sqlx::PgPool,
+    args: &Value,
+    actor: &str,
+    positions: &[String],
+) -> Result<Value, ApiError> {
+    let input: ListInput =
+        serde_json::from_value(args.clone()).map_err(|e| invalid(e.to_string()))?;
+    if !matches!(input.role.as_str(), "owner" | "requester") || !(1..=200).contains(&input.limit) {
         return Err(invalid("role or limit is invalid"));
     }
-    let cursor = input.cursor.as_deref().map(|cursor| {
-        let (ts,id) = cursor.split_once('|').ok_or_else(|| invalid("invalid cursor"))?;
-        let ts = chrono::DateTime::parse_from_rfc3339(ts)
-            .map_err(|_| invalid("invalid cursor timestamp"))?.with_timezone(&chrono::Utc);
-        let id = id.parse::<Uuid>().map_err(|_| invalid("invalid cursor binding id"))?;
-        Ok::<_,ApiError>((ts,id))
-    }).transpose()?;
+    let cursor = input
+        .cursor
+        .as_deref()
+        .map(|cursor| {
+            let (ts, id) = cursor
+                .split_once('|')
+                .ok_or_else(|| invalid("invalid cursor"))?;
+            let ts = chrono::DateTime::parse_from_rfc3339(ts)
+                .map_err(|_| invalid("invalid cursor timestamp"))?
+                .with_timezone(&chrono::Utc);
+            let id = id
+                .parse::<Uuid>()
+                .map_err(|_| invalid("invalid cursor binding id"))?;
+            Ok::<_, ApiError>((ts, id))
+        })
+        .transpose()?;
     let mut tx = pool.begin().await.map_err(database_error)?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-        .execute(&mut *tx).await.map_err(database_error)?;
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
     let user_id = actor.parse::<Uuid>().ok();
-    let rows = sqlx::query("SELECT b.binding_id,b.tool_id,b.tool_name,b.wf_def_id,b.workflow_version,
+    let rows = sqlx::query(
+        "SELECT b.binding_id,b.tool_id,b.tool_name,b.wf_def_id,b.workflow_version,
         b.revision_status,b.requested_by,b.requested_ts,b.approved_by,b.approved_ts
         FROM workflow_tool_binding_t b
         JOIN wf_definition_t d ON d.host_id=b.host_id AND d.wf_def_id=b.wf_def_id
@@ -1762,16 +2124,27 @@ pub async fn list_verified(pool: &sqlx::PgPool,args: &Value,actor: &str,
           AND ($6::uuid IS NULL OR b.wf_def_id=$6)
           AND ($7::text IS NULL OR b.revision_status=$7)
           AND ($8::timestamptz IS NULL OR (b.requested_ts,b.binding_id)<($8,$9))
-        ORDER BY b.requested_ts DESC,b.binding_id DESC LIMIT $10")
-        .bind(input.host_id).bind(&input.role).bind(user_id).bind(positions).bind(actor)
-        .bind(input.wf_def_id).bind(&input.status).bind(cursor.map(|c| c.0))
-        .bind(cursor.map(|c| c.1)).bind(input.limit+1)
-        .fetch_all(&mut *tx).await.map_err(database_error)?;
+        ORDER BY b.requested_ts DESC,b.binding_id DESC LIMIT $10",
+    )
+    .bind(input.host_id)
+    .bind(&input.role)
+    .bind(user_id)
+    .bind(positions)
+    .bind(actor)
+    .bind(input.wf_def_id)
+    .bind(&input.status)
+    .bind(cursor.map(|c| c.0))
+    .bind(cursor.map(|c| c.1))
+    .bind(input.limit + 1)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(database_error)?;
     let more = rows.len() as i64 > input.limit;
     let mut items = Vec::new();
     for row in rows.into_iter().take(input.limit as usize) {
         let approved_by: Option<String> = row.try_get("approved_by").map_err(database_error)?;
-        let approved_ts: Option<chrono::DateTime<chrono::Utc>> = row.try_get("approved_ts").map_err(database_error)?;
+        let approved_ts: Option<chrono::DateTime<chrono::Utc>> =
+            row.try_get("approved_ts").map_err(database_error)?;
         let mut item = json!({"bindingId":row.try_get::<Uuid,_>("binding_id").map_err(database_error)?,
             "toolId":row.try_get::<Uuid,_>("tool_id").map_err(database_error)?,
             "toolName":row.try_get::<String,_>("tool_name").map_err(database_error)?,
@@ -1780,21 +2153,33 @@ pub async fn list_verified(pool: &sqlx::PgPool,args: &Value,actor: &str,
             "revisionStatus":row.try_get::<String,_>("revision_status").map_err(database_error)?,
             "requestedBy":row.try_get::<String,_>("requested_by").map_err(database_error)?,
             "requestedTs":row.try_get::<chrono::DateTime<chrono::Utc>,_>("requested_ts").map_err(database_error)?});
-        if let Some(value)=approved_by { item["approvedBy"]=json!(value); }
-        if let Some(value)=approved_ts { item["approvedTs"]=json!(value); }
+        if let Some(value) = approved_by {
+            item["approvedBy"] = json!(value);
+        }
+        if let Some(value) = approved_ts {
+            item["approvedTs"] = json!(value);
+        }
         items.push(item);
     }
     let mut output = json!({"items":items});
     if more {
-        if let Some(last)=items.last() {
-            output["nextCursor"] = json!(format!("{}|{}",last["requestedTs"].as_str().unwrap(),
-                last["bindingId"].as_str().unwrap()));
+        if let Some(last) = items.last() {
+            output["nextCursor"] = json!(format!(
+                "{}|{}",
+                last["requestedTs"].as_str().unwrap(),
+                last["bindingId"].as_str().unwrap()
+            ));
         }
     }
-    if input.role=="owner" && input.wf_def_id.is_none() {
+    if input.role == "owner" && input.wf_def_id.is_none() {
         let counts: Vec<(String,i64)> = sqlx::query_as("SELECT b.revision_status,count(*) FROM workflow_tool_binding_t b JOIN wf_definition_t d ON d.host_id=b.host_id AND d.wf_def_id=b.wf_def_id WHERE b.host_id=$1 AND (d.owner_user_id=$2 OR d.owner_position_id=ANY($3)) AND b.requested_ts IS NOT NULL GROUP BY b.revision_status")
             .bind(input.host_id).bind(user_id).bind(positions).fetch_all(&mut *tx).await.map_err(database_error)?;
-        output["counts"] = Value::Object(counts.into_iter().map(|(status,count)| (status,json!(count))).collect());
+        output["counts"] = Value::Object(
+            counts
+                .into_iter()
+                .map(|(status, count)| (status, json!(count)))
+                .collect(),
+        );
     }
     tx.commit().await.map_err(database_error)?;
     Ok(output)
@@ -1935,45 +2320,199 @@ mod tests {
         let (_, approval_digest) = digests(&input).unwrap();
         let owner = Uuid::new_v4();
         let tasks = vec![task(Effect::Write)];
-        let requirements = StaticRequirements { fork_width: 1, attempts: 1,
-            nested_calls: 0, cost_units: 1 };
-        let basis = CarryOverBasis { binding_id: Uuid::new_v4(), host_id: input.host_id,
-            tool_id: input.binding.tool_id, wf_def_id: input.binding.wf_def_id,
-            owner_user: Some(owner), owner_position: None,
-            approval_digest: approval_digest.clone(),
-            dependencies: input.dependencies.clone(), endpoints: input.endpoint_targets.clone(),
-            tasks: tasks.clone() };
-        let allowed = |basis: &CarryOverBasis, input: &PublishInput, digest: &str,
-            tasks: &[TaskEffect], requirements: &StaticRequirements, approval: &str| {
-            carry_over_allowed(basis,input,digest,tasks,requirements,Some(owner),None,approval)
+        let requirements = StaticRequirements {
+            fork_width: 1,
+            attempts: 1,
+            nested_calls: 0,
+            cost_units: 1,
         };
-        assert!(allowed(&basis,&input,&approval_digest,&tasks,&requirements,"carryOver").is_ok());
-        let mut changed = input.clone(); changed.host_id = Uuid::new_v4();
-        assert!(allowed(&basis,&changed,&approval_digest,&tasks,&requirements,"carryOver").is_err());
-        let mut changed = input.clone(); changed.binding.tool_id = Uuid::new_v4();
-        assert!(allowed(&basis,&changed,&approval_digest,&tasks,&requirements,"carryOver").is_err());
-        let mut changed = input.clone(); changed.binding.wf_def_id = Uuid::new_v4();
-        assert!(allowed(&basis,&changed,&approval_digest,&tasks,&requirements,"carryOver").is_err());
-        let mut changed = basis.clone(); changed.owner_user = Some(Uuid::new_v4());
-        assert!(allowed(&changed,&input,&approval_digest,&tasks,&requirements,"carryOver").is_err());
-        assert!(allowed(&basis,&input,"different",&tasks,&requirements,"carryOver").is_err());
+        let basis = CarryOverBasis {
+            binding_id: Uuid::new_v4(),
+            host_id: input.host_id,
+            tool_id: input.binding.tool_id,
+            wf_def_id: input.binding.wf_def_id,
+            owner_user: Some(owner),
+            owner_position: None,
+            approval_digest: approval_digest.clone(),
+            dependencies: input.dependencies.clone(),
+            endpoints: input.endpoint_targets.clone(),
+            tasks: tasks.clone(),
+        };
+        let allowed = |basis: &CarryOverBasis,
+                       input: &PublishInput,
+                       digest: &str,
+                       tasks: &[TaskEffect],
+                       requirements: &StaticRequirements,
+                       approval: &str| {
+            carry_over_allowed(
+                basis,
+                input,
+                digest,
+                tasks,
+                requirements,
+                Some(owner),
+                None,
+                approval,
+            )
+        };
+        assert!(
+            allowed(
+                &basis,
+                &input,
+                &approval_digest,
+                &tasks,
+                &requirements,
+                "carryOver"
+            )
+            .is_ok()
+        );
         let mut changed = input.clone();
-        if let Some(dep) = changed.dependencies.first_mut() { dep.contract_digest = format!("sha256:{}","f".repeat(64)); }
-        else { changed.endpoint_targets.push(EndpointTarget { endpoint_ref:"extra".into(),
-            endpoint_uri:"https://example.org".into(),allowed_methods:vec!["GET".into()],
-            authorization_policy_digest:format!("sha256:{}","f".repeat(64)),resolution_document:None }); }
-        assert!(allowed(&basis,&changed,&approval_digest,&tasks,&requirements,"carryOver").is_err());
-        let mut changed = input.clone(); changed.endpoint_targets.push(EndpointTarget {
-            endpoint_ref:"expanded".into(),endpoint_uri:"https://example.org".into(),
-            allowed_methods:vec!["HEAD".into()], authorization_policy_digest:format!("sha256:{}","e".repeat(64)),
-            resolution_document:None });
-        assert!(allowed(&basis,&changed,&approval_digest,&tasks,&requirements,"carryOver").is_err());
-        let mut changed = tasks.clone(); changed.push(TaskEffect { name:"new".into(),
-            ..task(Effect::Write) });
-        assert!(allowed(&basis,&input,&approval_digest,&changed,&requirements,"carryOver").is_err());
-        let changed = StaticRequirements { attempts: u64::MAX, ..requirements.clone() };
-        assert!(allowed(&basis,&input,&approval_digest,&tasks,&changed,"carryOver").is_err());
-        assert!(allowed(&basis,&input,&approval_digest,&tasks,&requirements,"reapprove").is_err());
+        changed.host_id = Uuid::new_v4();
+        assert!(
+            allowed(
+                &basis,
+                &changed,
+                &approval_digest,
+                &tasks,
+                &requirements,
+                "carryOver"
+            )
+            .is_err()
+        );
+        let mut changed = input.clone();
+        changed.binding.tool_id = Uuid::new_v4();
+        assert!(
+            allowed(
+                &basis,
+                &changed,
+                &approval_digest,
+                &tasks,
+                &requirements,
+                "carryOver"
+            )
+            .is_err()
+        );
+        let mut changed = input.clone();
+        changed.binding.wf_def_id = Uuid::new_v4();
+        assert!(
+            allowed(
+                &basis,
+                &changed,
+                &approval_digest,
+                &tasks,
+                &requirements,
+                "carryOver"
+            )
+            .is_err()
+        );
+        let mut changed = basis.clone();
+        changed.owner_user = Some(Uuid::new_v4());
+        assert!(
+            allowed(
+                &changed,
+                &input,
+                &approval_digest,
+                &tasks,
+                &requirements,
+                "carryOver"
+            )
+            .is_err()
+        );
+        assert!(
+            allowed(
+                &basis,
+                &input,
+                "different",
+                &tasks,
+                &requirements,
+                "carryOver"
+            )
+            .is_err()
+        );
+        let mut changed = input.clone();
+        if let Some(dep) = changed.dependencies.first_mut() {
+            dep.contract_digest = format!("sha256:{}", "f".repeat(64));
+        } else {
+            changed.endpoint_targets.push(EndpointTarget {
+                endpoint_ref: "extra".into(),
+                endpoint_uri: "https://example.org".into(),
+                allowed_methods: vec!["GET".into()],
+                authorization_policy_digest: format!("sha256:{}", "f".repeat(64)),
+                resolution_document: None,
+            });
+        }
+        assert!(
+            allowed(
+                &basis,
+                &changed,
+                &approval_digest,
+                &tasks,
+                &requirements,
+                "carryOver"
+            )
+            .is_err()
+        );
+        let mut changed = input.clone();
+        changed.endpoint_targets.push(EndpointTarget {
+            endpoint_ref: "expanded".into(),
+            endpoint_uri: "https://example.org".into(),
+            allowed_methods: vec!["HEAD".into()],
+            authorization_policy_digest: format!("sha256:{}", "e".repeat(64)),
+            resolution_document: None,
+        });
+        assert!(
+            allowed(
+                &basis,
+                &changed,
+                &approval_digest,
+                &tasks,
+                &requirements,
+                "carryOver"
+            )
+            .is_err()
+        );
+        let mut changed = tasks.clone();
+        changed.push(TaskEffect {
+            name: "new".into(),
+            ..task(Effect::Write)
+        });
+        assert!(
+            allowed(
+                &basis,
+                &input,
+                &approval_digest,
+                &changed,
+                &requirements,
+                "carryOver"
+            )
+            .is_err()
+        );
+        let changed = StaticRequirements {
+            attempts: u64::MAX,
+            ..requirements.clone()
+        };
+        assert!(
+            allowed(
+                &basis,
+                &input,
+                &approval_digest,
+                &tasks,
+                &changed,
+                "carryOver"
+            )
+            .is_err()
+        );
+        assert!(
+            allowed(
+                &basis,
+                &input,
+                &approval_digest,
+                &tasks,
+                &requirements,
+                "reapprove"
+            )
+            .is_err()
+        );
     }
     #[test]
     fn field_rules_reject_each_invalid_binding_family() {

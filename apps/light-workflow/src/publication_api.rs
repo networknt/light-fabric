@@ -1,8 +1,10 @@
 //! Portal-authoritative definition publication and grant synchronization.
 
 pub(crate) mod binding;
-pub use binding::{publish_binding_verified, retire_binding_verified, decide_verified,
-    revoke_verified, get_verified, list_verified, pinned_evidence, pinned_dependencies};
+pub use binding::{
+    decide_verified, get_verified, list_verified, pinned_dependencies, pinned_evidence,
+    publish_binding_verified, retire_binding_verified, revoke_verified,
+};
 
 use axum::http::{HeaderMap, StatusCode};
 use light_security::{
@@ -44,8 +46,12 @@ pub(crate) async fn dispatch(
         "workflow_definition_retire" => retire_definition(state, headers, args, settings)
             .await
             .map(Some),
-        "workflow_binding_publish" => binding::publish(state, headers, args, settings).await.map(Some),
-        "workflow_binding_retire" => binding::retire(state, headers, args, settings).await.map(Some),
+        "workflow_binding_publish" => binding::publish(state, headers, args, settings)
+            .await
+            .map(Some),
+        "workflow_binding_retire" => binding::retire(state, headers, args, settings)
+            .await
+            .map(Some),
         "workflow_binding_get" => binding::get(state, headers, args).await.map(Some),
         "workflow_binding_list" => binding::list(state, headers, args).await.map(Some),
         "workflow_binding_decide" => binding::decide(state, headers, args).await.map(Some),
@@ -121,14 +127,21 @@ fn verified_positions(claims: &Value) -> Vec<String> {
     fn collect(value: &Value, out: &mut Vec<String>) {
         match value {
             Value::Array(values) => values.iter().for_each(|value| collect(value, out)),
-            Value::String(value) => out.extend(value.split([',', ' '])
-                .map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned)),
+            Value::String(value) => out.extend(
+                value
+                    .split([',', ' '])
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned),
+            ),
             _ => {}
         }
     }
     let mut positions = Vec::new();
     for name in ["pos", "positions"] {
-        if let Some(value) = claims.get(name) { collect(value, &mut positions); }
+        if let Some(value) = claims.get(name) {
+            collect(value, &mut positions);
+        }
     }
     positions.sort();
     positions.dedup();
@@ -146,13 +159,28 @@ fn is_definition_owner(
 }
 
 fn verified_user_id(identity: &InvocationIdentity) -> Result<&str, ApiError> {
-    if identity.caller_claims.get("token_use").and_then(Value::as_str) == Some("app") {
+    if identity
+        .caller_claims
+        .get("token_use")
+        .and_then(Value::as_str)
+        == Some("app")
+    {
         return Err(ApiError::policy_denied("a user token is required"));
     }
-    identity.caller_claims.get("user_id").and_then(Value::as_str)
+    identity
+        .caller_claims
+        .get("user_id")
+        .and_then(Value::as_str)
         .or_else(|| identity.caller_claims.get("uid").and_then(Value::as_str))
-        .or_else(|| (identity.caller_claims.get("token_use").and_then(Value::as_str)==Some("user"))
-            .then(|| identity.caller_claims.get("sub").and_then(Value::as_str)).flatten())
+        .or_else(|| {
+            (identity
+                .caller_claims
+                .get("token_use")
+                .and_then(Value::as_str)
+                == Some("user"))
+            .then(|| identity.caller_claims.get("sub").and_then(Value::as_str))
+            .flatten()
+        })
         .filter(|id| !id.is_empty())
         .ok_or_else(|| ApiError::policy_denied("verified user id is required"))
 }
@@ -230,14 +258,9 @@ async fn verify_publisher_token(
             "publisher client is not allowlisted",
         ));
     }
-    let principal = verify_with_purpose(
-        security,
-        token,
-        TokenUse::App,
-        publisher_keys(settings),
-    )
-    .await
-    .map_err(|_| ApiError::policy_denied("publisher application token is invalid"))?;
+    let principal = verify_with_purpose(security, token, TokenUse::App, publisher_keys(settings))
+        .await
+        .map_err(|_| ApiError::policy_denied("publisher application token is invalid"))?;
     assert_publisher_claims(&principal, host_id, publisher_client_ids)?;
     Ok(principal)
 }
@@ -250,8 +273,14 @@ pub(crate) async fn verify_publisher_header(
     settings: Option<&ActionSettings>,
 ) -> Result<AuthPrincipal, ApiError> {
     let generation = state.runtime_config.load();
-    verify_publisher_header_with(&state.invocation_security, &generation.config.publisher_client_ids,
-        headers, host_id, settings).await
+    verify_publisher_header_with(
+        &state.invocation_security,
+        &generation.config.publisher_client_ids,
+        headers,
+        host_id,
+        settings,
+    )
+    .await
 }
 
 async fn verify_publisher_header_with(
@@ -261,7 +290,14 @@ async fn verify_publisher_header_with(
     host_id: Uuid,
     settings: Option<&ActionSettings>,
 ) -> Result<AuthPrincipal, ApiError> {
-    verify_publisher_token(security, publisher_client_ids, publisher_header_token(headers)?, host_id, settings).await
+    verify_publisher_token(
+        security,
+        publisher_client_ids,
+        publisher_header_token(headers)?,
+        host_id,
+        settings,
+    )
+    .await
 }
 
 /// Publisher assertion for durable save/grant synchronization. This validates
@@ -273,11 +309,17 @@ pub(crate) async fn authenticate_publisher_service(
     settings: Option<&ActionSettings>,
 ) -> Result<AuthPrincipal, ApiError> {
     let generation = state.runtime_config.load();
-    authenticate_publisher_service_with(&state.invocation_security,
+    authenticate_publisher_service_with(
+        &state.invocation_security,
         &generation.config.publisher_client_ids,
         &generation.config.invocation_caller_service_ids,
         &generation.config.invocation_caller_environments,
-        state.invocation_environment.as_ref(), headers, host_id, settings).await
+        state.invocation_environment.as_ref(),
+        headers,
+        host_id,
+        settings,
+    )
+    .await
 }
 
 async fn authenticate_publisher_service_with(
@@ -291,15 +333,13 @@ async fn authenticate_publisher_service_with(
     settings: Option<&ActionSettings>,
 ) -> Result<AuthPrincipal, ApiError> {
     let app_token = bearer(headers, "authorization")?;
-    let publisher = verify_publisher_token(security, publisher_client_ids, app_token, host_id, settings).await?;
+    let publisher =
+        verify_publisher_token(security, publisher_client_ids, app_token, host_id, settings)
+            .await?;
     let scope_token = bearer(headers, "x-scope-token")?;
-    let scope = verify_jwt_token(
-        security,
-        scope_token,
-        JwtExpiryMode::Enforce,
-    )
-    .await
-    .map_err(|_| ApiError::policy_denied("Gateway caller token is invalid"))?;
+    let scope = verify_jwt_token(security, scope_token, JwtExpiryMode::Enforce)
+        .await
+        .map_err(|_| ApiError::policy_denied("Gateway caller token is invalid"))?;
     let sid = scope.claims.get("sid").and_then(Value::as_str);
     if sid.is_none_or(|sid| !caller_service_ids.iter().any(|id| id == sid)) {
         return Err(ApiError::policy_denied(
@@ -864,13 +904,7 @@ async fn publish_definition(
     let positions = verified_positions(&identity.caller_claims);
     let actor = verified_user_id(&identity)?.to_owned();
     with_matching_host(args, identity.host_id, || {
-        publish_definition_verified(
-            &state.pool,
-            args,
-            &actor,
-            &positions,
-            cel_validator,
-        )
+        publish_definition_verified(&state.pool, args, &actor, &positions, cel_validator)
     })
     .await
 }
@@ -1065,27 +1099,72 @@ mod tests {
     fn verified_user_and_position_owner_paths() {
         let user = Uuid::new_v4();
         let positions = verified_positions(&json!({"pos":"team-a,team-b"}));
-        assert!(is_definition_owner(&user.to_string(), &positions, Some(user), None));
-        assert!(is_definition_owner("another-user", &positions, None, Some("team-b")));
-        assert!(!is_definition_owner("another-user", &[], None, Some("team-b")));
-        assert!(!is_definition_owner("another-user", &positions, Some(user), Some("team-c")));
+        assert!(is_definition_owner(
+            &user.to_string(),
+            &positions,
+            Some(user),
+            None
+        ));
+        assert!(is_definition_owner(
+            "another-user",
+            &positions,
+            None,
+            Some("team-b")
+        ));
+        assert!(!is_definition_owner(
+            "another-user",
+            &[],
+            None,
+            Some("team-b")
+        ));
+        assert!(!is_definition_owner(
+            "another-user",
+            &positions,
+            Some(user),
+            Some("team-c")
+        ));
     }
     #[tokio::test]
     async fn signed_owner_claims_use_user_id_and_pos() {
-        let security=light_security::SecurityRuntime::with_test_hs256_key("step03",TEST_KEY).await;
-        let user=Uuid::new_v4();
-        let token=signed(json!({"iss":"step03","aud":"workflow","exp":4102444800u64,
+        let security =
+            light_security::SecurityRuntime::with_test_hs256_key("step03", TEST_KEY).await;
+        let user = Uuid::new_v4();
+        let token = signed(json!({"iss":"step03","aud":"workflow","exp":4102444800u64,
             "token_use":"user","client_id":"portal-ui","user_id":user,"pos":"ops,reviewers",
             "host":Uuid::new_v4()}));
-        let principal=verify_jwt_token(&security,&token,JwtExpiryMode::Enforce).await.unwrap();
-        let positions=verified_positions(&principal.claims);
-        assert!(is_definition_owner(principal.user_id.as_deref().unwrap(),&positions,Some(user),None));
-        assert!(is_definition_owner(principal.user_id.as_deref().unwrap(),&positions,None,Some("reviewers")));
-        let without_pos=signed(json!({"iss":"step03","aud":"workflow","exp":4102444800u64,
+        let principal = verify_jwt_token(&security, &token, JwtExpiryMode::Enforce)
+            .await
+            .unwrap();
+        let positions = verified_positions(&principal.claims);
+        assert!(is_definition_owner(
+            principal.user_id.as_deref().unwrap(),
+            &positions,
+            Some(user),
+            None
+        ));
+        assert!(is_definition_owner(
+            principal.user_id.as_deref().unwrap(),
+            &positions,
+            None,
+            Some("reviewers")
+        ));
+        let without_pos = signed(json!({"iss":"step03","aud":"workflow","exp":4102444800u64,
             "token_use":"user","client_id":"portal-ui","user_id":user,"host":Uuid::new_v4()}));
-        let principal=verify_jwt_token(&security,&without_pos,JwtExpiryMode::Enforce).await.unwrap();
-        assert!(is_definition_owner(principal.user_id.as_deref().unwrap(),&verified_positions(&principal.claims),Some(user),None));
-        assert!(!is_definition_owner(principal.user_id.as_deref().unwrap(),&verified_positions(&principal.claims),None,Some("reviewers")));
+        let principal = verify_jwt_token(&security, &without_pos, JwtExpiryMode::Enforce)
+            .await
+            .unwrap();
+        assert!(is_definition_owner(
+            principal.user_id.as_deref().unwrap(),
+            &verified_positions(&principal.claims),
+            Some(user),
+            None
+        ));
+        assert!(!is_definition_owner(
+            principal.user_id.as_deref().unwrap(),
+            &verified_positions(&principal.claims),
+            None,
+            Some("reviewers")
+        ));
     }
     use axum::response::IntoResponse;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -1094,7 +1173,12 @@ mod tests {
     fn signed(claims: Value) -> String {
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
         header.kid = Some("step03".into());
-        jsonwebtoken::encode(&header, &claims, &jsonwebtoken::EncodingKey::from_secret(TEST_KEY)).unwrap()
+        jsonwebtoken::encode(
+            &header,
+            &claims,
+            &jsonwebtoken::EncodingKey::from_secret(TEST_KEY),
+        )
+        .unwrap()
     }
     fn publisher_claims(host: Uuid, purpose: &str) -> Value {
         json!({"iss":"step03","aud":"workflow","exp":4102444800u64,
@@ -1111,49 +1195,154 @@ mod tests {
         headers: &HeaderMap,
         host: Uuid,
     ) -> Result<AuthPrincipal, ApiError> {
-        authenticate_publisher_service_with(security, allow, callers, &[], "dev", headers, host, None).await
+        authenticate_publisher_service_with(
+            security,
+            allow,
+            callers,
+            &[],
+            "dev",
+            headers,
+            host,
+            None,
+        )
+        .await
     }
     #[tokio::test]
     async fn signed_tokens_cover_both_publisher_entry_paths_before_store() {
-        let security = light_security::SecurityRuntime::with_test_hs256_key("step03", TEST_KEY).await;
+        let security =
+            light_security::SecurityRuntime::with_test_hs256_key("step03", TEST_KEY).await;
         let host = Uuid::new_v4();
         let other = Uuid::new_v4();
         let allow = vec!["publisher-a".to_owned()];
         let callers = vec!["gateway-a".to_owned()];
         let mut headers = HeaderMap::new();
-        headers.insert("x-publisher-token", signed(publisher_claims(host, "app")).parse().unwrap());
-        let direct = verify_with_purpose(&security, headers.get("x-publisher-token").unwrap().to_str().unwrap(), TokenUse::App, &[]).await;
+        headers.insert(
+            "x-publisher-token",
+            signed(publisher_claims(host, "app")).parse().unwrap(),
+        );
+        let direct = verify_with_purpose(
+            &security,
+            headers.get("x-publisher-token").unwrap().to_str().unwrap(),
+            TokenUse::App,
+            &[],
+        )
+        .await;
         assert!(direct.is_ok(), "{:?}", direct.err());
-        assert!(verify_publisher_header_with(&security, &allow, &headers, host, None).await.is_ok(),
-            "{:?}", verify_publisher_header_with(&security, &allow, &headers, host, None).await.err());
-        assert!(verify_publisher_header_with(&security, &allow, &headers, other, None).await.is_err());
-        assert!(verify_publisher_header_with(&security, &[], &headers, host, None).await.is_err());
+        assert!(
+            verify_publisher_header_with(&security, &allow, &headers, host, None)
+                .await
+                .is_ok(),
+            "{:?}",
+            verify_publisher_header_with(&security, &allow, &headers, host, None)
+                .await
+                .err()
+        );
+        assert!(
+            verify_publisher_header_with(&security, &allow, &headers, other, None)
+                .await
+                .is_err()
+        );
+        assert!(
+            verify_publisher_header_with(&security, &[], &headers, host, None)
+                .await
+                .is_err()
+        );
         headers.remove("x-publisher-token");
-        assert!(verify_publisher_header_with(&security, &allow, &headers, host, None).await.is_err());
-        headers.insert("x-publisher-token", signed(publisher_claims(host, "user")).parse().unwrap());
-        assert!(verify_publisher_header_with(&security, &allow, &headers, host, None).await.is_err());
+        assert!(
+            verify_publisher_header_with(&security, &allow, &headers, host, None)
+                .await
+                .is_err()
+        );
+        headers.insert(
+            "x-publisher-token",
+            signed(publisher_claims(host, "user")).parse().unwrap(),
+        );
+        assert!(
+            verify_publisher_header_with(&security, &allow, &headers, host, None)
+                .await
+                .is_err()
+        );
 
-        headers.insert("authorization", format!("Bearer {}", signed(publisher_claims(host, "app"))).parse().unwrap());
-        headers.insert("x-scope-token", format!("Bearer {}", signed(scope_claims(host, "gateway-a"))).parse().unwrap());
-        assert!(test_service(&security, &allow, &callers, &headers, host).await.is_ok());
-        assert!(test_service(&security, &allow, &callers, &headers, other).await.is_err());
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", signed(publisher_claims(host, "app")))
+                .parse()
+                .unwrap(),
+        );
+        headers.insert(
+            "x-scope-token",
+            format!("Bearer {}", signed(scope_claims(host, "gateway-a")))
+                .parse()
+                .unwrap(),
+        );
+        assert!(
+            test_service(&security, &allow, &callers, &headers, host)
+                .await
+                .is_ok()
+        );
+        assert!(
+            test_service(&security, &allow, &callers, &headers, other)
+                .await
+                .is_err()
+        );
         headers.remove("authorization");
-        assert!(test_service(&security, &allow, &callers, &headers, host).await.is_err());
-        headers.insert("authorization", format!("Bearer {}", signed(publisher_claims(host, "user"))).parse().unwrap());
-        assert!(test_service(&security, &allow, &callers, &headers, host).await.is_err());
-        headers.insert("authorization", format!("Bearer {}", signed(publisher_claims(host, "app"))).parse().unwrap());
-        headers.insert("x-scope-token", format!("Bearer {}", signed(scope_claims(host, "wrong-gateway"))).parse().unwrap());
-        assert!(test_service(&security, &allow, &callers, &headers, host).await.is_err());
-        headers.insert("x-scope-token", format!("Bearer {}", signed(scope_claims(host, "gateway-a"))).parse().unwrap());
-        assert!(test_service(&security, &allow, &callers, &headers, host).await.is_ok());
+        assert!(
+            test_service(&security, &allow, &callers, &headers, host)
+                .await
+                .is_err()
+        );
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", signed(publisher_claims(host, "user")))
+                .parse()
+                .unwrap(),
+        );
+        assert!(
+            test_service(&security, &allow, &callers, &headers, host)
+                .await
+                .is_err()
+        );
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", signed(publisher_claims(host, "app")))
+                .parse()
+                .unwrap(),
+        );
+        headers.insert(
+            "x-scope-token",
+            format!("Bearer {}", signed(scope_claims(host, "wrong-gateway")))
+                .parse()
+                .unwrap(),
+        );
+        assert!(
+            test_service(&security, &allow, &callers, &headers, host)
+                .await
+                .is_err()
+        );
+        headers.insert(
+            "x-scope-token",
+            format!("Bearer {}", signed(scope_claims(host, "gateway-a")))
+                .parse()
+                .unwrap(),
+        );
+        assert!(
+            test_service(&security, &allow, &callers, &headers, host)
+                .await
+                .is_ok()
+        );
         let scoped_calls = std::sync::atomic::AtomicUsize::new(0);
-        let rejected: Result<(), ApiError> = with_matching_host(&json!({"hostId":other}), host, || async {
-            scoped_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(())
-        }).await;
+        let rejected: Result<(), ApiError> =
+            with_matching_host(&json!({"hostId":other}), host, || async {
+                scoped_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
         assert!(rejected.is_err());
-        assert_eq!(scoped_calls.load(std::sync::atomic::Ordering::SeqCst), 0,
-            "neither scoped storage nor receipt replay can be reached");
+        assert_eq!(
+            scoped_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "neither scoped storage nor receipt replay can be reached"
+        );
     }
 
     #[tokio::test]
@@ -1172,52 +1361,149 @@ mod tests {
         user_headers.insert("authorization", format!("Bearer {user}").parse().unwrap());
         user_headers.insert("x-scope-token", format!("Bearer {scope}").parse().unwrap());
         user_headers.insert("x-publisher-token", app.parse().unwrap());
-        assert!(user_and_publisher(&state, &user_headers, &json!({"hostId":host}), None).await.is_ok());
+        assert!(
+            user_and_publisher(&state, &user_headers, &json!({"hostId":host}), None)
+                .await
+                .is_ok()
+        );
         let rejected = dispatch("workflow_definition_retire", &state, &user_headers,
             &json!({"hostId":other,"wfDefId":Uuid::new_v4(),"version":"1.0.0","operationId":Uuid::new_v4()}),
             None, &|_| Ok(())).await.unwrap_err();
         assert_eq!(rejected.into_response().status(), StatusCode::FORBIDDEN);
-        for name in ["workflow_binding_get", "workflow_binding_list",
-            "workflow_binding_decide", "workflow_binding_revoke"] {
-            let rejected = dispatch(name, &state, &user_headers,
+        for name in [
+            "workflow_binding_get",
+            "workflow_binding_list",
+            "workflow_binding_decide",
+            "workflow_binding_revoke",
+        ] {
+            let rejected = dispatch(
+                name,
+                &state,
+                &user_headers,
                 &json!({"hostId":other,"bindingId":Uuid::new_v4(),"operationId":Uuid::new_v4()}),
-                None, &|_| Ok(())).await.unwrap_err();
-            assert_eq!(rejected.into_response().status(), StatusCode::FORBIDDEN,
-                "{name} must deny before scoped storage or receipt lookup");
+                None,
+                &|_| Ok(()),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                rejected.into_response().status(),
+                StatusCode::FORBIDDEN,
+                "{name} must deny before scoped storage or receipt lookup"
+            );
         }
         let mut bad_gateway = user_headers.clone();
-        bad_gateway.insert("x-scope-token", format!("Bearer {}",
-            signed(scope_claims(host,"wrong-gateway"))).parse().unwrap());
-        let rejected = dispatch("workflow_binding_get",&state,&bad_gateway,
-            &json!({"hostId":host,"bindingId":Uuid::new_v4()}),None,&|_|Ok(())).await.unwrap_err();
-        assert_eq!(rejected.into_response().status(),StatusCode::UNAUTHORIZED);
+        bad_gateway.insert(
+            "x-scope-token",
+            format!("Bearer {}", signed(scope_claims(host, "wrong-gateway")))
+                .parse()
+                .unwrap(),
+        );
+        let rejected = dispatch(
+            "workflow_binding_get",
+            &state,
+            &bad_gateway,
+            &json!({"hostId":host,"bindingId":Uuid::new_v4()}),
+            None,
+            &|_| Ok(()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(rejected.into_response().status(), StatusCode::UNAUTHORIZED);
         let mut app_as_user = user_headers.clone();
-        app_as_user.insert("authorization",format!("Bearer {}",signed(json!({
+        app_as_user.insert(
+            "authorization",
+            format!(
+                "Bearer {}",
+                signed(json!({
             "iss":"step03","aud":"workflow","exp":4102444800u64,"token_use":"app",
-            "client_id":"publisher-a","uid":Uuid::new_v4(),"host":host}))).parse().unwrap());
-        let rejected=dispatch("workflow_binding_get",&state,&app_as_user,
-            &json!({"hostId":host,"bindingId":Uuid::new_v4()}),None,&|_|Ok(())).await.unwrap_err();
-        assert_eq!(rejected.into_response().status(),StatusCode::FORBIDDEN);
+            "client_id":"publisher-a","uid":Uuid::new_v4(),"host":host}))
+            )
+            .parse()
+            .unwrap(),
+        );
+        let rejected = dispatch(
+            "workflow_binding_get",
+            &state,
+            &app_as_user,
+            &json!({"hostId":host,"bindingId":Uuid::new_v4()}),
+            None,
+            &|_| Ok(()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(rejected.into_response().status(), StatusCode::FORBIDDEN);
         user_headers.remove("x-publisher-token");
-        let authenticated=binding::user_identity(&state,&user_headers,&json!({"hostId":host})).await;
-        assert!(authenticated.is_ok(),"the four user-only tools share this path without a publisher token");
-        assert!(user_and_publisher(&state, &user_headers, &json!({"hostId":host}), None).await.is_err());
+        let authenticated =
+            binding::user_identity(&state, &user_headers, &json!({"hostId":host})).await;
+        assert!(
+            authenticated.is_ok(),
+            "the four user-only tools share this path without a publisher token"
+        );
+        assert!(
+            user_and_publisher(&state, &user_headers, &json!({"hostId":host}), None)
+                .await
+                .is_err()
+        );
         user_headers.insert("x-publisher-token", user.parse().unwrap());
-        assert!(user_and_publisher(&state, &user_headers, &json!({"hostId":host}), None).await.is_err());
+        assert!(
+            user_and_publisher(&state, &user_headers, &json!({"hostId":host}), None)
+                .await
+                .is_err()
+        );
         let mut service_headers = HeaderMap::new();
-        service_headers.insert("authorization", format!("Bearer {}", signed(publisher_claims(host, "app"))).parse().unwrap());
+        service_headers.insert(
+            "authorization",
+            format!("Bearer {}", signed(publisher_claims(host, "app")))
+                .parse()
+                .unwrap(),
+        );
         service_headers.insert("x-scope-token", format!("Bearer {scope}").parse().unwrap());
-        assert!(authenticate_publisher_service(&state, &service_headers, host, None).await.is_ok());
-        let rejected = dispatch("workflow_definition_save", &state, &service_headers,
-            &json!({"hostId":other}), None, &|_| Ok(())).await.unwrap_err();
+        assert!(
+            authenticate_publisher_service(&state, &service_headers, host, None)
+                .await
+                .is_ok()
+        );
+        let rejected = dispatch(
+            "workflow_definition_save",
+            &state,
+            &service_headers,
+            &json!({"hostId":other}),
+            None,
+            &|_| Ok(()),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(rejected.into_response().status(), StatusCode::FORBIDDEN);
         service_headers.remove("authorization");
-        assert!(authenticate_publisher_service(&state, &service_headers, host, None).await.is_err());
+        assert!(
+            authenticate_publisher_service(&state, &service_headers, host, None)
+                .await
+                .is_err()
+        );
         service_headers.insert("authorization", format!("Bearer {user}").parse().unwrap());
-        assert!(authenticate_publisher_service(&state, &service_headers, host, None).await.is_err());
-        service_headers.insert("authorization", format!("Bearer {}", signed(publisher_claims(host, "app"))).parse().unwrap());
-        service_headers.insert("x-scope-token", format!("Bearer {}", signed(scope_claims(host, "wrong-gateway"))).parse().unwrap());
-        assert!(authenticate_publisher_service(&state, &service_headers, host, None).await.is_err());
+        assert!(
+            authenticate_publisher_service(&state, &service_headers, host, None)
+                .await
+                .is_err()
+        );
+        service_headers.insert(
+            "authorization",
+            format!("Bearer {}", signed(publisher_claims(host, "app")))
+                .parse()
+                .unwrap(),
+        );
+        service_headers.insert(
+            "x-scope-token",
+            format!("Bearer {}", signed(scope_claims(host, "wrong-gateway")))
+                .parse()
+                .unwrap(),
+        );
+        assert!(
+            authenticate_publisher_service(&state, &service_headers, host, None)
+                .await
+                .is_err()
+        );
     }
     #[test]
     fn digest_fixture_semantics_preserve_order_and_types() {

@@ -338,11 +338,36 @@ async fn retirement_withdraws_pending_revision_and_records_decision() {
     )
     .await;
     // A real head may also have an active binding to another version.
-    let next = save(&pool, &save_input(host, wf, 2, NEXT_DEFINITION, owner, true)).await;
-    publish(&pool, &publish_input(host, wf, "1.1.0", NEXT_DEFINITION,
-        next["definitionDigest"].as_str().unwrap(), owner, Uuid::new_v4()), owner).await;
-    let active = insert_binding(&pool, host, wf, tool, "1.1.0",
-        next["definitionDigest"].as_str().unwrap(), "approved", true).await;
+    let next = save(
+        &pool,
+        &save_input(host, wf, 2, NEXT_DEFINITION, owner, true),
+    )
+    .await;
+    publish(
+        &pool,
+        &publish_input(
+            host,
+            wf,
+            "1.1.0",
+            NEXT_DEFINITION,
+            next["definitionDigest"].as_str().unwrap(),
+            owner,
+            Uuid::new_v4(),
+        ),
+        owner,
+    )
+    .await;
+    let active = insert_binding(
+        &pool,
+        host,
+        wf,
+        tool,
+        "1.1.0",
+        next["definitionDigest"].as_str().unwrap(),
+        "approved",
+        true,
+    )
+    .await;
     sqlx::query("INSERT INTO workflow_tool_publication_t(host_id,tool_id,aggregate_version,active_binding_id,pending_binding_id) VALUES($1,$2,7,$3,$4)")
         .bind(host).bind(tool).bind(active).bind(binding).execute(&pool).await.unwrap();
     let new_owner = Uuid::new_v4();
@@ -380,8 +405,16 @@ async fn retirement_withdraws_pending_revision_and_records_decision() {
     let head = sqlx::query("SELECT aggregate_version,active_binding_id,pending_binding_id FROM workflow_tool_publication_t WHERE host_id=$1 AND tool_id=$2")
         .bind(host).bind(tool).fetch_one(&pool).await.unwrap();
     assert_eq!(head.try_get::<i64, _>("aggregate_version").unwrap(), 8);
-    assert_eq!(head.try_get::<Option<Uuid>, _>("active_binding_id").unwrap(), Some(active));
-    assert_eq!(head.try_get::<Option<Uuid>, _>("pending_binding_id").unwrap(), None);
+    assert_eq!(
+        head.try_get::<Option<Uuid>, _>("active_binding_id")
+            .unwrap(),
+        Some(active)
+    );
+    assert_eq!(
+        head.try_get::<Option<Uuid>, _>("pending_binding_id")
+            .unwrap(),
+        None
+    );
 }
 
 #[tokio::test]
@@ -611,9 +644,17 @@ async fn grant_revocation_stays_removed_after_delayed_sync() {
     // is exercised on every run, independent of task scheduling.
     let mut gate = admin.begin().await.unwrap();
     sqlx::query("LOCK TABLE workflow_ops.workflow_tool_grant_t IN SHARE MODE")
-        .execute(&mut *gate).await.unwrap();
-    let left_task = tokio::spawn(async move { left_barrier.wait().await; publication_api::sync_grants_verified(&left_pool, &left).await });
-    let right_task = tokio::spawn(async move { right_barrier.wait().await; publication_api::sync_grants_verified(&right_pool, &right).await });
+        .execute(&mut *gate)
+        .await
+        .unwrap();
+    let left_task = tokio::spawn(async move {
+        left_barrier.wait().await;
+        publication_api::sync_grants_verified(&left_pool, &left).await
+    });
+    let right_task = tokio::spawn(async move {
+        right_barrier.wait().await;
+        publication_api::sync_grants_verified(&right_pool, &right).await
+    });
     start.wait().await;
     let wait_result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
@@ -635,8 +676,14 @@ async fn grant_revocation_stays_removed_after_delayed_sync() {
     assert_eq!(left_result.is_ok() as u8 + right_result.is_ok() as u8, 1);
     let winner = if left_result.is_ok() { race_a } else { race_b };
     let loser = if winner == race_a { race_b } else { race_a };
-    let stored_owner: Uuid = sqlx::query_scalar("SELECT wf_def_id FROM workflow_tool_grant_t WHERE host_id=$1 AND grant_id=$2")
-        .bind(host).bind(racing_id).fetch_one(&pool).await.unwrap();
+    let stored_owner: Uuid = sqlx::query_scalar(
+        "SELECT wf_def_id FROM workflow_tool_grant_t WHERE host_id=$1 AND grant_id=$2",
+    )
+    .bind(host)
+    .bind(racing_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(stored_owner, winner);
     let losing_revision: Option<i64> = sqlx::query_scalar("SELECT source_revision FROM workflow_definition_grant_sync_t WHERE host_id=$1 AND wf_def_id=$2")
         .bind(host).bind(loser).fetch_optional(&pool).await.unwrap();

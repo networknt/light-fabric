@@ -33,27 +33,6 @@ pub trait RoleAuthority: Send + Sync {
     ) -> Result<Vec<String>, RoleAuthorityError>;
 }
 
-#[async_trait::async_trait]
-impl RoleAuthority for crate::credential_broker::CredentialBroker {
-    async fn current_roles(
-        &self,
-        user_authorization: &str,
-        host_id: Uuid,
-        user_id: Uuid,
-    ) -> Result<Vec<String>, RoleAuthorityError> {
-        let snapshot = self
-            .current_workflow_roles(user_authorization)
-            .await
-            .map_err(|error| match error {
-                light_client::unattended::ProviderFailure::ReauthorizationRequired => {
-                    RoleAuthorityError::Denied
-                }
-                _ => RoleAuthorityError::Unavailable,
-            })?;
-        validate_role_snapshot(snapshot, host_id, user_id)
-    }
-}
-
 fn validate_role_snapshot(
     snapshot: light_client::unattended::CurrentWorkflowRoles,
     host_id: Uuid,

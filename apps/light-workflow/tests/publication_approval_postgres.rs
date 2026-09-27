@@ -125,9 +125,10 @@ fn write_input(
     value
 }
 async fn publish(pool: &PgPool, request: &Value, actor: Uuid) -> Value {
-    let receipt = publication_api::publish_binding_verified(pool, request, &actor.to_string(), &[], 16)
-        .await
-        .unwrap();
+    let receipt =
+        publication_api::publish_binding_verified(pool, request, &actor.to_string(), &[], 16)
+            .await
+            .unwrap();
     validate("BindingPublishOutput", &receipt);
     if receipt["status"] == "active" {
         assert!(receipt.get("carryOverDeniedReason").is_none());
@@ -141,14 +142,28 @@ async fn binding_schemas_round_trip_with_published_digest() {
     let (pool, _) = pools();
     let (host, wf, owner, tool, def, schema) = fixture(&pool).await;
     let mut request = input(host, wf, tool, &def, &schema, "1.0.0", 0);
-    request["binding"]["inputSchema"] = json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]});
-    request["binding"]["outputSchema"] = json!({"type":"object","properties":{"answer":{"type":"integer"}},"required":["answer"]});
+    request["binding"]["inputSchema"] =
+        json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]});
+    request["binding"]["outputSchema"] =
+        json!({"type":"object","properties":{"answer":{"type":"integer"}},"required":["answer"]});
     let receipt = publish(&pool, &request, owner).await;
-    let view = publication_api::get_verified(&pool,
-        &json!({"hostId":host,"bindingId":id(&receipt)}), &owner.to_string(), &[]).await.unwrap();
+    let view = publication_api::get_verified(
+        &pool,
+        &json!({"hostId":host,"bindingId":id(&receipt)}),
+        &owner.to_string(),
+        &[],
+    )
+    .await
+    .unwrap();
     validate("BindingGetOutput", &view);
-    assert_eq!(view["revision"]["binding"]["inputSchema"], request["binding"]["inputSchema"]);
-    assert_eq!(view["revision"]["binding"]["outputSchema"], request["binding"]["outputSchema"]);
+    assert_eq!(
+        view["revision"]["binding"]["inputSchema"],
+        request["binding"]["inputSchema"]
+    );
+    assert_eq!(
+        view["revision"]["binding"]["outputSchema"],
+        request["binding"]["outputSchema"]
+    );
     assert_eq!(view["revision"]["bindingDigest"], receipt["bindingDigest"]);
     let reconstructed = json!({"hostId":host,"binding":view["revision"]["binding"],
         "dependencies":view["revision"]["dependencies"],
@@ -189,43 +204,80 @@ async fn normalized_boolean_output_schemas_publish_and_round_trip() {
 async fn repeatable_read_binding_snapshot_survives_concurrent_approval() {
     let (pool, _) = pools();
     let (host, wf, owner, tool, def, schema) = fixture(&pool).await;
-    let active = publish(&pool, &input(host,wf,tool,&def,&schema,"1.0.0",0),owner).await;
-    let mut next=input(host,wf,tool,&def,&schema,"1.0.0",1);
-    next["binding"]["totalDeadlineMs"]=json!(29_000);
+    let active = publish(
+        &pool,
+        &input(host, wf, tool, &def, &schema, "1.0.0", 0),
+        owner,
+    )
+    .await;
+    let mut next = input(host, wf, tool, &def, &schema, "1.0.0", 1);
+    next["binding"]["totalDeadlineMs"] = json!(29_000);
     let pending = publish(&pool, &next, Uuid::new_v4()).await;
     let mut read = pool.begin().await.unwrap();
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-        .execute(&mut *read).await.unwrap();
+        .execute(&mut *read)
+        .await
+        .unwrap();
     let before:(i64,Option<Uuid>)=sqlx::query_as("SELECT aggregate_version,active_binding_id FROM workflow_tool_publication_t WHERE host_id=$1 AND tool_id=$2")
         .bind(host).bind(tool).fetch_one(&mut *read).await.unwrap();
-    assert_eq!(before.1,Some(id(&active)));
-    let barrier=Arc::new(Barrier::new(2));
-    let writer_pool=ops_db::runtime_pool();
-    let writer_barrier=barrier.clone();
-    let approval=review(host,&pending,"approve",None);
-    let writer=tokio::spawn(async move {
+    assert_eq!(before.1, Some(id(&active)));
+    let barrier = Arc::new(Barrier::new(2));
+    let writer_pool = ops_db::runtime_pool();
+    let writer_barrier = barrier.clone();
+    let approval = review(host, &pending, "approve", None);
+    let writer = tokio::spawn(async move {
         writer_barrier.wait().await;
-        publication_api::decide_verified(&writer_pool,&approval,&owner.to_string(),&[],16).await
+        publication_api::decide_verified(&writer_pool, &approval, &owner.to_string(), &[], 16).await
     });
     barrier.wait().await;
-    let approved=tokio::time::timeout(std::time::Duration::from_secs(10),writer).await.unwrap().unwrap().unwrap();
-    assert_eq!(approved["result"],"approved");
+    let approved = tokio::time::timeout(std::time::Duration::from_secs(10), writer)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(approved["result"], "approved");
     let after:(i64,Option<Uuid>)=sqlx::query_as("SELECT aggregate_version,active_binding_id FROM workflow_tool_publication_t WHERE host_id=$1 AND tool_id=$2")
         .bind(host).bind(tool).fetch_one(&mut *read).await.unwrap();
-    assert_eq!(after,before,"head and revision reads must share one snapshot");
+    assert_eq!(
+        after, before,
+        "head and revision reads must share one snapshot"
+    );
     let states:Vec<(Uuid,String)>=sqlx::query_as("SELECT binding_id,revision_status FROM workflow_tool_binding_t WHERE host_id=$1 AND tool_id=$2 ORDER BY requested_ts")
         .bind(host).bind(tool).fetch_all(&mut *read).await.unwrap();
-    assert_eq!(states,vec![(id(&active),"approved".into()),(id(&pending),"pendingApproval".into())]);
+    assert_eq!(
+        states,
+        vec![
+            (id(&active), "approved".into()),
+            (id(&pending), "pendingApproval".into())
+        ]
+    );
     let counts:Vec<(String,i64)>=sqlx::query_as("SELECT revision_status,count(*) FROM workflow_tool_binding_t WHERE host_id=$1 AND tool_id=$2 GROUP BY revision_status ORDER BY revision_status")
         .bind(host).bind(tool).fetch_all(&mut *read).await.unwrap();
-    assert_eq!(counts,vec![("approved".into(),1),("pendingApproval".into(),1)]);
+    assert_eq!(
+        counts,
+        vec![("approved".into(), 1), ("pendingApproval".into(), 1)]
+    );
     read.commit().await.unwrap();
-    let view=publication_api::get_verified(&pool,&json!({"hostId":host,"bindingId":id(&pending)}),&owner.to_string(),&[]).await.unwrap();
-    assert_eq!(view["revision"]["revisionStatus"],"approved");
-    assert_eq!(view["aggregateVersion"],approved["aggregateVersion"]);
-    let list=publication_api::list_verified(&pool,&json!({"hostId":host,"role":"owner","limit":20}),&owner.to_string(),&[]).await.unwrap();
-    assert_eq!(list["counts"]["approved"],1);
-    assert_eq!(list["counts"]["superseded"],1);
+    let view = publication_api::get_verified(
+        &pool,
+        &json!({"hostId":host,"bindingId":id(&pending)}),
+        &owner.to_string(),
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(view["revision"]["revisionStatus"], "approved");
+    assert_eq!(view["aggregateVersion"], approved["aggregateVersion"]);
+    let list = publication_api::list_verified(
+        &pool,
+        &json!({"hostId":host,"role":"owner","limit":20}),
+        &owner.to_string(),
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(list["counts"]["approved"], 1);
+    assert_eq!(list["counts"]["superseded"], 1);
 }
 fn id(value: &Value) -> Uuid {
     value["bindingId"].as_str().unwrap().parse().unwrap()
@@ -310,16 +362,11 @@ async fn non_owner_publish_owner_approval_supersedes_previous_active() {
         .await
         .is_err()
     );
-    let approval_request=review(host,&pending,"approve",None);
-    let approved = publication_api::decide_verified(
-        &pool,
-        &approval_request,
-        &owner.to_string(),
-        &[],
-        16,
-    )
-    .await
-    .unwrap();
+    let approval_request = review(host, &pending, "approve", None);
+    let approved =
+        publication_api::decide_verified(&pool, &approval_request, &owner.to_string(), &[], 16)
+            .await
+            .unwrap();
     validate("BindingDecideOutput", &approved);
     assert_eq!(approved["result"], "approved");
     let states:Vec<(Uuid,String)>=sqlx::query_as("SELECT binding_id,revision_status FROM workflow_tool_binding_t WHERE host_id=$1 AND tool_id=$2 ORDER BY requested_ts")
@@ -375,14 +422,29 @@ async fn non_owner_publish_owner_approval_supersedes_previous_active() {
         requester_list["items"][0]["bindingId"],
         pending["bindingId"]
     );
-    let new_owner=Uuid::new_v4();
-    publication_api::save_definition_verified(&pool,&json!({"hostId":host,"wfDefId":wf,
+    let new_owner = Uuid::new_v4();
+    publication_api::save_definition_verified(
+        &pool,
+        &json!({"hostId":host,"wfDefId":wf,
         "sourceRevision":2,"actor":"step05","namespace":"step05","name":format!("definition-{wf}"),
         "version":"1.0.0","definition":READ,"lifecycleStatus":"PUBLISHED","catalogVisible":false,
-        "owner":{"userId":new_owner},"active":true})).await.unwrap();
-    let replay=publication_api::decide_verified(&pool,&approval_request,&owner.to_string(),&[],16).await.unwrap();
-    assert_eq!(replay,approved,"the original actor keeps the stored receipt after owner transfer");
-    assert!(publication_api::decide_verified(&pool,&approval_request,&new_owner.to_string(),&[],16).await.is_err());
+        "owner":{"userId":new_owner},"active":true}),
+    )
+    .await
+    .unwrap();
+    let replay =
+        publication_api::decide_verified(&pool, &approval_request, &owner.to_string(), &[], 16)
+            .await
+            .unwrap();
+    assert_eq!(
+        replay, approved,
+        "the original actor keeps the stored receipt after owner transfer"
+    );
+    assert!(
+        publication_api::decide_verified(&pool, &approval_request, &new_owner.to_string(), &[], 16)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -525,9 +587,15 @@ async fn expanded_endpoint_reach_stays_pending_with_reason() {
     )
     .await;
     assert_eq!(carried["status"], "active");
-    let basis_id: Uuid = sqlx::query_scalar("SELECT approval_basis_id FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2")
-        .bind(host).bind(id(&carried)).fetch_one(&pool).await.unwrap();
-    assert_ne!(basis_id,id(&carried));
+    let basis_id: Uuid = sqlx::query_scalar(
+        "SELECT approval_basis_id FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2",
+    )
+    .bind(host)
+    .bind(id(&carried))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_ne!(basis_id, id(&carried));
     let mut next = input(host, wf, tool, &def2, &schema2, "1.1.0", 2);
     next["endpointTargets"]
         .as_array_mut()
@@ -551,14 +619,21 @@ async fn expanded_endpoint_reach_stays_pending_with_reason() {
     let unchanged = publish(&pool, &unchanged_request, requester).await;
     assert_eq!(unchanged["result"], "unchanged");
     assert_eq!(unchanged["bindingId"], pending["bindingId"]);
-    assert_eq!(unchanged["carryOverDeniedReason"], pending["carryOverDeniedReason"]);
+    assert_eq!(
+        unchanged["carryOverDeniedReason"],
+        pending["carryOverDeniedReason"]
+    );
     sqlx::query("UPDATE workflow_publication_operation_t SET created_ts=CURRENT_TIMESTAMP-INTERVAL '31 days' WHERE host_id=$1 AND tool_name='workflow_binding_publish'")
         .bind(host).execute(&admin).await.unwrap();
-    TaskExecutor::sweep_publication_operations(&pool,
-        chrono::Utc::now()-chrono::Duration::days(30)).await.unwrap();
+    TaskExecutor::sweep_publication_operations(
+        &pool,
+        chrono::Utc::now() - chrono::Duration::days(30),
+    )
+    .await
+    .unwrap();
     let retained_receipts:i64=sqlx::query_scalar("SELECT count(*) FROM workflow_publication_operation_t WHERE host_id=$1 AND tool_name='workflow_binding_publish'")
         .bind(host).fetch_one(&pool).await.unwrap();
-    assert_eq!(retained_receipts,0);
+    assert_eq!(retained_receipts, 0);
     let view = publication_api::get_verified(
         &pool,
         &json!({"hostId":host,"bindingId":id(&pending)}),
@@ -630,9 +705,15 @@ async fn expanded_endpoint_reach_stays_pending_with_reason() {
     )
     .await;
     assert_eq!(carried_write["status"], "active");
-    let basis_id: Uuid = sqlx::query_scalar("SELECT approval_basis_id FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2")
-        .bind(write_host).bind(id(&carried_write)).fetch_one(&pool).await.unwrap();
-    assert_eq!(basis_id,id(&base));
+    let basis_id: Uuid = sqlx::query_scalar(
+        "SELECT approval_basis_id FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2",
+    )
+    .bind(write_host)
+    .bind(id(&carried_write))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(basis_id, id(&base));
     let evidence:i64=sqlx::query_scalar("SELECT count(*) FROM workflow_tool_approval_evidence_t WHERE host_id=$1 AND binding_id=$2 AND task_name='update'")
         .bind(write_host).bind(id(&carried_write)).fetch_one(&pool).await.unwrap();
     assert_eq!(evidence, 1);

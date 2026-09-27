@@ -1,7 +1,7 @@
 use crate::events::{CloudEventEnvelope, ProcessInfoDeletedPayload};
 use serde_json::from_str;
 use sha2::{Digest, Sha256};
-use sqlx::{postgres::PgListener, PgPool, Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Transaction, postgres::PgListener};
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
@@ -451,7 +451,6 @@ impl EventConsumer {
 
         Ok(())
     }
-
 }
 
 fn event_aggregate_identity(event: &RawEvent) -> (String, i64) {

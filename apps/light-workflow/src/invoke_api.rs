@@ -372,7 +372,6 @@ async fn invoke_with_interlude<I: std::future::Future<Output = ()>>(
         State(state),
         None,
         None,
-        None,
         headers,
         request,
         None,
@@ -781,10 +780,82 @@ mod tests {
 }
 
 #[cfg(test)]
-mod handler_postgres_tests {
+pub(crate) mod handler_postgres_tests {
     use super::*;
     use axum::response::IntoResponse;
+    use axum::routing::post;
     use sqlx::{PgPool, postgres::PgPoolOptions};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    async fn owned_gateway() -> (
+        tempfile::TempDir,
+        String,
+        Arc<tokio::sync::Mutex<Vec<(HeaderMap, Value)>>>,
+        Arc<AtomicUsize>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let directory = tempfile::tempdir().unwrap();
+        let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let cert = directory.path().join("cert.pem");
+        let key = directory.path().join("key.pem");
+        tokio::fs::write(&cert, certificate.cert.pem())
+            .await
+            .unwrap();
+        tokio::fs::write(&key, certificate.signing_key.serialize_pem())
+            .await
+            .unwrap();
+        let calls = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let exchanges = Arc::new(AtomicUsize::new(0));
+        let gateway_calls = calls.clone();
+        let issuer_calls = exchanges.clone();
+        let app = axum::Router::new()
+            .route("/mcp", post(move |headers: HeaderMap, Json(body): Json<Value>| {
+                let gateway_calls = gateway_calls.clone();
+                async move {
+                    gateway_calls.lock().await.push((headers, body));
+                    Json(json!({"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}))
+                }
+            }))
+            .route("/oauth2/test/token", post(move |body: String| {
+                let issuer_calls = issuer_calls.clone();
+                async move {
+                    let form: std::collections::HashMap<String, String> = url::form_urlencoded::parse(body.as_bytes()).into_owned().collect();
+                    assert_eq!(form.get("grant_type").map(String::as_str), Some("urn:ietf:params:oauth:grant-type:token-exchange"));
+                    assert!(form.contains_key("workflow_binding_id"));
+                    issuer_calls.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({"access_token":"exchanged-user-token","token_type":"Bearer","expires_in":300,"scope":"portal.r portal.w"}))
+                }
+            }));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key)
+            .await
+            .unwrap();
+        let task = tokio::spawn(async move {
+            axum_server::from_tcp_rustls(listener, tls)
+                .serve(app.into_make_service())
+                .await
+                .unwrap();
+        });
+        (
+            directory,
+            format!("https://localhost:{}", address.port()),
+            calls,
+            exchanges,
+            task,
+        )
+    }
+
+    async fn clear_owned_long_identity() {
+        let admin = PgPool::connect(&std::env::var("ADMIN_DATABASE_URL").unwrap())
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM workflow_ops.workflow_long_identity_t WHERE singleton AND NOT EXISTS (SELECT 1 FROM workflow_ops.workflow_long_credential_t)")
+            .execute(&admin).await.unwrap();
+        admin.close().await;
+    }
 
     const TEST_KEY: &[u8] = b"step12-invoke-signing-key-32-bytes";
     const DEFINITION: &str = "document: {dsl: '1.0.3', namespace: step12, name: invoke, version: '1.0.0'}\nevaluate: {language: cel}\ndo:\n  - prepare:\n      set: {status: ok}\n      end: true\n";
@@ -800,7 +871,7 @@ mod handler_postgres_tests {
         .unwrap()
     }
 
-    fn headers(host: Uuid, user: Uuid, purpose: &str) -> HeaderMap {
+    pub(crate) fn headers(host: Uuid, user: Uuid, purpose: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
         let claims = if purpose == "app" {
             json!({"iss":"step12","aud":"workflow","exp":4102444800u64,
@@ -823,16 +894,16 @@ mod handler_postgres_tests {
         headers
     }
 
-    struct Fixture {
-        state: RuleApiState,
-        pool: PgPool,
-        host: Uuid,
+    pub(crate) struct Fixture {
+        pub(crate) state: RuleApiState,
+        pub(crate) pool: PgPool,
+        pub(crate) host: Uuid,
         tool: Uuid,
-        user: Uuid,
-        binding: Uuid,
+        pub(crate) user: Uuid,
+        pub(crate) binding: Uuid,
         definition_digest: String,
         binding_digest: String,
-        keyring: std::path::PathBuf,
+        pub(crate) keyring: std::path::PathBuf,
     }
 
     async fn insert_binding(
@@ -859,7 +930,7 @@ mod handler_postgres_tests {
             .execute(pool).await.unwrap();
     }
 
-    async fn fixture() -> Fixture {
+    pub(crate) async fn fixture() -> Fixture {
         let url = std::env::var("DATABASE_URL").expect("DATABASE_URL is required");
         std::env::var("ADMIN_DATABASE_URL").expect("ADMIN_DATABASE_URL is required");
         let pool = PgPoolOptions::new()
@@ -932,10 +1003,325 @@ mod handler_postgres_tests {
         }
     }
 
-    fn arguments(f: &Fixture) -> Value {
+    pub(crate) fn arguments(f: &Fixture) -> Value {
         json!({"stableToolRef":f.tool,
         "expectedBindingDigest":f.binding_digest,"expectedDefinitionDigest":f.definition_digest,
         "input":{}})
+    }
+
+    #[tokio::test]
+    #[ignore = "requires owned scratch DATABASE_URL and ADMIN_DATABASE_URL"]
+    async fn invoke_token_and_bound_mcp_authority_ignore_global_long_configuration() {
+        use crate::{bound_mcp, run_authority::PerRunAuthority, run_token::RunTokenSelector};
+        use sha2::{Digest, Sha256};
+        let f = fixture().await;
+        let headers = headers(f.host, f.user, "user");
+        let original = headers
+            .get("authorization")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .strip_prefix("Bearer ")
+            .unwrap()
+            .to_owned();
+        let receipt = invoke(f.state.clone(), headers, arguments(&f))
+            .await
+            .unwrap();
+        let run = Uuid::parse_str(receipt["workflowInstanceId"].as_str().unwrap()).unwrap();
+        let process: Uuid = sqlx::query_scalar(
+            "SELECT process_id FROM workflow_invocation_t
+            WHERE host_id=$1 AND workflow_instance_id=$2",
+        )
+        .bind(f.host)
+        .bind(run)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+        let agent = Uuid::new_v4();
+        let (gateway_dir, gateway_origin, gateway_calls, _, gateway_task) = owned_gateway().await;
+        let gateway_url = format!("{gateway_origin}/mcp");
+        let nested_tool = Uuid::new_v4();
+        let digest = format!("sha256:{}", "a".repeat(64));
+        sqlx::query("INSERT INTO workflow_tool_dependency_t(host_id,outer_binding_id,nested_tool_id,nested_tool_version,contract_digest,compatibility_policy,authorization_tool_name,authorization_endpoint_key,authorization_policy_digest,lifecycle_status,dispatch_target) VALUES($1,$2,$3,'1.0.0',$4,'exact','nested-test','gateway',$4,'active',$5)")
+            .bind(f.host).bind(f.binding).bind(nested_tool).bind(&digest)
+            .bind(json!({"endpoint":gateway_url,"toolName":"nested-tool"}))
+            .execute(&f.pool).await.unwrap();
+        let config = bound_mcp::Config {
+            gateway_url: gateway_url.clone(),
+            service_id: "workflow-test".into(),
+            client_identity_file: Default::default(),
+            ca_file: "cert.pem".into(),
+            scope_token_file: Default::default(),
+            maximum_depth: 2,
+            request_byte_limit: 1024,
+            response_byte_limit: 1024,
+            cost_unit_limit: 1,
+        };
+        for with_long in [false, true] {
+            let long = if with_long {
+                let config = light_client::config::OAuthWorkflowLongConfig {
+                    gateway_url: gateway_origin.clone(),
+                    provider_id: "test".into(),
+                    client_id: "test-client".into(),
+                    client_secret: "test-secret".into(),
+                    database_url_file: String::new(),
+                    keyring_file: String::new(),
+                    ca_file: "cert.pem".into(),
+                };
+                crate::long_authority::LongAuthority::open(
+                    &config,
+                    gateway_dir.path(),
+                    f.pool.clone(),
+                    None,
+                    &[],
+                )
+                .await
+                .unwrap()
+                .map(Arc::new)
+            } else {
+                None
+            };
+            let selector = Arc::new(
+                RunTokenSelector::new(
+                    f.pool.clone(),
+                    f.state.run_credential_vault.clone(),
+                    long.clone(),
+                    f.state.invocation_security.clone(),
+                    60,
+                )
+                .unwrap(),
+            );
+            let selected = selector
+                .select_run_token(run, f.host, f.user, Utc::now())
+                .await
+                .unwrap();
+            assert_eq!(
+                Sha256::digest(selected.as_bytes()),
+                Sha256::digest(original.as_bytes())
+            );
+            let authority = Arc::new(PerRunAuthority::new(
+                f.pool.clone(),
+                long.clone(),
+                selector.clone(),
+            ));
+            let dispatch = bound_mcp::Runtime::new(
+                f.pool.clone(),
+                long,
+                authority,
+                selector,
+                "Bearer test-scope".into(),
+                &config,
+                gateway_dir.path(),
+            )
+            .await
+            .unwrap()
+            .with_agent_services(std::collections::BTreeMap::from([(
+                "test-agent".into(),
+                agent,
+            )]));
+            assert!(
+                dispatch
+                    .authorize_agent(f.host, process, agent)
+                    .await
+                    .is_ok()
+            );
+            let result = dispatch
+                .call(
+                    f.host,
+                    process,
+                    Uuid::new_v4(),
+                    "nested-test",
+                    json!({"arguments":{"key":"value"}}),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result, json!({"content":[{"type":"text","text":"ok"}]}));
+            let recorded = gateway_calls.lock().await;
+            let (sent_headers, sent_body) = recorded.last().unwrap();
+            assert_eq!(
+                sent_headers.get("authorization").unwrap().to_str().unwrap(),
+                format!("Bearer {original}")
+            );
+            assert_eq!(
+                sent_headers.get("x-scope-token").unwrap(),
+                "Bearer test-scope"
+            );
+            assert_eq!(sent_body["params"]["name"], "nested-tool");
+        }
+        let bad = f
+            .state
+            .run_credential_vault
+            .as_ref()
+            .unwrap()
+            .seal(run, "invalid", 4_102_444_801)
+            .unwrap();
+        let mut tx = f.pool.begin().await.unwrap();
+        bad.refresh_if_later(&mut tx, f.host, run).await.unwrap();
+        tx.commit().await.unwrap();
+        let selector = RunTokenSelector::new(
+            f.pool.clone(),
+            f.state.run_credential_vault.clone(),
+            None,
+            f.state.invocation_security.clone(),
+            60,
+        )
+        .unwrap();
+        assert!(
+            selector
+                .select_run_token(run, f.host, f.user, Utc::now())
+                .await
+                .is_err()
+        );
+        clear_owned_long_identity().await;
+        tokio::fs::remove_file(&f.keyring).await.unwrap();
+        gateway_task.abort();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires owned scratch DATABASE_URL and ADMIN_DATABASE_URL"]
+    async fn long_token_uses_verified_original_then_exchanges_at_margin() {
+        use crate::run_token::RunTokenSelector;
+        use sha2::{Digest, Sha256};
+        let f = fixture().await;
+        clear_owned_long_identity().await;
+        let (gateway_dir, gateway_origin, _, exchanges, gateway_task) = owned_gateway().await;
+        let headers = headers(f.host, f.user, "user");
+        let original = headers
+            .get("authorization")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .strip_prefix("Bearer ")
+            .unwrap()
+            .to_owned();
+        let receipt = invoke(f.state.clone(), headers, arguments(&f))
+            .await
+            .unwrap();
+        let run = Uuid::parse_str(receipt["workflowInstanceId"].as_str().unwrap()).unwrap();
+        let binding = Uuid::new_v4();
+        let far_deadline = chrono::DateTime::from_timestamp(4_102_444_800, 0).unwrap();
+        sqlx::query(
+            "UPDATE workflow_action_authority_t SET credential_kind='long',grant_id=$3,
+            deadline=$4 WHERE host_id=$1 AND run_id=$2",
+        )
+        .bind(f.host)
+        .bind(run)
+        .bind(binding)
+        .bind(far_deadline)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE workflow_invocation_t SET deadline_ts=$3
+            WHERE host_id=$1 AND workflow_instance_id=$2",
+        )
+        .bind(f.host)
+        .bind(run)
+        .bind(far_deadline)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE process_info_t SET deadline_ts=$3 WHERE host_id=$1
+            AND process_id=(SELECT process_id FROM workflow_invocation_t
+                WHERE host_id=$1 AND workflow_instance_id=$2)",
+        )
+        .bind(f.host)
+        .bind(run)
+        .bind(far_deadline)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO workflow_long_identity_t(singleton,gateway_url,provider_id,client_id)
+            VALUES(true,$1,'test','test-client') ON CONFLICT DO NOTHING",
+        )
+        .bind(&gateway_origin)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+        let hash = hex::encode(Sha256::digest(original.as_bytes()));
+        sqlx::query(
+            "INSERT INTO workflow_long_credential_t
+            (binding_id,run_id,host_id,owner_user_id,issuer_client_id,registration_key_sha256,
+             subject_token_sha256,state,issuer_version,key_id,token_bytes)
+            VALUES($1,$2,$3,$4,'test-client',$5,$6,'ACTIVE',1,'plaintext',$7)",
+        )
+        .bind(binding)
+        .bind(run)
+        .bind(f.host)
+        .bind(f.user)
+        .bind("a".repeat(64))
+        .bind(hash)
+        .bind(original.as_bytes())
+        .execute(&f.pool)
+        .await
+        .unwrap();
+        let config = light_client::config::OAuthWorkflowLongConfig {
+            gateway_url: gateway_origin,
+            provider_id: "test".into(),
+            client_id: "test-client".into(),
+            client_secret: "test-secret".into(),
+            database_url_file: String::new(),
+            keyring_file: String::new(),
+            ca_file: "cert.pem".into(),
+        };
+        let long = Arc::new(
+            crate::long_authority::LongAuthority::open(
+                &config,
+                gateway_dir.path(),
+                f.pool.clone(),
+                None,
+                &[],
+            )
+            .await
+            .unwrap()
+            .unwrap(),
+        );
+        let selector = RunTokenSelector::new(
+            f.pool.clone(),
+            f.state.run_credential_vault.clone(),
+            Some(long),
+            f.state.invocation_security.clone(),
+            60,
+        )
+        .unwrap();
+        let selected = selector
+            .select_run_token(run, f.host, f.user, Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(
+            Sha256::digest(selected.as_bytes()),
+            Sha256::digest(original.as_bytes())
+        );
+        let boundary = chrono::DateTime::from_timestamp(4_102_444_740, 0).unwrap();
+        let before = boundary - chrono::Duration::seconds(1);
+        assert_eq!(
+            selector
+                .select_run_token(run, f.host, f.user, before)
+                .await
+                .unwrap(),
+            original
+        );
+        assert_eq!(exchanges.load(Ordering::SeqCst), 0);
+        let exchanged = selector
+            .select_run_token(run, f.host, f.user, boundary)
+            .await
+            .unwrap();
+        assert_eq!(exchanged, "exchanged-user-token");
+        assert_eq!(exchanges.load(Ordering::SeqCst), 1);
+        let admin = PgPool::connect(&std::env::var("ADMIN_DATABASE_URL").unwrap())
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM workflow_ops.workflow_long_credential_t WHERE run_id=$1")
+            .bind(run)
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
+        clear_owned_long_identity().await;
+        tokio::fs::remove_file(&f.keyring).await.unwrap();
+        gateway_task.abort();
     }
 
     #[tokio::test]

@@ -114,32 +114,52 @@ pub(crate) async fn handler_error(id: Value, response: Response) -> Result<Value
         );
         return Err(denied);
     }
-    let code = detail.get("code").and_then(Value::as_str).unwrap_or("WORKFLOW_REJECTED");
-    let message = detail.get("message").and_then(Value::as_str).unwrap_or("workflow operation was rejected");
+    let code = detail
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or("WORKFLOW_REJECTED");
+    let message = detail
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("workflow operation was rejected");
     let mut error = json!({
         "code": code,
         "message": message,
         "retryable": detail.get("retryable").and_then(Value::as_bool).unwrap_or(false),
         "afterEffect": detail.get("afterEffect").and_then(Value::as_bool).unwrap_or(false),
     });
-    if let Some(value) = detail.get("retryAfterMs") { error["retryAfterMs"] = value.clone(); }
-    if let Some(value) = detail.get("details").filter(|value| value.is_object()) { error["details"] = value.clone(); }
+    if let Some(value) = detail.get("retryAfterMs") {
+        error["retryAfterMs"] = value.clone();
+    }
+    if let Some(value) = detail.get("details").filter(|value| value.is_object()) {
+        error["details"] = value.clone();
+    }
     let error_status = match detail.get("status").and_then(Value::as_str) {
         Some("failed" | "timeout" | "cancelled" | "rejected") => detail["status"].as_str().unwrap(),
         _ => match code {
-        "WORKFLOW_TIMEOUT" => "timeout",
-        "WORKFLOW_CANCELLED" => "cancelled",
-        "WORKFLOW_POLICY_DENIED" | "WORKFLOW_START_REJECTED" | "WORKFLOW_INPUT_INVALID" => "rejected",
-        _ => "failed",
+            "WORKFLOW_TIMEOUT" => "timeout",
+            "WORKFLOW_CANCELLED" => "cancelled",
+            "WORKFLOW_POLICY_DENIED" | "WORKFLOW_START_REJECTED" | "WORKFLOW_INPUT_INVALID" => {
+                "rejected"
+            }
+            _ => "failed",
         },
     };
-    let after_effect = detail.get("afterEffect").and_then(Value::as_bool).unwrap_or(false);
+    let after_effect = detail
+        .get("afterEffect")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let mut structured = json!({"status":error_status,"error":error});
     structured["error"]["afterEffect"] = json!(after_effect);
-    if let Some(value) = detail.get("workflowInstanceId") { structured["workflowInstanceId"] = value.clone(); }
+    if let Some(value) = detail.get("workflowInstanceId") {
+        structured["workflowInstanceId"] = value.clone();
+    }
     let mut result = json!({"resultType":"complete","content":[{"type":"text","text":format!("{code}: {message}")}],"structuredContent":structured,"isError":true});
     if let Some(value) = retry_after.and_then(|value| value.to_str().ok().map(str::to_owned)) {
-        if let Ok(seconds) = value.parse::<u64>() { result["structuredContent"]["error"]["retryAfterMs"] = json!(seconds.saturating_mul(1000)); }
+        if let Ok(seconds) = value.parse::<u64>() {
+            result["structuredContent"]["error"]["retryAfterMs"] =
+                json!(seconds.saturating_mul(1000));
+        }
     }
     Ok(result)
 }
@@ -373,9 +393,11 @@ mod tests {
             serde_json::from_str(include_str!("../contracts/workflow-admin/examples.json"))
                 .unwrap();
         assert_eq!(tools.len(), 32);
-        assert!(tools
-            .iter()
-            .any(|tool| tool["name"] == "workflow_wait_result"));
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool["name"] == "workflow_wait_result")
+        );
         assert!(!tools.iter().any(|tool| tool["name"] == "workflow_invoke"));
         for tool in tools {
             let name = tool["name"].as_str().unwrap();
@@ -426,18 +448,40 @@ mod tests {
         assert_eq!(result["isError"], true);
         assert_eq!(result["structuredContent"]["status"], "failed");
         assert_eq!(result["structuredContent"]["error"]["details"], details);
-        assert_eq!(result["content"][0]["text"], "WORKFLOW_DEFINITION_MISMATCH: revision conflict");
-        assert!(result["structuredContent"]["error"].get("workflowInstanceId").is_none());
+        assert_eq!(
+            result["content"][0]["text"],
+            "WORKFLOW_DEFINITION_MISMATCH: revision conflict"
+        );
+        assert!(
+            result["structuredContent"]["error"]
+                .get("workflowInstanceId")
+                .is_none()
+        );
     }
 
     #[tokio::test]
     async fn forbidden_and_other_failures_are_tool_results() {
-        for status in [StatusCode::FORBIDDEN, StatusCode::BAD_REQUEST, StatusCode::INTERNAL_SERVER_ERROR] {
-            let source = (status, Json(json!({"code":"WORKFLOW_POLICY_DENIED","message":"denied","retryable":false}))).into_response();
+        for status in [
+            StatusCode::FORBIDDEN,
+            StatusCode::BAD_REQUEST,
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            let source = (
+                status,
+                Json(json!({"code":"WORKFLOW_POLICY_DENIED","message":"denied","retryable":false})),
+            )
+                .into_response();
             let result = handler_error(json!(10), source).await.unwrap();
             assert_eq!(result["isError"], true);
-            assert_eq!(result["structuredContent"]["error"]["code"], "WORKFLOW_POLICY_DENIED");
-            assert!(result["structuredContent"]["error"].get("details").is_none());
+            assert_eq!(
+                result["structuredContent"]["error"]["code"],
+                "WORKFLOW_POLICY_DENIED"
+            );
+            assert!(
+                result["structuredContent"]["error"]
+                    .get("details")
+                    .is_none()
+            );
         }
     }
 

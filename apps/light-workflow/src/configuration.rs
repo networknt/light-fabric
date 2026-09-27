@@ -27,8 +27,8 @@ const SERVICE_ID: &str = "com.networknt.workflow-1.0.0";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowConfiguration {
     pub approval_portal: Option<crate::approval_portal::Config>,
-    pub credential_broker: Option<crate::credential_broker::BrokerSettings>,
     pub long_keyring_file: Option<PathBuf>,
+    pub original_token_margin_seconds: i64,
     pub action_authorization: Option<crate::action_api::ActionSettings>,
     pub environment: String,
     pub http_addr: SocketAddr,
@@ -116,6 +116,8 @@ struct WorkflowFile {
     #[serde(default, rename = "credentialBroker")]
     _retired_credential_broker: Option<serde_yaml::Value>,
     #[serde(default)]
+    run_credential: RunCredentialFile,
+    #[serde(default)]
     long_keyring_file: Option<String>,
     #[serde(default)]
     action_authorization: Option<crate::action_api::ActionSettings>,
@@ -136,6 +138,17 @@ struct WorkflowFile {
 struct PublicationFile {
     #[serde(default)]
     publisher_client_ids: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RunCredentialFile {
+    #[serde(default = "default_original_token_margin_seconds")]
+    original_token_margin_seconds: i64,
+}
+
+const fn default_original_token_margin_seconds() -> i64 {
+    60
 }
 
 #[derive(Debug, Deserialize)]
@@ -610,6 +623,11 @@ impl WorkflowConfiguration {
         );
         let delegation_secret = optional_secret("WORKFLOW_DELEGATION_SECRET", environment_value);
         let agent_provider_base_urls = agent_provider_base_urls(runtime, &mut violations);
+        if !(0..=86_400).contains(&workflow.run_credential.original_token_margin_seconds) {
+            violations.push(
+                "workflow.runCredential.originalTokenMarginSeconds: expected 0..86400".into(),
+            );
+        }
 
         if !violations.is_empty() {
             return Err(format!(
@@ -620,11 +638,11 @@ impl WorkflowConfiguration {
 
         Ok(Self {
             approval_portal: workflow.approval_portal,
-            credential_broker: None,
             long_keyring_file: workflow
                 .long_keyring_file
                 .or_else(|| environment_value("WORKFLOW_LONG_KEYRING_FILE"))
                 .and_then(|value| non_empty(&value).map(PathBuf::from)),
+            original_token_margin_seconds: workflow.run_credential.original_token_margin_seconds,
             action_authorization: workflow.action_authorization,
             environment,
             http_addr: http_addr.expect("validated socket address"),
@@ -881,8 +899,8 @@ pub fn restart_required_differences_from_baseline(
     if active.action_authorization != candidate.action_authorization {
         differences.insert("workflow.actionAuthorization".to_string());
     }
-    if active.credential_broker != candidate.credential_broker {
-        differences.insert("workflow.credentialBroker".to_string());
+    if active.original_token_margin_seconds != candidate.original_token_margin_seconds {
+        differences.insert("workflow.runCredential.originalTokenMarginSeconds".to_string());
     }
     if active.long_keyring_file != candidate.long_keyring_file {
         differences.insert("workflow.longKeyringFile".to_string());
@@ -1325,8 +1343,8 @@ mod tests {
     fn workflow_configuration() -> WorkflowConfiguration {
         WorkflowConfiguration {
             approval_portal: None,
-            credential_broker: None,
             long_keyring_file: None,
+            original_token_margin_seconds: 60,
             action_authorization: None,
             environment: "dev".to_string(),
             http_addr: "0.0.0.0:8436".parse().unwrap(),

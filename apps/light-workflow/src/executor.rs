@@ -304,6 +304,7 @@ struct AgentCatalog {
 pub struct TaskExecutor {
     review_artifacts: Option<crate::artifact_store::DurableArtifactStore>,
     pub bound_mcp: std::sync::OnceLock<Arc<dyn crate::bound_mcp::Dispatch>>,
+    pub run_tokens: std::sync::OnceLock<Arc<crate::run_token::RunTokenSelector>>,
     pool: PgPool,
     http_client: reqwest::Client,
     rule_executor: Arc<MultiThreadRuleExecutor>,
@@ -457,6 +458,7 @@ impl TaskExecutor {
             .expect("failed to build reqwest HTTP client with timeouts and redirects disabled");
         Self {
             bound_mcp: std::sync::OnceLock::new(),
+            run_tokens: std::sync::OnceLock::new(),
             review_artifacts: None,
             pool,
             http_client,
@@ -1644,18 +1646,21 @@ impl TaskExecutor {
             .into());
         }
 
-        if self
-            .bound_mcp
-            .get()
-            .and_then(|runtime| runtime.long_gateway_origin())
-            .is_some()
-            && matches!(task_def,TaskDefinition::Call(call) if !matches!(call,CallTaskDefinition::Http(_) | CallTaskDefinition::Mcp(_)))
+        if matches!(task_def,TaskDefinition::Call(call) if !matches!(call,CallTaskDefinition::Http(_) | CallTaskDefinition::Mcp(_)))
         {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "LONG owner-token handoff for this external task is not yet available",
-            )
-            .into());
+            if let Some(selector) = self.run_tokens.get() {
+                let kind = selector
+                    .run_for_process(claimed.task.host_id, claimed.task.process_id)
+                    .await?
+                    .map(|(_, _, kind)| kind);
+                if matches!(kind.as_deref(), Some("long" | "broker")) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "run owner-token handoff for this external task is unavailable",
+                    )
+                    .into());
+                }
+            }
         }
 
         match task_def {
@@ -1860,13 +1865,27 @@ impl TaskExecutor {
                     .into());
                 }
                 let protected_target = granted_uri.is_some() || registered_uri.is_some();
-                if self
-                    .bound_mcp
-                    .get()
-                    .and_then(|runtime| runtime.long_gateway_origin())
-                    .is_some()
-                    && !protected_target
+                let run_identity = if let Some(selector) = self.run_tokens.get() {
+                    selector
+                        .run_for_process(claimed.task.host_id, claimed.task.process_id)
+                        .await?
+                } else {
+                    None
+                };
+                if run_identity
+                    .as_ref()
+                    .is_some_and(|(_, _, kind)| kind == "broker")
                 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "retired broker run cannot dispatch HTTP",
+                    )
+                    .into());
+                }
+                let long_run = run_identity
+                    .as_ref()
+                    .is_some_and(|(_, _, kind)| kind == "long");
+                if long_run && !protected_target {
                     return Err(io::Error::new(
                         io::ErrorKind::PermissionDenied,
                         "LONG HTTP task requires a Gateway-protected target",
@@ -1906,33 +1925,50 @@ impl TaskExecutor {
                 // A private inline endpoint must never receive the caller's
                 // bearer. Registered/Tool-granted targets retain protected
                 // Workflow authorization on the trusted dispatch path.
-                let long_owner_authorization = if admission_profile
-                    == InvocationAdmissionProfile::PortalExecution
-                    && protected_target
-                {
-                    if let Some(runtime) = self.bound_mcp.get() {
-                        if let Some(gateway) = runtime.long_gateway_origin() {
-                            let gateway = reqwest::Url::parse(&gateway)?;
-                            if validated_uri.origin() != gateway.origin() {
-                                return Err(io::Error::new(
-                                    io::ErrorKind::PermissionDenied,
-                                    "private protected HTTP target must traverse Gateway",
+                if long_run {
+                    let gateway = self
+                        .bound_mcp
+                        .get()
+                        .and_then(|runtime| runtime.long_gateway_origin())
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                "LONG Gateway authority unavailable",
+                            )
+                        })?;
+                    if validated_uri.origin() != reqwest::Url::parse(&gateway)?.origin() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "private protected HTTP target must traverse Gateway",
+                        )
+                        .into());
+                    }
+                }
+                let selected_authorization = if workflow_backed || protected_target {
+                    if let Some(selector) = self.run_tokens.get() {
+                        let (run, user, _) = run_identity.as_ref().ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                "run authority unavailable",
+                            )
+                        })?;
+                        Some(format!(
+                            "Bearer {}",
+                            selector
+                                .select_run_token(
+                                    *run,
+                                    claimed.task.host_id,
+                                    *user,
+                                    chrono::Utc::now()
                                 )
-                                .into());
-                            }
-                            let token = runtime
-                                .long_owner_token(claimed.task.host_id, claimed.task.process_id)
                                 .await?
-                                .ok_or_else(|| {
-                                    io::Error::new(
-                                        io::ErrorKind::PermissionDenied,
-                                        "LONG owner authority unavailable",
-                                    )
-                                })?;
-                            Some(format!("Bearer {token}"))
-                        } else {
-                            None
-                        }
+                        ))
+                    } else if workflow_backed {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "run credential selector unavailable",
+                        )
+                        .into());
                     } else {
                         None
                     }
@@ -1943,7 +1979,7 @@ impl TaskExecutor {
                     || (admission_profile == InvocationAdmissionProfile::PortalExecution
                         && protected_target)
                 {
-                    let long_scope_authorization = if long_owner_authorization.is_some() {
+                    let long_scope_authorization = if long_run {
                         Some(format!(
                             "Bearer {}",
                             self.bound_mcp
@@ -1970,7 +2006,7 @@ impl TaskExecutor {
                         .as_deref()
                         .or(self.service_authorization.as_deref());
                     Some(workflow_http_authorization_headers(
-                        long_owner_authorization.as_deref().or(user_authorization),
+                        selected_authorization.as_deref().or(user_authorization),
                         scope_authorization,
                     )?)
                 } else {
@@ -6559,6 +6595,95 @@ fn parse_iso8601_duration_ms(value: &str) -> Option<u64> {
 mod tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
+
+    #[tokio::test]
+    #[ignore = "requires owned scratch DATABASE_URL and ADMIN_DATABASE_URL"]
+    async fn workflow_backed_http_uses_the_shared_run_token_selector() {
+        use crate::{
+            invoke_api::{self, handler_postgres_tests as fixture},
+            run_token::RunTokenSelector,
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let f = fixture::fixture().await;
+        let headers = fixture::headers(f.host, f.user, "user");
+        let original = headers
+            .get("authorization")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .strip_prefix("Bearer ")
+            .unwrap()
+            .to_owned();
+        let receipt = invoke_api::invoke(f.state.clone(), headers, fixture::arguments(&f))
+            .await
+            .unwrap();
+        let run = Uuid::parse_str(receipt["workflowInstanceId"].as_str().unwrap()).unwrap();
+        let process: Uuid = sqlx::query_scalar(
+            "SELECT process_id FROM workflow_invocation_t
+            WHERE host_id=$1 AND workflow_instance_id=$2",
+        )
+        .bind(f.host)
+        .bind(run)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let uri = format!("http://{}/protected", listener.local_addr().unwrap());
+        sqlx::query("INSERT INTO workflow_endpoint_target_t
+            (host_id,binding_id,endpoint_ref,endpoint_uri,allowed_methods,authorization_policy_digest)
+            VALUES($1,$2,'test-endpoint',$3,ARRAY['GET'], $4)")
+            .bind(f.host).bind(f.binding).bind(&uri)
+            .bind(format!("sha256:{}", "a".repeat(64)))
+            .execute(&f.pool).await.unwrap();
+        let receiver = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = [0u8; 4096];
+            let length = stream.read(&mut bytes).await.unwrap();
+            let request = String::from_utf8_lossy(&bytes[..length]);
+            let bearer = request
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .starts_with("authorization: bearer ")
+                        .then(|| {
+                            line.split_once(':')
+                                .unwrap()
+                                .1
+                                .trim()
+                                .strip_prefix("Bearer ")
+                                .unwrap_or_default()
+                                .to_owned()
+                        })
+                })
+                .unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 11\r\n\r\n{\"ok\":true}")
+                .await.unwrap();
+            Sha256::digest(bearer.as_bytes())
+        });
+        let yaml = format!(
+            "document: {{ dsl: '1.0.3', namespace: test, name: token, version: '1.0.0' }}\ndo:\n  - fetch:\n      call: http\n      metadata: {{endpointRef: test-endpoint}}\n      with:\n        method: GET\n        endpoint: {{ uri: '{uri}' }}\n"
+        );
+        let mut claimed = claimed_from_yaml(&yaml, "fetch", "call");
+        claimed.task.host_id = f.host;
+        claimed.task.process_id = process;
+        claimed.task.task_id = Uuid::new_v4();
+        let mut executor = TaskExecutor::new(f.pool.clone());
+        executor.service_authorization = Some("test-scope".into());
+        let selector = Arc::new(
+            RunTokenSelector::new(
+                f.pool.clone(),
+                f.state.run_credential_vault.clone(),
+                None,
+                f.state.invocation_security.clone(),
+                60,
+            )
+            .unwrap(),
+        );
+        executor.run_tokens.set(selector).ok().unwrap();
+        assert!(executor.execute_task(&claimed).await.is_ok());
+        assert_eq!(receiver.await.unwrap(), Sha256::digest(original.as_bytes()));
+        tokio::fs::remove_file(&f.keyring).await.unwrap();
+    }
 
     struct ComponentGateway {
         calls: std::sync::Mutex<Vec<(Uuid, Uuid, Uuid, String, Value)>>,

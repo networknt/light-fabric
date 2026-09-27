@@ -1060,14 +1060,9 @@ The margin only decides when a LONG run switches to the exchanged token. Only
 `workflow_start` runs register with LONG, because only they can outlive the
 original token. A `workflow_invoke` run never does.
 
-This changes today's behaviour in two places in `bound_mcp.rs`:
-
-- A LONG-registered run currently exchanges on every call
-  (`token_for` always calls `exchange`), even while the original token is
-  valid. It should use the original first.
-- A run without LONG falls back to the grant broker
-  (`CredentialBroker::renew_for_run`). The grant broker is removed, so that
-  fallback goes away.
+The same selector serves bound MCP and protected executor HTTP calls.
+An expired Invoke credential fails the outbound call. Retired broker rows
+have no credential source and fail closed.
 
 **Where the original token is kept.** A run can move to another Workflow
 replica, so the token must be stored, not only held in memory.
@@ -1518,7 +1513,7 @@ in the workflow-invoke implementation plan. In outline:
 - A `workflow_start` run whose original token is still valid makes outbound
   calls with that token and does not call light-oauth. Once the token is
   within the margin, it switches to the exchanged token.
-- No outbound call path uses `CredentialBroker::renew_for_run`.
+- No outbound call uses the retired grant broker.
 - A binding with `invocationMode: async` or a human task is rejected.
 - A write Tool with `resultReplayMs` below 600000 is rejected. A read-only
   Tool reaching a write is rejected. A write Tool with evidence is admitted.
