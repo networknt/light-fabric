@@ -1348,4 +1348,26 @@ mod tests {
         }
         assert_eq!(names.len(), expected.as_object().unwrap().len());
     }
+
+    #[test]
+    fn definition_schema_digest_matches_shared_portal_fixtures() {
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/definition-digest");
+        let expected: Value =
+            serde_json::from_slice(&std::fs::read(root.join("schema-expected.json")).unwrap())
+                .unwrap();
+        for (name, want) in expected.as_object().unwrap() {
+            let text = std::fs::read_to_string(root.join(name)).unwrap();
+            let parsed: Value = serde_yaml::from_str(&text).unwrap();
+            let schema = parsed
+                .pointer("/input/schema/document")
+                .cloned()
+                .unwrap_or(Value::Null);
+            assert_eq!(
+                digest_value(&schema).unwrap(),
+                want.as_str().unwrap(),
+                "{name}"
+            );
+        }
+    }
 }

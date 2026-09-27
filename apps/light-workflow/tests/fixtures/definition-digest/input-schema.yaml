@@ -1,0 +1,6 @@
+document: {dsl: '1.0.3', name: schema-fixture}
+input:
+  schema:
+    document:
+      type: object
+      properties: {}

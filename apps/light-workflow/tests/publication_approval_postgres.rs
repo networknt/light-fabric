@@ -161,6 +161,31 @@ async fn binding_schemas_round_trip_with_published_digest() {
 
 #[tokio::test]
 #[ignore = "requires the isolated workflow-invoke scratch database"]
+async fn normalized_boolean_output_schemas_publish_and_round_trip() {
+    let (pool, _) = pools();
+    let (host, wf, owner, tool, def, schema) = fixture(&pool).await;
+    let mut request = input(host, wf, tool, &def, &schema, "1.0.0", 0);
+    for (expected, output) in [(0, json!({})), (1, json!({"not": {}}))] {
+        request["expectedAggregateVersion"] = json!(expected);
+        request["operationId"] = json!(Uuid::new_v4());
+        request["binding"]["outputSchema"] = output.clone();
+        let receipt = publish(&pool, &request, owner).await;
+        assert_eq!(receipt["aggregateVersion"], json!(expected + 1));
+        let view = publication_api::get_verified(
+            &pool,
+            &json!({"hostId":host,"bindingId":id(&receipt)}),
+            &owner.to_string(),
+            &[],
+        )
+        .await
+        .unwrap();
+        assert_eq!(view["revision"]["binding"]["outputSchema"], output);
+        assert_eq!(view["revision"]["bindingDigest"], receipt["bindingDigest"]);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires the isolated workflow-invoke scratch database"]
 async fn repeatable_read_binding_snapshot_survives_concurrent_approval() {
     let (pool, _) = pools();
     let (host, wf, owner, tool, def, schema) = fixture(&pool).await;
