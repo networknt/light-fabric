@@ -1,7 +1,7 @@
 # Workflow Invoke And Tool Binding Publication
 
-Status: Design draft for issue #415; not implemented. Revised after the
-2026-09-26 plan review (R1–R13).
+Status: Component implementation for issue #415; live qualification remains
+unverified. Revised after the 2026-09-26 plan review (R1–R13).
 
 This document defines two related changes to workflow-backed MCP Tools:
 
@@ -25,7 +25,46 @@ workflow-backed Tools. `workflow_start` remains the entry point for editors,
 schedulers and other asynchronous callers, as described in
 [Start Workflow](start-workflow.md).
 
-## Problem
+## Operator setup
+
+The local stack uses the main `all-in-lt/docker-compose.yml`. Provision the
+Workflow run credential keyring through its idempotent runtime secrets init
+service; `WORKFLOW_LONG_KEYRING_FILE` points to
+`/run/secrets/run-credential-keyring.json`. Workflow refuses invoke admission
+when a usable sealing key is unavailable. Configure
+`workflow.publication.publisherClientIds` with the existing hybrid-command
+client-credentials client ID (`client.tokenCcClientId` in its Portal config).
+The Portal obtains that application token for publication and synchronization.
+JWT-only Gateway-to-Workflow operation is supported; mTLS is optional future
+setup.
+
+In Portal Rule Admin (`/app/rule/admin`), create strict CEL `req-acc` rules
+for `workflow_definition_save` and `workflow_definition_grants_sync`. Match
+both `auditInfo.subject_claims.ClaimsMap.client_id` to the configured
+hybrid-command client ID and `toolName` to the exact operation. In MCP Gateway
+Setup (`/app/mcp/setup`) → Access Control, assign each rule to its matching
+Tool endpoint card. These two tools accept the application token only.
+
+On the other Workflow endpoint cards, add the established role-based rule and
+assign roles: definition publish/retire to `admin`, `host-admin`,
+`workflow-admin`, `genai-admin`; binding publish/retire to `admin`,
+`host-admin`, `genai-admin`; binding get/list/decide/revoke to `admin`,
+`host-admin`, `workflow-admin`, `genai-admin`. In Role Permission
+(`/app/access/rolePermission`), assign the Portal commands
+`decideWorkflowToolBinding`, `revokeWorkflowToolBinding`, and
+`refreshWorkflowToolBindingStatus` to those four roles. Assign
+`retireWorkflowToolBinding` to `admin`, `host-admin`, `genai-admin`.
+Keep `retryWorkflowOperation` under its existing command ACL and original-user
+check. Check each endpoint ID before saving.
+
+Definition and grant synchronization travels from Portal through Gateway MCP
+to Workflow's authenticated publication operations. The Portal needs no direct
+connection to the `workflow-ops` database. The Gateway keeps
+`workflow_invoke` internal: it is absent from client `tools/list` and direct
+client `tools/call` is refused. Gateway still applies the published Tool ACL
+before its internal call.
+
+## Historical problem
 
 The issue #415 checkpoint unified every root start on the native
 `workflow_start` MCP tool. That is right for editor and scheduler starts, but

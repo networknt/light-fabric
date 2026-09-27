@@ -1,11 +1,13 @@
 # Start Workflow (Archived Instructions)
 
-Use the native `workflow_start` MCP tool through `light-gateway` for every
-root Workflow start. The Workflow Editor and workflow-backed Tools use this
-same Gateway route. Gateway forwards the original user Authorization token and
-its Workflow app scope token; Workflow creates the process in its native start
-handler. The legacy Portal `startWorkflow` command and its event-based launch
-path are retired. Workflow-backed Tools are moving to `workflow_invoke`; see
+Use the native `workflow_start` MCP tool through `light-gateway` for
+asynchronous root Workflow starts. It rejects `stableToolRef`: a
+workflow-backed Tool must enter through its Gateway Tool and the
+Gateway-internal `workflow_invoke` operation. `workflow_start` accepts the
+optional `expectedDefinitionDigest` to ensure that it starts the definition
+revision acknowledged by Workflow. The Workflow Editor uses the Portal
+`StartWorkflow` command, which saves and acknowledges the current definition
+before calling `workflow_start`. See
 [Workflow Invoke And Tool Binding Publication](workflow-invoke.md).
 
 The remaining examples in this archived guide describe the former Portal

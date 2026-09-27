@@ -2,6 +2,12 @@
 
 Status: Development implementation; runtime qualification incomplete
 
+The active publication and invocation contract is
+[Workflow Invoke And Tool Binding Publication](../light-workflow/workflow-invoke.md).
+Published workflow-backed Tools are synchronous only. Later sections in this
+document describing asynchronous workflow-backed Tool publication are design
+history; asynchronous root Workflow starts use `workflow_start`.
+
 This repository is still in development. The workflow-backed MCP path has not
 been exercised against a live workflow deployment, so none of the phase gate
 scripts or unit-test results constitute production qualification. The current
@@ -437,17 +443,15 @@ those canonical spellings rather than normalize them ad hoc.
 
 ## Workflow Start and Invocation API
 
-> The proposed replacement for workflow-backed Tools, `workflow_invoke` with
-> binding publication through Workflow MCP, is described in
+> The current workflow-backed Tool contract is described in
 > [Workflow Invoke And Tool Binding Publication](../light-workflow/workflow-invoke.md).
+> Workflow-backed Tools are synchronous only. Use asynchronous `workflow_start`
+> for editor, scheduler, and other root starts.
 
-Every root launch, including launches from the Workflow Editor and
-workflow-backed Tools, enters through the native `workflow_start` MCP tool on
-`light-workflow`. Gateway applies the caller's Tool ACL, then forwards the
-original user Authorization token and its Workflow app scope token to that MCP
-call. Workflow authenticates the caller and creates the process through its
-single native start handler. Root starts do not enroll renewable grants or
-call the invocation admission endpoint directly.
+Workflow-backed Tool calls enter through the Gateway Tool ACL and its internal
+`workflow_invoke` call. Direct clients cannot list or call `workflow_invoke`.
+The native `workflow_start` operation remains asynchronous and serves other
+root starts; it does not admit a workflow-backed Tool binding.
 
 The Gateway uses these internal operations only after start, to read or wait
 for the process and to cancel it:
