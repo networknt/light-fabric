@@ -778,6 +778,21 @@ receipt. A repeat with the same request returns the stored receipt. A repeat
 with a different request returns `WORKFLOW_IDEMPOTENCY_CONFLICT`. Records are
 swept after 30 days.
 
+The binding publish receipt includes optional `carryOverDeniedReason` when
+carry-over is denied and the new revision is `pendingApproval`. Active publish
+receipts, including self-approval and successful carry-over, omit the field.
+The operation record stores the complete response, so replay returns the
+original reason unchanged.
+
+Migration 0019 adds immutable `input_schema` and `output_schema` JSON columns
+to each binding revision, preserving the optional Tool schemas covered by
+`bindingDigest`. It also stores `carry_over_denied_reason` on the revision.
+A new operation returning an unchanged pending revision includes that stored
+reason, and `workflow_binding_get` reads it after operation receipts expire.
+Binding get and list use read-only `REPEATABLE READ` transactions so their
+head pointers, revision statuses, decisions, items and counts come from one
+committed snapshot.
+
 After a timeout or a lost receipt, the Portal refreshes from
 `workflow_binding_get` and reconciles status, digests and aggregate version.
 

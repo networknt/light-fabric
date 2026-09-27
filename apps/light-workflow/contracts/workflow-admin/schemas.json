@@ -1402,6 +1402,9 @@
         },
         "decisionId": {
           "$ref": "#/$defs/Uuid"
+        },
+        "carryOverDeniedReason": {
+          "type": "string"
         }
       },
       "additionalProperties": false

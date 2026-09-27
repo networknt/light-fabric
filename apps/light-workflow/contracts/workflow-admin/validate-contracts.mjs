@@ -134,6 +134,15 @@ for (const toolName of operationIdTools) {
 }
 if (schemas.$defs.BindingDependency?.properties?.dispatchTarget?.type !== 'object') fail('BindingDependency.dispatchTarget must remain an object');
 const bindingPublishTool = manifest.tools.find(item => item.name === 'workflow_binding_publish');
+const validatePublishOutput = ajv.compile(bindingPublishTool.outputSchema);
+const activePublishReceipt = examples.workflow_binding_publish.output;
+const pendingPublishReceipt = examples.workflow_binding_publish.pendingOutput;
+if (activePublishReceipt.status !== 'active' || Object.hasOwn(activePublishReceipt, 'carryOverDeniedReason')
+    || !validatePublishOutput(activePublishReceipt)) fail('active binding publish receipt must validate without a carry-over denial reason');
+if (pendingPublishReceipt.status !== 'pendingApproval' || typeof pendingPublishReceipt.carryOverDeniedReason !== 'string'
+    || !validatePublishOutput(pendingPublishReceipt)) fail('pending binding publish receipt must validate with a carry-over denial reason');
+const unexpectedPublishField = {...pendingPublishReceipt, unexpectedField: true};
+if (validatePublishOutput(unexpectedPublishField)) fail('binding publish receipt must reject additional properties');
 const badPublishDependency = structuredClone(examples.workflow_binding_publish.input);
 badPublishDependency.dependencies[0].dispatchTarget = 'claims.lookup@call';
 if (ajv.compile(bindingPublishTool.inputSchema)(badPublishDependency)) fail('validator accepted string dispatchTarget on binding publish');

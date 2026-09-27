@@ -690,6 +690,19 @@
       "bindingDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "approvalDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "aggregateVersion": 1
+    },
+    "pendingOutput": {
+      "result": "published",
+      "status": "pendingApproval",
+      "toolId": "00000000-0000-4000-8000-000000000001",
+      "bindingId": "00000000-0000-4000-8000-000000000001",
+      "sourceBindingId": "00000000-0000-4000-8000-000000000001",
+      "workflowVersion": "1",
+      "definitionDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bindingDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "approvalDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "aggregateVersion": 1,
+      "carryOverDeniedReason": "new endpoint reach exceeds active revision"
     }
   },
   "workflow_binding_retire": {

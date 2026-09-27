@@ -1,7 +1,8 @@
 //! Portal-authoritative definition publication and grant synchronization.
 
 pub(crate) mod binding;
-pub use binding::{publish_binding_verified, retire_binding_verified, pinned_evidence, pinned_dependencies};
+pub use binding::{publish_binding_verified, retire_binding_verified, decide_verified,
+    revoke_verified, get_verified, list_verified, pinned_evidence, pinned_dependencies};
 
 use axum::http::{HeaderMap, StatusCode};
 use light_security::{
@@ -45,6 +46,10 @@ pub(crate) async fn dispatch(
             .map(Some),
         "workflow_binding_publish" => binding::publish(state, headers, args, settings).await.map(Some),
         "workflow_binding_retire" => binding::retire(state, headers, args, settings).await.map(Some),
+        "workflow_binding_get" => binding::get(state, headers, args).await.map(Some),
+        "workflow_binding_list" => binding::list(state, headers, args).await.map(Some),
+        "workflow_binding_decide" => binding::decide(state, headers, args).await.map(Some),
+        "workflow_binding_revoke" => binding::revoke(state, headers, args).await.map(Some),
         _ => Ok(None),
     }
 }
@@ -106,6 +111,50 @@ fn host_claim(principal: &AuthPrincipal) -> Option<Uuid> {
         .or_else(|| principal.claims.get("hostId").and_then(Value::as_str))
         .or_else(|| principal.claims.get("host_id").and_then(Value::as_str))
         .and_then(|s| s.parse().ok())
+}
+
+// Portal persists `positions` with auth codes/refresh tokens. The issued
+// position claim used by the Java authorization path is `pos` (a delimited
+// string); accept a structured `positions` claim too when an issuer supplies
+// one. Both values come only from the verified user token.
+fn verified_positions(claims: &Value) -> Vec<String> {
+    fn collect(value: &Value, out: &mut Vec<String>) {
+        match value {
+            Value::Array(values) => values.iter().for_each(|value| collect(value, out)),
+            Value::String(value) => out.extend(value.split([',', ' '])
+                .map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned)),
+            _ => {}
+        }
+    }
+    let mut positions = Vec::new();
+    for name in ["pos", "positions"] {
+        if let Some(value) = claims.get(name) { collect(value, &mut positions); }
+    }
+    positions.sort();
+    positions.dedup();
+    positions
+}
+
+fn is_definition_owner(
+    user_id: &str,
+    positions: &[String],
+    owner_user: Option<Uuid>,
+    owner_position: Option<&str>,
+) -> bool {
+    owner_user.is_some_and(|owner| user_id.parse::<Uuid>().ok() == Some(owner))
+        || owner_position.is_some_and(|owner| positions.iter().any(|position| position == owner))
+}
+
+fn verified_user_id(identity: &InvocationIdentity) -> Result<&str, ApiError> {
+    if identity.caller_claims.get("token_use").and_then(Value::as_str) == Some("app") {
+        return Err(ApiError::policy_denied("a user token is required"));
+    }
+    identity.caller_claims.get("user_id").and_then(Value::as_str)
+        .or_else(|| identity.caller_claims.get("uid").and_then(Value::as_str))
+        .or_else(|| (identity.caller_claims.get("token_use").and_then(Value::as_str)==Some("user"))
+            .then(|| identity.caller_claims.get("sub").and_then(Value::as_str)).flatten())
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| ApiError::policy_denied("verified user id is required"))
 }
 
 fn publisher_client(principal: &AuthPrincipal) -> Option<&str> {
@@ -311,6 +360,7 @@ async fn user_and_publisher(
 ) -> Result<InvocationIdentity, ApiError> {
     // User and x-scope tokens are verified before the body host is used in SQL.
     let (identity, _) = crate::rule_api::authenticate(state, headers).await?;
+    verified_user_id(&identity)?;
     assert_body_host(args, identity.host_id)?;
     verify_publisher_header(state, headers, identity.host_id, settings).await?;
     Ok(identity)
@@ -811,20 +861,13 @@ async fn publish_definition(
     cel_validator: &(dyn Fn(&str) -> Result<(), ApiError> + Send + Sync),
 ) -> Result<Value, ApiError> {
     let identity = user_and_publisher(state, headers, args, settings).await?;
-    let positions: Vec<String> = identity
-        .caller_claims
-        .get("positions")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(str::to_owned)
-        .collect();
+    let positions = verified_positions(&identity.caller_claims);
+    let actor = verified_user_id(&identity)?.to_owned();
     with_matching_host(args, identity.host_id, || {
         publish_definition_verified(
             &state.pool,
             args,
-            &identity.end_user_subject,
+            &actor,
             &positions,
             cel_validator,
         )
@@ -901,10 +944,7 @@ pub async fn publish_definition_verified(
             ));
         }
     };
-    let is_owner = owner_user.is_some_and(|owner| actor.parse::<Uuid>().ok() == Some(owner))
-        || owner_position
-            .as_ref()
-            .is_some_and(|pos| positions.iter().any(|position| position == pos));
+    let is_owner = is_definition_owner(actor, positions, owner_user, owner_position.as_deref());
     let binding_approval = if requested_approval == "reapprove" && is_owner {
         "reapprove"
     } else {
@@ -952,8 +992,9 @@ async fn retire_definition(
     settings: Option<&ActionSettings>,
 ) -> Result<Value, ApiError> {
     let identity = user_and_publisher(state, headers, args, settings).await?;
+    let actor = verified_user_id(&identity)?.to_owned();
     with_matching_host(args, identity.host_id, || {
-        retire_definition_verified(&state.pool, args, &identity.end_user_subject)
+        retire_definition_verified(&state.pool, args, &actor)
     })
     .await
 }
@@ -1020,6 +1061,32 @@ pub async fn retire_definition_verified(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn verified_user_and_position_owner_paths() {
+        let user = Uuid::new_v4();
+        let positions = verified_positions(&json!({"pos":"team-a,team-b"}));
+        assert!(is_definition_owner(&user.to_string(), &positions, Some(user), None));
+        assert!(is_definition_owner("another-user", &positions, None, Some("team-b")));
+        assert!(!is_definition_owner("another-user", &[], None, Some("team-b")));
+        assert!(!is_definition_owner("another-user", &positions, Some(user), Some("team-c")));
+    }
+    #[tokio::test]
+    async fn signed_owner_claims_use_user_id_and_pos() {
+        let security=light_security::SecurityRuntime::with_test_hs256_key("step03",TEST_KEY).await;
+        let user=Uuid::new_v4();
+        let token=signed(json!({"iss":"step03","aud":"workflow","exp":4102444800u64,
+            "token_use":"user","client_id":"portal-ui","user_id":user,"pos":"ops,reviewers",
+            "host":Uuid::new_v4()}));
+        let principal=verify_jwt_token(&security,&token,JwtExpiryMode::Enforce).await.unwrap();
+        let positions=verified_positions(&principal.claims);
+        assert!(is_definition_owner(principal.user_id.as_deref().unwrap(),&positions,Some(user),None));
+        assert!(is_definition_owner(principal.user_id.as_deref().unwrap(),&positions,None,Some("reviewers")));
+        let without_pos=signed(json!({"iss":"step03","aud":"workflow","exp":4102444800u64,
+            "token_use":"user","client_id":"portal-ui","user_id":user,"host":Uuid::new_v4()}));
+        let principal=verify_jwt_token(&security,&without_pos,JwtExpiryMode::Enforce).await.unwrap();
+        assert!(is_definition_owner(principal.user_id.as_deref().unwrap(),&verified_positions(&principal.claims),Some(user),None));
+        assert!(!is_definition_owner(principal.user_id.as_deref().unwrap(),&verified_positions(&principal.claims),None,Some("reviewers")));
+    }
     use axum::response::IntoResponse;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use std::path::PathBuf;
@@ -1110,7 +1177,30 @@ mod tests {
             &json!({"hostId":other,"wfDefId":Uuid::new_v4(),"version":"1.0.0","operationId":Uuid::new_v4()}),
             None, &|_| Ok(())).await.unwrap_err();
         assert_eq!(rejected.into_response().status(), StatusCode::FORBIDDEN);
+        for name in ["workflow_binding_get", "workflow_binding_list",
+            "workflow_binding_decide", "workflow_binding_revoke"] {
+            let rejected = dispatch(name, &state, &user_headers,
+                &json!({"hostId":other,"bindingId":Uuid::new_v4(),"operationId":Uuid::new_v4()}),
+                None, &|_| Ok(())).await.unwrap_err();
+            assert_eq!(rejected.into_response().status(), StatusCode::FORBIDDEN,
+                "{name} must deny before scoped storage or receipt lookup");
+        }
+        let mut bad_gateway = user_headers.clone();
+        bad_gateway.insert("x-scope-token", format!("Bearer {}",
+            signed(scope_claims(host,"wrong-gateway"))).parse().unwrap());
+        let rejected = dispatch("workflow_binding_get",&state,&bad_gateway,
+            &json!({"hostId":host,"bindingId":Uuid::new_v4()}),None,&|_|Ok(())).await.unwrap_err();
+        assert_eq!(rejected.into_response().status(),StatusCode::UNAUTHORIZED);
+        let mut app_as_user = user_headers.clone();
+        app_as_user.insert("authorization",format!("Bearer {}",signed(json!({
+            "iss":"step03","aud":"workflow","exp":4102444800u64,"token_use":"app",
+            "client_id":"publisher-a","uid":Uuid::new_v4(),"host":host}))).parse().unwrap());
+        let rejected=dispatch("workflow_binding_get",&state,&app_as_user,
+            &json!({"hostId":host,"bindingId":Uuid::new_v4()}),None,&|_|Ok(())).await.unwrap_err();
+        assert_eq!(rejected.into_response().status(),StatusCode::FORBIDDEN);
         user_headers.remove("x-publisher-token");
+        let authenticated=binding::user_identity(&state,&user_headers,&json!({"hostId":host})).await;
+        assert!(authenticated.is_ok(),"the four user-only tools share this path without a publisher token");
         assert!(user_and_publisher(&state, &user_headers, &json!({"hostId":host}), None).await.is_err());
         user_headers.insert("x-publisher-token", user.parse().unwrap());
         assert!(user_and_publisher(&state, &user_headers, &json!({"hostId":host}), None).await.is_err());

@@ -1536,6 +1536,9 @@
           "decisionId": {
             "type": "string",
             "format": "uuid"
+          },
+          "carryOverDeniedReason": {
+            "type": "string"
           }
         },
         "additionalProperties": false

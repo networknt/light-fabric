@@ -1386,8 +1386,21 @@ pub async fn read_admissible_pinned_binding(
     .bind(tool_id)
     .fetch_optional(pool)
     .await
-    .map_err(ApiError::database)?
-    .ok_or_else(|| ApiError::definition_mismatch("workflow binding or published version is unavailable"))?;
+    .map_err(ApiError::database)?;
+    let row = match row {
+        Some(row) => row,
+        None => {
+            let revoked: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM workflow_tool_publication_t h
+                   WHERE h.host_id=$1 AND h.tool_id=$2 AND h.active_binding_id IS NULL
+                     AND (SELECT b.revision_status FROM workflow_tool_binding_t b
+                           WHERE b.host_id=h.host_id AND b.tool_id=h.tool_id
+                           ORDER BY b.requested_ts DESC NULLS LAST,b.binding_id DESC LIMIT 1)='revoked')")
+                .bind(host_id).bind(tool_id).fetch_one(pool).await.map_err(ApiError::database)?;
+            if revoked { return Err(ApiError::policy_denied("binding revoked by workflow owner")); }
+            return Err(ApiError::definition_mismatch("workflow binding or published version is unavailable"));
+        }
+    };
     let version_status: String = row.try_get("version_status").map_err(ApiError::database)?;
     if version_status == "retired" {
         return Err(publication_error(

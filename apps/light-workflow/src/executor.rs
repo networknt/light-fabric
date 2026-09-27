@@ -662,6 +662,7 @@ impl TaskExecutor {
         })?;
         let mut listener = PgListener::connect(database_url).await?;
         listener.listen("workflow_task_ready_v1").await?;
+        let mut last_publication_sweep = tokio::time::Instant::now() - Duration::from_secs(3600);
         loop {
             if shutdown.is_cancelled() {
                 return Ok(());
@@ -669,6 +670,14 @@ impl TaskExecutor {
             match self.process_next_task(worker_id).await {
                 Ok(true) => {}
                 Ok(false) => {
+                    if last_publication_sweep.elapsed() >= Duration::from_secs(3600) {
+                        if let Err(error) = Self::sweep_publication_operations(
+                            &self.pool, Utc::now() - chrono::Duration::days(30)).await {
+                            error!(worker_id = %worker_id, "Error sweeping publication operations: {error}");
+                        } else {
+                            last_publication_sweep = tokio::time::Instant::now();
+                        }
+                    }
                     if let Err(error) = self.expire_interactive_deadlines().await {
                         error!(
                             worker_id = %worker_id,
@@ -690,6 +699,14 @@ impl TaskExecutor {
                 }
             }
         }
+    }
+
+    pub async fn sweep_publication_operations(
+    pool: &PgPool, cutoff: chrono::DateTime<Utc>,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM workflow_publication_operation_t WHERE created_ts < $1")
+        .bind(cutoff).execute(pool).await?;
+    Ok(result.rows_affected())
     }
 
     async fn expire_interactive_deadlines(&self) -> Result<(), sqlx::Error> {
