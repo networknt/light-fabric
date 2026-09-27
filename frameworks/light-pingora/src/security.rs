@@ -1,4 +1,5 @@
 use crate::config_util::request_header;
+use light_security::token_purpose::{TokenUse, validate_verified_purpose, verify_with_purpose};
 use light_security::verify_jwt_token_for_services;
 use pingora::prelude::Session;
 
@@ -57,13 +58,10 @@ pub async fn verify_jwt_request_with_service_ids(
         return Ok(None);
     }
 
-    let token = bearer_token(session).or_else(|| {
-        config
-            .enable_extract_scope_token
-            .then(|| request_header(session, SCOPE_TOKEN))
-            .flatten()
-    });
-    let token = token.ok_or_else(|| HandlerRejection::unauthorized("missing bearer token"))?;
+    let authorization = request_header(session, AUTHORIZATION);
+    let token = required_authorization_bearer(authorization.as_deref())?;
+    let scope_header = request_header(session, SCOPE_TOKEN);
+    verify_optional_app_scope(runtime, scope_header.as_deref()).await?;
     let mut effective_service_ids = normalized_service_ids(service_ids);
     if effective_service_ids.is_empty()
         && let Some(service_id) = runtime.service_id_for_request(
@@ -80,16 +78,36 @@ pub async fn verify_jwt_request_with_service_ids(
         &effective_service_ids,
     )
     .await?;
+    if request_path.starts_with("/mcp") {
+        validate_verified_purpose(token, &principal, TokenUse::User, &[])?;
+    }
     apply_pass_through_claims(session, config, &principal)?;
     Ok(Some(principal))
 }
 
-fn bearer_token(session: &Session) -> Option<String> {
-    let value = request_header(session, AUTHORIZATION)?;
+fn required_authorization_bearer(value: Option<&str>) -> Result<&str, HandlerRejection> {
+    value.and_then(parse_bearer).ok_or_else(|| {
+        HandlerRejection::unauthorized("user Authorization bearer token is required")
+    })
+}
+
+async fn verify_optional_app_scope(
+    runtime: &SecurityRuntime,
+    header: Option<&str>,
+) -> Result<(), HandlerRejection> {
+    if let Some(header) = header {
+        let token = parse_bearer(header)
+            .ok_or_else(|| HandlerRejection::unauthorized("invalid X-Scope-Token bearer token"))?;
+        verify_with_purpose(runtime, token, TokenUse::App, &[]).await?;
+    }
+    Ok(())
+}
+
+fn parse_bearer(value: &str) -> Option<&str> {
     let (scheme, token) = value.split_once(' ')?;
     scheme
         .eq_ignore_ascii_case("bearer")
-        .then(|| token.trim().to_string())
+        .then(|| token.trim())
         .filter(|token| !token.is_empty())
 }
 
@@ -160,4 +178,62 @@ fn mock_principal() -> AuthPrincipal {
 fn non_empty(value: &str) -> Option<&str> {
     let value = value.trim();
     (!value.is_empty()).then_some(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const KEY: &[u8] = b"gateway-dual-token-test-signing-key";
+
+    fn signed(purpose: &str) -> String {
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
+        header.kid = Some("gateway-dual".into());
+        jsonwebtoken::encode(
+            &header,
+            &json!({"iss":"gateway-dual","aud":"workflow","exp":4102444800u64,
+                "token_use":purpose,"sub":"caller"}),
+            &jsonwebtoken::EncodingKey::from_secret(KEY),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn user_authorization_is_required_and_optional_scope_must_be_an_app() {
+        let runtime = SecurityRuntime::with_test_hs256_key("gateway-dual", KEY).await;
+        let user = signed("user");
+        let app = signed("app");
+        assert!(required_authorization_bearer(None).is_err());
+        assert!(required_authorization_bearer(Some("Bearer ")).is_err());
+        assert_eq!(
+            required_authorization_bearer(Some(&format!("Bearer {user}"))).unwrap(),
+            user
+        );
+        assert!(verify_optional_app_scope(&runtime, None).await.is_ok());
+        assert!(
+            verify_optional_app_scope(&runtime, Some(&format!("Bearer {app}")))
+                .await
+                .is_ok()
+        );
+        assert!(
+            verify_optional_app_scope(&runtime, Some(&format!("Bearer {user}")))
+                .await
+                .is_err()
+        );
+        assert!(
+            verify_optional_app_scope(&runtime, Some("Bearer invalid"))
+                .await
+                .is_err()
+        );
+        assert!(
+            verify_optional_app_scope(&runtime, Some(&app))
+                .await
+                .is_err()
+        );
+        let app_principal = verify_jwt_token(&runtime, &app, JwtExpiryMode::Enforce)
+            .await
+            .unwrap();
+        assert!(validate_verified_purpose(&app, &app_principal, TokenUse::User, &[]).is_err());
+    }
 }

@@ -1143,7 +1143,7 @@ pub(super) async fn publish(
     args: &Value,
     settings: Option<&ActionSettings>,
 ) -> Result<Value, ApiError> {
-    let identity = user_and_publisher(state, headers, args, settings).await?;
+    let identity = authenticated_user(state, headers, args, settings).await?;
     let positions = verified_positions(&identity.caller_claims);
     let actor = verified_user_id(&identity)?.to_owned();
     with_matching_host(args, identity.host_id, || {
@@ -1387,7 +1387,7 @@ pub(super) async fn retire(
     args: &Value,
     settings: Option<&ActionSettings>,
 ) -> Result<Value, ApiError> {
-    let identity = user_and_publisher(state, headers, args, settings).await?;
+    let identity = authenticated_user(state, headers, args, settings).await?;
     let positions = verified_positions(&identity.caller_claims);
     let actor = verified_user_id(&identity)?.to_owned();
     with_matching_host(args, identity.host_id, || {

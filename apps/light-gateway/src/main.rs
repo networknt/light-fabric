@@ -4928,9 +4928,9 @@ impl ProxyHttp for GatewayProxy {
                         ctx.record_handler_duration(&handler_id, started.elapsed());
                         return self.write_mcp_response(session, ctx, response).await;
                     };
-                    // Definition and grant synchronization use Portal's service token as
-                    // Authorization. They are ordinary MCP calls, not workflow actions.
-                    // Gateway's MCP ACL and Workflow's publisher authentication still apply.
+                    // Definition and grant synchronization use the caller's user bearer.
+                    // They are ordinary MCP calls, not workflow actions; the MCP router
+                    // still verifies the user identity and applies the tool ACL.
                     let action = if ctx.auth.is_some()
                         && is_workflow_sync_call(&session.req_header().headers, &body)
                     {
@@ -7460,7 +7460,7 @@ fn handler_active(active_handlers: &ActiveHandlerSet, ids: &[&str]) -> bool {
 }
 
 fn is_workflow_sync_call(headers: &http::HeaderMap, body: &[u8]) -> bool {
-    if headers.contains_key("x-scope-token") || headers.contains_key("x-workflow-action") {
+    if headers.contains_key("x-workflow-action") {
         return false;
     }
     let Ok(message) = serde_json::from_slice::<JsonValue>(body) else {
@@ -7953,10 +7953,11 @@ fn build_registered_gateway_handler(
 #[cfg(test)]
 mod tests {
     include!("dual_token_tests.rs");
+    include!("workflow_auth_tests.rs");
     use super::*;
 
     #[test]
-    fn only_plain_definition_sync_calls_bypass_workflow_action_admission() {
+    fn authenticated_definition_sync_calls_use_normal_mcp_admission() {
         let headers = http::HeaderMap::new();
         for name in [
             "workflow_definition_save",
@@ -7991,7 +7992,7 @@ mod tests {
         ));
         action_headers.clear();
         action_headers.insert("x-scope-token", "Bearer app".parse().unwrap());
-        assert!(!is_workflow_sync_call(
+        assert!(is_workflow_sync_call(
             &action_headers,
             body.to_string().as_bytes()
         ));

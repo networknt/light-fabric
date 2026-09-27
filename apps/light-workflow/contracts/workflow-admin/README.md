@@ -8,6 +8,13 @@ The parent test also validates `proposed-runtime-v1/`. Step 08 promotes native p
 
 `workflow-tools-list-full.json` is the single Tool catalog and Portal MCP `tools/list` import source. Its `tools` array contains all 33 Workflow MCP Tools with bundled schemas, including `workflow_invoke`. That Tool is available on Workflow MCP but has `gatewayPublication: false` and must not be exposed through light-gateway. Contract metadata and the original schema references are retained on each Tool; `schemas.json` holds the shared schema definitions. Register the `tools` array as a Portal MCP API version with Workflow service `com.networknt.workflow-1.0.0` and streamable HTTP transport path `/mcp`. `gateway-publication.json` selects the additive Gateway publication subset and restricted routes; it is not another Tool catalog. Use the Gateway Tool preview/publish command to stage only selected Tools and explicit ACLs. The JSON is source metadata, not a Portal CloudEvent or active Gateway snapshot.
 
+When a Tool input schema changes, first update the Portal MCP API version from
+this catalog (or rediscover the rebuilt Workflow server). Verify the affected
+Portal API endpoint's `tool_schema` contains the change. Then preview and
+publish the Gateway Tools and activate the resulting config snapshot. Gateway
+publication compiles from the Portal endpoint schema; republishing without the
+API version update preserves the previous schema.
+
 Contract version `0.3.0-definition-start` removes the workflow-backed Tool binding from native `workflow_start`. Native callers provide the saved definition ID, object input and idempotency key; Workflow derives execution policy from the saved definition and runtime configuration. Workflow-backed Tool calls use this same start operation and may supply `expectedDefinitionDigest` so the active saved definition must still match the published Tool binding. A successful human-task mutation reports that its completion was durably recorded; asynchronous executor continuation remains observable through process/task reads. Changing names, required fields, identifier meanings, error codes, or bounds requires a reviewed contract version and updated consumers/fixtures.
 
 `workflow_wait_result` returns its documented output for completed and still running instances. Failed and cancelled instances return an MCP `isError` result whose `structuredContent` follows `WorkflowErrorResult`; the examples include both terminal states. `workflow_start` rejects `stableToolRef` with `WORKFLOW_INPUT_INVALID`; use the workflow-backed Tool for binding-based invocation. `workflow_start` remains asynchronous and retains its v1 unlimited result replay window.

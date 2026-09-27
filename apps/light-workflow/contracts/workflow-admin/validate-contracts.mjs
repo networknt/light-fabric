@@ -103,6 +103,14 @@ for (const tool of manifest.tools) {
   if (examples[tool.name]?.errorResult) validateExample(examples[tool.name].errorResult, { $ref:'schemas.json#/$defs/WorkflowErrorResult' }, `${tool.name}.errorResult`);
   for (const violation of scanResolvedInput(tool.inputSchema, tool.name, '', `${tool.name}.inputSchema`)) fail(violation);
 }
+const startInputSchema = manifest.tools.find(tool => tool.name === 'workflow_start')?.inputSchema;
+const startInput = examples.workflow_start.input;
+validateExample({...startInput, expectedDefinitionDigest: `sha256:${'a'.repeat(64)}`}, startInputSchema,
+  'workflow_start.fencedInput');
+const invalidStartDigest = ajv.compile(startInputSchema);
+if (invalidStartDigest({...startInput, expectedDefinitionDigest: 'invalid'})) {
+  fail('workflow_start must reject a malformed expectedDefinitionDigest');
+}
 for (const state of ['failed', 'cancelled']) {
   const value = examples.workflow_wait_result[`${state}Error`];
   validateExample(value, {$ref:'schemas.json#/$defs/WorkflowErrorResult'}, `workflow_wait_result.${state}Error`);

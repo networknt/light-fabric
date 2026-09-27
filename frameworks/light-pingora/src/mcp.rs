@@ -3914,10 +3914,6 @@ impl McpRouterRuntime {
                     && TokenUse::User.validate(&auth.claims).is_err())
                     || auth.user_id.is_none()
             })
-            && !matches!(
-                name,
-                "workflow_definition_save" | "workflow_definition_grants_sync"
-            )
         {
             return Err(McpExecutionError {
                 code: -32001,
@@ -19113,7 +19109,7 @@ toolMetadata:
     }
 
     #[tokio::test]
-    async fn step15_verified_app_identity_uses_endpoint_scoped_cel_rules() {
+    async fn step15_workflow_sync_requires_user_identity_and_endpoint_scoped_cel_rules() {
         let receipt = http_json_response(json!({
             "jsonrpc":"2.0","id":"backend",
             "result":{"resultType":"complete","isError":false,
@@ -19121,7 +19117,7 @@ toolMetadata:
                 "structuredContent":{"result":"saved"}}
         }));
         let (base, received) =
-            spawn_http_sequence_server(vec![receipt.clone(), receipt.clone(), receipt]).await;
+            spawn_http_sequence_server(vec![receipt.clone(), receipt]).await;
         let mut config = McpRouterConfig::default();
         config.workflow.invocation_url = base.clone();
         for name in [
@@ -19157,7 +19153,7 @@ ruleBodies:
     ruleType: req-acc
     conditionLanguage: cel
     conditionSecurityProfile: strict
-    expression: "(('client_id' in auditInfo.subject_claims.ClaimsMap && auditInfo.subject_claims.ClaimsMap.client_id == 'f7d42348-c647-4efb-a52d-4c5787421e72' && auditInfo.subject_claims.ClaimsMap.token_use == 'app' && toolName in ['workflow_definition_save', 'workflow_definition_grants_sync']) || ('role' in auditInfo.subject_claims.ClaimsMap && auditInfo.subject_claims.ClaimsMap.role == 'workflow-admin'))"
+    expression: "'role' in auditInfo.subject_claims.ClaimsMap && auditInfo.subject_claims.ClaimsMap.role == 'admin'"
 endpointRules:
   workflow_definition_save@call:
     req-acc: [sync]
@@ -19181,11 +19177,19 @@ endpointRules:
             "workflow_definition_save",
             "workflow_definition_grants_sync",
         ] {
-            let accepted =
-                step15_call(&runtime, name, json!({"actor":"claimed-user"}), None, false).await;
+            let accepted = step15_call_as(
+                &runtime,
+                name,
+                json!({"actor":"claimed-user"}),
+                None,
+                true,
+                Some("user"),
+                Some("admin"),
+            )
+            .await;
             assert_eq!(accepted["result"]["structuredContent"]["result"], "saved");
-            let denied_user = step15_call(&runtime, name, json!({}), None, true).await;
-            assert_eq!(denied_user["error"]["code"], -32001, "{denied_user}");
+            let denied_app = step15_call(&runtime, name, json!({}), None, false).await;
+            assert_eq!(denied_app["error"]["code"], -32001, "{denied_app}");
         }
         let app_with_user = step15_call_as(
             &runtime,
@@ -19197,10 +19201,7 @@ endpointRules:
             None,
         )
         .await;
-        assert_eq!(
-            app_with_user["result"]["structuredContent"]["result"],
-            "saved"
-        );
+        assert_eq!(app_with_user["error"]["code"], -32001);
         for name in ["workflow_definition_publish", "workflow_start"] {
             let denied = step15_call(&runtime, name, json!({}), None, false).await;
             assert_eq!(denied["error"]["code"], -32001);
@@ -19221,7 +19222,7 @@ endpointRules:
             );
         }
         let requests = received.await.unwrap();
-        assert_eq!(requests.len(), 3);
+        assert_eq!(requests.len(), 2);
         assert_eq!(
             request_json_body(&requests[0])["params"]["name"],
             "workflow_definition_save"
@@ -19229,10 +19230,6 @@ endpointRules:
         assert_eq!(
             request_json_body(&requests[1])["params"]["name"],
             "workflow_definition_grants_sync"
-        );
-        assert_eq!(
-            request_json_body(&requests[2])["params"]["name"],
-            "workflow_definition_save"
         );
     }
 

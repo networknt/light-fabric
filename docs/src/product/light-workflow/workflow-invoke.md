@@ -35,6 +35,16 @@ The request body's `idempotencyKey` takes precedence over the
 a fresh key and represents new work, even with identical workflow input. A
 caller retrying one intended start must reuse an explicit key.
 
+The Workflow Editor attempts synchronization when a user saves or publishes.
+Portal keeps the desired definition and grant revisions alongside Workflow's
+acknowledged revisions. If delivery fails after a local save, the editor shows
+both revision pairs and the last error; **Sync now** retries with the current
+user's bearer. If the status query also fails, the editor retains an
+unconfirmed-sync warning and keeps **Sync now** available until a later status
+read confirms both revisions. There is no periodic synchronization job. Start may also sync
+pending revisions during the authenticated user request, and runs only after
+the required revision is acknowledged.
+
 ## Operator setup
 
 The local stack uses the main `all-in-lt/docker-compose.yml`. Provision the
@@ -42,18 +52,22 @@ Workflow run credential keyring through its idempotent runtime secrets init
 service; `WORKFLOW_LONG_KEYRING_FILE` points to
 `/run/secrets/run-credential-keyring.json`. Workflow refuses invoke admission
 when a usable sealing key is unavailable. Configure
-`workflow.publication.publisherClientIds` with the existing hybrid-command
-client-credentials client ID (`client.tokenCcClientId` in its Portal config).
-The Portal obtains that application token for publication and synchronization.
+the Gateway application identity accepted by Workflow. All Portal publication,
+definition and grant synchronization calls use the acting user's bearer in `Authorization`;
+Gateway supplies its own application bearer in `X-Scope-Token` to Workflow.
+At the Gateway entry, `Authorization` must contain a valid user bearer. If a
+caller supplies `X-Scope-Token`, Gateway independently verifies it as an app
+bearer; a missing scope header is allowed, and an invalid one is refused.
+The scope token never substitutes for user authentication. The same user role
+and MCP Tool access rules apply in either case. This path requires no mTLS.
 JWT-only Gateway-to-Workflow operation is supported; mTLS is optional future
 setup.
 
-In Portal Rule Admin (`/app/rule/admin`), create strict CEL `req-acc` rules
-for `workflow_definition_save` and `workflow_definition_grants_sync`. Match
-both `auditInfo.subject_claims.ClaimsMap.client_id` to the configured
-hybrid-command client ID and `toolName` to the exact operation. In MCP Gateway
-Setup (`/app/mcp/setup`) → Access Control, assign each rule to its matching
-Tool endpoint card. These two tools accept the application token only.
+In Portal Rule Admin (`/app/rule/admin`), assign the established user role rule
+to `workflow_definition_save` and `workflow_definition_grants_sync` in MCP
+Gateway Setup (`/app/mcp/setup`) → Access Control. Allow `admin`, `host-admin`,
+and `workflow-admin` for these two endpoints. An app bearer in `Authorization`
+must be denied even if it carries a user-like claim.
 
 On the other Workflow endpoint cards, add the established role-based rule and
 assign roles: definition publish/retire to `admin`, `host-admin`,
@@ -300,21 +314,20 @@ Workflow exposes these operations on its native MCP endpoint, next to
 `contracts/workflow-admin/workflow-tools-list-full.json` with schemas and examples like
 the other workflow-admin tools.
 
-| Tool | Publisher token | Purpose |
-|------|-----------------|---------|
-| `workflow_definition_save` | as `authorization` (sync) | Upsert the saved (editable) head of a definition |
-| `workflow_definition_publish` | `x-publisher-token` | Publish one immutable definition version |
-| `workflow_definition_retire` | `x-publisher-token` | Stop new admissions to a definition version |
-| `workflow_definition_grants_sync` | as `authorization` (sync) | Replace the Tool grants of one definition |
-| `workflow_binding_publish` | `x-publisher-token` | Publish a binding revision with its dependencies and endpoint targets |
-| `workflow_binding_retire` | `x-publisher-token` | Retire a Tool's binding, called by the Tool owner |
-| `workflow_binding_get` | no | Read one revision with its status and decision history |
-| `workflow_binding_list` | no | List revisions for definitions the caller owns, filterable by status |
-| `workflow_binding_decide` | no | Approve or reject a pending revision, called by the definition owner |
-| `workflow_binding_revoke` | no | Withdraw approval of an active revision, called by the definition owner |
+| Tool | Purpose |
+|------|---------|
+| `workflow_definition_save` | Upsert the saved (editable) head of a definition |
+| `workflow_definition_publish` | Publish one immutable definition version |
+| `workflow_definition_retire` | Stop new admissions to a definition version |
+| `workflow_definition_grants_sync` | Replace the Tool grants of one definition |
+| `workflow_binding_publish` | Publish a binding revision with its dependencies and endpoint targets |
+| `workflow_binding_retire` | Retire a Tool's binding, called by the Tool owner |
+| `workflow_binding_get` | Read one revision with its status and decision history |
+| `workflow_binding_list` | List revisions for definitions the caller owns, filterable by status |
+| `workflow_binding_decide` | Approve or reject a pending revision, called by the definition owner |
+| `workflow_binding_revoke` | Withdraw approval of an active revision, called by the definition owner |
 
-Every call except the two synchronization operations carries the acting
-user's token in `authorization`. The Gateway adds its own token in
+Every call carries the acting user's token in `authorization`. The Gateway adds its own token in
 `x-scope-token`, and Workflow checks it against
 `workflow.invocation.allowedCallerServiceIds`, as for `workflow_start`.
 
@@ -331,10 +344,9 @@ The ten definition-publication and binding-management tools carry a required
 `hostId` as a target-host assertion. It does not supply identity or grant
 cross-host access. Workflow authenticates first and rejects a mismatch with
 `WORKFLOW_POLICY_DENIED` before any scoped read, mutation or operation-receipt
-lookup/replay. Database scope comes from the verified token host. User-plus-
-publisher calls require the body and both token hosts to agree; app-only sync
-calls use the allowlisted publisher app's host; user-only calls use the user's
-host. Gateway caller-service validation remains required.
+lookup/replay. Database scope comes from the verified user host. The request
+body, user bearer, and Gateway scope bearer must identify the same host.
+Gateway caller-service validation remains required for every call.
 
 `workflow_invoke` has no `hostId` argument; its host is derived from trusted
 invocation context. The manifest retains `identitySource: trustedInvocationContext`.
@@ -342,49 +354,32 @@ The input-schema validator permits only the exact root `hostId` paths on the
 ten tools, without relaxing its identity/fencing guard for existing tools,
 alternate spellings or nested fields.
 
-The `owner` objects on definition save/publish describe publisher-authenticated
+The `owner` objects on definition save/publish describe user-authenticated
 resource metadata, not caller identity. Only save changes current ownership;
 authorization uses the verified caller and stored owner. The `role` field on
 binding list is only the `owner`/`requester` relationship filter relative to
 that caller. These are exact tool/path validator exceptions with constrained
 schemas. A sync payload's `actor` is audit metadata and grants no authority.
 
-### Publisher assertion
+### Gateway assertion
 
-The user token says who clicked; it does not prove the request came from the
-Portal. Any client holding a user token and able to reach the Gateway could
-otherwise write definitions, grants or bindings with arbitrary owners, digests
-and reach.
+The user token identifies who clicked. Gateway checks that user's endpoint
+permissions before forwarding, and Workflow independently checks the user host
+and Gateway service identity. A payload `actor` cannot replace either token.
 
-The six operations with a publisher token above are Portal-authoritative.
-The publisher token is a client-credentials JWT that `hybrid-command` obtains
-with its existing client (`client.tokenCcClientId` in its `values.yml`), the
-same way other Portal commands obtain service tokens.
+All definition, grant, and binding operations carry the acting user's bearer
+in `Authorization`. Gateway verifies that user and the endpoint ACL. On the
+Gateway-to-Workflow request, Gateway supplies its own app bearer in
+`X-Scope-Token`; Workflow verifies its service identity, host, and environment
+independently from the user bearer and checks that the user host matches the
+request host. `hybrid-command` does not mint an application token for Workflow.
+The payload `actor` remains audit metadata, never a credential.
 
-- Workflow verifies it as an **application token**
-  (`token_purpose::verify_with_purpose` with `TokenUse::App`), so a user token
-  is refused even when it carries an allowed client id. It then checks that
-  the client id is listed in the new configuration
-  `workflow.publication.publisherClientIds`, and that its host matches the
-  request `hostId`.
-- The four user-initiated operations carry the user token in `authorization`
-  and the publisher token in `x-publisher-token`. The user is recorded as the
-  actor. The Gateway forwards `x-publisher-token` unchanged to Workflow,
-  strips it on every other route, and never creates one.
-- The two synchronization operations (`workflow_definition_save`,
-  `workflow_definition_grants_sync`) are delivered by a Portal background
-  worker with no user present (see **Synchronization**). They carry the
-  publisher token as `authorization`. The Portal user who made the change
-  travels in the payload as `actor`, for audit only. The Gateway admits the
-  application token for these two tools only.
-- A missing or invalid publisher token returns `isError` with
+- A missing or invalid user or Gateway token returns `isError` with
   `WORKFLOW_POLICY_DENIED`.
 
-The Workflow owner decides which Portal clients may publish by editing
-`publisherClientIds`.
-
 `workflow_binding_get`, `workflow_binding_list`, `workflow_binding_decide`
-and `workflow_binding_revoke` need only the user token. Workflow checks the
+and `workflow_binding_revoke` use the same user and Gateway tokens. Workflow checks the
 caller against the definition owner it stored, so they do not depend on the
 Portal's word.
 
@@ -459,6 +454,14 @@ synchronization described below.
    that revision. Workflow
    compares it to the head it loads and returns
    `WORKFLOW_DEFINITION_MISMATCH` on a difference.
+
+The `workflow_start` MCP catalog input schema must declare this optional
+digest with `^sha256:[0-9a-f]{64}$`. Gateway validates arguments against its
+published tool schema before calling Workflow. The catalog must first be
+reimported into Portal's MCP API endpoint (`api_endpoint_t.tool_schema`), then
+the Gateway Tool publication must be previewed and published and its config
+snapshot activated. Rebuilding and restarting Workflow or republishing Gateway
+Tools alone leaves an older Portal endpoint schema in place.
 
 Every Portal start path goes through `StartWorkflow`, including the workflow
 editor's Start button. A body idempotency key takes precedence over the header.
@@ -577,7 +580,7 @@ flight. An operation already dispatched is not undone.
 
 ### Synchronization
 
-Definition saves and grant sets are delivered by a durable, ordered retry:
+Definition saves and grant sets are delivered by authenticated user actions:
 
 - The Portal keeps a sync row per definition and kind (`definition`,
   `grants`) with a desired revision and the user of the last change, written
@@ -587,12 +590,12 @@ Definition saves and grant sets are delivered by a durable, ordered retry:
   database snapshot, so content is never paired with another revision's
   number. When several grant changes are delivered as one set, the user of
   the last change is sent as `actor`.
-- The command delivers right after its event. A leader-only worker in
-  `hybrid-command` retries rows that are behind, with backoff, always
-  sending the current Portal state with the current revision. The worker
-  has its own leader lock (lock id 2), separate from the Portal task
-  scheduler's (lock id 1). Two instances may overlap briefly during a
-  leadership change; the revision rules keep that safe.
+- Save and Publish in the Workflow Editor attempt delivery with the current
+  user bearer. A committed local revision remains pending if delivery fails.
+  `getWfDefinitionById` returns desired and acknowledged definition and grant
+  revisions, and the editor shows the difference with a **Sync now** action.
+  `syncWfDefinition` retries both kinds under the current user bearer. There
+  is no scheduled synchronization worker or stored user credential.
 - The Portal stores the acknowledged revision and digest together and only
   moves them forward, so a late receipt for an older revision is ignored.
   Errors are recorded and shown in the UI.
@@ -1470,7 +1473,7 @@ text.
 | No active revision, or admission refused | `WORKFLOW_START_REJECTED` | no |
 | Binding or definition digest mismatch | `WORKFLOW_DEFINITION_MISMATCH` | no, until the snapshots converge |
 | Definition version retired | `WORKFLOW_DEFINITION_RETIRED` | no |
-| Policy refused, missing publisher token, revoked binding, or `parentActionId` supplied | `WORKFLOW_POLICY_DENIED` | no |
+| Policy refused, invalid user or Gateway identity, revoked binding, or `parentActionId` supplied | `WORKFLOW_POLICY_DENIED` | no |
 | User fails the revision's caller policy | `WORKFLOW_POLICY_DENIED` | no |
 | Interactive capacity full, or a concurrency or rate limit hit | `WORKFLOW_CAPACITY_EXHAUSTED`, with `retryAfterMs` | yes |
 | Same key, different input or different client | `WORKFLOW_IDEMPOTENCY_CONFLICT` | no |
@@ -1540,7 +1543,8 @@ with a fresh 30-second deadline and a full budget.
 - The Gateway no longer computes the idempotency key.
 - Workflow `isError` results and their `structuredContent` pass through as
   described in **Error envelopes**.
-- The Gateway forwards `x-publisher-token` on calls to Workflow unchanged.
+- The Gateway forwards the verified user bearer and supplies its own app bearer
+  in `X-Scope-Token` on calls to Workflow.
 - `workflow_invoke` is hidden from `tools/list` and refused as a client
   `tools/call`.
 - `loadRuntimeWorkflowTool` in `ConfigPersistenceImpl` takes the digests from
@@ -1584,14 +1588,14 @@ in the workflow-invoke implementation plan. In outline:
    and retire, grants sync, binding revisions, digests, effect matrix, task
    evidence, pinned readers, owner approval, carry-over, decisions and
    concurrency.
-3. **Portal.** Database patch, normalizer, Workflow client with the publisher
+3. **Portal.** Database patch, normalizer, Workflow client with the acting user
    token, save-then-start, per-Tool publication, preview digest, approval
    commands and queries, portal-view screens.
 4. **`workflow_invoke`.** Admission, sealed run credential, admission limits,
    authority, run credential selection, broker removal, wait, result and
    envelopes.
 5. **Gateway.** Route to `workflow_invoke`, shrink the binding config, pass
-   errors through, forward the publisher token, hide `workflow_invoke`.
+   errors through, forward the user token, supply Gateway's app token, hide `workflow_invoke`.
 6. **Cleanup.** `workflow_start` hardening, FDW sync removal, documentation,
    light-portal-test, local Compose image tag, user runbook.
 
@@ -1611,13 +1615,13 @@ in the workflow-invoke implementation plan. In outline:
 - A Gateway snapshot with a stale `bindingDigest` gets
   `WORKFLOW_DEFINITION_MISMATCH`; one without `bindingDigest` gets
   `WORKFLOW_START_REJECTED` for that Tool only.
-- A publication call without `x-publisher-token`, or with a token from an
-  unlisted client, is refused. A user token carrying an allowed client id is
-  refused as a publisher token.
+- A publication call without a valid user `Authorization` or Gateway
+  `X-Scope-Token` is refused before storage access. A mismatched host is refused.
 - A delayed save or grant set with a lower `sourceRevision` returns `stale`
   and changes nothing.
-- With Workflow stopped, a grant revocation shows "Sync pending"; after
-  Workflow returns, the worker delivers it and the next dispatch is refused.
+- With Workflow stopped, a grant revocation shows "Sync pending" and the Portal
+  and Workflow revision gap. Once Workflow returns, a user presses **Sync now**;
+  subsequent dispatches then honor the acknowledged revocation.
 - A publish whose receipt is lost is shown as unconfirmed; a retry by the
   same user with the same `operationId` returns the stored receipt and does
   not overwrite a newer Portal projection. Another user cannot retry it.
@@ -1727,10 +1731,9 @@ peer identity, and nested calls can use the restored action dispatch. The
     owner can narrow it with the revision's caller policy.
 15. Gateway-to-Workflow mTLS is future work (see **Future: Gateway to Workflow
     mTLS**).
-16. Portal-authoritative publication needs a `hybrid-command`
-    client-credentials token, verified as an application token and accepted
-    by client id. User-initiated operations carry it in `x-publisher-token`;
-    the two synchronization operations carry it as `authorization`.
+16. Portal-authoritative publication carries the acting user's bearer in
+    `Authorization`. Gateway verifies the user, forwards that bearer and adds
+    Gateway's application bearer in `X-Scope-Token` for Workflow to verify.
 17. Portal keeps Workflow's saved definition head in step with
     `workflow_definition_save` through durable, revisioned delivery.
     `StartWorkflow`, including the editor's Start, runs only the

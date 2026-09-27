@@ -26,6 +26,10 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 128
+          },
+          "expectedDefinitionDigest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
           }
         },
         "additionalProperties": false

@@ -47,5 +47,6 @@ url = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+light-security = { path = "../../crates/light-security", features = ["test-support"] }
 rcgen = "0.14"
 tempfile = "3"
