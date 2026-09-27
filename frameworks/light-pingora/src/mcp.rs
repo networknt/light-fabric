@@ -9457,7 +9457,7 @@ fn resolve_workflow_contract_refs(value: &JsonValue, shared: &JsonValue) -> Json
 
 fn frozen_workflow_admin_schema(name: &str) -> Option<JsonValue> {
     let manifest: JsonValue = serde_json::from_str(include_str!(
-        "../../../apps/light-workflow/contracts/workflow-admin/tool-manifest.json"
+        "../../../apps/light-workflow/contracts/workflow-admin/workflow-tools-list-full.json"
     ))
     .expect("frozen Workflow admin manifest is valid JSON");
     let shared: JsonValue = serde_json::from_str(include_str!(
@@ -18162,7 +18162,7 @@ tools:
 "#;
         let mut config: McpRouterConfig = serde_yaml::from_str(yaml).expect("async config");
         let manifest: JsonValue = serde_json::from_str(include_str!(
-            "../../../apps/light-workflow/contracts/workflow-admin/tool-manifest.json"
+            "../../../apps/light-workflow/contracts/workflow-admin/workflow-tools-list-full.json"
         ))
         .expect("manifest");
         for name in manifest["tools"]
@@ -18314,7 +18314,7 @@ tools:
             }
         }
         let manifest: JsonValue = serde_json::from_str(include_str!(
-            "../../../apps/light-workflow/contracts/workflow-admin/tool-manifest.json"
+            "../../../apps/light-workflow/contracts/workflow-admin/workflow-tools-list-full.json"
         ))
         .expect("manifest");
         let manifest_names = manifest["tools"]

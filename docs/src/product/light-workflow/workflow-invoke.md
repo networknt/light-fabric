@@ -297,7 +297,7 @@ are the ones the owner approves.
 
 Workflow exposes these operations on its native MCP endpoint, next to
 `workflow_start`. They are declared in
-`contracts/workflow-admin/tool-manifest.json` with schemas and examples like
+`contracts/workflow-admin/workflow-tools-list-full.json` with schemas and examples like
 the other workflow-admin tools.
 
 | Tool | Publisher token | Purpose |

@@ -4928,7 +4928,14 @@ impl ProxyHttp for GatewayProxy {
                         ctx.record_handler_duration(&handler_id, started.elapsed());
                         return self.write_mcp_response(session, ctx, response).await;
                     };
-                    let action = if let Some(actions) = &self.workflow_actions {
+                    // Definition and grant synchronization use Portal's service token as
+                    // Authorization. They are ordinary MCP calls, not workflow actions.
+                    // Gateway's MCP ACL and Workflow's publisher authentication still apply.
+                    let action = if ctx.auth.is_some()
+                        && is_workflow_sync_call(&session.req_header().headers, &body)
+                    {
+                        None
+                    } else if let Some(actions) = &self.workflow_actions {
                         let snapshot = self.security_execution.load();
                         let Some(security) = snapshot.security.as_ref().as_ref() else {
                             return self
@@ -7452,6 +7459,25 @@ fn handler_active(active_handlers: &ActiveHandlerSet, ids: &[&str]) -> bool {
     ids.iter().any(|id| active_handlers.is_handler_active(id))
 }
 
+fn is_workflow_sync_call(headers: &http::HeaderMap, body: &[u8]) -> bool {
+    if headers.contains_key("x-scope-token") || headers.contains_key("x-workflow-action") {
+        return false;
+    }
+    let Ok(message) = serde_json::from_slice::<JsonValue>(body) else {
+        return false;
+    };
+    if message.get("method").and_then(JsonValue::as_str) != Some("tools/call") {
+        return false;
+    }
+    matches!(
+        message
+            .get("params")
+            .and_then(|params| params.get("name"))
+            .and_then(JsonValue::as_str),
+        Some("workflow_definition_save" | "workflow_definition_grants_sync")
+    )
+}
+
 fn validate_hmac_chain(
     location: &str,
     chain: &[String],
@@ -7928,6 +7954,48 @@ fn build_registered_gateway_handler(
 mod tests {
     include!("dual_token_tests.rs");
     use super::*;
+
+    #[test]
+    fn only_plain_definition_sync_calls_bypass_workflow_action_admission() {
+        let headers = http::HeaderMap::new();
+        for name in [
+            "workflow_definition_save",
+            "workflow_definition_grants_sync",
+        ] {
+            let body = json!({"jsonrpc":"2.0","method":"tools/call","params":{"name":name}});
+            assert!(is_workflow_sync_call(&headers, body.to_string().as_bytes()));
+        }
+        for name in [
+            "workflow_start",
+            "workflow_definition_publish",
+            "workflow_invoke",
+        ] {
+            let body = json!({"jsonrpc":"2.0","method":"tools/call","params":{"name":name}});
+            assert!(!is_workflow_sync_call(
+                &headers,
+                body.to_string().as_bytes()
+            ));
+        }
+        assert!(!is_workflow_sync_call(&headers, b"not json"));
+        let body = json!({"method":"tools/list","params":{"name":"workflow_definition_save"}});
+        assert!(!is_workflow_sync_call(
+            &headers,
+            body.to_string().as_bytes()
+        ));
+        let body = json!({"method":"tools/call","params":{"name":"workflow_definition_save"}});
+        let mut action_headers = http::HeaderMap::new();
+        action_headers.insert("x-workflow-action", "not-an-action".parse().unwrap());
+        assert!(!is_workflow_sync_call(
+            &action_headers,
+            body.to_string().as_bytes()
+        ));
+        action_headers.clear();
+        action_headers.insert("x-scope-token", "Bearer app".parse().unwrap());
+        assert!(!is_workflow_sync_call(
+            &action_headers,
+            body.to_string().as_bytes()
+        ));
+    }
     use futures_util::{SinkExt, StreamExt};
     use light_runtime::config::ClientConfig;
     use light_runtime::{

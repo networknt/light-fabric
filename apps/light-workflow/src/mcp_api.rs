@@ -25,7 +25,7 @@ fn manifest() -> &'static Value {
     static VALUE: OnceLock<Value> = OnceLock::new();
     VALUE.get_or_init(|| {
         serde_json::from_str(include_str!(
-            "../contracts/workflow-admin/tool-manifest.json"
+            "../contracts/workflow-admin/workflow-tools-list-full.json"
         ))
         .expect("embedded workflow admin tool manifest must be valid")
     })
@@ -68,7 +68,6 @@ fn advertised_tools() -> Vec<Value> {
         .cloned()
         .unwrap_or_default()
         .into_iter()
-        .filter(|tool| tool.get("visibility").and_then(Value::as_str) != Some("gateway-internal"))
         .map(|tool| {
             json!({
                 "name":tool["name"],
@@ -392,13 +391,13 @@ mod tests {
         let examples: Value =
             serde_json::from_str(include_str!("../contracts/workflow-admin/examples.json"))
                 .unwrap();
-        assert_eq!(tools.len(), 32);
+        assert_eq!(tools.len(), 33);
         assert!(
             tools
                 .iter()
                 .any(|tool| tool["name"] == "workflow_wait_result")
         );
-        assert!(!tools.iter().any(|tool| tool["name"] == "workflow_invoke"));
+        assert!(tools.iter().any(|tool| tool["name"] == "workflow_invoke"));
         for tool in tools {
             let name = tool["name"].as_str().unwrap();
             for (schema_name, example_name) in

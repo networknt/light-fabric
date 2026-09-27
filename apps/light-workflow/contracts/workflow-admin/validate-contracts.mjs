@@ -6,12 +6,16 @@ import addFormats from 'ajv-formats';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const read = (name) => JSON.parse(fs.readFileSync(path.join(root, name), 'utf8'));
-const manifest = read('tool-manifest.json');
+const catalog = read('workflow-tools-list-full.json');
+const manifest = {...catalog, tools: catalog.tools.map(tool => ({
+  ...tool,
+  inputSchema: tool.contractInputSchema || tool.inputSchema,
+  outputSchema: tool.contractOutputSchema || tool.outputSchema,
+}))};
 const schemas = read('schemas.json');
 const examples = read('examples.json');
 const errors = read('errors.json');
 const gateway = read('gateway-publication.json');
-const gatewayTools = read('gateway-tools-list.json');
 const failures = [];
 const fail = (message) => failures.push(message);
 
@@ -28,6 +32,9 @@ const expected = [
 ];
 const names = manifest.tools.map((tool) => tool.name);
 if (new Set(names).size !== names.length) fail('tool names must be unique');
+if (catalog.tools.length !== 33 || catalog.tools.find(tool => tool.name === 'workflow_invoke')?.gatewayPublication !== false) {
+  fail('the Workflow MCP catalog must include all 33 Tools and exclude workflow_invoke from Gateway publication');
+}
 for (const name of expected) if (!names.includes(name)) fail(`missing tool ${name}`);
 for (const name of names) if (!examples[name]) fail(`missing examples for ${name}`);
 for (const name of Object.keys(examples)) if (!names.includes(name)) fail(`orphan examples for ${name}`);
@@ -90,8 +97,7 @@ function scanResolvedInput(schema, toolName, propertyPath = '', at = toolName, s
 for (const tool of manifest.tools) {
   if (!tool.permission || typeof tool.sideEffect !== 'boolean') fail(`${tool.name}: permission/sideEffect missing`);
   if (tool.publisherToken && !['header','authorization'].includes(tool.publisherToken)) fail(`${tool.name}: invalid publisherToken metadata`);
-  if (tool.visibility && tool.visibility !== 'gateway-internal') fail(`${tool.name}: invalid visibility metadata`);
-  if (tool.visibility === 'gateway-internal' && tool.name !== 'workflow_invoke') fail(`${tool.name}: only workflow_invoke may be gateway-internal`);
+  if (tool.gatewayPublication === false && tool.name !== 'workflow_invoke') fail(`${tool.name}: only workflow_invoke may be excluded from Gateway publication`);
   validateExample(examples[tool.name]?.input, tool.inputSchema, `${tool.name}.input`);
   validateExample(examples[tool.name]?.output, tool.outputSchema, `${tool.name}.output`);
   if (examples[tool.name]?.errorResult) validateExample(examples[tool.name].errorResult, { $ref:'schemas.json#/$defs/WorkflowErrorResult' }, `${tool.name}.errorResult`);
@@ -170,11 +176,11 @@ const nativeNames = ['workflow_start', 'workflow_decide_tool_access', 'workflow_
   'workflow_binding_publish','workflow_binding_retire','workflow_binding_get','workflow_binding_list',
   'workflow_binding_decide','workflow_binding_revoke'];
 const internalPublicationViolation = (published, contracts) => published
-  .filter(item => contracts.find(tool => tool.name === item.name)?.visibility === 'gateway-internal')
+  .filter(item => contracts.find(tool => tool.name === item.name)?.gatewayPublication === false)
   .map(item => item.name);
-if (internalPublicationViolation(gateway.tools, manifest.tools).length) fail('Gateway publication contains a gateway-internal Tool');
-if (!internalPublicationViolation([{name:'workflow_invoke'}], [{name:'workflow_invoke',visibility:'gateway-internal'}]).includes('workflow_invoke')) {
-  fail('validator negative test did not reject an internal Tool in Gateway publication');
+if (internalPublicationViolation(gateway.tools, manifest.tools).length) fail('Gateway publication contains an excluded Tool');
+if (!internalPublicationViolation([{name:'workflow_invoke'}], [{name:'workflow_invoke',gatewayPublication:false}]).includes('workflow_invoke')) {
+  fail('validator negative test did not reject workflow_invoke in Gateway publication');
 }
 if (gateway.serviceId !== 'com.networknt.workflow-1.0.0' || gateway.path !== '/mcp'
     || gateway.apiType !== 'mcp' || gateway.backendMcpProtocol !== 'stateless'
@@ -186,25 +192,27 @@ if (JSON.stringify(gateway.tools.map(tool => tool.name)) !== JSON.stringify(nati
 }
 for (const published of gateway.tools) {
   const contract = manifest.tools.find(tool => tool.name === published.name);
-  if (contract?.visibility === 'gateway-internal') fail(`${published.name}: gateway-internal Tool cannot be published`);
+  if (contract?.gatewayPublication === false) fail(`${published.name}: Tool cannot be published on Gateway`);
   if (published.permission !== contract?.permission || published.endpoint !== `${published.name}@call`) {
     fail(`${published.name}: Gateway publication permission or endpoint differs from Workflow contract`);
   }
-}
-if (JSON.stringify(gatewayTools.tools.map(tool => tool.name)) !== JSON.stringify(nativeNames)) {
-  fail('Gateway import spec must contain exactly the additive native Tools');
 }
 function hasReference(value) {
   if (!value || typeof value !== 'object') return false;
   if (Array.isArray(value)) return value.some(hasReference);
   return Object.hasOwn(value, '$ref') || Object.values(value).some(hasReference);
 }
-for (const tool of gatewayTools.tools) {
+for (const tool of catalog.tools) {
   if (hasReference(tool.inputSchema) || hasReference(tool.outputSchema)) {
-    fail(`${tool.name}: Gateway import schema contains an unresolved reference`);
+    fail(`${tool.name}: public Tool schema contains an unresolved reference`);
   }
-  validateExample(examples[tool.name]?.input, tool.inputSchema, `${tool.name}.gatewayInput`);
-  validateExample(examples[tool.name]?.output, tool.outputSchema, `${tool.name}.gatewayOutput`);
+  validateExample(examples[tool.name]?.input, tool.inputSchema, `${tool.name}.publicInput`);
+  validateExample(examples[tool.name]?.output, tool.outputSchema, `${tool.name}.publicOutput`);
+}
+for (const published of gateway.tools) {
+  if (!catalog.tools.some(tool => tool.name === published.name)) {
+    fail(`${published.name}: Gateway publication is absent from the public Tool list`);
+  }
 }
 if (!gateway.restrictedRoutes.every(route => ['GET','POST'].includes(route.method) && route.path.startsWith('/')
     && ['light-oauth','portal-bff-loc'].includes(route.target) && route.authentication)) {
@@ -234,4 +242,4 @@ if (failures.length) {
   console.error(failures.map((failure) => `FAIL ${failure}`).join('\n'));
   process.exit(1);
 }
-console.log(`PASS workflow-admin contracts: ${manifest.tools.length} tools, ${errors.errors.length} stable errors, ${Object.keys(examples).length} example pairs`);
+console.log(`PASS workflow-admin contracts: ${catalog.tools.length} MCP tools, ${errors.errors.length} stable errors, ${Object.keys(examples).length} example pairs`);
