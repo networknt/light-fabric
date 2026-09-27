@@ -459,17 +459,34 @@ pub(crate) async fn dispatch_native_tool(
             .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
         validate_cel_expressions(&state.engine, &snapshot)
     };
-    match crate::publication_api::dispatch(name, &state, &headers, &arguments, settings.as_ref(), &cel_validator).await {
+    match crate::publication_api::dispatch(
+        name,
+        &state,
+        &headers,
+        &arguments,
+        settings.as_ref(),
+        &cel_validator,
+    )
+    .await
+    {
         Ok(Some(value)) => return Ok(value),
         Ok(None) => {}
         Err(error) => return Err(error.into_response()),
     }
-    if matches!(name,
-        "workflow_definition_save" | "workflow_definition_publish" | "workflow_definition_retire" |
-        "workflow_definition_grants_sync" | "workflow_binding_publish" | "workflow_binding_retire" |
-        "workflow_binding_get" | "workflow_binding_list" | "workflow_binding_decide" |
-        "workflow_binding_revoke" | "workflow_invoke")
-    {
+    if matches!(
+        name,
+        "workflow_definition_save"
+            | "workflow_definition_publish"
+            | "workflow_definition_retire"
+            | "workflow_definition_grants_sync"
+            | "workflow_binding_publish"
+            | "workflow_binding_retire"
+            | "workflow_binding_get"
+            | "workflow_binding_list"
+            | "workflow_binding_decide"
+            | "workflow_binding_revoke"
+            | "workflow_invoke"
+    ) {
         return Err(ApiError::bad_request("not implemented").into_response());
     }
     if name == "workflow_start" {
@@ -518,7 +535,9 @@ pub(crate) async fn dispatch_native_tool(
                 .get("waitMs")
                 .and_then(Value::as_u64)
                 .filter(|value| *value > 0 && *value <= MAX_WAIT_MS)
-                .ok_or_else(|| ApiError::bad_request("waitMs is outside the supported range").into_response())?;
+                .ok_or_else(|| {
+                    ApiError::bad_request("waitMs is outside the supported range").into_response()
+                })?;
             let (identity, _) = authenticate(&state, &headers)
                 .await
                 .map_err(IntoResponse::into_response)?;
@@ -802,11 +821,14 @@ fn parse_native_start_input(arguments: Value) -> Result<NativeStartInput, ApiErr
         || input.idempotency_key.is_empty()
         || input.idempotency_key.len() > 128
         || input.idempotency_key.chars().any(char::is_control)
-        || input.expected_definition_digest.as_ref().is_some_and(|digest| {
-            digest.len() != 71
-                || !digest.starts_with("sha256:")
-                || !digest[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
-        })
+        || input
+            .expected_definition_digest
+            .as_ref()
+            .is_some_and(|digest| {
+                digest.len() != 71
+                    || !digest.starts_with("sha256:")
+                    || !digest[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
     {
         return Err(ApiError::input_invalid("invalid workflow_start arguments"));
     }
@@ -837,10 +859,18 @@ fn native_definition_pins(
         "input": snapshot.get("input"), "output": snapshot.get("output")
     }))
     .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
-    let policy_digest = format!("sha256:{}", resolved_policy.policy_digest.trim_start_matches("sha256:"));
+    let policy_digest = format!(
+        "sha256:{}",
+        resolved_policy.policy_digest.trim_start_matches("sha256:")
+    );
     let response_policy_digest = canonical_sha256(&json!({ "output": snapshot.get("output") }))
         .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
-    Ok((definition_digest, schema_digest, policy_digest, response_policy_digest))
+    Ok((
+        definition_digest,
+        schema_digest,
+        policy_digest,
+        response_policy_digest,
+    ))
 }
 
 async fn start_native_workflow(
@@ -923,13 +953,19 @@ async fn start_native_workflow(
         identity.host_id,
         input.workflow_definition_id,
         input.expected_definition_digest.as_deref(),
-    ).await?;
+    )
+    .await?;
     let (definition_digest, schema_digest, policy_digest, response_policy_digest) =
         native_definition_pins(&definition_text, &state.private_execution_profiles)?;
-    verify_expected_definition_digest(input.expected_definition_digest.as_deref(), &definition_digest)?;
+    verify_expected_definition_digest(
+        input.expected_definition_digest.as_deref(),
+        &definition_digest,
+    )?;
     if let Some(approval) = approval.as_ref() {
         if approval.definition_digest != definition_digest {
-            return Err(ApiError::definition_mismatch("approval definition revision changed"));
+            return Err(ApiError::definition_mismatch(
+                "approval definition revision changed",
+            ));
         }
     }
     let execution_class = ExecutionClass::Interactive;
@@ -1294,7 +1330,10 @@ async fn cancel_development_feature(
 }
 
 /// Reject a saved-head change between Portal acknowledgement and Workflow start.
-pub fn verify_expected_definition_digest(expected: Option<&str>, actual: &str) -> Result<(), ApiError> {
+pub fn verify_expected_definition_digest(
+    expected: Option<&str>,
+    actual: &str,
+) -> Result<(), ApiError> {
     if expected.is_some_and(|expected| expected != actual) {
         return Err(ApiError::definition_mismatch(
             "published workflow definition changed before start",
@@ -1351,13 +1390,23 @@ pub async fn read_admissible_pinned_binding(
     .ok_or_else(|| ApiError::definition_mismatch("workflow binding or published version is unavailable"))?;
     let version_status: String = row.try_get("version_status").map_err(ApiError::database)?;
     if version_status == "retired" {
-        return Err(publication_error(StatusCode::CONFLICT, ErrorCode::WorkflowDefinitionRetired,
-            "workflow definition version is retired", None));
+        return Err(publication_error(
+            StatusCode::CONFLICT,
+            ErrorCode::WorkflowDefinitionRetired,
+            "workflow definition version is retired",
+            None,
+        ));
     }
-    let binding_digest: String = row.try_get("binding_definition_digest").map_err(ApiError::database)?;
-    let version_digest: String = row.try_get("version_definition_digest").map_err(ApiError::database)?;
+    let binding_digest: String = row
+        .try_get("binding_definition_digest")
+        .map_err(ApiError::database)?;
+    let version_digest: String = row
+        .try_get("version_definition_digest")
+        .map_err(ApiError::database)?;
     if binding_digest != version_digest {
-        return Err(ApiError::definition_mismatch("workflow binding definition digest does not match its published version"));
+        return Err(ApiError::definition_mismatch(
+            "workflow binding definition digest does not match its published version",
+        ));
     }
     Ok(row)
 }
@@ -1478,8 +1527,9 @@ async fn start_invocation_with_stage(
         .fetch_optional(&state.pool)
         .await
         .map_err(ApiError::database)?;
-        let (workflow_version, definition) = row.ok_or_else(||
-            ApiError::definition_mismatch("saved workflow definition is unavailable"))?;
+        let (workflow_version, definition) = row.ok_or_else(|| {
+            ApiError::definition_mismatch("saved workflow definition is unavailable")
+        })?;
         let (definition_digest, schema_digest, policy_digest, response_policy_digest) =
             native_definition_pins(&definition, &state.private_execution_profiles)?;
         BindingRow {
@@ -1494,16 +1544,24 @@ async fn start_invocation_with_stage(
             tool_name: "workflow".to_string(),
         }
     } else {
-        let row = read_admissible_pinned_binding(&state.pool, identity.host_id, request.stable_tool_ref).await?;
-        let binding_digest: String = row.try_get("binding_definition_digest").map_err(ApiError::database)?;
+        let row =
+            read_admissible_pinned_binding(&state.pool, identity.host_id, request.stable_tool_ref)
+                .await?;
+        let binding_digest: String = row
+            .try_get("binding_definition_digest")
+            .map_err(ApiError::database)?;
         BindingRow {
             binding_id: Some(row.try_get("binding_id").map_err(ApiError::database)?),
             wf_def_id: row.try_get("wf_def_id").map_err(ApiError::database)?,
-            workflow_version: row.try_get("workflow_version").map_err(ApiError::database)?,
+            workflow_version: row
+                .try_get("workflow_version")
+                .map_err(ApiError::database)?,
             definition_digest: binding_digest,
             schema_digest: row.try_get("schema_digest").map_err(ApiError::database)?,
             policy_digest: row.try_get("policy_digest").map_err(ApiError::database)?,
-            response_policy_digest: row.try_get("response_policy_digest").map_err(ApiError::database)?,
+            response_policy_digest: row
+                .try_get("response_policy_digest")
+                .map_err(ApiError::database)?,
             definition: row.try_get("definition").map_err(ApiError::database)?,
             tool_name: row.try_get("tool_name").map_err(ApiError::database)?,
         }
@@ -1546,7 +1604,9 @@ async fn start_invocation_with_stage(
         validate_pinned_dependencies(
             &state.pool,
             identity.host_id,
-            binding.binding_id.ok_or_else(|| ApiError::definition_mismatch("workflow Tool binding is unavailable"))?,
+            binding.binding_id.ok_or_else(|| {
+                ApiError::definition_mismatch("workflow Tool binding is unavailable")
+            })?,
             &definition,
             request.mode,
             request.budget.maximum_delegation_depth,
@@ -1555,8 +1615,11 @@ async fn start_invocation_with_stage(
         validate_approval_evidence(
             &state.pool,
             identity.host_id,
-            binding.binding_id.ok_or_else(|| ApiError::definition_mismatch("workflow Tool binding is unavailable"))?,
+            binding.binding_id.ok_or_else(|| {
+                ApiError::definition_mismatch("workflow Tool binding is unavailable")
+            })?,
             &definition,
+            request.budget.maximum_delegation_depth,
         )
         .await?;
     }
@@ -1969,87 +2032,17 @@ async fn validate_pinned_dependencies(
     host_id: Uuid,
     binding_id: Uuid,
     definition: &WorkflowDefinition,
-    mode: InvocationMode,
+    _mode: InvocationMode,
     maximum_delegation_depth: u16,
 ) -> Result<(), ApiError> {
-    let mut tasks: Vec<&TaskDefinition> = definition
-        .do_
-        .entries
-        .iter()
-        .filter_map(|entry| entry.iter().next().map(|(_, task)| task))
-        .collect();
-    let mut cursor = 0;
-    while cursor < tasks.len() {
-        if let TaskDefinition::Fork(fork) = tasks[cursor] {
-            tasks.extend(
-                fork.fork
-                    .branches
-                    .entries
-                    .iter()
-                    .filter_map(|entry| entry.iter().next().map(|(_, task)| task)),
-            );
-        }
-        cursor += 1;
-    }
-    for task in tasks {
-        let TaskDefinition::Call(CallTaskDefinition::Mcp(call)) = task else {
-            continue;
-        };
-        let tool_name = mcp_tool_name(&call.with).ok_or_else(|| {
-            ApiError::definition_mismatch(
-                "Phase 1 MCP workflow tasks must call a pinned tool, not a resource or prompt",
-            )
-        })?;
-        let target: Option<(String, Value)> = sqlx::query_as(
-            "SELECT contract_digest,dispatch_target FROM workflow_tool_dependency_t
-              WHERE host_id=$1 AND outer_binding_id=$2 AND authorization_tool_name=$3
-                AND active AND lifecycle_status IN ('active','superseded')",
-        )
-        .bind(host_id)
-        .bind(binding_id)
-        .bind(tool_name)
-        .fetch_optional(pool)
-        .await
-        .map_err(ApiError::database)?;
-        let (contract_digest, target) = target.ok_or_else(|| {
-            ApiError::definition_mismatch(format!(
-                "nested MCP tool {tool_name} has no active pinned version target"
-            ))
-        })?;
-        if target
-            .get("contractDigest")
-            .and_then(Value::as_str)
-            .is_some_and(|value| value != contract_digest)
-        {
-            return Err(ApiError::definition_mismatch(format!(
-                "nested MCP tool {tool_name} private target drifted from its pinned contract digest"
-            )));
-        }
-        if mode == InvocationMode::Sync
-            && (target.get("readOnly").and_then(Value::as_bool) != Some(true)
-                || target
-                    .get("humanApprovalRequired")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-                || target
-                    .get("destructive")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false))
-        {
-            return Err(ApiError::definition_mismatch(format!(
-                "nested MCP tool {tool_name} is not transitively read-only and headless"
-            )));
-        }
-        let nested_depth = target
-            .get("maximumDelegationDepth")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        if nested_depth.saturating_add(1) > u64::from(maximum_delegation_depth) {
-            return Err(ApiError::definition_mismatch(format!(
-                "nested MCP tool {tool_name} exceeds the published delegation depth"
-            )));
-        }
-    }
+    crate::publication_api::binding::pinned_task_effects(
+        pool,
+        host_id,
+        binding_id,
+        definition,
+        maximum_delegation_depth,
+    )
+    .await?;
     Ok(())
 }
 
@@ -2071,76 +2064,19 @@ async fn validate_approval_evidence(
     host_id: Uuid,
     binding_id: Uuid,
     definition: &WorkflowDefinition,
+    maximum_delegation_depth: u16,
 ) -> Result<(), ApiError> {
-    fn collect<'a>(
-        prefix: Option<&str>,
-        entries: &'a [std::collections::HashMap<String, TaskDefinition>],
-        output: &mut Vec<(String, &'a TaskDefinition)>,
-    ) {
-        for entry in entries {
-            let Some((name, task)) = entry.iter().next() else {
-                continue;
-            };
-            let qualified =
-                prefix.map_or_else(|| name.clone(), |prefix| format!("{prefix}::{name}"));
-            output.push((qualified.clone(), task));
-            if let TaskDefinition::Fork(fork) = task {
-                collect(Some(&qualified), &fork.fork.branches.entries, output);
-            }
-        }
-    }
-    let mut tasks = Vec::new();
-    collect(None, &definition.do_.entries, &mut tasks);
-    for (task_name, task) in tasks {
-        let common = match task {
-            TaskDefinition::Call(CallTaskDefinition::Http(call))
-                if !call.with.method.eq_ignore_ascii_case("GET")
-                    && !call.with.method.eq_ignore_ascii_case("HEAD") =>
-            {
-                Some(&call.common)
-            }
-            TaskDefinition::Call(CallTaskDefinition::Mcp(call))
-                if call
-                    .common
-                    .metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata.get("readOnly"))
-                    .and_then(Value::as_bool)
-                    == Some(false) =>
-            {
-                Some(&call.common)
-            }
-            _ => None,
-        };
-        let Some(common) = common else { continue };
-        let evidence_digest = common
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get("approvalEvidenceDigest"))
-            .and_then(Value::as_str)
-            .ok_or_else(|| ApiError::definition_mismatch("write approval evidence is missing"))?;
-        let approved: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM workflow_tool_approval_evidence_t
-              WHERE host_id=$1 AND binding_id=$2 AND task_name=$3
-                AND evidence_digest=$4 AND active)",
-        )
-        .bind(host_id)
-        .bind(binding_id)
-        .bind(&task_name)
-        .bind(evidence_digest)
-        .fetch_one(pool)
-        .await
-        .map_err(ApiError::database)?;
-        if !approved {
-            return Err(ApiError::definition_mismatch(format!(
-                "write task {task_name} has no active publication approval evidence"
-            )));
-        }
-    }
-    Ok(())
+    crate::publication_api::binding::pinned_evidence(
+        pool,
+        host_id,
+        binding_id,
+        definition,
+        maximum_delegation_depth,
+    )
+    .await
 }
 
-fn find_task_recursive<'a>(
+pub(crate) fn find_task_recursive<'a>(
     entries: &'a [std::collections::HashMap<String, TaskDefinition>],
     requested_name: &str,
 ) -> Option<&'a TaskDefinition> {
@@ -2881,7 +2817,7 @@ fn verify_binding(request: &StartInvocationRequest, binding: &BindingRow) -> Res
     Ok(())
 }
 
-fn validate_orchestration_definition(
+pub(crate) fn validate_orchestration_definition(
     definition: &WorkflowDefinition,
     mode: InvocationMode,
     budget: &workflow_invocation_contract::InvocationBudget,
@@ -3039,7 +2975,7 @@ fn validate_development_agent_call(
     Ok(())
 }
 
-fn budget_envelope(
+pub(crate) fn budget_envelope(
     definition: &WorkflowDefinition,
     portal_execution: bool,
 ) -> Result<(u64, u64, u64), ApiError> {
@@ -3408,14 +3344,19 @@ impl ApiError {
             error: InvocationError {
                 code,
                 message: message.into(),
-                retryable: status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS,
+                retryable: status.is_server_error()
+                    || status == StatusCode::TOO_MANY_REQUESTS
+                    || code == ErrorCode::VersionConflict,
                 workflow_instance_id: None,
                 correlation_id: "unavailable".to_string(),
             },
         }
     }
     fn with_details(mut self, details: Value) -> Self {
-        assert!(details.is_object(), "Workflow error details must be an object");
+        assert!(
+            details.is_object(),
+            "Workflow error details must be an object"
+        );
         self.details = Some(details);
         self
     }
@@ -3441,7 +3382,11 @@ impl ApiError {
         )
     }
     pub(crate) fn policy_denied(message: impl Into<String>) -> Self {
-        Self::new(StatusCode::FORBIDDEN, ErrorCode::WorkflowPolicyDenied, message)
+        Self::new(
+            StatusCode::FORBIDDEN,
+            ErrorCode::WorkflowPolicyDenied,
+            message,
+        )
     }
     pub(crate) fn definition_mismatch(message: impl Into<String>) -> Self {
         Self::new(
@@ -3486,7 +3431,9 @@ impl axum::response::IntoResponse for ApiError {
         let mut error = serde_json::to_value(self.error).unwrap_or_else(|_| json!({}));
         error["status"] = json!(self.status);
         error["afterEffect"] = json!(self.after_effect);
-        if let Some(retry_after_ms) = self.retry_after_ms { error["retryAfterMs"] = json!(retry_after_ms); }
+        if let Some(retry_after_ms) = self.retry_after_ms {
+            error["retryAfterMs"] = json!(retry_after_ms);
+        }
         if let Some(details) = self.details {
             error["details"] = details;
         }
@@ -4199,8 +4146,7 @@ fork:
         });
         assert!(parse_native_start_input(valid.clone()).is_ok());
         let mut valid_with_digest = valid.clone();
-        valid_with_digest["expectedDefinitionDigest"] =
-            json!(format!("sha256:{}", "a".repeat(64)));
+        valid_with_digest["expectedDefinitionDigest"] = json!(format!("sha256:{}", "a".repeat(64)));
         assert!(parse_native_start_input(valid_with_digest).is_ok());
         for (field, value) in [
             ("stableToolRef", json!(Uuid::now_v7())),

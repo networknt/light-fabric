@@ -1317,6 +1317,7 @@
                 "items": {
                   "enum": [
                     "GET",
+                    "HEAD",
                     "POST",
                     "PUT",
                     "PATCH",
@@ -1899,8 +1900,7 @@
           "$ref": "#/$defs/Digest"
         },
         "compatibilityPolicy": {
-          "type": "string",
-          "minLength": 1
+          "enum": ["exact", "follow-compatible"]
         },
         "authorizationToolName": {
           "type": "string",
@@ -1914,8 +1914,7 @@
           "$ref": "#/$defs/Digest"
         },
         "lifecycleStatus": {
-          "type": "string",
-          "minLength": 1
+          "enum": ["active", "superseded", "retirement-candidate", "revoked"]
         },
         "dispatchTarget": {
           "type": "object",
@@ -2251,6 +2250,7 @@
                 "items": {
                   "enum": [
                     "GET",
+                    "HEAD",
                     "POST",
                     "PUT",
                     "PATCH",

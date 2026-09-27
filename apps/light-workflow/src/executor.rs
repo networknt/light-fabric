@@ -95,6 +95,98 @@ struct ClaimedTask {
     host_lease: Option<HostTaskLease>,
 }
 
+/// Read a target from the invocation's immutable binding pin. Callers retain
+/// the live grant check for lightapi targets separately.
+pub async fn pinned_endpoint_uri(
+    pool: &sqlx::PgPool,
+    host_id: Uuid,
+    binding_id: Uuid,
+    endpoint_ref: &str,
+    method: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT endpoint_uri FROM workflow_endpoint_target_t
+          WHERE host_id=$1 AND binding_id=$2 AND endpoint_ref=$3
+            AND $4=ANY(allowed_methods)",
+    )
+    .bind(host_id)
+    .bind(binding_id)
+    .bind(endpoint_ref)
+    .bind(method.to_ascii_uppercase())
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn pinned_endpoint_for_process(
+    pool: &sqlx::PgPool,
+    host_id: Uuid,
+    process_id: Uuid,
+    endpoint_ref: &str,
+    method: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let binding_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT binding_id FROM workflow_invocation_t WHERE host_id=$1 AND process_id=$2",
+    )
+    .bind(host_id)
+    .bind(process_id)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+    match binding_id {
+        Some(id) => pinned_endpoint_uri(pool, host_id, id, endpoint_ref, method).await,
+        None => Ok(None),
+    }
+}
+
+/// Resolve a LightAPI endpoint with live grant authorization. Historical
+/// revision targets are available only when an invocation pins that revision.
+pub async fn resolve_granted_endpoint(
+    pool: &sqlx::PgPool,
+    host_id: Uuid,
+    wf_def_id: Uuid,
+    tool_id: Uuid,
+    tool_version: &str,
+    lightapi_digest: &str,
+    environment: &str,
+    process_id: Uuid,
+    capability_ref: &str,
+    method: &str,
+) -> Result<Option<(Uuid, Uuid, String, Option<Value>)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT g.grant_id,g.tool_id,target.endpoint_uri,target.resolution_document
+           FROM workflow_tool_grant_t g
+           JOIN workflow_tool_binding_t binding
+             ON binding.host_id=g.host_id AND binding.wf_def_id=g.wf_def_id
+           JOIN workflow_endpoint_target_t target
+             ON target.host_id=binding.host_id
+            AND target.binding_id=binding.binding_id
+           LEFT JOIN workflow_invocation_t invocation
+             ON invocation.host_id=g.host_id AND invocation.process_id=$7
+          WHERE g.host_id=$1 AND g.wf_def_id=$2 AND g.active
+            AND g.tool_id=$3 AND g.tool_version=$4 AND g.lightapi_digest=$5
+            AND $6=ANY(g.allowed_environments)
+            AND target.endpoint_ref=$8
+            AND upper($9)=ANY(target.allowed_methods)
+            AND ((invocation.binding_id IS NOT NULL
+                  AND binding.binding_id=invocation.binding_id)
+              OR (invocation.binding_id IS NULL
+                  AND binding.active AND target.active))
+          ORDER BY binding.binding_id
+          LIMIT 1",
+    )
+    .bind(host_id)
+    .bind(wf_def_id)
+    .bind(tool_id)
+    .bind(tool_version)
+    .bind(lightapi_digest)
+    .bind(environment)
+    .bind(process_id)
+    .bind(capability_ref)
+    .bind(method.to_ascii_uppercase())
+    .fetch_optional(pool)
+    .await
+}
+
 #[derive(Debug, Clone, Copy)]
 struct HostTaskLease {
     owner: Uuid,
@@ -1651,37 +1743,18 @@ impl TaskExecutor {
                         .into());
                     }
                     let environment = self.environment.clone();
-                    let resolved: Option<(Uuid, Uuid, String, Option<Value>)> = sqlx::query_as(
-                        "SELECT g.grant_id,g.tool_id,target.endpoint_uri,target.resolution_document
-                           FROM workflow_tool_grant_t g
-                           JOIN workflow_tool_binding_t binding
-                             ON binding.host_id=g.host_id AND binding.wf_def_id=g.wf_def_id
-                            AND binding.active
-                           JOIN workflow_endpoint_target_t target
-                             ON target.host_id=binding.host_id
-                            AND target.binding_id=binding.binding_id
-                           LEFT JOIN workflow_invocation_t invocation
-                             ON invocation.host_id=g.host_id AND invocation.process_id=$7
-                          WHERE g.host_id=$1 AND g.wf_def_id=$2 AND g.active
-                            AND g.tool_id=$3 AND g.tool_version=$4 AND g.lightapi_digest=$5
-                            AND $6=ANY(g.allowed_environments)
-                            AND target.endpoint_ref=$8 AND target.active
-                            AND upper($9)=ANY(target.allowed_methods)
-                            AND (invocation.binding_id IS NULL
-                                 OR binding.binding_id=invocation.binding_id)
-                          ORDER BY binding.binding_id
-                          LIMIT 1",
+                    let resolved = resolve_granted_endpoint(
+                        &self.pool,
+                        claimed.task.host_id,
+                        claimed.wf_def_id,
+                        tool_id,
+                        tool_version,
+                        lightapi_digest,
+                        &environment,
+                        claimed.task.process_id,
+                        capability_ref,
+                        &http_call.with.method,
                     )
-                    .bind(claimed.task.host_id)
-                    .bind(claimed.wf_def_id)
-                    .bind(tool_id)
-                    .bind(tool_version)
-                    .bind(lightapi_digest)
-                    .bind(&environment)
-                    .bind(claimed.task.process_id)
-                    .bind(capability_ref)
-                    .bind(http_call.with.method.to_ascii_uppercase())
-                    .fetch_optional(&self.pool)
                     .await?;
                     let (grant_id, tool_id, endpoint_uri, resolution_document) = resolved.ok_or_else(|| io::Error::new(
                         io::ErrorKind::PermissionDenied,
@@ -1706,20 +1779,13 @@ impl TaskExecutor {
                     None
                 };
                 let registered_uri: Option<String> = if let Some(endpoint_ref) = endpoint_ref {
-                    sqlx::query_scalar(
-                        "SELECT target.endpoint_uri
-                           FROM workflow_invocation_t invocation
-                           JOIN workflow_endpoint_target_t target ON target.host_id=invocation.host_id
-                          WHERE invocation.host_id=$1 AND invocation.process_id=$2
-                            AND target.binding_id=invocation.binding_id
-                            AND target.endpoint_ref=$3 AND target.active
-                            AND $4=ANY(target.allowed_methods)",
+                    pinned_endpoint_for_process(
+                        &self.pool,
+                        claimed.task.host_id,
+                        claimed.task.process_id,
+                        endpoint_ref,
+                        &http_call.with.method,
                     )
-                    .bind(claimed.task.host_id)
-                    .bind(claimed.task.process_id)
-                    .bind(endpoint_ref)
-                    .bind(http_call.with.method.to_ascii_uppercase())
-                    .fetch_optional(&self.pool)
                     .await?
                 } else {
                     None
@@ -7222,7 +7288,7 @@ do:
             .find("SELECT g.grant_id,g.tool_id,target.endpoint_uri,target.resolution_document")
             .expect("workflow Tool grant SQL must exist");
         let end = source[start..]
-            .find(".fetch_optional(&self.pool)")
+            .find(".fetch_optional(pool)")
             .map(|offset| start + offset)
             .expect("workflow Tool grant query must execute");
         let query = &source[start..end];
@@ -7239,6 +7305,7 @@ do:
             "LEFT JOIN workflow_invocation_t",
             "invocation.binding_id IS NULL",
             "binding.binding_id=invocation.binding_id",
+            "binding.active AND target.active",
         ] {
             assert!(
                 query.contains(expected),
@@ -7246,15 +7313,15 @@ do:
             );
         }
         for expected in [
-            ".bind(claimed.task.host_id)",
-            ".bind(claimed.wf_def_id)",
+            ".bind(host_id)",
+            ".bind(wf_def_id)",
             ".bind(tool_id)",
             ".bind(tool_version)",
             ".bind(lightapi_digest)",
-            ".bind(&environment)",
-            ".bind(claimed.task.process_id)",
+            ".bind(environment)",
+            ".bind(process_id)",
             ".bind(capability_ref)",
-            ".bind(http_call.with.method.to_ascii_uppercase())",
+            ".bind(method.to_ascii_uppercase())",
         ] {
             assert!(
                 query.contains(expected),

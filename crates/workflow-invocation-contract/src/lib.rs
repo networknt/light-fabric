@@ -138,10 +138,12 @@ pub enum BindingLifecycle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
+    VersionConflict,
     WorkflowInputInvalid,
     WorkflowStartRejected,
     WorkflowDefinitionMismatch,
     WorkflowDefinitionRetired,
+    WorkflowBindingLimitExceeded,
     WorkflowTimeout,
     WorkflowCancelled,
     WorkflowTaskFailed,

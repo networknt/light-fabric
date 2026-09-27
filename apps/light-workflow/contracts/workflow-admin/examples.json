@@ -664,11 +664,11 @@
           "nestedToolId": "00000000-0000-4000-8000-000000000002",
           "nestedToolVersion": "2.1.0",
           "contractDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-          "compatibilityPolicy": "backwardCompatible",
+          "compatibilityPolicy": "follow-compatible",
           "authorizationToolName": "claims.lookup",
           "authorizationEndpointKey": "claims.lookup@call",
           "authorizationPolicyDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-          "lifecycleStatus": "ACTIVE",
+          "lifecycleStatus": "active",
           "dispatchTarget": {
             "targetType": "mcp",
             "endpoint": "claims.lookup@call"
@@ -783,11 +783,11 @@
             "nestedToolId": "00000000-0000-4000-8000-000000000002",
             "nestedToolVersion": "2.1.0",
             "contractDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-            "compatibilityPolicy": "backwardCompatible",
+            "compatibilityPolicy": "follow-compatible",
             "authorizationToolName": "claims.lookup",
             "authorizationEndpointKey": "claims.lookup@call",
             "authorizationPolicyDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-            "lifecycleStatus": "ACTIVE",
+            "lifecycleStatus": "active",
             "dispatchTarget": {
               "targetType": "mcp",
               "endpoint": "claims.lookup@call"
@@ -867,11 +867,11 @@
             "nestedToolId": "00000000-0000-4000-8000-000000000002",
             "nestedToolVersion": "2.1.0",
             "contractDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-            "compatibilityPolicy": "backwardCompatible",
+            "compatibilityPolicy": "follow-compatible",
             "authorizationToolName": "claims.lookup",
             "authorizationEndpointKey": "claims.lookup@call",
             "authorizationPolicyDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-            "lifecycleStatus": "ACTIVE",
+            "lifecycleStatus": "active",
             "dispatchTarget": {
               "targetType": "mcp",
               "endpoint": "claims.lookup@call"

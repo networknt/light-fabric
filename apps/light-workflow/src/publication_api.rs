@@ -1,5 +1,8 @@
 //! Portal-authoritative definition publication and grant synchronization.
 
+pub(crate) mod binding;
+pub use binding::{publish_binding_verified, retire_binding_verified, pinned_evidence, pinned_dependencies};
+
 use axum::http::{HeaderMap, StatusCode};
 use light_security::{
     AuthPrincipal, JwtExpiryMode,
@@ -40,12 +43,8 @@ pub(crate) async fn dispatch(
         "workflow_definition_retire" => retire_definition(state, headers, args, settings)
             .await
             .map(Some),
-        "workflow_binding_publish" | "workflow_binding_retire" => {
-            user_and_publisher(state, headers, args, settings).await?;
-            Err(ApiError::policy_denied(
-                "workflow binding publication is not available yet",
-            ))
-        }
+        "workflow_binding_publish" => binding::publish(state, headers, args, settings).await.map(Some),
+        "workflow_binding_retire" => binding::retire(state, headers, args, settings).await.map(Some),
         _ => Ok(None),
     }
 }
