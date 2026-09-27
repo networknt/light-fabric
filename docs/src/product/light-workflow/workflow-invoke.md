@@ -25,6 +25,16 @@ workflow-backed Tools. `workflow_start` remains the entry point for editors,
 schedulers and other asynchronous callers, as described in
 [Start Workflow](start-workflow.md).
 
+The Portal `StartWorkflow` command initializes and acknowledges both the saved
+definition and its current grant set before it calls `workflow_start`. It
+rechecks the acknowledged definition revision and digest after grant delivery
+and passes that digest as `expectedDefinitionDigest`. Workflow still fences the
+definition digest and enforces the live grants at admission and execution.
+The request body's `idempotencyKey` takes precedence over the
+`Idempotency-Key` header. If neither is supplied, each Start request generates
+a fresh key and represents new work, even with identical workflow input. A
+caller retrying one intended start must reuse an explicit key.
+
 ## Operator setup
 
 The local stack uses the main `all-in-lt/docker-compose.yml`. Provision the
@@ -440,14 +450,20 @@ synchronization described below.
 1. Portal `StartWorkflow` checks that Workflow has acknowledged the current
    Portal revision of the definition. If not, it delivers the save at once
    and fails the start if that delivery fails.
-2. It then calls `workflow_start` with the new optional
+2. It also initializes and acknowledges the current full grant set, including
+   legacy grants with no sync row. If grant delivery fails, it does not start.
+   After grant delivery it rechecks the acknowledged definition revision/digest
+   pair. This is a readiness check; grants remain live at runtime.
+3. It then calls `workflow_start` with the new optional
    `expectedDefinitionDigest`, set to the digest acknowledged together with
    that revision. Workflow
    compares it to the head it loads and returns
    `WORKFLOW_DEFINITION_MISMATCH` on a difference.
 
 Every Portal start path goes through `StartWorkflow`, including the workflow
-editor's Start button, which today calls `workflow_start` directly.
+editor's Start button. A body idempotency key takes precedence over the header.
+With neither, Start means new work and allocates a fresh key; callers retrying
+one intended start must reuse an explicit key.
 
 `workflow_definition_publish` never changes the head.
 
@@ -592,6 +608,94 @@ Definition saves and grant sets are delivered by a durable, ordered retry:
   revision past Workflow's.
 
 ### Lost receipts
+
+**Final review amendment (2026-09-27):** remediation is specified in
+`implementation/light-workflow/workflow-invoke-execution/final-remediation-handoff.md`.
+The ledger classifies operation outcome separately from retryability. Proven
+rejection of the exact stored operation may close it as failed. Authentication,
+transport, Gateway, unreadable-response and unproven JSON-RPC errors preserve
+pending state. Initially, definitive rejection is limited to validated binding
+publish/retire VERSION_CONFLICT responses from paths that check the original
+receipt before rejecting its stale expected version. Retry never edits the
+stored request. Other errors do not prove the original outcome.
+
+**F2 request-validation evidence (2026-09-27):** For binding publish and
+retire, a negative `expectedAggregateVersion` is a request-only validation
+failure. The authenticated publisher and host checks precede parsing. A
+parseable request with `hostId` and `operationId` reaches the serialized
+`operation_begin` insert/row lock and exact tool/request-digest comparison
+before this check. An existing success receipt wins. The rejection is stored
+under that same operation ID while holding the operation row lock, so an
+overlapping attempt and later replay return the same rejection even if
+validation rules change. The error remains `WORKFLOW_INPUT_INVALID`,
+`afterEffect=false`, and includes additive `details.requestValidation`:
+`{version:1, discriminator:"negativeExpectedAggregateVersion",
+operationId:"<UUID>", toolName:"workflow_binding_publish|workflow_binding_retire"}`.
+Portal accepts this evidence only from a Workflow Tool error for the matching
+stored operation/tool and a numeric negative expected version in the stored
+request. Missing, malformed, mismatched, or unmarked errors remain unknown.
+
+#### Additive binding request-validation evidence (version 2)
+
+After authenticated host verification and serialized operation lookup, binding
+publish may store a request-only rejection for either `bindingFields` or
+`bindingReach`. Evidence is
+`{version:2, discriminator, operationId, toolName:"workflow_binding_publish", requestSection}`.
+`bindingFields` requires `requestSection:"binding"`; `bindingReach` requires
+`requestSection:"reach"` and covers the typed `dependencies` and
+`endpointTargets` arrays together. The section identifies the immutable request
+member inspected by Workflow. The rejection stores the
+original `WORKFLOW_INPUT_INVALID` code, exact message, and complete evidence;
+replay returns those stored values. Portal accepts it only for a Workflow Tool
+error with `afterEffect=false`, a matching operation and tool, a nonnegative
+expected version, and the named section present with its contract type in its
+stored exact request. Portal does not reinterpret a bare business error code as
+proof. Both versions require exactly their documented evidence members; extra
+members are malformed and remain unknown. The earlier version 1 negative-version
+marker remains supported.
+
+`bindingFields` covers every explicit field, bound, policy, digest-format,
+role, annotation, and schema-type rejection in `validate_binding`.
+`bindingReach` covers reach size, dependency field/digest/policy/uniqueness,
+and endpoint field/digest/uniqueness/URI/method/document rejections in
+`normalize_payload`. Digest *format* checks use immutable supplied strings.
+`digests` serialization and canonical-hash computation errors do not establish
+invalid input and carry no evidence. Definition, grants, owner, current head,
+static fit, runtime configuration, database, authentication, transport, and
+other state-dependent failures remain unknown unless separately proven.
+Deserialization errors cannot safely identify and fence an operation, so they
+remain unknown. Other `WORKFLOW_INPUT_INVALID` paths remain unknown, including
+state-dependent missing binding and limits. The existing validated
+`VERSION_CONFLICT` rule remains independent.
+
+A validated definition publication receipt with `result=unchanged` and
+`status=retired` is a completed D21 outcome. The definition prerequisite for
+binding publication additionally requires `status=active`; a retired receipt
+is neither cached as active nor followed by a binding send. Original-user
+Retry replays the retired receipt, and publishing another version is deliberate
+new work. Gateway-removal retirement results retain Portal-owned identity,
+status, code and message; unconfirmed results expose only validated recovery
+metadata. A forbidden Retry means only that the caller is not the original
+requester. It does not establish completion, failure or expiry.
+
+**UI recovery follow-up:** A recovered definition receipt with either
+`result=published` or `result=unchanged` and `status=active` enables an explicit
+binding-publication continuation; it never sends the binding automatically.
+When the authenticated Portal ledger returns a stored failed operation, Portal
+adds `metadata.operationState="failed"` to the command error while preserving
+the stored business error code. This Portal-owned marker, rather than the code
+or retryable flag, lets the UI stop Retry and offer deliberate new work.
+Unproven remote errors do not receive the marker.
+Ledger database errors and unknown operation-prefixed Retry errors remain
+recoverable with the original operation ID; neither establishes failure or
+expiry. The UI handles explicit expiry, forbidden Retry, and not-found
+responses separately.
+
+Concurrent finalization rereads the committed outcome when its guarded update
+loses. Remote reconciliation happens outside the short receipt/event/projection
+transaction. Publication event-version allocation is serialized using the
+existing global aggregate identity. Wrong-user Retry is forbidden regardless
+of state and must not expose receipts or masquerade as pending.
 
 Every other mutating call the Portal makes to Workflow (definition publish
 and retire, binding publish, retire, decide and revoke) goes through a

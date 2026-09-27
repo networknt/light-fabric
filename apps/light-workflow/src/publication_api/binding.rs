@@ -149,6 +149,35 @@ fn invalid(message: impl Into<String>) -> ApiError {
         message,
     )
 }
+
+async fn reject_negative_expected_version(
+    mut tx: Transaction<'_, Postgres>, host: Uuid, operation: Uuid, tool: &str,
+) -> Result<Value, ApiError> {
+    let message = "expectedAggregateVersion must be nonnegative";
+    let evidence = json!({"version":1,"discriminator":"negativeExpectedAggregateVersion",
+        "operationId":operation,"toolName":tool});
+    operation_finish(&mut tx, host, operation, &json!({"_requestRejection": {
+        "version":1,"discriminator":"negativeExpectedAggregateVersion",
+        "operationId":operation,"toolName":tool,"code":"WORKFLOW_INPUT_INVALID",
+        "message":message,"evidence":evidence
+    }})).await?;
+    tx.commit().await.map_err(database_error)?;
+    Err(invalid(message).with_details(json!({"requestValidation":evidence})))
+}
+async fn reject_request_fields(
+    mut tx: Transaction<'_, Postgres>, host: Uuid, operation: Uuid,
+    discriminator: &str, section: &str, failure: ApiError,
+) -> Result<Value, ApiError> {
+    let message = failure.message().to_owned();
+    let evidence = json!({"version":2,"discriminator":discriminator,
+        "operationId":operation,"toolName":"workflow_binding_publish",
+        "requestSection":section});
+    operation_finish(&mut tx, host, operation, &json!({"_requestRejection": {
+        "code":"WORKFLOW_INPUT_INVALID", "message":message, "evidence":evidence
+    }})).await?;
+    tx.commit().await.map_err(database_error)?;
+    Err(failure.with_details(json!({"requestValidation":evidence})))
+}
 fn limit(name: &str, required: u64, configured: u64) -> ApiError {
     error(
         StatusCode::CONFLICT,
@@ -293,9 +322,6 @@ fn validate_binding(binding: &Binding) -> Result<(), ApiError> {
 }
 
 fn normalize_payload(input: &mut PublishInput) -> Result<(), ApiError> {
-    if input.expected_aggregate_version < 0 {
-        return Err(invalid("expectedAggregateVersion must be nonnegative"));
-    }
     if input.dependencies.len() > 256 || input.endpoint_targets.len() > 256 {
         return Err(invalid("binding reach exceeds 256 records"));
     }
@@ -1142,10 +1168,6 @@ pub async fn publish_binding_verified(
 ) -> Result<Value, ApiError> {
     let mut input: PublishInput =
         serde_json::from_value(args.clone()).map_err(|e| invalid(e.to_string()))?;
-    validate_binding(&input.binding)?;
-    normalize_payload(&mut input)?;
-    let (binding_digest, approval_digest) = digests(&input)?;
-    let b = &input.binding;
     let mut tx = pool.begin().await.map_err(database_error)?;
     if let Some(receipt) = operation_begin(
         &mut tx,
@@ -1159,6 +1181,20 @@ pub async fn publish_binding_verified(
         tx.commit().await.map_err(database_error)?;
         return Ok(receipt);
     }
+    if input.expected_aggregate_version < 0 {
+        return reject_negative_expected_version(tx, input.host_id, input.operation_id,
+            "workflow_binding_publish").await;
+    }
+    if let Err(failure) = validate_binding(&input.binding) {
+        return reject_request_fields(tx, input.host_id, input.operation_id,
+            "bindingFields", "binding", failure).await;
+    }
+    if let Err(failure) = normalize_payload(&mut input) {
+        return reject_request_fields(tx, input.host_id, input.operation_id,
+            "bindingReach", "reach", failure).await;
+    }
+    let (binding_digest, approval_digest) = digests(&input)?;
+    let b = &input.binding;
     let version:Option<(String,String,String,String,String)>=sqlx::query_as("SELECT definition,definition_digest,schema_digest,version_status,binding_approval FROM wf_definition_version_t WHERE host_id=$1 AND wf_def_id=$2 AND version=$3 FOR SHARE")
         .bind(input.host_id).bind(b.wf_def_id).bind(&b.workflow_version).fetch_optional(&mut *tx).await.map_err(database_error)?;
     let (definition_text, stored_digest, stored_schema, status, version_approval) = version
@@ -1369,9 +1405,6 @@ pub async fn retire_binding_verified(
 ) -> Result<Value, ApiError> {
     let input: RetireInput =
         serde_json::from_value(args.clone()).map_err(|e| invalid(e.to_string()))?;
-    if input.expected_aggregate_version < 0 {
-        return Err(invalid("expectedAggregateVersion must be nonnegative"));
-    }
     let mut tx = pool.begin().await.map_err(database_error)?;
     if let Some(receipt) = operation_begin(
         &mut tx,
@@ -1384,6 +1417,10 @@ pub async fn retire_binding_verified(
     {
         tx.commit().await.map_err(database_error)?;
         return Ok(receipt);
+    }
+    if input.expected_aggregate_version < 0 {
+        return reject_negative_expected_version(tx, input.host_id, input.operation_id,
+            "workflow_binding_retire").await;
     }
     // The preliminary reads take no locks. Lock every version previously used
     // by this Tool in stable order before taking the head lock. This includes
@@ -2619,7 +2656,7 @@ mod tests {
         assert!(validate_binding(&bad).is_err());
     }
     #[test]
-    fn payload_field_rules_reject_invalid_reach_and_aggregate() {
+    fn payload_field_rules_reject_invalid_reach() {
         let mut base = example();
         base.endpoint_targets.push(EndpointTarget {
             endpoint_ref: "target-a".into(),
@@ -2628,9 +2665,6 @@ mod tests {
             authorization_policy_digest: format!("sha256:{}", "a".repeat(64)),
             resolution_document: None,
         });
-        let mut bad = base.clone();
-        bad.expected_aggregate_version = -1;
-        assert!(normalize_payload(&mut bad).is_err());
         let mut bad = base.clone();
         bad.dependencies[0].compatibility_policy = "backwardCompatible".into();
         assert!(normalize_payload(&mut bad).is_err());

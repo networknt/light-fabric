@@ -12,6 +12,28 @@ Contract version `0.3.0-definition-start` removes the workflow-backed Tool bindi
 
 `workflow_wait_result` returns its documented output for completed and still running instances. Failed and cancelled instances return an MCP `isError` result whose `structuredContent` follows `WorkflowErrorResult`; the examples include both terminal states. `workflow_start` rejects `stableToolRef` with `WORKFLOW_INPUT_INVALID`; use the workflow-backed Tool for binding-based invocation. `workflow_start` remains asynchronous and retains its v1 unlimited result replay window.
 
+Binding publish/retire may return `WORKFLOW_INPUT_INVALID` with `afterEffect=false` and
+`details.requestValidation` when an authenticated, serialized operation has a
+negative `expectedAggregateVersion`. Example evidence:
+`{"version":1,"discriminator":"negativeExpectedAggregateVersion","operationId":"11111111-1111-4111-8111-111111111111","toolName":"workflow_binding_publish"}`.
+The same operation ID/request replays this stored rejection. Unproven input errors
+do not carry this marker. Portal verifies the Workflow Tool origin, marker,
+operation/tool correspondence, and its exact stored request before treating the
+error as definitive.
+
+Binding publish also uses finite version 2 evidence after its serialized
+operation check: `bindingFields` with `requestSection:"binding"`, or
+`bindingReach` with `requestSection:"reach"` (the typed `dependencies` and
+`endpointTargets` arrays together). Both require `operationId` and
+`toolName:"workflow_binding_publish"`. These cover explicit deterministic
+validation of supplied binding/reach fields. Portal verifies the corresponding
+section and type in its stored exact request, a nonnegative expected version,
+Workflow Tool origin, `WORKFLOW_INPUT_INVALID`, and `afterEffect=false`.
+Additional evidence members are rejected by the schema and remain unknown to
+Portal.
+Serialization, digest computation, configuration, database, and live-state
+errors have no version 2 evidence and remain unconfirmed.
+
 
 ### Workflow error results
 

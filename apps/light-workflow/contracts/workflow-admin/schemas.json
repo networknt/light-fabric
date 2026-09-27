@@ -1808,6 +1808,25 @@
       },
       "additionalProperties": false
     },
+    "RequestValidationEvidence": {
+      "type": "object",
+      "required": ["version", "discriminator", "operationId", "toolName"],
+      "properties": {
+        "version": {"enum": [1, 2]},
+        "discriminator": {"enum": ["negativeExpectedAggregateVersion", "bindingFields", "bindingReach"]},
+        "operationId": {"$ref": "#/$defs/Uuid"},
+        "toolName": {"enum": ["workflow_binding_publish", "workflow_binding_retire"]},
+        "requestSection": {"enum": ["binding", "reach"]}
+      },
+      "allOf": [
+        {"if": {"properties": {"version": {"const": 1}}}, "then": {"properties": {"discriminator": {"const": "negativeExpectedAggregateVersion"}}, "not": {"properties": {"requestSection": {}}, "required": ["requestSection"]}}},
+        {"if": {"properties": {"version": {"const": 2}}}, "then": {"required": ["requestSection"], "properties": {"toolName": {"const": "workflow_binding_publish"}, "requestSection": {"enum": ["binding", "reach"]}}, "oneOf": [
+          {"properties": {"discriminator": {"const": "bindingFields"}, "requestSection": {"const": "binding"}}},
+          {"properties": {"discriminator": {"const": "bindingReach"}, "requestSection": {"const": "reach"}}}
+        ]}}
+      ],
+      "additionalProperties": false
+    },
     "WorkflowErrorResult": {
       "type": "object",
       "required": [
@@ -1855,6 +1874,9 @@
             },
             "details": {
               "type": "object",
+              "properties": {
+                "requestValidation": {"$ref": "#/$defs/RequestValidationEvidence"}
+              },
               "additionalProperties": true
             }
           },

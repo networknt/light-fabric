@@ -877,6 +877,28 @@ async fn operation_begin(
             "operationId was used with a different request",
         ));
     }
+    if let Some(rejection) = receipt.get("_requestRejection") {
+        // Version-1 rows created before the extension omitted the code; their
+        // documented business code is WORKFLOW_INPUT_INVALID.
+        let stored_code = rejection.get("code").and_then(Value::as_str)
+            .unwrap_or("WORKFLOW_INPUT_INVALID");
+        if stored_code != "WORKFLOW_INPUT_INVALID" {
+            return Err(ApiError::new(StatusCode::INTERNAL_SERVER_ERROR,
+                workflow_invocation_contract::ErrorCode::WorkflowInputInvalid,
+                "unsupported stored rejection code"));
+        }
+        let message = rejection.get("message").and_then(Value::as_str)
+            .unwrap_or("expectedAggregateVersion must be nonnegative");
+        // Older rows have no separate evidence member. Preserve their original
+        // version-1 marker while replaying newer rows exactly as committed.
+        let evidence = rejection.get("evidence").cloned().unwrap_or_else(|| json!({
+            "version": 1, "discriminator": "negativeExpectedAggregateVersion",
+            "operationId": operation, "toolName": tool
+        }));
+        return Err(ApiError::input_invalid(message).with_details(json!({
+            "requestValidation": evidence
+        })));
+    }
     if receipt.get("_pending").is_some() {
         Ok(None)
     } else {

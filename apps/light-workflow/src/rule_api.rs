@@ -3475,13 +3475,16 @@ impl ApiError {
             },
         }
     }
-    fn with_details(mut self, details: Value) -> Self {
+    pub(crate) fn with_details(mut self, details: Value) -> Self {
         assert!(
             details.is_object(),
             "Workflow error details must be an object"
         );
         self.details = Some(details);
         self
+    }
+    pub(crate) fn message(&self) -> &str {
+        &self.error.message
     }
     pub(crate) fn with_retry_after(mut self, milliseconds: u64) -> Self {
         self.retry_after_ms = Some(milliseconds);
