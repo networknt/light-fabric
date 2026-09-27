@@ -2,12 +2,12 @@
 use crate::invocation::AcceptOutcome;
 use crate::rule_api::{
     AdmissionProfile, ApiError, InvocationIdentity, RuleApiState, authenticate_invoke, load_status,
-    read_admissible_pinned_binding, start_invocation_with_stage,
+    read_admissible_pinned_binding, start_invocation_with_stage, wait_for_terminal_until,
 };
 use crate::run_credential::SealedRunCredential;
 use axum::{
     Json,
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
 };
 use chrono::{Duration, Utc};
@@ -18,8 +18,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 use workflow_invocation_contract::{
     CANONICAL_INPUT_PROFILE, CONTRACT_VERSION, CancellationPolicy, ErrorCode, ExecutionClass,
-    IdempotencyBinding, IdempotencyKind, InvocationBudget, InvocationMode, StartInvocationRequest,
-    canonical_sha256,
+    IdempotencyBinding, IdempotencyKind, InvocationBudget, InvocationMode, InvocationState,
+    InvocationStatus, StartInvocationRequest, canonical_sha256,
 };
 use zeroize::Zeroizing;
 
@@ -222,7 +222,7 @@ async fn invoke_with_interlude<I: std::future::Future<Output = ()>>(
 ) -> Result<Value, ApiError> {
     let input: InvokeInput = serde_json::from_value(arguments)
         .map_err(|_| ApiError::input_invalid("invalid workflow_invoke arguments"))?;
-    let (identity, _) = authenticate_invoke(&state, &headers).await?;
+    let (identity, generation) = authenticate_invoke(&state, &headers).await?;
     reject_parent_action(input.parent_action_id)?;
     if input.stable_tool_ref.is_nil()
         || !valid_digest(&input.expected_binding_digest)
@@ -294,7 +294,7 @@ async fn invoke_with_interlude<I: std::future::Future<Output = ()>>(
     )
     .await?
     {
-        return Ok(replayed);
+        return finish_invoke(&state, &headers, &identity, &generation, replayed).await;
     }
     let token = original_user_token(&identity.user_authorization)?;
     let sealed = vault
@@ -369,10 +369,10 @@ async fn invoke_with_interlude<I: std::future::Future<Output = ()>>(
         .map_err(ApiError::database)?;
     interlude.await;
     let (_, Json(status)) = start_invocation_with_stage(
-        State(state),
+        State(state.clone()),
         None,
         None,
-        headers,
+        headers.clone(),
         request,
         None,
         None,
@@ -389,8 +389,62 @@ async fn invoke_with_interlude<I: std::future::Future<Output = ()>>(
         )?),
     )
     .await?;
-    serde_json::to_value(status)
-        .map_err(|_| ApiError::input_invalid("workflow receipt cannot be encoded"))
+    finish_invoke(&state, &headers, &identity, &generation, status).await
+}
+
+async fn finish_invoke(
+    state: &RuleApiState,
+    headers: &HeaderMap,
+    identity: &InvocationIdentity,
+    generation: &Arc<crate::configuration::WorkflowConfigGeneration>,
+    mut status: InvocationStatus,
+) -> Result<Value, ApiError> {
+    let wait_ms: i32 = sqlx::query_scalar(
+        "SELECT b.sync_wait_ms FROM workflow_invocation_t i
+         JOIN workflow_tool_binding_t b ON b.host_id=i.host_id AND b.binding_id=i.binding_id
+         WHERE i.host_id=$1 AND i.workflow_instance_id=$2",
+    )
+    .bind(identity.host_id)
+    .bind(status.workflow_instance_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(ApiError::database)?;
+    if !status.state.is_terminal() {
+        let remaining = (status.deadline_ts - Utc::now()).num_milliseconds();
+        let bounded = i64::from(wait_ms).min(remaining).max(0) as u64;
+        if bounded > 0 {
+            status = wait_for_terminal_until(state, identity, generation, status, bounded).await?;
+        }
+    }
+    if status.state == InvocationState::Completed {
+        return Ok(
+            json!({"status":"completed","workflowInstanceId":status.workflow_instance_id,
+            "definitionDigest":status.definition_digest,"output":status.public_result.unwrap_or_else(||json!({}))}),
+        );
+    }
+    if status.state.is_terminal() {
+        return Err(ApiError::run_failure(status));
+    }
+    if status.deadline_ts > Utc::now() {
+        return Err(ApiError::run_timeout(&status, true));
+    }
+    let cancelled = crate::rule_api::cancel_invocation(
+        State(state.clone()),
+        headers.clone(),
+        Path(status.workflow_instance_id),
+    )
+    .await?
+    .0;
+    if cancelled.state == InvocationState::Completed {
+        return Ok(
+            json!({"status":"completed","workflowInstanceId":cancelled.workflow_instance_id,
+            "definitionDigest":cancelled.definition_digest,"output":cancelled.public_result.unwrap_or_else(||json!({}))}),
+        );
+    }
+    if cancelled.state == InvocationState::Failed {
+        return Err(ApiError::run_failure(cancelled));
+    }
+    Err(ApiError::run_timeout(&cancelled, false))
 }
 
 fn valid_digest(value: &str) -> bool {
@@ -419,7 +473,7 @@ async fn precheck(
     definition: &str,
     input: &str,
     vault: &crate::run_credential::RunCredentialVault,
-) -> Result<Option<Value>, ApiError> {
+) -> Result<Option<InvocationStatus>, ApiError> {
     let row = sqlx::query("SELECT k.workflow_instance_id,k.stable_tool_ref,k.principal_subject,k.end_user_subject,
             k.definition_digest,k.input_digest,k.result_replay_until,i.state
         FROM workflow_invocation_idempotency_t k
@@ -485,9 +539,7 @@ async fn precheck(
             .map_err(ApiError::database)?;
         tx.commit().await.map_err(ApiError::database)?;
     }
-    Ok(Some(serde_json::to_value(status).map_err(|_| {
-        ApiError::input_invalid("workflow receipt cannot be encoded")
-    })?))
+    Ok(Some(status))
 }
 
 impl InvokeAdmission {
@@ -1009,6 +1061,18 @@ pub(crate) mod handler_postgres_tests {
         "input":{}})
     }
 
+    pub(crate) async fn running_run(result: Result<Value, ApiError>) -> Uuid {
+        let error = result.expect_err("unexecuted Invoke must return a bounded timeout");
+        let response = error.into_response();
+        let bytes = axum::body::to_bytes(response.into_body(), 65536)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["code"], "WORKFLOW_TIMEOUT");
+        assert_eq!(body["retryable"], true);
+        serde_json::from_value(body["workflowInstanceId"].clone()).unwrap()
+    }
+
     #[tokio::test]
     #[ignore = "requires owned scratch DATABASE_URL and ADMIN_DATABASE_URL"]
     async fn invoke_token_and_bound_mcp_authority_ignore_global_long_configuration() {
@@ -1024,10 +1088,7 @@ pub(crate) mod handler_postgres_tests {
             .strip_prefix("Bearer ")
             .unwrap()
             .to_owned();
-        let receipt = invoke(f.state.clone(), headers, arguments(&f))
-            .await
-            .unwrap();
-        let run = Uuid::parse_str(receipt["workflowInstanceId"].as_str().unwrap()).unwrap();
+        let run = running_run(invoke(f.state.clone(), headers, arguments(&f)).await).await;
         let process: Uuid = sqlx::query_scalar(
             "SELECT process_id FROM workflow_invocation_t
             WHERE host_id=$1 AND workflow_instance_id=$2",
@@ -1194,10 +1255,7 @@ pub(crate) mod handler_postgres_tests {
             .strip_prefix("Bearer ")
             .unwrap()
             .to_owned();
-        let receipt = invoke(f.state.clone(), headers, arguments(&f))
-            .await
-            .unwrap();
-        let run = Uuid::parse_str(receipt["workflowInstanceId"].as_str().unwrap()).unwrap();
+        let run = running_run(invoke(f.state.clone(), headers, arguments(&f)).await).await;
         let binding = Uuid::new_v4();
         let far_deadline = chrono::DateTime::from_timestamp(4_102_444_800, 0).unwrap();
         sqlx::query(
@@ -1343,14 +1401,16 @@ pub(crate) mod handler_postgres_tests {
                 .await
                 .unwrap();
         assert_eq!(before, 0);
-        let receipt = invoke(
-            f.state.clone(),
-            headers(f.host, f.user, "user"),
-            arguments(&f),
+        let run = running_run(
+            invoke(
+                f.state.clone(),
+                headers(f.host, f.user, "user"),
+                arguments(&f),
+            )
+            .await,
         )
-        .await
-        .unwrap();
-        assert!(receipt.get("workflowInstanceId").is_some());
+        .await;
+        assert!(!run.is_nil());
         let stored:(Uuid,i64)=sqlx::query_as("SELECT i.binding_id,a.action_limit FROM workflow_invocation_t i JOIN workflow_action_authority_t a ON a.host_id=i.host_id AND a.run_id=i.workflow_instance_id WHERE i.host_id=$1")
             .bind(f.host).fetch_one(&f.pool).await.unwrap();
         assert_eq!(stored, (f.binding, 8));

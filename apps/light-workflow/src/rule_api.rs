@@ -104,6 +104,9 @@ impl RuleApiState {
     ) -> Self {
         let mut state = Self::for_publication_test(security, host);
         state.pool = pool;
+        state.database_url = std::env::var("DATABASE_URL")
+            .expect("DATABASE_URL is required")
+            .into();
         state.run_credential_vault = Some(vault);
         state
     }
@@ -345,10 +348,10 @@ pub struct RuleTestResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WaitRequest {
-    wait_ms: u64,
+pub(crate) struct WaitRequest {
+    pub(crate) wait_ms: u64,
     #[serde(default)]
-    observed_version: i64,
+    pub(crate) observed_version: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -560,32 +563,15 @@ pub(crate) async fn dispatch_native_tool(
                 .ok_or_else(|| {
                     ApiError::bad_request("waitMs is outside the supported range").into_response()
                 })?;
-            let (identity, _) = authenticate(&state, &headers)
+            let (identity, generation) = authenticate(&state, &headers)
                 .await
                 .map_err(IntoResponse::into_response)?;
-            let mut status = load_status(&state.pool, &identity, id)
+            let status = load_status(&state.pool, &identity, id)
                 .await
                 .map_err(IntoResponse::into_response)?;
-            let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms);
-            while !status.state.is_terminal() {
-                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-                if remaining.is_zero() {
-                    break;
-                }
-                let chunk_ms = remaining.as_millis().min(MAX_WAIT_MS as u128) as u64;
-                status = wait_for_invocation(
-                    State(state.clone()),
-                    headers.clone(),
-                    Path(id),
-                    Json(WaitRequest {
-                        wait_ms: chunk_ms.max(1),
-                        observed_version: status.state_version,
-                    }),
-                )
+            let status = wait_for_terminal_until(&state, &identity, &generation, status, wait_ms)
                 .await
-                .map_err(IntoResponse::into_response)?
-                .0;
-            }
+                .map_err(IntoResponse::into_response)?;
             let ready = status.state.is_terminal();
             let result = (status.state == InvocationState::Completed)
                 .then(|| status.public_result.unwrap_or_else(|| json!({})))
@@ -2191,6 +2177,19 @@ async fn wait_for_invocation(
     if wait.wait_ms == 0 || wait.wait_ms > MAX_WAIT_MS || wait.observed_version < 0 {
         return Err(ApiError::bad_request("invalid bounded wait request"));
     }
+    Ok(Json(
+        wait_for_invocation_state(&state, &identity, &generation, workflow_instance_id, wait)
+            .await?,
+    ))
+}
+
+pub(crate) async fn wait_for_invocation_state(
+    state: &RuleApiState,
+    identity: &InvocationIdentity,
+    generation: &Arc<WorkflowConfigGeneration>,
+    workflow_instance_id: Uuid,
+    wait: WaitRequest,
+) -> Result<InvocationStatus, ApiError> {
     // LISTEN connections stay outside the query pool, but are globally bounded.
     // Excess waiters use durable polling instead of opening another connection.
     let listener_permit = generation
@@ -2214,11 +2213,11 @@ async fn wait_for_invocation(
     loop {
         let status = load_status(&state.pool, &identity, workflow_instance_id).await?;
         if status.state.is_terminal() || status.state_version > wait.observed_version {
-            return Ok(Json(status));
+            return Ok(status);
         }
         let now = tokio::time::Instant::now();
         if now >= deadline {
-            return Ok(Json(status));
+            return Ok(status);
         }
         let remaining = deadline - now;
         if let Some(listener) = listener.as_mut() {
@@ -2229,6 +2228,35 @@ async fn wait_for_invocation(
             tokio::time::sleep(remaining.min(Duration::from_millis(100))).await;
         }
     }
+}
+
+pub(crate) async fn wait_for_terminal_until(
+    state: &RuleApiState,
+    identity: &InvocationIdentity,
+    generation: &Arc<WorkflowConfigGeneration>,
+    mut status: InvocationStatus,
+    wait_ms: u64,
+) -> Result<InvocationStatus, ApiError> {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms);
+    while !status.state.is_terminal() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let chunk = remaining.as_millis().min(MAX_WAIT_MS as u128) as u64;
+        status = wait_for_invocation_state(
+            state,
+            identity,
+            generation,
+            status.workflow_instance_id,
+            WaitRequest {
+                wait_ms: chunk.max(1),
+                observed_version: status.state_version,
+            },
+        )
+        .await?;
+    }
+    Ok(status)
 }
 
 async fn get_invocation_result(
@@ -2244,7 +2272,7 @@ async fn get_invocation_result(
     Ok(Json(status.public_result.unwrap_or_else(|| json!({}))))
 }
 
-async fn cancel_invocation(
+pub(crate) async fn cancel_invocation(
     State(state): State<RuleApiState>,
     headers: HeaderMap,
     Path(workflow_instance_id): Path<Uuid>,
@@ -3380,6 +3408,45 @@ pub struct ApiError {
 }
 
 impl ApiError {
+    pub(crate) fn run_failure(status: InvocationStatus) -> Self {
+        let cancelled = status.state == InvocationState::Cancelled;
+        let stored = status.error.unwrap_or(InvocationError {
+            code: if cancelled {
+                ErrorCode::WorkflowCancelled
+            } else {
+                ErrorCode::WorkflowTaskFailed
+            },
+            message: if cancelled {
+                "workflow invocation was cancelled"
+            } else {
+                "workflow invocation failed"
+            }
+            .into(),
+            retryable: false,
+            workflow_instance_id: Some(status.workflow_instance_id),
+            correlation_id: "unavailable".into(),
+        });
+        let mut error = Self::new(StatusCode::CONFLICT, stored.code, stored.message);
+        error.error.retryable = stored.retryable;
+        error.error.workflow_instance_id = Some(status.workflow_instance_id);
+        error.status = if cancelled { "cancelled" } else { "failed" };
+        error.after_effect = status.effect_state != EffectState::None;
+        error
+    }
+
+    pub(crate) fn run_timeout(status: &InvocationStatus, retryable: bool) -> Self {
+        let mut error = Self::new(
+            StatusCode::REQUEST_TIMEOUT,
+            ErrorCode::WorkflowTimeout,
+            "workflow invocation did not complete before the wait or run deadline",
+        );
+        error.error.retryable = retryable;
+        error.error.workflow_instance_id = Some(status.workflow_instance_id);
+        error.status = "timeout";
+        error.after_effect = status.effect_state != EffectState::None;
+        error
+    }
+
     pub(crate) fn new(status: StatusCode, code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
             http_status: status,

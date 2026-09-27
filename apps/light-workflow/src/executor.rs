@@ -6614,10 +6614,10 @@ mod tests {
             .strip_prefix("Bearer ")
             .unwrap()
             .to_owned();
-        let receipt = invoke_api::invoke(f.state.clone(), headers, fixture::arguments(&f))
-            .await
-            .unwrap();
-        let run = Uuid::parse_str(receipt["workflowInstanceId"].as_str().unwrap()).unwrap();
+        let run = fixture::running_run(
+            invoke_api::invoke(f.state.clone(), headers, fixture::arguments(&f)).await,
+        )
+        .await;
         let process: Uuid = sqlx::query_scalar(
             "SELECT process_id FROM workflow_invocation_t
             WHERE host_id=$1 AND workflow_instance_id=$2",

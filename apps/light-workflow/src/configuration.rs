@@ -765,8 +765,9 @@ pub struct WorkflowConfigManager {
 }
 
 impl WorkflowConfigManager {
-    #[cfg(test)]
-    pub(crate) fn for_publication_test(host_id: Uuid) -> Self {
+    #[cfg(any(test, debug_assertions))]
+    #[doc(hidden)]
+    pub fn for_publication_test(host_id: Uuid) -> Self {
         let config = WorkflowRuntimeConfig {
             generation: 1,
             content_digest: String::new(),
