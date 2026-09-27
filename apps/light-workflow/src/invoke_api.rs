@@ -179,12 +179,20 @@ pub fn verify_caller_policy(policy: &Value, claims: &Value) -> Result<(), ApiErr
         return Err(ApiError::policy_denied("binding caller policy is invalid"));
     }
     if let Some(roles) = policy.get("anyRole").and_then(Value::as_array) {
-        let verified_roles = claims.get("roles").and_then(Value::as_array);
-        if !roles.is_empty()
-            && !roles.iter().any(|role| {
-                verified_roles
-                    .is_some_and(|actual| actual.iter().any(|candidate| candidate == role))
+        let verified_roles = ["role", "roles"]
+            .into_iter()
+            .filter_map(|name| claims.get(name))
+            .flat_map(|value| match value {
+                Value::String(text) => text.split_whitespace().collect::<Vec<_>>(),
+                Value::Array(values) => values.iter().filter_map(Value::as_str).collect(),
+                _ => Vec::new(),
             })
+            .collect::<std::collections::HashSet<_>>();
+        if !roles.is_empty()
+            && !roles
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|role| verified_roles.contains(role))
         {
             return Err(ApiError::policy_denied(
                 "caller does not satisfy the binding role policy",
@@ -946,6 +954,21 @@ pub(crate) mod handler_postgres_tests {
         headers
     }
 
+    fn issuer_role_headers(host: Uuid, user: Uuid, role: Option<&str>) -> HeaderMap {
+        let mut headers = headers(host, user, "user");
+        let mut claims = json!({"iss":"step12","aud":"workflow","exp":4102444800u64,
+            "token_use":"user","client_id":"portal-ui","uid":user,
+            "user_id":user,"sub":user,"host":host});
+        if let Some(role) = role {
+            claims["role"] = json!(role);
+        }
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", signed(claims)).parse().unwrap(),
+        );
+        headers
+    }
+
     pub(crate) struct Fixture {
         pub(crate) state: RuleApiState,
         pub(crate) pool: PgPool,
@@ -1068,7 +1091,7 @@ pub(crate) mod handler_postgres_tests {
             .await
             .unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(body["code"], "WORKFLOW_TIMEOUT");
+        assert_eq!(body["code"], "WORKFLOW_TIMEOUT", "{body:?}");
         assert_eq!(body["retryable"], true);
         serde_json::from_value(body["workflowInstanceId"].clone()).unwrap()
     }
@@ -1414,6 +1437,54 @@ pub(crate) mod handler_postgres_tests {
         let stored:(Uuid,i64)=sqlx::query_as("SELECT i.binding_id,a.action_limit FROM workflow_invocation_t i JOIN workflow_action_authority_t a ON a.host_id=i.host_id AND a.run_id=i.workflow_instance_id WHERE i.host_id=$1")
             .bind(f.host).fetch_one(&f.pool).await.unwrap();
         assert_eq!(stored, (f.binding, 8));
+        tokio::fs::remove_file(&f.keyring).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires owned scratch DATABASE_URL and ADMIN_DATABASE_URL"]
+    async fn issuer_role_claim_is_checked_by_signed_invoke_handler() {
+        let f = fixture().await;
+        sqlx::query("UPDATE workflow_tool_binding_t SET caller_policy=$3 WHERE host_id=$1 AND binding_id=$2")
+            .bind(f.host)
+            .bind(f.binding)
+            .bind(json!({"anyRole":["genai-admin"]}))
+            .execute(&f.pool)
+            .await
+            .unwrap();
+        let stored_policy: Value = sqlx::query_scalar(
+            "SELECT caller_policy FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2",
+        )
+        .bind(f.host)
+        .bind(f.binding)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+        assert_eq!(stored_policy, json!({"anyRole":["genai-admin"]}));
+        for role in [Some("reader"), None] {
+            let rejected = invoke(
+                f.state.clone(),
+                issuer_role_headers(f.host, f.user, role),
+                arguments(&f),
+            )
+            .await
+            .unwrap_err();
+            let body = axum::body::to_bytes(rejected.into_response().into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let error: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(error["code"], "WORKFLOW_POLICY_DENIED");
+        }
+        for role in ["genai-admin", "reader genai-admin workflow-user"] {
+            let role_headers = issuer_role_headers(f.host, f.user, Some(role));
+            let (identity, _) = authenticate_invoke(&f.state, &role_headers).await.unwrap();
+            assert_eq!(identity.caller_claims["role"], role);
+            verify_caller_policy(&json!({"anyRole":["genai-admin"]}), &identity.caller_claims)
+                .unwrap();
+            let mut args = arguments(&f);
+            args["input"] = json!({"case": role});
+            let run = running_run(invoke(f.state.clone(), role_headers, args).await).await;
+            assert!(!run.is_nil());
+        }
         tokio::fs::remove_file(&f.keyring).await.unwrap();
     }
 
