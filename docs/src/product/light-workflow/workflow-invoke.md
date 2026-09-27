@@ -749,6 +749,21 @@ Gateway snapshot first, then calls `workflow_binding_retire`. Runs in flight
 keep their pinned revision and finish. New `workflow_invoke` calls for the
 retired Tool are rejected.
 
+If Gateway removal was staged but retirement remains unconfirmed until its
+Portal operation expires, the requester may start explicit new work with the
+Portal `RetireWorkflowToolBinding {hostId, instanceId, toolId,
+expectedAggregateVersion}` command. Portal checks that the Tool is absent
+from that instance's current staged Gateway publication and refuses retirement
+if it was re-added. The caller supplies the Workflow Tool-head version read
+after Refresh status; Portal rejects a changed head and never substitutes a
+newer version. A live pending retirement returns
+`WORKFLOW_OPERATION_PENDING`. Once the old operation expires, this command
+allocates a new operation ID and uses the existing D21 ledger, publisher-token
+path, and retirement completion event. `RetryWorkflowOperation` still targets
+only the old operation and sends nothing after expiry. Gateway removal is not
+staged again by this command. Snapshot activation and live routing remain
+separate operator steps.
+
 **Preview.** The Portal stores `published_request_digest` on its binding row:
 the canonical digest of the binding publish input it sent, without
 `operationId` and `expectedAggregateVersion`. Preview and the server-side
