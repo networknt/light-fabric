@@ -146,6 +146,7 @@
 - [Light Identity Issuer](product/light-identity-issuer/service-identity-and-revocation.md)
 - [Light-Workflow](product/light-workflow.md)
   - [Start Workflow](product/light-workflow/start-workflow.md)
+  - [Workflow Invoke And Tool Binding Publication](product/light-workflow/workflow-invoke.md)
   - [Native Agent Call](product/light-workflow/native-agent-call.md)
     - [Execution Backends And Sandbox Execution](product/light-workflow/sandbox-execution.md)
   - [Insurance Claim Agentic Workflow](product/light-workflow/insurance-claim-agentic-workflow.md)

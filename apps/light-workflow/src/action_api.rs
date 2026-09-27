@@ -23,7 +23,7 @@ use workflow_action::{
 #[derive(Clone)]
 pub struct ActionApi {
     pub ledger: Ledger,
-    pub broker: Arc<dyn RunAuthority>,
+    pub authority: Arc<dyn RunAuthority>,
     pub security: Arc<SecurityRuntime>,
     pub policy: RoutePolicy,
     /// Administrator-approved certificate to service/replica mapping. Boot
@@ -167,7 +167,7 @@ async fn authorize(
         let binding = s.ledger.resolve(&r.reference).await.map_err(status)?;
         s.identity(&peer, &h, &binding, &r.owner).await?;
         let _guard = s
-            .broker
+            .authority
             .lock_run_authority(
                 binding.run_id,
                 binding.grant_id,
@@ -200,7 +200,7 @@ async fn begin(
     s.identity(&peer, &h, &d.binding, &d.owner).await?;
     let b = &d.binding;
     let _guard = s
-        .broker
+        .authority
         .lock_run_authority(b.run_id, b.grant_id, b.host_id, b.user_id)
         .await
         .map_err(|_| StatusCode::FORBIDDEN)?;
@@ -291,7 +291,7 @@ async fn read_status(
     let b = s.ledger.resolve(&r.reference).await.map_err(status)?;
     s.identity(&peer, &h, &b, &r.owner).await?;
     let _guard = s
-        .broker
+        .authority
         .lock_run_authority(b.run_id, b.grant_id, b.host_id, b.user_id)
         .await
         .map_err(|_| StatusCode::FORBIDDEN)?;
@@ -310,7 +310,8 @@ pub struct ActionSettings {
     #[serde(default)]
     pub receivers: BTreeMap<String, Vec<Uuid>>,
     pub outbound: crate::bound_mcp::Config,
-    pub tls: light_axum::mtls::Config,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls: Option<light_axum::mtls::Config>,
     pub policy: RoutePolicy,
     pub owners: BTreeMap<String, workflow_action::GatewayRegistration>,
 }
@@ -366,7 +367,7 @@ async fn inspect(
     let b = s.ledger.resolve(&r.reference).await.map_err(status)?;
     s.identity(&peer, &h, &b, &r.owner).await?;
     let _guard = s
-        .broker
+        .authority
         .lock_run_authority(b.run_id, b.grant_id, b.host_id, b.user_id)
         .await
         .map_err(|_| StatusCode::FORBIDDEN)?;
@@ -414,7 +415,7 @@ async fn receiver_authorize(
         return Err(StatusCode::FORBIDDEN);
     }
     let _grant = s
-        .broker
+        .authority
         .lock_run_authority(
             binding.run_id,
             binding.grant_id,

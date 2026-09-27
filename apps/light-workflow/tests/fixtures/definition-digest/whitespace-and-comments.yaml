@@ -1,0 +1,5 @@
+# comments and indentation do not affect Workflow's parsed value
+name:    example
+items:
+   - alpha
+   - beta

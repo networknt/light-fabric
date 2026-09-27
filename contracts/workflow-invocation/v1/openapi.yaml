@@ -6,26 +6,6 @@ info:
 servers:
   - url: https://light-workflow.internal
 paths:
-  /v1/workflow-invocations:
-    post:
-      operationId: startWorkflowInvocation
-      security: [{ workflowDelegation: [] }]
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: ./start-request.schema.json
-      responses:
-        '202':
-          description: Durably accepted or idempotently replayed.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/InvocationStatus' }
-        '409': { $ref: '#/components/responses/IdempotencyConflict' }
-        '429': { $ref: '#/components/responses/CapacityExhausted' }
   /v1/workflow-invocations/{workflowInstanceId}:
     parameters:
       - $ref: '#/components/parameters/WorkflowInstanceId'

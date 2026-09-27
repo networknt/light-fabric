@@ -1,0 +1,6 @@
+defaults: &defaults
+  timeout: 10
+  enabled: true
+task:
+  <<: *defaults
+  name: demo

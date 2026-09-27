@@ -1,13 +1,18 @@
-# Start Workflow
+# Start Workflow (Archived Instructions)
 
-This page describes the local workflow start path used to test `light-workflow`
-from `light-portal`.
+Use the native `workflow_start` MCP tool through `light-gateway` for
+asynchronous root Workflow starts. It rejects `stableToolRef`: a
+workflow-backed Tool must enter through its Gateway Tool and the
+Gateway-internal `workflow_invoke` operation. `workflow_start` accepts the
+optional `expectedDefinitionDigest` to ensure that it starts the definition
+revision acknowledged by Workflow. The Workflow Editor uses the Portal
+`StartWorkflow` command, which saves and acknowledges the current definition
+before calling `workflow_start`. See
+[Workflow Invoke And Tool Binding Publication](workflow-invoke.md).
 
-`light-workflow` does not create workflow definitions and it is not the public
-entry point for starting a workflow. For local testing, create the workflow
-definition through the portal workflow service, then start it through the
-`startWorkflow` command. The running `light-workflow` process consumes the
-workflow start event from the portal database and executes the workflow tasks.
+The remaining examples in this archived guide describe the former Portal
+event path. They are retained for historical context and must not be used to
+start a current Workflow.
 
 ## Runtime Path
 

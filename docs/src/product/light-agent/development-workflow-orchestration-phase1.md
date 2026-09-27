@@ -1053,12 +1053,12 @@ quarantine row was found during the check. This is **command acceptance only**,
 not a successful execution or native qualification. No development-stage
 definitions were present among the ten active definitions shown in the Portal.
 
-Implemented the missing Gateway-compatible lane: `POST /v1/workflow-invocations`
-now resolves `input.stageClaim` only for a marked development definition and
-uses the same atomic claim path as `/development-stage`. Both routes require
-the input claim to match any explicit envelope. The existing mTLS, caller
-identity, published binding/dependency checks and renewable-grant validation
-remain in place. No Gateway token extraction or authorization bypass is used.
+This historical note predates the single-start-path change. Current root
+Workflow launches enter through Gateway MCP `workflow_start`; the public
+`POST /v1/workflow-invocations` root start route has been removed. The separate
+`/development-stage` route remains for claimed development-stage execution and
+is not a general workflow launch path. The old event command and the old root
+invocation route must not be used to start workflows.
 
 For first intake, the published definition must pin:
 

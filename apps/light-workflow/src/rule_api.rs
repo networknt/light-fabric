@@ -17,7 +17,9 @@ use chrono::{DateTime, Utc};
 use light_rule::{ActionRegistry, Rule, RuleEngine};
 use light_runtime::{ConfigProvenance, ConfigSource};
 use light_security::{
-    AuthPrincipal, HandlerRejection, JwtExpiryMode, SecurityRuntime, verify_jwt_token,
+    AuthPrincipal, HandlerRejection, JwtExpiryMode, SecurityRuntime,
+    token_purpose::{TokenUse, validate_verified_purpose},
+    verify_jwt_token,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -60,15 +62,54 @@ const MAX_WAIT_MS: u64 = 20_000;
 pub struct RuleApiState {
     engine: Arc<RuleEngine>,
     pub(crate) pool: PgPool,
-    invocation_security: Arc<SecurityRuntime>,
-    invocation_environment: Arc<str>,
-    runtime_config: Arc<WorkflowConfigManager>,
+    pub(crate) invocation_security: Arc<SecurityRuntime>,
+    pub(crate) invocation_environment: Arc<str>,
+    pub(crate) runtime_config: Arc<WorkflowConfigManager>,
     database_url: Arc<str>,
     health: WorkflowHealth,
     pub(crate) role_authority: Option<Arc<dyn crate::admin_api::RoleAuthority>>,
     private_execution_profiles:
         Arc<std::collections::BTreeMap<String, workflow_policy::ExecutionProfile>>,
     long_authority: Option<Arc<crate::long_authority::LongAuthority>>,
+    pub(crate) run_credential_vault: Option<Arc<crate::run_credential::RunCredentialVault>>,
+}
+
+#[cfg(test)]
+impl RuleApiState {
+    pub(crate) fn for_publication_test(
+        security: light_security::SecurityRuntime,
+        host: Uuid,
+    ) -> Self {
+        let pool = PgPool::connect_lazy("postgres://unused:unused@127.0.0.1:1/unused").unwrap();
+        Self {
+            engine: Arc::new(RuleEngine::new(Arc::new(ActionRegistry::new()))),
+            pool,
+            invocation_security: Arc::new(security),
+            invocation_environment: "dev".into(),
+            runtime_config: Arc::new(WorkflowConfigManager::for_publication_test(host)),
+            database_url: "postgres://unused".into(),
+            health: WorkflowHealth::default(),
+            role_authority: None,
+            private_execution_profiles: Arc::new(Default::default()),
+            long_authority: None,
+            run_credential_vault: None,
+        }
+    }
+
+    pub(crate) fn for_invoke_test(
+        security: light_security::SecurityRuntime,
+        host: Uuid,
+        pool: PgPool,
+        vault: Arc<crate::run_credential::RunCredentialVault>,
+    ) -> Self {
+        let mut state = Self::for_publication_test(security, host);
+        state.pool = pool;
+        state.database_url = std::env::var("DATABASE_URL")
+            .expect("DATABASE_URL is required")
+            .into();
+        state.run_credential_vault = Some(vault);
+        state
+    }
 }
 
 #[derive(Clone)]
@@ -307,10 +348,10 @@ pub struct RuleTestResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WaitRequest {
-    wait_ms: u64,
+pub(crate) struct WaitRequest {
+    pub(crate) wait_ms: u64,
     #[serde(default)]
-    observed_version: i64,
+    pub(crate) observed_version: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -357,6 +398,7 @@ pub fn build_rule_api_router(
         workflow_policy::ExecutionProfile,
     >,
     long_authority: Option<Arc<crate::long_authority::LongAuthority>>,
+    run_credential_vault: Option<Arc<crate::run_credential::RunCredentialVault>>,
 ) -> Router {
     let state = RuleApiState {
         engine: Arc::new(RuleEngine::new(Arc::new(ActionRegistry::new()))),
@@ -369,13 +411,13 @@ pub fn build_rule_api_router(
         role_authority,
         private_execution_profiles: Arc::new(private_execution_profiles),
         long_authority,
+        run_credential_vault,
     };
 
     Router::new()
         .route("/health", get(liveness))
         .route("/ready", get(readiness))
         .route("/metrics", get(metrics))
-        .route("/v1/workflow-invocations", post(start_invocation))
         .route(
             "/v1/workflow-invocations/development-stage",
             post(start_development_stage),
@@ -430,11 +472,50 @@ pub(crate) async fn dispatch_native_tool(
     state: RuleApiState,
     headers: HeaderMap,
     arguments: Value,
-    _settings: Option<crate::action_api::ActionSettings>,
+    settings: Option<crate::action_api::ActionSettings>,
     approval_portal: Option<Arc<crate::approval_portal::Client>>,
 ) -> Result<Value, axum::response::Response> {
+    let cel_validator = |text: &str| -> Result<(), ApiError> {
+        let snapshot: Value = serde_yaml::from_str(text)
+            .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
+        validate_cel_expressions(&state.engine, &snapshot)
+    };
+    match crate::publication_api::dispatch(
+        name,
+        &state,
+        &headers,
+        &arguments,
+        settings.as_ref(),
+        &cel_validator,
+    )
+    .await
+    {
+        Ok(Some(value)) => return Ok(value),
+        Ok(None) => {}
+        Err(error) => return Err(error.into_response()),
+    }
+    if matches!(
+        name,
+        "workflow_definition_save"
+            | "workflow_definition_publish"
+            | "workflow_definition_retire"
+            | "workflow_definition_grants_sync"
+            | "workflow_binding_publish"
+            | "workflow_binding_retire"
+            | "workflow_binding_get"
+            | "workflow_binding_list"
+            | "workflow_binding_decide"
+            | "workflow_binding_revoke"
+    ) {
+        return Err(ApiError::bad_request("not implemented").into_response());
+    }
     if name == "workflow_start" {
         return start_native_workflow(state, headers, arguments, approval_portal)
+            .await
+            .map_err(IntoResponse::into_response);
+    }
+    if name == "workflow_invoke" {
+        return crate::invoke_api::invoke(state, headers, arguments)
             .await
             .map_err(IntoResponse::into_response);
     }
@@ -472,6 +553,26 @@ pub(crate) async fn dispatch_native_tool(
             get_invocation_result(State(state), headers, Path(id)).await
                 .map(|Json(result)| json!({"workflowInstanceId":id,"state":"COMPLETED","result":result,"safeFailureSummary":Value::Null}))
                 .map_err(IntoResponse::into_response)
+        }
+        "workflow_wait_result" => {
+            let id = uuid("workflowInstanceId")?;
+            let wait_ms = arguments
+                .get("waitMs")
+                .and_then(Value::as_u64)
+                .filter(|value| *value > 0 && *value <= MAX_WAIT_MS)
+                .ok_or_else(|| {
+                    ApiError::bad_request("waitMs is outside the supported range").into_response()
+                })?;
+            let (identity, generation) = authenticate(&state, &headers)
+                .await
+                .map_err(IntoResponse::into_response)?;
+            let status = load_status(&state.pool, &identity, id)
+                .await
+                .map_err(IntoResponse::into_response)?;
+            let status = wait_for_terminal_until(&state, &identity, &generation, status, wait_ms)
+                .await
+                .map_err(IntoResponse::into_response)?;
+            native_wait_result(status).map_err(IntoResponse::into_response)
         }
         "workflow_cancel" => {
             let id = uuid("workflowInstanceId")?;
@@ -530,6 +631,25 @@ pub(crate) async fn dispatch_native_tool(
         }
         _ => Err(ApiError::not_found("workflow tool is unavailable").into_response()),
     }
+}
+
+fn native_wait_result(status: InvocationStatus) -> Result<Value, ApiError> {
+    if matches!(
+        status.state,
+        InvocationState::Failed | InvocationState::Cancelled
+    ) {
+        return Err(ApiError::run_failure(status));
+    }
+    let ready = status.state.is_terminal();
+    let result = (status.state == InvocationState::Completed)
+        .then(|| status.public_result.unwrap_or_else(|| json!({})))
+        .unwrap_or(Value::Null);
+    Ok(json!({
+        "workflowInstanceId": status.workflow_instance_id,
+        "state": status.state,
+        "ready": ready,
+        "result": result
+    }))
 }
 
 async fn enforce_action_receiver(
@@ -633,30 +753,6 @@ async fn repair_quarantined_event(
     Ok(StatusCode::ACCEPTED)
 }
 
-async fn start_invocation(
-    State(state): State<RuleApiState>,
-    artifacts: Option<axum::Extension<crate::artifact_store::DevelopmentArtifactAccess>>,
-    broker: Option<axum::Extension<Arc<crate::credential_broker::CredentialBroker>>>,
-    peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
-    policy: Option<axum::Extension<crate::action_api::ActionSettings>>,
-    headers: HeaderMap,
-    Json(request): Json<StartInvocationRequest>,
-) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
-    start_invocation_with_stage(
-        State(state),
-        broker,
-        peer,
-        policy,
-        headers,
-        request,
-        None,
-        artifacts.and_then(|a| a.0.0),
-        AdmissionProfile::WorkflowBacked,
-        None,
-    )
-    .await
-}
-
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DevelopmentStageStart {
@@ -667,7 +763,6 @@ struct DevelopmentStageStart {
 async fn start_development_stage(
     state: State<RuleApiState>,
     artifacts: Option<axum::Extension<crate::artifact_store::DevelopmentArtifactAccess>>,
-    broker: Option<axum::Extension<Arc<crate::credential_broker::CredentialBroker>>>,
     peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
     policy: Option<axum::Extension<crate::action_api::ActionSettings>>,
     headers: HeaderMap,
@@ -675,7 +770,6 @@ async fn start_development_stage(
 ) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
     start_invocation_with_stage(
         state,
-        broker,
         peer,
         policy,
         headers,
@@ -683,6 +777,7 @@ async fn start_development_stage(
         Some(request.claim),
         artifacts.and_then(|a| a.0.0),
         AdmissionProfile::WorkflowBacked,
+        None,
         None,
     )
     .await
@@ -693,7 +788,6 @@ async fn start_development_stage(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_private_portal_execution(
     state: State<RuleApiState>,
-    broker: Option<axum::Extension<Arc<crate::credential_broker::CredentialBroker>>>,
     peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
     policy: Option<axum::Extension<crate::action_api::ActionSettings>>,
     headers: HeaderMap,
@@ -702,7 +796,6 @@ pub(crate) async fn start_private_portal_execution(
 ) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
     start_invocation_with_stage(
         state,
-        broker,
         peer,
         policy,
         headers,
@@ -711,6 +804,7 @@ pub(crate) async fn start_private_portal_execution(
         None,
         AdmissionProfile::PortalExecution,
         approval,
+        None,
     )
     .await
 }
@@ -721,6 +815,7 @@ struct NativeStartInput {
     workflow_definition_id: Uuid,
     input: Value,
     idempotency_key: String,
+    expected_definition_digest: Option<String>,
 }
 
 #[derive(Clone)]
@@ -742,13 +837,21 @@ fn parse_native_start_input(arguments: Value) -> Result<NativeStartInput, ApiErr
         || input.idempotency_key.is_empty()
         || input.idempotency_key.len() > 128
         || input.idempotency_key.chars().any(char::is_control)
+        || input
+            .expected_definition_digest
+            .as_ref()
+            .is_some_and(|digest| {
+                digest.len() != 71
+                    || !digest.starts_with("sha256:")
+                    || !digest[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
     {
         return Err(ApiError::input_invalid("invalid workflow_start arguments"));
     }
     Ok(input)
 }
 
-fn saved_definition_digest(snapshot: &Value) -> Result<String, ApiError> {
+pub(crate) fn saved_definition_digest(snapshot: &Value) -> Result<String, ApiError> {
     Ok(format!(
         "sha256:{}",
         execution_runner_protocol::canonical_sha256(snapshot)
@@ -772,10 +875,18 @@ fn native_definition_pins(
         "input": snapshot.get("input"), "output": snapshot.get("output")
     }))
     .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
-    let policy_digest = format!("sha256:{}", resolved_policy.policy_digest.trim_start_matches("sha256:"));
+    let policy_digest = format!(
+        "sha256:{}",
+        resolved_policy.policy_digest.trim_start_matches("sha256:")
+    );
     let response_policy_digest = canonical_sha256(&json!({ "output": snapshot.get("output") }))
         .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
-    Ok((definition_digest, schema_digest, policy_digest, response_policy_digest))
+    Ok((
+        definition_digest,
+        schema_digest,
+        policy_digest,
+        response_policy_digest,
+    ))
 }
 
 async fn start_native_workflow(
@@ -853,21 +964,24 @@ async fn start_native_workflow(
     } else {
         None
     };
-    let (workflow_version, definition_text): (String, String) = sqlx::query_as(
-        "SELECT version,definition FROM wf_definition_t
-         WHERE host_id=$1 AND wf_def_id=$2 AND active",
+    let (workflow_version, definition_text) = load_saved_head_for_start(
+        &state.pool,
+        identity.host_id,
+        input.workflow_definition_id,
+        input.expected_definition_digest.as_deref(),
     )
-    .bind(identity.host_id)
-    .bind(input.workflow_definition_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(ApiError::database)?
-    .ok_or_else(|| ApiError::definition_mismatch("saved workflow definition is unavailable"))?;
+    .await?;
     let (definition_digest, schema_digest, policy_digest, response_policy_digest) =
         native_definition_pins(&definition_text, &state.private_execution_profiles)?;
+    verify_expected_definition_digest(
+        input.expected_definition_digest.as_deref(),
+        &definition_digest,
+    )?;
     if let Some(approval) = approval.as_ref() {
         if approval.definition_digest != definition_digest {
-            return Err(ApiError::definition_mismatch("approval definition revision changed"));
+            return Err(ApiError::definition_mismatch(
+                "approval definition revision changed",
+            ));
         }
     }
     let execution_class = ExecutionClass::Interactive;
@@ -936,7 +1050,6 @@ async fn start_native_workflow(
     };
     let (_, Json(status)) = start_private_portal_execution(
         State(state.clone()),
-        None,
         None,
         None,
         headers,
@@ -1231,10 +1344,126 @@ async fn cancel_development_feature(
     Ok(Json(feature))
 }
 
+/// Reject a saved-head change between Portal acknowledgement and Workflow start.
+pub fn verify_expected_definition_digest(
+    expected: Option<&str>,
+    actual: &str,
+) -> Result<(), ApiError> {
+    if expected.is_some_and(|expected| expected != actual) {
+        return Err(ApiError::definition_mismatch(
+            "published workflow definition changed before start",
+        ));
+    }
+    Ok(())
+}
+
+/// Load the active saved head and enforce the Portal acknowledged digest.
+/// `workflow_start` uses this before constructing its invocation request.
+pub async fn load_saved_head_for_start(
+    pool: &PgPool,
+    host_id: Uuid,
+    wf_def_id: Uuid,
+    expected_digest: Option<&str>,
+) -> Result<(String, String), ApiError> {
+    let (version, definition): (String, String) = sqlx::query_as(
+        "SELECT version,definition FROM wf_definition_t
+         WHERE host_id=$1 AND wf_def_id=$2 AND active",
+    )
+    .bind(host_id)
+    .bind(wf_def_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(ApiError::database)?
+    .ok_or_else(|| ApiError::definition_mismatch("saved workflow definition is unavailable"))?;
+    let digest = crate::publication_api::definition_digest(&definition)?;
+    verify_expected_definition_digest(expected_digest, &digest)?;
+    Ok((version, definition))
+}
+
+/// Resolve a Tool through its immutable binding version for admission.
+pub async fn read_admissible_pinned_binding(
+    pool: &PgPool,
+    host_id: Uuid,
+    tool_id: Uuid,
+) -> Result<sqlx::postgres::PgRow, ApiError> {
+    let row = sqlx::query(
+        "SELECT b.binding_id,b.wf_def_id,b.workflow_version,b.definition_digest AS binding_definition_digest,
+                 b.schema_digest,b.policy_digest,b.response_policy_digest,v.definition,
+                 b.tool_name,b.binding_digest,b.invocation_mode,b.sync_wait_ms,b.total_deadline_ms,
+                 b.execution_class,b.cancellation_policy,b.idempotency_policy,b.delegation_policy,
+                 b.runtime_bounds,b.admission_limits,b.caller_policy,
+                 v.version_status,v.definition_digest AS version_definition_digest
+           FROM workflow_tool_binding_t b
+           JOIN wf_definition_version_t v
+             ON v.host_id=b.host_id AND v.wf_def_id=b.wf_def_id
+            AND v.version=b.workflow_version
+          WHERE b.host_id=$1 AND b.tool_id=$2 AND b.active
+            AND b.tool_name IS NOT NULL",
+    )
+    .bind(host_id)
+    .bind(tool_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(ApiError::database)?;
+    let row = match row {
+        Some(row) => row,
+        None => {
+            let revoked: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM workflow_tool_publication_t h
+                   WHERE h.host_id=$1 AND h.tool_id=$2 AND h.active_binding_id IS NULL
+                     AND (SELECT b.revision_status FROM workflow_tool_binding_t b
+                           WHERE b.host_id=h.host_id AND b.tool_id=h.tool_id
+                           ORDER BY b.requested_ts DESC NULLS LAST,b.binding_id DESC LIMIT 1)='revoked')")
+                .bind(host_id).bind(tool_id).fetch_one(pool).await.map_err(ApiError::database)?;
+            if revoked {
+                return Err(ApiError::policy_denied("binding revoked by workflow owner"));
+            }
+            let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_tool_binding_t WHERE host_id=$1 AND tool_id=$2 AND revision_status='pendingApproval')")
+                .bind(host_id).bind(tool_id).fetch_one(pool).await.map_err(ApiError::database)?;
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                ErrorCode::WorkflowStartRejected,
+                if pending {
+                    "binding is waiting for workflow owner approval"
+                } else {
+                    "active workflow Tool binding is unavailable"
+                },
+            ));
+        }
+    };
+    let version_status: String = row.try_get("version_status").map_err(ApiError::database)?;
+    if version_status == "retired" {
+        return Err(publication_error(
+            StatusCode::CONFLICT,
+            ErrorCode::WorkflowDefinitionRetired,
+            "workflow definition version is retired",
+            None,
+        ));
+    }
+    if version_status != "active" {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            ErrorCode::WorkflowStartRejected,
+            "workflow definition version is not published",
+        ));
+    }
+    let binding_digest: String = row
+        .try_get("binding_definition_digest")
+        .map_err(ApiError::database)?;
+    let version_digest: String = row
+        .try_get("version_definition_digest")
+        .map_err(ApiError::database)?;
+    if binding_digest != version_digest {
+        return Err(ApiError::definition_mismatch(
+            "workflow binding definition digest does not match its published version",
+        ));
+    }
+    Ok(row)
+}
+
 #[allow(clippy::too_many_arguments)]
-async fn start_invocation_with_stage(
+pub(crate) async fn start_invocation_with_stage(
     State(state): State<RuleApiState>,
-    broker: Option<axum::Extension<Arc<crate::credential_broker::CredentialBroker>>>,
     peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
     policy: Option<axum::Extension<crate::action_api::ActionSettings>>,
     headers: HeaderMap,
@@ -1243,6 +1472,7 @@ async fn start_invocation_with_stage(
     artifacts: Option<crate::artifact_store::DurableArtifactStore>,
     profile: AdmissionProfile,
     approval: Option<ApprovalAdmission>,
+    invoke_admission: Option<crate::invoke_api::InvokeAdmission>,
 ) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
     let (identity, generation) = authenticate(&state, &headers).await?;
     let mut parent_binding = None;
@@ -1314,10 +1544,9 @@ async fn start_invocation_with_stage(
             None => {
                 if caller.origin != light_security::dual_identity::Origin::Gateway
                     || caller.action_reference.is_some()
-                    || request.renewable_grant_id.is_none()
                 {
                     return Err(ApiError::unauthorized(
-                        "root workflow renewable grant required",
+                        "root workflow caller identity rejected",
                     ));
                 }
             }
@@ -1348,8 +1577,9 @@ async fn start_invocation_with_stage(
         .fetch_optional(&state.pool)
         .await
         .map_err(ApiError::database)?;
-        let (workflow_version, definition) = row.ok_or_else(||
-            ApiError::definition_mismatch("saved workflow definition is unavailable"))?;
+        let (workflow_version, definition) = row.ok_or_else(|| {
+            ApiError::definition_mismatch("saved workflow definition is unavailable")
+        })?;
         let (definition_digest, schema_digest, policy_digest, response_policy_digest) =
             native_definition_pins(&definition, &state.private_execution_profiles)?;
         BindingRow {
@@ -1364,26 +1594,39 @@ async fn start_invocation_with_stage(
             tool_name: "workflow".to_string(),
         }
     } else {
-    sqlx::query_as::<_, BindingRow>(
-        "SELECT b.binding_id,b.wf_def_id,b.workflow_version,b.definition_digest,
-                b.schema_digest,b.policy_digest,b.response_policy_digest,w.definition,
-                b.tool_name
-           FROM workflow_tool_binding_t b
-           JOIN wf_definition_t w ON w.host_id=b.host_id AND w.wf_def_id=b.wf_def_id
-          WHERE b.host_id=$1 AND b.tool_id=$2 AND b.active AND w.active
-            AND b.tool_name IS NOT NULL",
-    )
-    .bind(identity.host_id)
-    .bind(request.stable_tool_ref)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(ApiError::database)?
-    .ok_or_else(|| ApiError::definition_mismatch("workflow binding is unavailable"))?
+        let row =
+            read_admissible_pinned_binding(&state.pool, identity.host_id, request.stable_tool_ref)
+                .await?;
+        if let Some(admission) = invoke_admission.as_ref() {
+            admission.verify_loaded_revision(
+                row.try_get("binding_id").map_err(ApiError::database)?,
+                &row.try_get::<String, _>("binding_digest")
+                    .map_err(ApiError::database)?,
+            )?;
+        }
+        let binding_digest: String = row
+            .try_get("binding_definition_digest")
+            .map_err(ApiError::database)?;
+        BindingRow {
+            binding_id: Some(row.try_get("binding_id").map_err(ApiError::database)?),
+            wf_def_id: row.try_get("wf_def_id").map_err(ApiError::database)?,
+            workflow_version: row
+                .try_get("workflow_version")
+                .map_err(ApiError::database)?,
+            definition_digest: binding_digest,
+            schema_digest: row.try_get("schema_digest").map_err(ApiError::database)?,
+            policy_digest: row.try_get("policy_digest").map_err(ApiError::database)?,
+            response_policy_digest: row
+                .try_get("response_policy_digest")
+                .map_err(ApiError::database)?,
+            definition: row.try_get("definition").map_err(ApiError::database)?,
+            tool_name: row.try_get("tool_name").map_err(ApiError::database)?,
+        }
     };
     verify_binding(&request, &binding)?;
     let definition: WorkflowDefinition = serde_yaml::from_str(&binding.definition)
         .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
-    if profile == AdmissionProfile::PortalExecution {
+    {
         if let Some(schema) = definition
             .input
             .as_ref()
@@ -1418,7 +1661,9 @@ async fn start_invocation_with_stage(
         validate_pinned_dependencies(
             &state.pool,
             identity.host_id,
-            binding.binding_id.ok_or_else(|| ApiError::definition_mismatch("workflow Tool binding is unavailable"))?,
+            binding.binding_id.ok_or_else(|| {
+                ApiError::definition_mismatch("workflow Tool binding is unavailable")
+            })?,
             &definition,
             request.mode,
             request.budget.maximum_delegation_depth,
@@ -1427,8 +1672,11 @@ async fn start_invocation_with_stage(
         validate_approval_evidence(
             &state.pool,
             identity.host_id,
-            binding.binding_id.ok_or_else(|| ApiError::definition_mismatch("workflow Tool binding is unavailable"))?,
+            binding.binding_id.ok_or_else(|| {
+                ApiError::definition_mismatch("workflow Tool binding is unavailable")
+            })?,
             &definition,
+            request.budget.maximum_delegation_depth,
         )
         .await?;
     }
@@ -1557,6 +1805,11 @@ async fn start_invocation_with_stage(
         user_authorization_exp: stored_user_authorization_exp,
     };
     let mut tx = state.pool.begin().await.map_err(ApiError::database)?;
+    if let Some(admission) = invoke_admission.as_ref() {
+        admission
+            .fence_revision(&mut tx, identity.host_id, request.stable_tool_ref)
+            .await?;
+    }
     if let Some(private_policy) = private_policy.as_ref() {
         prepared.policy_snapshot_id = Some(
             crate::repositories::WorkflowRepository::store_policy_snapshot(
@@ -1616,6 +1869,17 @@ async fn start_invocation_with_stage(
             ..
         } => *workflow_instance_id,
     };
+    if let Some(admission) = invoke_admission.as_ref() {
+        admission
+            .apply(
+                &mut tx,
+                identity.host_id,
+                &identity.end_user_subject,
+                &request,
+                &outcome,
+            )
+            .await?;
+    }
     if profile == AdmissionProfile::PortalExecution {
         if matches!(outcome, AcceptOutcome::Accepted { .. }) {
             let long = state.long_authority.as_ref().ok_or_else(|| {
@@ -1653,8 +1917,8 @@ async fn start_invocation_with_stage(
             sqlx::query(
                 "INSERT INTO workflow_action_authority_t
                 (host_id,run_id,grant_id,user_id,grant_generation,run_generation,
-                 budget_generation,active,deadline,action_limit,maximum_depth)
-                VALUES($1,$2,$3,$4,1,1,1,true,$5,$6,$7)",
+                 budget_generation,active,deadline,action_limit,maximum_depth,credential_kind)
+                VALUES($1,$2,$3,$4,1,1,1,true,$5,$6,$7,'long')",
             )
             .bind(identity.host_id)
             .bind(accepted_run)
@@ -1687,64 +1951,12 @@ async fn start_invocation_with_stage(
             .await
             .map_err(ApiError::database)?;
         }
-    } else if let Some(parent) = parent_binding {
-        let broker = broker
-            .as_ref()
-            .ok_or_else(|| ApiError::unauthorized("credential broker unavailable"))?;
-        let user = identity
-            .end_user_subject
-            .parse::<Uuid>()
-            .map_err(|_| ApiError::unauthorized("workflow user identity is invalid"))?;
-        broker
-            .0
-            .inherit_run(
-                parent.run_id,
-                accepted_run,
-                identity.host_id,
-                user,
-                request.deadline_ts,
-            )
-            .await
-            .map_err(|_| ApiError::unauthorized("parent workflow grant rejected"))?;
-        workflow_action::ledger::Ledger::admit_child_run_in(
-            &mut tx,
-            identity.host_id,
-            accepted_run,
-            user,
-            parent.action_id,
-        )
-        .await
-        .map_err(|_| ApiError::unauthorized("child workflow authority rejected"))?;
-    } else if let Some(grant) = request.renewable_grant_id {
-        let broker = broker
-            .as_ref()
-            .ok_or_else(|| ApiError::unauthorized("credential broker unavailable"))?;
-        let user = identity
-            .end_user_subject
-            .parse::<Uuid>()
-            .map_err(|_| ApiError::unauthorized("workflow user identity is invalid"))?;
-        let binding = serde_json::json!({"profile":"workflow-action-v1","workflowDefinitionId":request.workflow_definition_id,"definitionDigest":request.definition_digest,"policyDigest":request.policy_digest,"responsePolicyDigest":request.response_policy_digest});
-        broker
-            .0
-            .bind_run(
-                accepted_run,
-                grant,
-                identity.host_id,
-                user,
-                &binding,
-                request.deadline_ts,
-            )
-            .await
-            .map_err(|_| ApiError::unauthorized("workflow grant binding rejected"))?;
-        workflow_action::ledger::Ledger::admit_run_in(
-            &mut tx,
-            identity.host_id,
-            accepted_run,
-            grant,
-            user,
-        )
-        .await
-        .map_err(|_| ApiError::unauthorized("workflow run authority rejected"))?;
+    } else if invoke_admission.is_none()
+        && (parent_binding.is_some() || request.renewable_grant_id.is_some())
+    {
+        return Err(ApiError::unauthorized(
+            "retired broker authority is unavailable",
+        ));
     }
     if let Some(approval) = approval.as_ref() {
         if profile != AdmissionProfile::PortalExecution {
@@ -1841,87 +2053,17 @@ async fn validate_pinned_dependencies(
     host_id: Uuid,
     binding_id: Uuid,
     definition: &WorkflowDefinition,
-    mode: InvocationMode,
+    _mode: InvocationMode,
     maximum_delegation_depth: u16,
 ) -> Result<(), ApiError> {
-    let mut tasks: Vec<&TaskDefinition> = definition
-        .do_
-        .entries
-        .iter()
-        .filter_map(|entry| entry.iter().next().map(|(_, task)| task))
-        .collect();
-    let mut cursor = 0;
-    while cursor < tasks.len() {
-        if let TaskDefinition::Fork(fork) = tasks[cursor] {
-            tasks.extend(
-                fork.fork
-                    .branches
-                    .entries
-                    .iter()
-                    .filter_map(|entry| entry.iter().next().map(|(_, task)| task)),
-            );
-        }
-        cursor += 1;
-    }
-    for task in tasks {
-        let TaskDefinition::Call(CallTaskDefinition::Mcp(call)) = task else {
-            continue;
-        };
-        let tool_name = mcp_tool_name(&call.with).ok_or_else(|| {
-            ApiError::definition_mismatch(
-                "Phase 1 MCP workflow tasks must call a pinned tool, not a resource or prompt",
-            )
-        })?;
-        let target: Option<(String, Value)> = sqlx::query_as(
-            "SELECT contract_digest,dispatch_target FROM workflow_tool_dependency_t
-              WHERE host_id=$1 AND outer_binding_id=$2 AND authorization_tool_name=$3
-                AND active AND lifecycle_status IN ('active','superseded')",
-        )
-        .bind(host_id)
-        .bind(binding_id)
-        .bind(tool_name)
-        .fetch_optional(pool)
-        .await
-        .map_err(ApiError::database)?;
-        let (contract_digest, target) = target.ok_or_else(|| {
-            ApiError::definition_mismatch(format!(
-                "nested MCP tool {tool_name} has no active pinned version target"
-            ))
-        })?;
-        if target
-            .get("contractDigest")
-            .and_then(Value::as_str)
-            .is_some_and(|value| value != contract_digest)
-        {
-            return Err(ApiError::definition_mismatch(format!(
-                "nested MCP tool {tool_name} private target drifted from its pinned contract digest"
-            )));
-        }
-        if mode == InvocationMode::Sync
-            && (target.get("readOnly").and_then(Value::as_bool) != Some(true)
-                || target
-                    .get("humanApprovalRequired")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-                || target
-                    .get("destructive")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false))
-        {
-            return Err(ApiError::definition_mismatch(format!(
-                "nested MCP tool {tool_name} is not transitively read-only and headless"
-            )));
-        }
-        let nested_depth = target
-            .get("maximumDelegationDepth")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        if nested_depth.saturating_add(1) > u64::from(maximum_delegation_depth) {
-            return Err(ApiError::definition_mismatch(format!(
-                "nested MCP tool {tool_name} exceeds the published delegation depth"
-            )));
-        }
-    }
+    crate::publication_api::binding::pinned_task_effects(
+        pool,
+        host_id,
+        binding_id,
+        definition,
+        maximum_delegation_depth,
+    )
+    .await?;
     Ok(())
 }
 
@@ -1943,76 +2085,19 @@ async fn validate_approval_evidence(
     host_id: Uuid,
     binding_id: Uuid,
     definition: &WorkflowDefinition,
+    maximum_delegation_depth: u16,
 ) -> Result<(), ApiError> {
-    fn collect<'a>(
-        prefix: Option<&str>,
-        entries: &'a [std::collections::HashMap<String, TaskDefinition>],
-        output: &mut Vec<(String, &'a TaskDefinition)>,
-    ) {
-        for entry in entries {
-            let Some((name, task)) = entry.iter().next() else {
-                continue;
-            };
-            let qualified =
-                prefix.map_or_else(|| name.clone(), |prefix| format!("{prefix}::{name}"));
-            output.push((qualified.clone(), task));
-            if let TaskDefinition::Fork(fork) = task {
-                collect(Some(&qualified), &fork.fork.branches.entries, output);
-            }
-        }
-    }
-    let mut tasks = Vec::new();
-    collect(None, &definition.do_.entries, &mut tasks);
-    for (task_name, task) in tasks {
-        let common = match task {
-            TaskDefinition::Call(CallTaskDefinition::Http(call))
-                if !call.with.method.eq_ignore_ascii_case("GET")
-                    && !call.with.method.eq_ignore_ascii_case("HEAD") =>
-            {
-                Some(&call.common)
-            }
-            TaskDefinition::Call(CallTaskDefinition::Mcp(call))
-                if call
-                    .common
-                    .metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata.get("readOnly"))
-                    .and_then(Value::as_bool)
-                    == Some(false) =>
-            {
-                Some(&call.common)
-            }
-            _ => None,
-        };
-        let Some(common) = common else { continue };
-        let evidence_digest = common
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get("approvalEvidenceDigest"))
-            .and_then(Value::as_str)
-            .ok_or_else(|| ApiError::definition_mismatch("write approval evidence is missing"))?;
-        let approved: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM workflow_tool_approval_evidence_t
-              WHERE host_id=$1 AND binding_id=$2 AND task_name=$3
-                AND evidence_digest=$4 AND active)",
-        )
-        .bind(host_id)
-        .bind(binding_id)
-        .bind(&task_name)
-        .bind(evidence_digest)
-        .fetch_one(pool)
-        .await
-        .map_err(ApiError::database)?;
-        if !approved {
-            return Err(ApiError::definition_mismatch(format!(
-                "write task {task_name} has no active publication approval evidence"
-            )));
-        }
-    }
-    Ok(())
+    crate::publication_api::binding::pinned_evidence(
+        pool,
+        host_id,
+        binding_id,
+        definition,
+        maximum_delegation_depth,
+    )
+    .await
 }
 
-fn find_task_recursive<'a>(
+pub(crate) fn find_task_recursive<'a>(
     entries: &'a [std::collections::HashMap<String, TaskDefinition>],
     requested_name: &str,
 ) -> Option<&'a TaskDefinition> {
@@ -2102,6 +2187,19 @@ async fn wait_for_invocation(
     if wait.wait_ms == 0 || wait.wait_ms > MAX_WAIT_MS || wait.observed_version < 0 {
         return Err(ApiError::bad_request("invalid bounded wait request"));
     }
+    Ok(Json(
+        wait_for_invocation_state(&state, &identity, &generation, workflow_instance_id, wait)
+            .await?,
+    ))
+}
+
+pub(crate) async fn wait_for_invocation_state(
+    state: &RuleApiState,
+    identity: &InvocationIdentity,
+    generation: &Arc<WorkflowConfigGeneration>,
+    workflow_instance_id: Uuid,
+    wait: WaitRequest,
+) -> Result<InvocationStatus, ApiError> {
     // LISTEN connections stay outside the query pool, but are globally bounded.
     // Excess waiters use durable polling instead of opening another connection.
     let listener_permit = generation
@@ -2125,11 +2223,11 @@ async fn wait_for_invocation(
     loop {
         let status = load_status(&state.pool, &identity, workflow_instance_id).await?;
         if status.state.is_terminal() || status.state_version > wait.observed_version {
-            return Ok(Json(status));
+            return Ok(status);
         }
         let now = tokio::time::Instant::now();
         if now >= deadline {
-            return Ok(Json(status));
+            return Ok(status);
         }
         let remaining = deadline - now;
         if let Some(listener) = listener.as_mut() {
@@ -2140,6 +2238,35 @@ async fn wait_for_invocation(
             tokio::time::sleep(remaining.min(Duration::from_millis(100))).await;
         }
     }
+}
+
+pub(crate) async fn wait_for_terminal_until(
+    state: &RuleApiState,
+    identity: &InvocationIdentity,
+    generation: &Arc<WorkflowConfigGeneration>,
+    mut status: InvocationStatus,
+    wait_ms: u64,
+) -> Result<InvocationStatus, ApiError> {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms);
+    while !status.state.is_terminal() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let chunk = remaining.as_millis().min(MAX_WAIT_MS as u128) as u64;
+        status = wait_for_invocation_state(
+            state,
+            identity,
+            generation,
+            status.workflow_instance_id,
+            WaitRequest {
+                wait_ms: chunk.max(1),
+                observed_version: status.state_version,
+            },
+        )
+        .await?;
+    }
+    Ok(status)
 }
 
 async fn get_invocation_result(
@@ -2155,7 +2282,7 @@ async fn get_invocation_result(
     Ok(Json(status.public_result.unwrap_or_else(|| json!({}))))
 }
 
-async fn cancel_invocation(
+pub(crate) async fn cancel_invocation(
     State(state): State<RuleApiState>,
     headers: HeaderMap,
     Path(workflow_instance_id): Path<Uuid>,
@@ -2377,7 +2504,7 @@ async fn cancel_invocation(
     ))
 }
 
-async fn load_status(
+pub(crate) async fn load_status(
     pool: &PgPool,
     identity: &InvocationIdentity,
     workflow_instance_id: Uuid,
@@ -2570,6 +2697,27 @@ pub(crate) async fn authenticate(
     ))
 }
 
+/// Invoke requires a signed end-user token. The shared authenticate path also
+/// serves app-token operations, so purpose is enforced here before any Tool read.
+pub(crate) async fn authenticate_invoke(
+    state: &RuleApiState,
+    headers: &HeaderMap,
+) -> Result<(InvocationIdentity, Arc<WorkflowConfigGeneration>), ApiError> {
+    let (identity, generation) = authenticate(state, headers).await?;
+    let authorization = header(headers, "authorization")?;
+    let token = bearer_token(authorization, "user Bearer authentication is required")?;
+    let principal = verify_jwt_token(
+        &state.invocation_security,
+        token,
+        user_jwt_expiry_mode(generation.config.ignore_user_jwt_expiry),
+    )
+    .await
+    .map_err(|error| jwt_verification_error("user", error))?;
+    validate_verified_purpose(token, &principal, TokenUse::User, &[])
+        .map_err(|_| ApiError::unauthorized("user access token purpose is required"))?;
+    Ok((identity, generation))
+}
+
 fn auth_denied(reason_code: &'static str, error: ApiError) -> ApiError {
     warn!(reason_code, "workflow invocation authentication denied");
     error
@@ -2753,7 +2901,7 @@ fn verify_binding(request: &StartInvocationRequest, binding: &BindingRow) -> Res
     Ok(())
 }
 
-fn validate_orchestration_definition(
+pub(crate) fn validate_orchestration_definition(
     definition: &WorkflowDefinition,
     mode: InvocationMode,
     budget: &workflow_invocation_contract::InvocationBudget,
@@ -2911,7 +3059,7 @@ fn validate_development_agent_call(
     Ok(())
 }
 
-fn budget_envelope(
+pub(crate) fn budget_envelope(
     definition: &WorkflowDefinition,
     portal_execution: bool,
 ) -> Result<(u64, u64, u64), ApiError> {
@@ -3260,23 +3408,87 @@ fn parse_state(value: &str) -> Result<InvocationState, ApiError> {
 }
 
 #[derive(Debug)]
-pub(crate) struct ApiError {
-    status: StatusCode,
+pub struct ApiError {
+    http_status: StatusCode,
     error: InvocationError,
+    status: &'static str,
+    after_effect: bool,
+    retry_after_ms: Option<u64>,
+    details: Option<Value>,
 }
 
 impl ApiError {
-    fn new(status: StatusCode, code: ErrorCode, message: impl Into<String>) -> Self {
+    pub(crate) fn run_failure(status: InvocationStatus) -> Self {
+        let cancelled = status.state == InvocationState::Cancelled;
+        let stored = status.error.unwrap_or(InvocationError {
+            code: if cancelled {
+                ErrorCode::WorkflowCancelled
+            } else {
+                ErrorCode::WorkflowTaskFailed
+            },
+            message: if cancelled {
+                "workflow invocation was cancelled"
+            } else {
+                "workflow invocation failed"
+            }
+            .into(),
+            retryable: false,
+            workflow_instance_id: Some(status.workflow_instance_id),
+            correlation_id: "unavailable".into(),
+        });
+        let mut error = Self::new(StatusCode::CONFLICT, stored.code, stored.message);
+        error.error.retryable = stored.retryable;
+        error.error.workflow_instance_id = Some(status.workflow_instance_id);
+        error.status = if cancelled { "cancelled" } else { "failed" };
+        error.after_effect = status.effect_state != EffectState::None;
+        error
+    }
+
+    pub(crate) fn run_timeout(status: &InvocationStatus, retryable: bool) -> Self {
+        let mut error = Self::new(
+            StatusCode::REQUEST_TIMEOUT,
+            ErrorCode::WorkflowTimeout,
+            "workflow invocation did not complete before the wait or run deadline",
+        );
+        error.error.retryable = retryable;
+        error.error.workflow_instance_id = Some(status.workflow_instance_id);
+        error.status = "timeout";
+        error.after_effect = status.effect_state != EffectState::None;
+        error
+    }
+
+    pub(crate) fn new(status: StatusCode, code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
-            status,
+            http_status: status,
+            status: "rejected",
+            after_effect: false,
+            retry_after_ms: None,
+            details: None,
             error: InvocationError {
                 code,
                 message: message.into(),
-                retryable: status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS,
+                retryable: status.is_server_error()
+                    || status == StatusCode::TOO_MANY_REQUESTS
+                    || code == ErrorCode::VersionConflict,
                 workflow_instance_id: None,
                 correlation_id: "unavailable".to_string(),
             },
         }
+    }
+    pub(crate) fn with_details(mut self, details: Value) -> Self {
+        assert!(
+            details.is_object(),
+            "Workflow error details must be an object"
+        );
+        self.details = Some(details);
+        self
+    }
+    pub(crate) fn message(&self) -> &str {
+        &self.error.message
+    }
+    pub(crate) fn with_retry_after(mut self, milliseconds: u64) -> Self {
+        self.retry_after_ms = Some(milliseconds);
+        self
     }
     fn bad_request(message: impl Into<String>) -> Self {
         Self::new(
@@ -3285,21 +3497,28 @@ impl ApiError {
             message,
         )
     }
-    fn input_invalid(message: impl Into<String>) -> Self {
+    pub(crate) fn input_invalid(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::BAD_REQUEST,
             ErrorCode::WorkflowInputInvalid,
             message,
         )
     }
-    fn unauthorized(message: impl Into<String>) -> Self {
+    pub(crate) fn unauthorized(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::UNAUTHORIZED,
             ErrorCode::WorkflowPolicyDenied,
             message,
         )
     }
-    fn definition_mismatch(message: impl Into<String>) -> Self {
+    pub(crate) fn policy_denied(message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::FORBIDDEN,
+            ErrorCode::WorkflowPolicyDenied,
+            message,
+        )
+    }
+    pub(crate) fn definition_mismatch(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::CONFLICT,
             ErrorCode::WorkflowDefinitionMismatch,
@@ -3316,7 +3535,7 @@ impl ApiError {
     fn conflict(message: impl Into<String>) -> Self {
         Self::new(StatusCode::CONFLICT, ErrorCode::WorkflowTaskFailed, message)
     }
-    fn database(error: sqlx::Error) -> Self {
+    pub(crate) fn database(error: sqlx::Error) -> Self {
         error!("workflow invocation database failure: {error}");
         Self::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -3339,8 +3558,34 @@ impl ApiError {
 
 impl axum::response::IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
-        (self.status, Json(self.error)).into_response()
+        let mut error = serde_json::to_value(self.error).unwrap_or_else(|_| json!({}));
+        error["status"] = json!(self.status);
+        error["afterEffect"] = json!(self.after_effect);
+        if let Some(retry_after_ms) = self.retry_after_ms {
+            error["retryAfterMs"] = json!(retry_after_ms);
+        }
+        if let Some(details) = self.details {
+            error["details"] = details;
+        }
+        (self.http_status, Json(error)).into_response()
     }
+}
+
+pub(crate) fn publication_error(
+    status: StatusCode,
+    code: ErrorCode,
+    message: impl Into<String>,
+    details: Option<Value>,
+) -> ApiError {
+    let error = ApiError::new(status, code, message);
+    match details {
+        Some(details) => error.with_details(details),
+        None => error,
+    }
+}
+
+pub(crate) fn publication_database_error(error: sqlx::Error) -> ApiError {
+    ApiError::database(error)
 }
 
 async fn run_mcp_rule_test(
@@ -3417,6 +3662,110 @@ fn bad_request<E: std::fmt::Display>(err: E) -> (StatusCode, Json<Value>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn api_error_details_round_trip_through_mcp_envelope() {
+        let details = json!({"appliedRevision":9,"definitionDigest":"sha256:stored"});
+        let response = ApiError::definition_mismatch("stale definition head")
+            .with_details(details.clone())
+            .into_response();
+        let result = crate::mcp_api::handler_error(json!(77), response)
+            .await
+            .expect("non-authentication failures remain tool results");
+        assert_eq!(result["structuredContent"]["error"]["details"], details);
+    }
+
+    #[tokio::test]
+    async fn native_wait_result_uses_stored_terminal_error_envelopes() {
+        let id = Uuid::now_v7();
+        for (state, effect_state, expected_status, after_effect) in [
+            ("FAILED", "none", "failed", false),
+            ("FAILED", "possible", "failed", true),
+            ("CANCELLED", "none", "cancelled", false),
+            ("CANCELLED", "confirmed", "cancelled", true),
+        ] {
+            let status: InvocationStatus = serde_json::from_value(json!({
+                "contractVersion": 1,
+                "workflowInstanceId": id,
+                "stableToolRef": Uuid::now_v7(),
+                "definitionDigest": format!("sha256:{}", "a".repeat(64)),
+                "state": state,
+                "stateVersion": 2,
+                "acceptedTs": "2026-09-27T00:00:00Z",
+                "updatedTs": "2026-09-27T00:00:01Z",
+                "deadlineTs": "2026-09-27T00:01:00Z",
+                "retryable": false,
+                "effectState": effect_state,
+                "error": {
+                    "code": "WORKFLOW_TASK_FAILED",
+                    "message": "stored terminal failure",
+                    "retryable": true,
+                    "workflowInstanceId": id,
+                    "correlationId": "stored-correlation"
+                }
+            }))
+            .unwrap();
+            let response = native_wait_result(status).unwrap_err().into_response();
+            let mcp = crate::mcp_api::handler_error(json!(42), response)
+                .await
+                .unwrap();
+            assert_eq!(mcp["isError"], true);
+            assert_eq!(mcp["resultType"], "complete");
+            assert_eq!(mcp["structuredContent"]["status"], expected_status);
+            assert_eq!(
+                mcp["structuredContent"]["workflowInstanceId"],
+                id.to_string()
+            );
+            assert_eq!(
+                mcp["structuredContent"]["error"]["code"],
+                "WORKFLOW_TASK_FAILED"
+            );
+            assert_eq!(
+                mcp["structuredContent"]["error"]["message"],
+                "stored terminal failure"
+            );
+            assert_eq!(mcp["structuredContent"]["error"]["retryable"], true);
+            assert_eq!(
+                mcp["structuredContent"]["error"]["afterEffect"],
+                after_effect
+            );
+            assert_eq!(
+                mcp["content"][0]["text"],
+                "WORKFLOW_TASK_FAILED: stored terminal failure"
+            );
+        }
+    }
+
+    #[test]
+    fn native_wait_result_preserves_completed_and_nonterminal_shapes() {
+        for (state, ready, expected_result) in [
+            ("COMPLETED", true, json!({"answer": 42})),
+            ("RUNNING", false, Value::Null),
+        ] {
+            let status: InvocationStatus = serde_json::from_value(json!({
+                "contractVersion": 1,
+                "workflowInstanceId": Uuid::now_v7(),
+                "stableToolRef": Uuid::now_v7(),
+                "definitionDigest": format!("sha256:{}", "a".repeat(64)),
+                "state": state,
+                "stateVersion": 2,
+                "acceptedTs": "2026-09-27T00:00:00Z",
+                "updatedTs": "2026-09-27T00:00:01Z",
+                "deadlineTs": "2026-09-27T00:01:00Z",
+                "retryable": false,
+                "publicResult": {"answer": 42}
+            }))
+            .unwrap();
+            let value = native_wait_result(status.clone()).unwrap();
+            assert_eq!(
+                value["workflowInstanceId"],
+                status.workflow_instance_id.to_string()
+            );
+            assert_eq!(value["state"], state);
+            assert_eq!(value["ready"], ready);
+            assert_eq!(value["result"], expected_result);
+        }
+    }
 
     #[test]
     fn saved_definition_digest_keeps_branch_end_directives() {
@@ -3994,7 +4343,7 @@ fork:
             "gateway service",
             HandlerRejection::new(502, "ERR10056", "failed to request JWKS"),
         );
-        assert_eq!(unavailable.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(unavailable.http_status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             unavailable.error.code,
             ErrorCode::WorkflowInvocationUnavailable
@@ -4005,7 +4354,7 @@ fork:
             "user",
             HandlerRejection::new(401, "ERR10002", "JWT validation failed"),
         );
-        assert_eq!(invalid.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(invalid.http_status, StatusCode::UNAUTHORIZED);
         assert_eq!(invalid.error.code, ErrorCode::WorkflowPolicyDenied);
         assert!(!invalid.error.retryable);
     }
@@ -4018,9 +4367,11 @@ fork:
             "idempotencyKey":"one-deliberate-start",
         });
         assert!(parse_native_start_input(valid.clone()).is_ok());
+        let mut valid_with_digest = valid.clone();
+        valid_with_digest["expectedDefinitionDigest"] = json!(format!("sha256:{}", "a".repeat(64)));
+        assert!(parse_native_start_input(valid_with_digest).is_ok());
         for (field, value) in [
             ("stableToolRef", json!(Uuid::now_v7())),
-            ("expectedDefinitionDigest", json!(format!("sha256:{}", "a".repeat(64)))),
             ("hostId", json!(Uuid::now_v7())),
             ("ownerUserId", json!(Uuid::now_v7())),
             ("renewableGrantId", json!(Uuid::now_v7())),
@@ -4030,10 +4381,33 @@ fork:
         ] {
             let mut changed = valid.clone();
             changed[field] = value;
-            assert!(parse_native_start_input(changed).is_err(), "{field}");
+            let error = parse_native_start_input(changed).err().expect(field);
+            assert_eq!(error.error.code, ErrorCode::WorkflowInputInvalid, "{field}");
+        }
+        for malformed_digest in [
+            "sha256:abc".to_string(),
+            format!("sha256:{}g", "a".repeat(63)),
+            format!("sha256-{}", "a".repeat(64)),
+        ] {
+            let mut changed = valid.clone();
+            changed["expectedDefinitionDigest"] = json!(malformed_digest);
+            assert!(parse_native_start_input(changed).is_err());
         }
         let mut changed = valid;
         changed["input"] = json!([]);
         assert!(parse_native_start_input(changed).is_err());
+    }
+
+    #[test]
+    fn native_start_keeps_unlimited_v1_replay_window() {
+        let source = include_str!("rule_api.rs");
+        let start = source.find("async fn start_native_workflow(").unwrap();
+        let body = start + "async fn ".len();
+        let end = source[body..]
+            .find("async fn ")
+            .map(|offset| body + offset)
+            .unwrap();
+        assert!(source[start..end].contains("result_replay_until: DateTime::<Utc>::MAX_UTC"));
+        assert!(source[start..end].contains("mode: InvocationMode::Async"));
     }
 }

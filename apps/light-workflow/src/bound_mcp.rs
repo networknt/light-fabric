@@ -1,7 +1,8 @@
 //! Trusted Workflow-to-Gateway action producer. No model-provided identity,
 //! target override, depth, budget, or authorization header is accepted here.
-use crate::credential_broker::CredentialBroker;
 use crate::long_authority::LongAuthority;
+use crate::run_authority::{PerRunAuthority, RunAuthority};
+use crate::run_token::RunTokenSelector;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Row};
@@ -27,7 +28,8 @@ pub struct Config {
 }
 pub struct Runtime {
     pool: PgPool,
-    broker: Option<Arc<CredentialBroker>>,
+    authority: Arc<PerRunAuthority>,
+    tokens: Arc<RunTokenSelector>,
     long: Option<Arc<LongAuthority>>,
     client: reqwest::Client,
     scope: String,
@@ -42,13 +44,6 @@ pub struct Runtime {
 pub trait Dispatch: Send + Sync {
     fn long_gateway_origin(&self) -> Option<String> {
         None
-    }
-    async fn long_owner_token(
-        &self,
-        _host: Uuid,
-        _process: Uuid,
-    ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(None)
     }
     async fn long_workload_token(
         &self,
@@ -80,28 +75,6 @@ pub trait Dispatch: Send + Sync {
 impl Dispatch for Runtime {
     fn long_gateway_origin(&self) -> Option<String> {
         self.long.as_ref().map(|_| self.config.gateway_url.clone())
-    }
-    async fn long_owner_token(
-        &self,
-        host: Uuid,
-        process: Uuid,
-    ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
-        let Some(long) = &self.long else {
-            return Ok(None);
-        };
-        let row = sqlx::query("SELECT i.workflow_instance_id,a.grant_id,a.user_id
-            FROM workflow_ops.workflow_invocation_t i
-            JOIN workflow_ops.workflow_action_authority_t a
-              ON a.host_id=i.host_id AND a.run_id=i.workflow_instance_id
-            WHERE i.host_id=$1 AND i.process_id=$2 AND i.state IN ('ACCEPTED','RUNNING','WAITING')
-              AND i.cancel_requested_ts IS NULL AND a.active AND a.user_id::text=i.end_user_subject")
-            .bind(host).bind(process).fetch_optional(&self.pool).await?.ok_or_else(denied)?;
-        let run: Uuid = row.get("workflow_instance_id");
-        let user: Uuid = row.get("user_id");
-        if long.binding_for(run, host, user).await? != row.get::<Uuid, _>("grant_id") {
-            return Err(denied().into());
-        }
-        Ok(Some(long.token_for(run, host, user).await?))
     }
     async fn long_workload_token(
         &self,
@@ -174,88 +147,32 @@ impl Runtime {
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(denied)?;
-        if let Some(long) = &self.long {
-            let run: Uuid = row.get("workflow_instance_id");
-            let user: Uuid = row.get("user_id");
-            if long.binding_for(run, host, user).await? != row.get::<Uuid, _>("grant_id") {
-                return Err(denied().into());
-            }
-            let _ = long.token_for(run, host, user).await?;
-        } else {
-            self.broker
-                .as_ref()
-                .ok_or_else(denied)?
-                .lock_run_authority(
-                    row.get("workflow_instance_id"),
-                    row.get("grant_id"),
-                    host,
-                    row.get("user_id"),
-                )
-                .await?;
-        }
+        self.authority
+            .lock_run_authority(
+                row.get("workflow_instance_id"),
+                row.get("grant_id"),
+                host,
+                row.get("user_id"),
+            )
+            .await?;
         Ok(())
     }
 
     pub async fn new(
         pool: PgPool,
-        broker: Arc<CredentialBroker>,
+        long: Option<Arc<LongAuthority>>,
+        authority: Arc<PerRunAuthority>,
+        tokens: Arc<RunTokenSelector>,
+        scope: String,
         config: &Config,
         dir: &Path,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let url = url::Url::parse(&config.gateway_url)?;
         if url.scheme() != "https"
             || url.host_str().is_none()
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.query().is_some()
-            || url.fragment().is_some()
-            || config.service_id.is_empty()
-            || config.maximum_depth > 16
-            || config.request_byte_limit == 0
-            || config.request_byte_limit > 16 * 1024 * 1024
-            || config.response_byte_limit == 0
-            || config.response_byte_limit > 16 * 1024 * 1024
-        {
-            return Err(denied().into());
-        }
-        let identity = tokio::fs::read(dir.join(&config.client_identity_file)).await?;
-        let ca = tokio::fs::read(dir.join(&config.ca_file)).await?;
-        let scope = tokio::fs::read_to_string(dir.join(&config.scope_token_file))
-            .await?
-            .trim()
-            .to_owned();
-        if !scope.starts_with("Bearer ") || scope.bytes().any(|b| b == b'\n' || b == b'\r') {
-            return Err(denied().into());
-        }
-        let mut builder = reqwest::Client::builder()
-            .https_only(true)
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never())
-            .timeout(Duration::from_secs(120))
-            .identity(reqwest::Identity::from_pem(&identity)?);
-        for cert in reqwest::Certificate::from_pem_bundle(&ca)? {
-            builder = builder.add_root_certificate(cert)
-        }
-        Ok(Self {
-            pool,
-            broker: Some(broker),
-            long: None,
-            client: builder.build()?,
-            scope,
-            config: config.clone(),
-            agent_services: Default::default(),
-        })
-    }
-    pub async fn new_long(
-        pool: PgPool,
-        long: Arc<LongAuthority>,
-        config: &Config,
-        dir: &Path,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let url = url::Url::parse(&config.gateway_url)?;
-        if url.scheme() != "https"
-            || url.host_str().is_none()
-            || url.origin() != long.gateway_origin()
+            || long
+                .as_ref()
+                .is_some_and(|long| url.origin() != long.gateway_origin())
             || url.query().is_some()
             || url.fragment().is_some()
             || config.service_id.is_empty()
@@ -277,10 +194,11 @@ impl Runtime {
         }
         Ok(Self {
             pool,
-            broker: None,
-            long: Some(long),
+            authority,
+            tokens,
+            long,
             client: builder.build()?,
-            scope: String::new(),
+            scope,
             config: config.clone(),
             agent_services: Default::default(),
         })
@@ -308,25 +226,14 @@ impl Runtime {
         if depth < 0 || depth > i32::from(self.config.maximum_depth) {
             return Err(denied().into());
         }
-        if let Some(long) = &self.long {
-            let run: Uuid = row.get("workflow_instance_id");
-            let user: Uuid = row.get("user_id");
-            if long.binding_for(run, host, user).await? != row.get::<Uuid, _>("grant_id") {
-                return Err(denied().into());
-            }
-            let _ = long.token_for(run, host, user).await?;
-        } else {
-            self.broker
-                .as_ref()
-                .ok_or_else(denied)?
-                .lock_run_authority(
-                    row.get("workflow_instance_id"),
-                    row.get("grant_id"),
-                    host,
-                    row.get("user_id"),
-                )
-                .await?;
-        }
+        self.authority
+            .lock_run_authority(
+                row.get("workflow_instance_id"),
+                row.get("grant_id"),
+                host,
+                row.get("user_id"),
+            )
+            .await?;
         Ok((
             row.get("deadline_ts"),
             depth,
@@ -341,7 +248,7 @@ impl Runtime {
         alias: &str,
         mut params: Value,
     ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
-        let row=sqlx::query("SELECT i.workflow_instance_id,i.end_user_subject,i.policy_digest,i.response_policy_digest,i.execution_class,i.permit_depth,CASE WHEN i.response_policy_snapshot->'privateExecutionProfile'->>'version'='1' THEN LEAST(a.deadline,COALESCE(p.deadline_ts,a.deadline)) ELSE LEAST(i.deadline_ts,a.deadline) END AS deadline_ts,a.grant_id,a.grant_generation,a.run_generation,a.budget_generation,d.nested_tool_id,d.contract_digest,d.dispatch_target FROM workflow_ops.workflow_invocation_t i JOIN workflow_ops.process_info_t p ON p.host_id=i.host_id AND p.process_id=i.process_id JOIN workflow_ops.workflow_action_authority_t a ON a.host_id=i.host_id AND a.run_id=i.workflow_instance_id JOIN workflow_ops.workflow_tool_dependency_t d ON d.host_id=i.host_id AND d.outer_binding_id=i.binding_id WHERE i.host_id=$1 AND i.process_id=$2 AND d.authorization_tool_name=$3 AND d.active AND d.lifecycle_status<>'revoked' AND i.state IN('ACCEPTED','RUNNING','WAITING') AND i.cancel_requested_ts IS NULL AND (i.deadline_ts>clock_timestamp() OR i.response_policy_snapshot->'privateExecutionProfile'->>'version'='1') AND (p.deadline_ts IS NULL OR p.deadline_ts>clock_timestamp()) AND a.active AND a.deadline>clock_timestamp()")
+        let row=sqlx::query("SELECT i.workflow_instance_id,i.end_user_subject,i.policy_digest,i.response_policy_digest,i.execution_class,i.permit_depth,CASE WHEN i.response_policy_snapshot->'privateExecutionProfile'->>'version'='1' THEN LEAST(a.deadline,COALESCE(p.deadline_ts,a.deadline)) ELSE LEAST(i.deadline_ts,a.deadline) END AS deadline_ts,a.credential_kind,a.grant_id,a.grant_generation,a.run_generation,a.budget_generation,d.nested_tool_id,d.contract_digest,d.dispatch_target FROM workflow_ops.workflow_invocation_t i JOIN workflow_ops.process_info_t p ON p.host_id=i.host_id AND p.process_id=i.process_id JOIN workflow_ops.workflow_action_authority_t a ON a.host_id=i.host_id AND a.run_id=i.workflow_instance_id JOIN workflow_ops.workflow_tool_dependency_t d ON d.host_id=i.host_id AND d.outer_binding_id=i.binding_id WHERE i.host_id=$1 AND i.process_id=$2 AND d.authorization_tool_name=$3 AND d.lifecycle_status<>'revoked' AND i.state IN('ACCEPTED','RUNNING','WAITING') AND i.cancel_requested_ts IS NULL AND (i.deadline_ts>clock_timestamp() OR i.response_policy_snapshot->'privateExecutionProfile'->>'version'='1') AND (p.deadline_ts IS NULL OR p.deadline_ts>clock_timestamp()) AND a.active AND a.deadline>clock_timestamp()")
             .bind(host).bind(process).bind(alias).fetch_optional(&self.pool).await?.ok_or_else(denied)?;
         let run: Uuid = row.get("workflow_instance_id");
         let user = row.get::<String, _>("end_user_subject").parse::<Uuid>()?;
@@ -365,21 +272,14 @@ impl Runtime {
         if bytes.len() as u64 > self.config.request_byte_limit {
             return Err(denied().into());
         }
-        let access_token = if let Some(long) = &self.long {
-            if long.binding_for(run, host, user).await? != row.get::<Uuid, _>("grant_id") {
-                return Err(denied().into());
-            }
-            long.token_for(run, host, user).await?
-        } else {
-            self.broker
-                .as_ref()
-                .ok_or_else(denied)?
-                .renew_for_run(run, host, user)
-                .await?
-                .access_token
-        };
-        // The provider has already verified this exact JWT's signature, purpose,
-        // issuer, audience, subject and tenant before exposing the credential.
+        self.authority
+            .lock_run_authority(run, row.get("grant_id"), host, user)
+            .await?;
+        let access_token = self
+            .tokens
+            .select_run_token(run, host, user, chrono::Utc::now())
+            .await?;
+        // The selector verified this exact JWT before exposing the credential.
         use base64::Engine as _;
         let payload = access_token.split('.').nth(1).ok_or_else(denied)?;
         let claims: Value = serde_json::from_slice(
@@ -434,7 +334,8 @@ impl Runtime {
             .client
             .post(&self.config.gateway_url)
             .bearer_auth(&access_token);
-        if let Some(long) = &self.long {
+        if row.get::<&str, _>("credential_kind") == "long" {
+            let long = self.long.as_ref().ok_or_else(denied)?;
             request = request.header(
                 "x-scope-token",
                 format!("Bearer {}", long.workload_token().await?),

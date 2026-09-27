@@ -435,7 +435,7 @@ fn phase0_source_characterizes_current_manual_lifecycle() {
     assert!(!main.contains("timeout_at(deadline, &mut tasks)"));
     assert!(main.contains("legacy_event_source_available"));
     assert!(main.contains("workflow.legacy_event_consumer.disabled"));
-    assert!(main.contains("direct invocation admission remains active"));
+    assert!(main.contains("native workflow_start MCP admission remains active"));
 }
 
 #[test]
@@ -443,9 +443,8 @@ fn phase0_source_characterizes_current_readiness_surface() {
     let rule_api = fs::read_to_string(manifest_dir().join("src/rule_api.rs")).unwrap();
     assert!(!rule_api.contains(".route(\"/rule/test\""));
     assert!(rule_api.contains("\"workflow_rule_test\""));
-    for route in [".route(\"/v1/workflow-invocations\""] {
-        assert!(rule_api.contains(route));
-    }
+    assert!(!rule_api.contains("post(start_invocation)"));
+    assert!(rule_api.contains(".merge(crate::mcp_api::routes())"));
     for route in [".route(\"/health\"", ".route(\"/ready\""] {
         assert!(rule_api.contains(route), "readiness route missing: {route}");
     }

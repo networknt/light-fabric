@@ -66,6 +66,8 @@ async fn durable_claims_replay_fencing_and_not_initiated() {
         .await
         .unwrap();
     sqlx::raw_sql(MIGRATION).execute(&pool).await.unwrap();
+    sqlx::query("ALTER TABLE workflow_ops.workflow_action_authority_t ADD COLUMN credential_kind varchar(8) NOT NULL CHECK (credential_kind IN ('broker','long','invoke'))")
+        .execute(&pool).await.unwrap();
     let b = binding();
     let l = Ledger::new(pool.clone());
     let original = owner();

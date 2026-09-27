@@ -95,6 +95,98 @@ struct ClaimedTask {
     host_lease: Option<HostTaskLease>,
 }
 
+/// Read a target from the invocation's immutable binding pin. Callers retain
+/// the live grant check for lightapi targets separately.
+pub async fn pinned_endpoint_uri(
+    pool: &sqlx::PgPool,
+    host_id: Uuid,
+    binding_id: Uuid,
+    endpoint_ref: &str,
+    method: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT endpoint_uri FROM workflow_endpoint_target_t
+          WHERE host_id=$1 AND binding_id=$2 AND endpoint_ref=$3
+            AND $4=ANY(allowed_methods)",
+    )
+    .bind(host_id)
+    .bind(binding_id)
+    .bind(endpoint_ref)
+    .bind(method.to_ascii_uppercase())
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn pinned_endpoint_for_process(
+    pool: &sqlx::PgPool,
+    host_id: Uuid,
+    process_id: Uuid,
+    endpoint_ref: &str,
+    method: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let binding_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT binding_id FROM workflow_invocation_t WHERE host_id=$1 AND process_id=$2",
+    )
+    .bind(host_id)
+    .bind(process_id)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+    match binding_id {
+        Some(id) => pinned_endpoint_uri(pool, host_id, id, endpoint_ref, method).await,
+        None => Ok(None),
+    }
+}
+
+/// Resolve a LightAPI endpoint with live grant authorization. Historical
+/// revision targets are available only when an invocation pins that revision.
+pub async fn resolve_granted_endpoint(
+    pool: &sqlx::PgPool,
+    host_id: Uuid,
+    wf_def_id: Uuid,
+    tool_id: Uuid,
+    tool_version: &str,
+    lightapi_digest: &str,
+    environment: &str,
+    process_id: Uuid,
+    capability_ref: &str,
+    method: &str,
+) -> Result<Option<(Uuid, Uuid, String, Option<Value>)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT g.grant_id,g.tool_id,target.endpoint_uri,target.resolution_document
+           FROM workflow_tool_grant_t g
+           JOIN workflow_tool_binding_t binding
+             ON binding.host_id=g.host_id AND binding.wf_def_id=g.wf_def_id
+           JOIN workflow_endpoint_target_t target
+             ON target.host_id=binding.host_id
+            AND target.binding_id=binding.binding_id
+           LEFT JOIN workflow_invocation_t invocation
+             ON invocation.host_id=g.host_id AND invocation.process_id=$7
+          WHERE g.host_id=$1 AND g.wf_def_id=$2 AND g.active
+            AND g.tool_id=$3 AND g.tool_version=$4 AND g.lightapi_digest=$5
+            AND $6=ANY(g.allowed_environments)
+            AND target.endpoint_ref=$8
+            AND upper($9)=ANY(target.allowed_methods)
+            AND ((invocation.binding_id IS NOT NULL
+                  AND binding.binding_id=invocation.binding_id)
+              OR (invocation.binding_id IS NULL
+                  AND binding.active AND target.active))
+          ORDER BY binding.binding_id
+          LIMIT 1",
+    )
+    .bind(host_id)
+    .bind(wf_def_id)
+    .bind(tool_id)
+    .bind(tool_version)
+    .bind(lightapi_digest)
+    .bind(environment)
+    .bind(process_id)
+    .bind(capability_ref)
+    .bind(method.to_ascii_uppercase())
+    .fetch_optional(pool)
+    .await
+}
+
 #[derive(Debug, Clone, Copy)]
 struct HostTaskLease {
     owner: Uuid,
@@ -212,6 +304,7 @@ struct AgentCatalog {
 pub struct TaskExecutor {
     review_artifacts: Option<crate::artifact_store::DurableArtifactStore>,
     pub bound_mcp: std::sync::OnceLock<Arc<dyn crate::bound_mcp::Dispatch>>,
+    pub run_tokens: std::sync::OnceLock<Arc<crate::run_token::RunTokenSelector>>,
     pool: PgPool,
     http_client: reqwest::Client,
     rule_executor: Arc<MultiThreadRuleExecutor>,
@@ -365,6 +458,7 @@ impl TaskExecutor {
             .expect("failed to build reqwest HTTP client with timeouts and redirects disabled");
         Self {
             bound_mcp: std::sync::OnceLock::new(),
+            run_tokens: std::sync::OnceLock::new(),
             review_artifacts: None,
             pool,
             http_client,
@@ -570,6 +664,7 @@ impl TaskExecutor {
         })?;
         let mut listener = PgListener::connect(database_url).await?;
         listener.listen("workflow_task_ready_v1").await?;
+        let mut last_publication_sweep = tokio::time::Instant::now() - Duration::from_secs(3600);
         loop {
             if shutdown.is_cancelled() {
                 return Ok(());
@@ -577,6 +672,18 @@ impl TaskExecutor {
             match self.process_next_task(worker_id).await {
                 Ok(true) => {}
                 Ok(false) => {
+                    if last_publication_sweep.elapsed() >= Duration::from_secs(3600) {
+                        if let Err(error) = Self::sweep_publication_operations(
+                            &self.pool,
+                            Utc::now() - chrono::Duration::days(30),
+                        )
+                        .await
+                        {
+                            error!(worker_id = %worker_id, "Error sweeping publication operations: {error}");
+                        } else {
+                            last_publication_sweep = tokio::time::Instant::now();
+                        }
+                    }
                     if let Err(error) = self.expire_interactive_deadlines().await {
                         error!(
                             worker_id = %worker_id,
@@ -598,6 +705,18 @@ impl TaskExecutor {
                 }
             }
         }
+    }
+
+    pub async fn sweep_publication_operations(
+        pool: &PgPool,
+        cutoff: chrono::DateTime<Utc>,
+    ) -> Result<u64, sqlx::Error> {
+        let result =
+            sqlx::query("DELETE FROM workflow_publication_operation_t WHERE created_ts < $1")
+                .bind(cutoff)
+                .execute(pool)
+                .await?;
+        Ok(result.rows_affected())
     }
 
     async fn expire_interactive_deadlines(&self) -> Result<(), sqlx::Error> {
@@ -636,6 +755,9 @@ impl TaskExecutor {
             .execute(&mut *tx)
             .await?;
         }
+        sqlx::query("DELETE FROM workflow_run_credential_t WHERE expires_ts < CURRENT_TIMESTAMP")
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -1524,18 +1646,21 @@ impl TaskExecutor {
             .into());
         }
 
-        if self
-            .bound_mcp
-            .get()
-            .and_then(|runtime| runtime.long_gateway_origin())
-            .is_some()
-            && matches!(task_def,TaskDefinition::Call(call) if !matches!(call,CallTaskDefinition::Http(_) | CallTaskDefinition::Mcp(_)))
+        if matches!(task_def,TaskDefinition::Call(call) if !matches!(call,CallTaskDefinition::Http(_) | CallTaskDefinition::Mcp(_)))
         {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "LONG owner-token handoff for this external task is not yet available",
-            )
-            .into());
+            if let Some(selector) = self.run_tokens.get() {
+                let kind = selector
+                    .run_for_process(claimed.task.host_id, claimed.task.process_id)
+                    .await?
+                    .map(|(_, _, kind)| kind);
+                if matches!(kind.as_deref(), Some("long" | "broker")) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "run owner-token handoff for this external task is unavailable",
+                    )
+                    .into());
+                }
+            }
         }
 
         match task_def {
@@ -1651,37 +1776,18 @@ impl TaskExecutor {
                         .into());
                     }
                     let environment = self.environment.clone();
-                    let resolved: Option<(Uuid, Uuid, String, Option<Value>)> = sqlx::query_as(
-                        "SELECT g.grant_id,g.tool_id,target.endpoint_uri,target.resolution_document
-                           FROM workflow_tool_grant_t g
-                           JOIN workflow_tool_binding_t binding
-                             ON binding.host_id=g.host_id AND binding.wf_def_id=g.wf_def_id
-                            AND binding.active
-                           JOIN workflow_endpoint_target_t target
-                             ON target.host_id=binding.host_id
-                            AND target.binding_id=binding.binding_id
-                           LEFT JOIN workflow_invocation_t invocation
-                             ON invocation.host_id=g.host_id AND invocation.process_id=$7
-                          WHERE g.host_id=$1 AND g.wf_def_id=$2 AND g.active
-                            AND g.tool_id=$3 AND g.tool_version=$4 AND g.lightapi_digest=$5
-                            AND $6=ANY(g.allowed_environments)
-                            AND target.endpoint_ref=$8 AND target.active
-                            AND upper($9)=ANY(target.allowed_methods)
-                            AND (invocation.binding_id IS NULL
-                                 OR binding.binding_id=invocation.binding_id)
-                          ORDER BY binding.binding_id
-                          LIMIT 1",
+                    let resolved = resolve_granted_endpoint(
+                        &self.pool,
+                        claimed.task.host_id,
+                        claimed.wf_def_id,
+                        tool_id,
+                        tool_version,
+                        lightapi_digest,
+                        &environment,
+                        claimed.task.process_id,
+                        capability_ref,
+                        &http_call.with.method,
                     )
-                    .bind(claimed.task.host_id)
-                    .bind(claimed.wf_def_id)
-                    .bind(tool_id)
-                    .bind(tool_version)
-                    .bind(lightapi_digest)
-                    .bind(&environment)
-                    .bind(claimed.task.process_id)
-                    .bind(capability_ref)
-                    .bind(http_call.with.method.to_ascii_uppercase())
-                    .fetch_optional(&self.pool)
                     .await?;
                     let (grant_id, tool_id, endpoint_uri, resolution_document) = resolved.ok_or_else(|| io::Error::new(
                         io::ErrorKind::PermissionDenied,
@@ -1706,20 +1812,13 @@ impl TaskExecutor {
                     None
                 };
                 let registered_uri: Option<String> = if let Some(endpoint_ref) = endpoint_ref {
-                    sqlx::query_scalar(
-                        "SELECT target.endpoint_uri
-                           FROM workflow_invocation_t invocation
-                           JOIN workflow_endpoint_target_t target ON target.host_id=invocation.host_id
-                          WHERE invocation.host_id=$1 AND invocation.process_id=$2
-                            AND target.binding_id=invocation.binding_id
-                            AND target.endpoint_ref=$3 AND target.active
-                            AND $4=ANY(target.allowed_methods)",
+                    pinned_endpoint_for_process(
+                        &self.pool,
+                        claimed.task.host_id,
+                        claimed.task.process_id,
+                        endpoint_ref,
+                        &http_call.with.method,
                     )
-                    .bind(claimed.task.host_id)
-                    .bind(claimed.task.process_id)
-                    .bind(endpoint_ref)
-                    .bind(http_call.with.method.to_ascii_uppercase())
-                    .fetch_optional(&self.pool)
                     .await?
                 } else {
                     None
@@ -1766,13 +1865,27 @@ impl TaskExecutor {
                     .into());
                 }
                 let protected_target = granted_uri.is_some() || registered_uri.is_some();
-                if self
-                    .bound_mcp
-                    .get()
-                    .and_then(|runtime| runtime.long_gateway_origin())
-                    .is_some()
-                    && !protected_target
+                let run_identity = if let Some(selector) = self.run_tokens.get() {
+                    selector
+                        .run_for_process(claimed.task.host_id, claimed.task.process_id)
+                        .await?
+                } else {
+                    None
+                };
+                if run_identity
+                    .as_ref()
+                    .is_some_and(|(_, _, kind)| kind == "broker")
                 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "retired broker run cannot dispatch HTTP",
+                    )
+                    .into());
+                }
+                let long_run = run_identity
+                    .as_ref()
+                    .is_some_and(|(_, _, kind)| kind == "long");
+                if long_run && !protected_target {
                     return Err(io::Error::new(
                         io::ErrorKind::PermissionDenied,
                         "LONG HTTP task requires a Gateway-protected target",
@@ -1812,33 +1925,50 @@ impl TaskExecutor {
                 // A private inline endpoint must never receive the caller's
                 // bearer. Registered/Tool-granted targets retain protected
                 // Workflow authorization on the trusted dispatch path.
-                let long_owner_authorization = if admission_profile
-                    == InvocationAdmissionProfile::PortalExecution
-                    && protected_target
-                {
-                    if let Some(runtime) = self.bound_mcp.get() {
-                        if let Some(gateway) = runtime.long_gateway_origin() {
-                            let gateway = reqwest::Url::parse(&gateway)?;
-                            if validated_uri.origin() != gateway.origin() {
-                                return Err(io::Error::new(
-                                    io::ErrorKind::PermissionDenied,
-                                    "private protected HTTP target must traverse Gateway",
+                if long_run {
+                    let gateway = self
+                        .bound_mcp
+                        .get()
+                        .and_then(|runtime| runtime.long_gateway_origin())
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                "LONG Gateway authority unavailable",
+                            )
+                        })?;
+                    if validated_uri.origin() != reqwest::Url::parse(&gateway)?.origin() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "private protected HTTP target must traverse Gateway",
+                        )
+                        .into());
+                    }
+                }
+                let selected_authorization = if workflow_backed || protected_target {
+                    if let Some(selector) = self.run_tokens.get() {
+                        let (run, user, _) = run_identity.as_ref().ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                "run authority unavailable",
+                            )
+                        })?;
+                        Some(format!(
+                            "Bearer {}",
+                            selector
+                                .select_run_token(
+                                    *run,
+                                    claimed.task.host_id,
+                                    *user,
+                                    chrono::Utc::now()
                                 )
-                                .into());
-                            }
-                            let token = runtime
-                                .long_owner_token(claimed.task.host_id, claimed.task.process_id)
                                 .await?
-                                .ok_or_else(|| {
-                                    io::Error::new(
-                                        io::ErrorKind::PermissionDenied,
-                                        "LONG owner authority unavailable",
-                                    )
-                                })?;
-                            Some(format!("Bearer {token}"))
-                        } else {
-                            None
-                        }
+                        ))
+                    } else if workflow_backed {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "run credential selector unavailable",
+                        )
+                        .into());
                     } else {
                         None
                     }
@@ -1849,7 +1979,7 @@ impl TaskExecutor {
                     || (admission_profile == InvocationAdmissionProfile::PortalExecution
                         && protected_target)
                 {
-                    let long_scope_authorization = if long_owner_authorization.is_some() {
+                    let long_scope_authorization = if long_run {
                         Some(format!(
                             "Bearer {}",
                             self.bound_mcp
@@ -1876,7 +2006,7 @@ impl TaskExecutor {
                         .as_deref()
                         .or(self.service_authorization.as_deref());
                     Some(workflow_http_authorization_headers(
-                        long_owner_authorization.as_deref().or(user_authorization),
+                        selected_authorization.as_deref().or(user_authorization),
                         scope_authorization,
                     )?)
                 } else {
@@ -6466,6 +6596,95 @@ mod tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
 
+    #[tokio::test]
+    #[ignore = "requires owned scratch DATABASE_URL and ADMIN_DATABASE_URL"]
+    async fn workflow_backed_http_uses_the_shared_run_token_selector() {
+        use crate::{
+            invoke_api::{self, handler_postgres_tests as fixture},
+            run_token::RunTokenSelector,
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let f = fixture::fixture().await;
+        let headers = fixture::headers(f.host, f.user, "user");
+        let original = headers
+            .get("authorization")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .strip_prefix("Bearer ")
+            .unwrap()
+            .to_owned();
+        let run = fixture::running_run(
+            invoke_api::invoke(f.state.clone(), headers, fixture::arguments(&f)).await,
+        )
+        .await;
+        let process: Uuid = sqlx::query_scalar(
+            "SELECT process_id FROM workflow_invocation_t
+            WHERE host_id=$1 AND workflow_instance_id=$2",
+        )
+        .bind(f.host)
+        .bind(run)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let uri = format!("http://{}/protected", listener.local_addr().unwrap());
+        sqlx::query("INSERT INTO workflow_endpoint_target_t
+            (host_id,binding_id,endpoint_ref,endpoint_uri,allowed_methods,authorization_policy_digest)
+            VALUES($1,$2,'test-endpoint',$3,ARRAY['GET'], $4)")
+            .bind(f.host).bind(f.binding).bind(&uri)
+            .bind(format!("sha256:{}", "a".repeat(64)))
+            .execute(&f.pool).await.unwrap();
+        let receiver = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = [0u8; 4096];
+            let length = stream.read(&mut bytes).await.unwrap();
+            let request = String::from_utf8_lossy(&bytes[..length]);
+            let bearer = request
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .starts_with("authorization: bearer ")
+                        .then(|| {
+                            line.split_once(':')
+                                .unwrap()
+                                .1
+                                .trim()
+                                .strip_prefix("Bearer ")
+                                .unwrap_or_default()
+                                .to_owned()
+                        })
+                })
+                .unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 11\r\n\r\n{\"ok\":true}")
+                .await.unwrap();
+            Sha256::digest(bearer.as_bytes())
+        });
+        let yaml = format!(
+            "document: {{ dsl: '1.0.3', namespace: test, name: token, version: '1.0.0' }}\ndo:\n  - fetch:\n      call: http\n      metadata: {{endpointRef: test-endpoint}}\n      with:\n        method: GET\n        endpoint: {{ uri: '{uri}' }}\n"
+        );
+        let mut claimed = claimed_from_yaml(&yaml, "fetch", "call");
+        claimed.task.host_id = f.host;
+        claimed.task.process_id = process;
+        claimed.task.task_id = Uuid::new_v4();
+        let mut executor = TaskExecutor::new(f.pool.clone());
+        executor.service_authorization = Some("test-scope".into());
+        let selector = Arc::new(
+            RunTokenSelector::new(
+                f.pool.clone(),
+                f.state.run_credential_vault.clone(),
+                None,
+                f.state.invocation_security.clone(),
+                60,
+            )
+            .unwrap(),
+        );
+        executor.run_tokens.set(selector).ok().unwrap();
+        assert!(executor.execute_task(&claimed).await.is_ok());
+        assert_eq!(receiver.await.unwrap(), Sha256::digest(original.as_bytes()));
+        tokio::fs::remove_file(&f.keyring).await.unwrap();
+    }
+
     struct ComponentGateway {
         calls: std::sync::Mutex<Vec<(Uuid, Uuid, Uuid, String, Value)>>,
         denied: std::sync::atomic::AtomicBool,
@@ -7222,7 +7441,7 @@ do:
             .find("SELECT g.grant_id,g.tool_id,target.endpoint_uri,target.resolution_document")
             .expect("workflow Tool grant SQL must exist");
         let end = source[start..]
-            .find(".fetch_optional(&self.pool)")
+            .find(".fetch_optional(pool)")
             .map(|offset| start + offset)
             .expect("workflow Tool grant query must execute");
         let query = &source[start..end];
@@ -7239,6 +7458,7 @@ do:
             "LEFT JOIN workflow_invocation_t",
             "invocation.binding_id IS NULL",
             "binding.binding_id=invocation.binding_id",
+            "binding.active AND target.active",
         ] {
             assert!(
                 query.contains(expected),
@@ -7246,15 +7466,15 @@ do:
             );
         }
         for expected in [
-            ".bind(claimed.task.host_id)",
-            ".bind(claimed.wf_def_id)",
+            ".bind(host_id)",
+            ".bind(wf_def_id)",
             ".bind(tool_id)",
             ".bind(tool_version)",
             ".bind(lightapi_digest)",
-            ".bind(&environment)",
-            ".bind(claimed.task.process_id)",
+            ".bind(environment)",
+            ".bind(process_id)",
             ".bind(capability_ref)",
-            ".bind(http_call.with.method.to_ascii_uppercase())",
+            ".bind(method.to_ascii_uppercase())",
         ] {
             assert!(
                 query.contains(expected),

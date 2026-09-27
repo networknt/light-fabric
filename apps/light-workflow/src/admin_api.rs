@@ -33,27 +33,6 @@ pub trait RoleAuthority: Send + Sync {
     ) -> Result<Vec<String>, RoleAuthorityError>;
 }
 
-#[async_trait::async_trait]
-impl RoleAuthority for crate::credential_broker::CredentialBroker {
-    async fn current_roles(
-        &self,
-        user_authorization: &str,
-        host_id: Uuid,
-        user_id: Uuid,
-    ) -> Result<Vec<String>, RoleAuthorityError> {
-        let snapshot = self
-            .current_workflow_roles(user_authorization)
-            .await
-            .map_err(|error| match error {
-                light_client::unattended::ProviderFailure::ReauthorizationRequired => {
-                    RoleAuthorityError::Denied
-                }
-                _ => RoleAuthorityError::Unavailable,
-            })?;
-        validate_role_snapshot(snapshot, host_id, user_id)
-    }
-}
-
 fn validate_role_snapshot(
     snapshot: light_client::unattended::CurrentWorkflowRoles,
     host_id: Uuid,
@@ -2184,7 +2163,7 @@ mod native_process_postgres_tests {
         sqlx::query(
             "INSERT INTO workflow_action_authority_t(host_id,run_id,grant_id,
             user_id,grant_generation,run_generation,budget_generation,active,deadline,
-            action_limit,reserved) VALUES($1,$2,$3,$4,1,1,1,true,now()+interval '1 hour',2,1)",
+            action_limit,reserved,credential_kind) VALUES($1,$2,$3,$4,1,1,1,true,now()+interval '1 hour',2,1,'broker')",
         )
         .bind(host)
         .bind(instance)

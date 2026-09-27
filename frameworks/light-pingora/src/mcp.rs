@@ -30,6 +30,7 @@ use light_runtime::{
     DirectRegistryConfig, DiscoveryNode, DiscoverySnapshot, DiscoverySubscription, ModuleKind,
     PortalRegistryClient, RuntimeConfig, RuntimeError,
 };
+use light_security::token_purpose::TokenUse;
 use regex::Regex;
 use reqwest::header::{ACCEPT, HeaderMap, HeaderName, HeaderValue};
 use serde::de::Error as DeError;
@@ -47,11 +48,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore, mpsc};
 use url::{Url, form_urlencoded};
 use uuid::Uuid;
+#[cfg(test)]
+use workflow_invocation_contract::canonical_sha256;
 use workflow_invocation_contract::{
-    CANONICAL_INPUT_PROFILE, CONTRACT_VERSION as WORKFLOW_CONTRACT_VERSION, ErrorCode,
-    ExecutionClass, IdempotencyBinding, IdempotencyKind, InvocationBudget, InvocationError,
-    InvocationMode, InvocationState, InvocationStatus, ResultTextMode, StartInvocationRequest,
-    canonical_json_bytes, canonical_sha256, stable_subject_claims, validate_digest,
+    ErrorCode, InvocationMode, ResultTextMode, canonical_json_bytes, validate_digest,
 };
 
 pub const MCP_ROUTER_FILE: &str = "mcp-router.yml";
@@ -349,23 +349,10 @@ fn workflow_scope_authorization_with(
     }
 }
 
-fn workflow_start_error_code(status: reqwest::StatusCode) -> ErrorCode {
-    if status.is_server_error() {
-        ErrorCode::WorkflowInvocationUnavailable
-    } else {
-        ErrorCode::WorkflowStartRejected
-    }
-}
-
 fn workflow_user_authorization(
     authorization: Option<&str>,
-    delegated: bool,
+    _delegated: bool,
 ) -> Result<String, &'static str> {
-    if delegated {
-        return Err(
-            "WORKFLOW_POLICY_DENIED: agent-delegated workflow access requires the original user Authorization JWT",
-        );
-    }
     authorization
         .and_then(normalize_bearer_header)
         .ok_or(
@@ -502,50 +489,31 @@ pub enum McpExecutionPlacement {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct McpWorkflowBindingConfig {
     pub stable_tool_ref: Uuid,
     pub workflow_definition_id: Uuid,
     pub workflow_version: String,
     pub definition_digest: String,
-    pub schema_digest: String,
-    pub policy_digest: String,
-    pub response_policy_digest: String,
+    #[serde(default)]
+    pub binding_digest: Option<String>,
     #[serde(default)]
     pub mode: InvocationMode,
-    #[serde(default = "default_workflow_execution_class")]
-    pub execution_class: ExecutionClass,
-    #[serde(default)]
-    pub cancellation_policy: workflow_invocation_contract::CancellationPolicy,
     #[serde(default = "default_workflow_wait_ms")]
     pub wait_timeout_ms: u64,
-    #[serde(default = "default_workflow_deadline_ms")]
-    pub total_deadline_ms: u64,
-    #[serde(default)]
-    pub result_replay_ms: u64,
-    #[serde(default = "default_workflow_idempotency_kind")]
-    pub idempotency_kind: IdempotencyKind,
-    #[serde(default)]
-    pub idempotency_input: Option<String>,
     #[serde(default = "default_result_text_mode")]
     pub result_text_mode: ResultTextMode,
-    pub budget: InvocationBudget,
+    pub budget: McpWorkflowRequestBudget,
 }
 
-fn default_workflow_execution_class() -> ExecutionClass {
-    ExecutionClass::Interactive
-}
-
-fn default_workflow_idempotency_kind() -> IdempotencyKind {
-    IdempotencyKind::Derived
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpWorkflowRequestBudget {
+    pub maximum_request_bytes: u64,
 }
 
 fn default_workflow_wait_ms() -> u64 {
     20_000
-}
-
-fn default_workflow_deadline_ms() -> u64 {
-    30_000
 }
 
 fn default_result_text_mode() -> ResultTextMode {
@@ -1100,7 +1068,6 @@ fn decrement_principal_count(counts: &mut BTreeMap<String, usize>, principal: &s
 
 #[derive(Debug, Clone, Default)]
 pub struct McpRequestContext {
-    pub renewable_grant_id: Option<Uuid>,
     pub action: Option<crate::action_gateway::Context>,
     pub auth: Option<AuthPrincipal>,
     /// The current end-user Authorization header after authentication and any
@@ -1632,6 +1599,144 @@ struct WorkflowDispatchRuntime {
     invocation_url: String,
     scope_authorization: Option<String>,
     permit_pools: Vec<Arc<Semaphore>>,
+}
+
+#[derive(Debug)]
+enum NativeWorkflowError {
+    Rpc(McpExecutionError),
+    Transport(String),
+}
+
+async fn call_native_workflow_tool(
+    runtime: &WorkflowDispatchRuntime,
+    authorization: &str,
+    scope_authorization: &str,
+    publisher_token: Option<&str>,
+    tool_name: &str,
+    arguments: JsonValue,
+) -> Result<JsonValue, NativeWorkflowError> {
+    call_native_workflow_tool_with_timeout(
+        runtime,
+        authorization,
+        scope_authorization,
+        publisher_token,
+        tool_name,
+        arguments,
+        None,
+    )
+    .await
+}
+
+async fn call_native_workflow_tool_with_timeout(
+    runtime: &WorkflowDispatchRuntime,
+    authorization: &str,
+    scope_authorization: &str,
+    publisher_token: Option<&str>,
+    tool_name: &str,
+    arguments: JsonValue,
+    request_timeout: Option<Duration>,
+) -> Result<JsonValue, NativeWorkflowError> {
+    let request_id = Uuid::now_v7().to_string();
+    let request_json = json!({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": arguments,
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": STATELESS_PROTOCOL_VERSION,
+                "io.modelcontextprotocol/clientCapabilities": {},
+                "io.modelcontextprotocol/clientInfo": {
+                    "name": "light-gateway",
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            }
+        }
+    });
+    let url = format!("{}/mcp", runtime.invocation_url);
+    let mut request_builder = runtime
+        .client
+        .post(&url)
+        .header(reqwest::header::CONTENT_TYPE, JSON_CONTENT_TYPE)
+        .header(ACCEPT, "application/json, text/event-stream")
+        .header(MCP_PROTOCOL_VERSION_HEADER, STATELESS_PROTOCOL_VERSION)
+        .header(MCP_METHOD_HEADER, "tools/call")
+        .header(MCP_NAME_HEADER, tool_name)
+        .header("authorization", authorization)
+        .header("x-scope-token", scope_authorization)
+        .json(&request_json);
+    if let Some(token) = publisher_token {
+        request_builder = request_builder.header("x-publisher-token", token);
+    }
+    if let Some(timeout) = request_timeout {
+        request_builder = request_builder.timeout(timeout);
+    }
+    let response = request_builder.send().await.map_err(|error| {
+        NativeWorkflowError::Transport(format!(
+            "request failed (connect={}, timeout={})",
+            error.is_connect(),
+            error.is_timeout()
+        ))
+    })?;
+    let (http_status, content_type, response_headers, body) =
+        read_backend_mcp_response(response, tool_name, &url, 65_536)
+            .await
+            .map_err(|error| NativeWorkflowError::Transport(error.message))?;
+    if response_headers.contains_key(MCP_SESSION_ID_HEADER) {
+        return Err(NativeWorkflowError::Transport(
+            "unexpected session state".into(),
+        ));
+    }
+    let versions = response_headers
+        .get_all(MCP_PROTOCOL_VERSION_HEADER)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect::<Vec<_>>();
+    if versions.len() > 1
+        || versions
+            .first()
+            .is_some_and(|version| *version != STATELESS_PROTOCOL_VERSION)
+    {
+        return Err(NativeWorkflowError::Transport(
+            "protocol version mismatch".into(),
+        ));
+    }
+    if !content_type.as_deref().is_some_and(|value| {
+        let value = value.to_ascii_lowercase();
+        value.starts_with(JSON_CONTENT_TYPE) || value.starts_with(EVENT_STREAM_CONTENT_TYPE)
+    }) {
+        return Err(NativeWorkflowError::Transport(
+            "unsupported Content-Type".into(),
+        ));
+    }
+    let message = parse_mcp_backend_response(&body, content_type.as_deref())
+        .map_err(NativeWorkflowError::Transport)?;
+    validate_backend_response_id(&message, &request_json["id"])
+        .map_err(|error| NativeWorkflowError::Transport(error.message))?;
+    if let Some(error) = message.get("error") {
+        return Err(NativeWorkflowError::Rpc(McpExecutionError {
+            code: error
+                .get("code")
+                .and_then(JsonValue::as_i64)
+                .unwrap_or(-32000),
+            message: error
+                .get("message")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("Workflow returned a JSON-RPC error")
+                .to_string(),
+        }));
+    }
+    if !http_status.is_success() {
+        return Err(NativeWorkflowError::Transport(format!(
+            "HTTP {}",
+            http_status.as_u16()
+        )));
+    }
+    message
+        .get("result")
+        .cloned()
+        .ok_or_else(|| NativeWorkflowError::Transport("missing MCP result".into()))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -2270,7 +2375,6 @@ impl McpRouterRuntime {
         #[cfg(test)]
         let context = McpRequestContext {
             action: None,
-            renewable_grant_id: None,
             anonymous_binding: Some("in-process-test-client".to_string()),
             ..McpRequestContext::default()
         };
@@ -2938,7 +3042,9 @@ impl McpRouterRuntime {
         );
         let mut visible_names = Vec::new();
         for (index, tool) in self.tools.values().enumerate() {
-            if tool_metadata_bool(tool, &["privateVersionTarget"]).unwrap_or(false) {
+            if tool.name == "workflow_invoke"
+                || tool_metadata_bool(tool, &["privateVersionTarget"]).unwrap_or(false)
+            {
                 continue;
             }
             if self
@@ -3595,7 +3701,8 @@ impl McpRouterRuntime {
             .tools
             .values()
             .filter(|tool| {
-                !tool_metadata_bool(tool, &["privateVersionTarget"]).unwrap_or(false)
+                tool.name != "workflow_invoke"
+                    && !tool_metadata_bool(tool, &["privateVersionTarget"]).unwrap_or(false)
                     && query
                         .as_deref()
                         .is_none_or(|query| tool_matches_tools_list_query(tool, query))
@@ -3641,6 +3748,7 @@ impl McpRouterRuntime {
     fn tools_list_response_from_names(&self, tool_names: Vec<String>) -> JsonValue {
         let tools = tool_names
             .into_iter()
+            .filter(|tool_name| tool_name != "workflow_invoke")
             .filter_map(|tool_name| self.tools.get(tool_name.as_str()))
             .map(|tool| {
                 let mut descriptor = json!({
@@ -3776,6 +3884,12 @@ impl McpRouterRuntime {
             .and_then(JsonValue::as_str)
             .filter(|name| !name.trim().is_empty())
             .ok_or_else(|| McpExecutionError::invalid_params("tools/call requires params.name"))?;
+        if name == "workflow_invoke" {
+            return Err(McpExecutionError {
+                code: -32601,
+                message: "tool is not available".to_string(),
+            });
+        }
         let arguments = params
             .get("arguments")
             .cloned()
@@ -3789,6 +3903,27 @@ impl McpRouterRuntime {
             code: -32601,
             message: format!("tool `{name}` not found"),
         })?;
+        let workflow_destination = tool.execution_placement != McpExecutionPlacement::Backend
+            || tool_backend_credential_mode(tool) == McpBackendCredentialMode::Workflow;
+        if workflow_destination
+            && context.auth.as_ref().is_some_and(|auth| {
+                // Claims came from the Gateway's JWT verifier. An explicit app
+                // purpose wins over user-like claims, including uid/sub. The
+                // older unmarked user tokens retain the existing identity check.
+                (auth.claims.get("token_use").is_some()
+                    && TokenUse::User.validate(&auth.claims).is_err())
+                    || auth.user_id.is_none()
+            })
+            && !matches!(
+                name,
+                "workflow_definition_save" | "workflow_definition_grants_sync"
+            )
+        {
+            return Err(McpExecutionError {
+                code: -32001,
+                message: "Workflow operation requires an authenticated user".to_string(),
+            });
+        }
         let action_binding = if let Some(action) = context.action.as_ref() {
             let binding = action
                 .inspect(action_tool_ref(tool)?)
@@ -3959,6 +4094,11 @@ impl McpRouterRuntime {
             None
         };
 
+        let publisher_token = effective
+            .transport_headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("x-publisher-token"))
+            .map(|(_, value)| value.as_str());
         let execution = if context.action.is_some()
             && tool.execution_placement == McpExecutionPlacement::WorkflowLifecycle
         {
@@ -3966,10 +4106,10 @@ impl McpRouterRuntime {
                 "nested workflow lifecycle operations are not qualified for A2 actions",
             ))
         } else if tool.execution_placement == McpExecutionPlacement::Workflow {
-            self.execute_workflow_tool(tool, &masked_arguments, context, action_binding.as_ref())
+            self.execute_workflow_tool(tool, &masked_arguments, context, publisher_token)
                 .await
         } else if tool.execution_placement == McpExecutionPlacement::WorkflowLifecycle {
-            self.execute_workflow_lifecycle_tool(tool, &masked_arguments, context, policy_headers)
+            self.execute_workflow_lifecycle_tool(tool, &masked_arguments, context, publisher_token)
                 .await
         } else {
             match tool.api_type {
@@ -4201,17 +4341,10 @@ impl McpRouterRuntime {
         tool: &McpToolConfig,
         arguments: &JsonValue,
         context: &McpRequestContext,
-        parent_action: Option<&workflow_action::Binding>,
+        publisher_token: Option<&str>,
     ) -> Result<JsonValue, McpExecutionError> {
-        let workflow_started = Instant::now();
-        let workflow_error = |code: ErrorCode, message: String| {
+        let workflow_error = |code, message| {
             workflow_mcp_error_result(code, message, context.correlation_id.as_deref())
-        };
-        let Some(runtime) = self.workflow_dispatch.as_ref() else {
-            return Ok(workflow_error(
-                ErrorCode::WorkflowInvocationUnavailable,
-                "Workflow invocation capacity is unavailable".to_string(),
-            ));
         };
         let Some(binding) = tool.workflow_binding.as_ref() else {
             return Ok(workflow_error(
@@ -4219,11 +4352,33 @@ impl McpRouterRuntime {
                 "Workflow binding is unavailable".to_string(),
             ));
         };
-        let user_authorization = match workflow_user_authorization(
+        let Some(binding_digest) = binding
+            .binding_digest
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(workflow_error(
+                ErrorCode::WorkflowStartRejected,
+                "republish this Tool".to_string(),
+            ));
+        };
+        if binding.mode != InvocationMode::Sync {
+            return Ok(workflow_error(
+                ErrorCode::WorkflowStartRejected,
+                "republish this Tool".to_string(),
+            ));
+        }
+        let Some(runtime) = self.workflow_dispatch.as_ref() else {
+            return Ok(workflow_error(
+                ErrorCode::WorkflowInvocationUnavailable,
+                "Workflow invocation capacity is unavailable".to_string(),
+            ));
+        };
+        let authorization = match workflow_user_authorization(
             context.authorization.as_deref(),
             context.delegation.is_some(),
         ) {
-            Ok(authorization) => authorization,
+            Ok(value) => value,
             Err(message) => {
                 return Ok(workflow_error(
                     ErrorCode::WorkflowPolicyDenied,
@@ -4231,549 +4386,127 @@ impl McpRouterRuntime {
                 ));
             }
         };
-        let permit_depth = match parent_action {
-            Some(parent) => match parent.depth.checked_add(1) {
-                Some(depth) if depth <= parent.maximum_depth => depth,
-                _ => {
-                    return Ok(workflow_error(
-                        ErrorCode::WorkflowCapacityExhausted,
-                        "WORKFLOW_CAPACITY_EXHAUSTED: inherited action depth exceeded".to_string(),
-                    ));
-                }
-            },
-            None => match context
-                .delegation
-                .as_ref()
-                .and_then(|claims| claims.workflow_permit_depth)
-            {
-                Some(depth) => match depth.checked_add(1) {
-                    Some(depth) => depth,
-                    None => {
-                        return Ok(workflow_error(
-                            ErrorCode::WorkflowCapacityExhausted,
-                            "WORKFLOW_CAPACITY_EXHAUSTED: delegation depth overflow".to_string(),
-                        ));
-                    }
-                },
-                None => 0,
-            },
-        };
-        if permit_depth > binding.budget.maximum_delegation_depth {
+        if context.auth.is_none() {
             return Ok(workflow_error(
                 ErrorCode::WorkflowPolicyDenied,
-                "WORKFLOW_POLICY_DENIED: maximum delegation depth exceeded".to_string(),
+                "authenticated workflow identity is required".to_string(),
             ));
         }
-        let execution_class = match parent_action {
-            Some(parent) => match parent.execution_class {
-                workflow_action::ExecutionClass::Interactive => ExecutionClass::Interactive,
-                workflow_action::ExecutionClass::Standard => ExecutionClass::Standard,
-                workflow_action::ExecutionClass::Batch => ExecutionClass::Batch,
-            },
-            None => match context
-                .delegation
-                .as_ref()
-                .and_then(|claims| claims.workflow_execution_class.as_deref())
-            {
-                Some("interactive") => ExecutionClass::Interactive,
-                Some("standard") => ExecutionClass::Standard,
-                Some("batch") => ExecutionClass::Batch,
-                Some(_) => {
-                    return Ok(workflow_error(
-                        ErrorCode::WorkflowPolicyDenied,
-                        "WORKFLOW_POLICY_DENIED: delegated execution class is invalid".to_string(),
-                    ));
-                }
-                None => binding.execution_class,
-            },
-        };
-        let _permit = if binding.mode == InvocationMode::Sync {
-            let Some(pool) = runtime.permit_pools.get(usize::from(permit_depth)) else {
-                return Ok(workflow_error(
-                    ErrorCode::WorkflowCapacityExhausted,
-                    "Workflow delegation depth is not configured".to_string(),
-                ));
-            };
-            let Ok(permit) = Arc::clone(pool).try_acquire_owned() else {
-                return Ok(workflow_error(
-                    ErrorCode::WorkflowCapacityExhausted,
-                    "WORKFLOW_CAPACITY_EXHAUSTED: synchronous workflow capacity is temporarily exhausted".to_string(),
-                ));
-            };
-            Some(permit)
-        } else {
-            None
-        };
-
-        let Some(auth) = context.auth.as_ref() else {
+        let Some(scope_authorization) = runtime.scope_authorization.as_deref() else {
             return Ok(workflow_error(
-                ErrorCode::WorkflowPolicyDenied,
-                "WORKFLOW_POLICY_DENIED: authenticated workflow identity is required".to_string(),
+                ErrorCode::WorkflowInvocationUnavailable,
+                "Workflow invocation authentication is unavailable".to_string(),
             ));
         };
-        let host = auth
-            .host
-            .as_deref()
-            .or_else(|| auth.claims.get("hostId").and_then(JsonValue::as_str))
-            .or_else(|| auth.claims.get("host_id").and_then(JsonValue::as_str));
-        let Some(host_id) = host.and_then(|value| Uuid::parse_str(value).ok()) else {
-            return Ok(workflow_error(
-                ErrorCode::WorkflowPolicyDenied,
-                "WORKFLOW_POLICY_DENIED: a UUID tenant identity is required".to_string(),
-            ));
-        };
-        let principal_subject = auth
-            .client_id
-            .as_deref()
-            .or_else(|| auth.claims.get("client_id").and_then(JsonValue::as_str))
-            .or_else(|| auth.claims.get("sub").and_then(JsonValue::as_str));
-        let Some(principal_subject) = principal_subject.filter(|value| !value.trim().is_empty())
-        else {
-            return Ok(workflow_error(
-                ErrorCode::WorkflowPolicyDenied,
-                "WORKFLOW_POLICY_DENIED: principal subject is required".to_string(),
-            ));
-        };
-        let end_user_subject = auth
-            .user_id
-            .as_deref()
-            .or_else(|| auth.claims.get("user_id").and_then(JsonValue::as_str))
-            .or_else(|| auth.claims.get("userId").and_then(JsonValue::as_str))
-            .or_else(|| auth.claims.get("sub").and_then(JsonValue::as_str))
-            .unwrap_or(principal_subject);
-        let scope_authorization = match runtime.scope_authorization.as_deref() {
-            Some(authorization) => authorization,
-            None => {
-                return Ok(workflow_error(
-                    ErrorCode::WorkflowInvocationUnavailable,
-                    "Workflow invocation authentication is unavailable".to_string(),
-                ));
-            }
-        };
-        let canonical_input = match canonical_json_bytes(arguments) {
-            Ok(input) => input,
+        let input_bytes = match canonical_json_bytes(arguments) {
+            Ok(bytes) => bytes,
             Err(error) => {
                 return Ok(workflow_error(
-                    ErrorCode::WorkflowDefinitionMismatch,
-                    format!("Workflow input cannot be canonicalized: {error}"),
+                    ErrorCode::WorkflowInputInvalid,
+                    error.to_string(),
                 ));
             }
         };
-        if u64::try_from(canonical_input.len()).unwrap_or(u64::MAX)
+        if u64::try_from(input_bytes.len()).unwrap_or(u64::MAX)
             > binding.budget.maximum_request_bytes
         {
             return Ok(workflow_error(
-                ErrorCode::WorkflowDefinitionMismatch,
+                ErrorCode::WorkflowInputInvalid,
                 "Workflow input exceeds the declared byte limit".to_string(),
             ));
         }
-        let input_digest = match canonical_sha256(arguments) {
-            Ok(digest) => digest,
-            Err(error) => {
-                return Ok(workflow_error(
-                    ErrorCode::WorkflowDefinitionMismatch,
-                    format!("Workflow input cannot be canonicalized: {error}"),
-                ));
+        let mut invoke_arguments = json!({
+            "stableToolRef": binding.stable_tool_ref,
+            "expectedBindingDigest": binding_digest,
+            "expectedDefinitionDigest": binding.definition_digest,
+            "input": arguments,
+        });
+        // Only a named property in the published Tool input schema opts in to
+        // forwarding the caller's key. Workflow owns validation and key derivation.
+        if tool
+            .input_schema
+            .get("properties")
+            .and_then(|properties| properties.get("idempotencyKey"))
+            .is_some()
+        {
+            if let Some(key) = arguments.get("idempotencyKey") {
+                invoke_arguments["idempotencyKey"] = key.clone();
             }
-        };
-        let configured_idempotency_key = match binding.idempotency_kind {
-            IdempotencyKind::Derived => None,
-            IdempotencyKind::Explicit | IdempotencyKind::Business => {
-                let Some(field) = binding
-                    .idempotency_input
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                else {
+        }
+        let timeout =
+            Duration::from_millis(binding.wait_timeout_ms).saturating_add(Duration::from_secs(2));
+        match call_native_workflow_tool_with_timeout(
+            runtime,
+            &authorization,
+            scope_authorization,
+            publisher_token,
+            "workflow_invoke",
+            invoke_arguments,
+            Some(timeout),
+        )
+        .await
+        {
+            Ok(result) if result.get("isError").and_then(JsonValue::as_bool) == Some(true) => {
+                Ok(result)
+            }
+            Ok(result) => {
+                let receipt = result.get("structuredContent");
+                let valid = result.get("isError").and_then(JsonValue::as_bool) == Some(false)
+                    && receipt
+                        .and_then(|value| value.get("status"))
+                        .and_then(JsonValue::as_str)
+                        == Some("completed")
+                    && receipt
+                        .and_then(|value| value.get("workflowInstanceId"))
+                        .and_then(JsonValue::as_str)
+                        .is_some_and(|id| Uuid::parse_str(id).is_ok())
+                    && receipt
+                        .and_then(|value| value.get("definitionDigest"))
+                        .and_then(JsonValue::as_str)
+                        == Some(binding.definition_digest.as_str())
+                    && receipt
+                        .and_then(|value| value.get("output"))
+                        .is_some_and(JsonValue::is_object);
+                if !valid {
                     return Ok(workflow_error(
-                        ErrorCode::WorkflowInputInvalid,
-                        "WORKFLOW_INPUT_INVALID: idempotencyInput is required by the published binding"
+                        ErrorCode::WorkflowInvocationUnavailable,
+                        "WORKFLOW_INVOCATION_UNAVAILABLE: invalid native Workflow Invoke receipt"
                             .to_string(),
                     ));
-                };
-                let Some(value) = arguments
-                    .get(field)
-                    .and_then(JsonValue::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                else {
-                    return Ok(workflow_error(
-                        ErrorCode::WorkflowInputInvalid,
-                        format!(
-                            "WORKFLOW_INPUT_INVALID: {field} must be a non-empty idempotency string"
-                        ),
-                    ));
-                };
-                Some(value)
-            }
-        };
-        let scoped_key_digest = canonical_sha256(&json!({
-            "hostId": host_id,
-            "principalSubject": principal_subject,
-            "endUserSubject": end_user_subject,
-            "stableToolRef": binding.stable_tool_ref,
-            "parentActionId": parent_action.map(|parent| parent.action_id),
-            "definitionDigest": binding.definition_digest,
-            "idempotencyKey": configured_idempotency_key,
-            "inputDigest": if binding.idempotency_kind == IdempotencyKind::Derived {
-                Some(input_digest.as_str())
-            } else {
-                None
-            },
-        }))
-        .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
-        let now = chrono::Utc::now();
-        let mut deadline_ts = now
-            + chrono::Duration::milliseconds(
-                i64::try_from(binding.total_deadline_ms).unwrap_or(i64::MAX),
-            );
-        if let Some(parent) = parent_action {
-            deadline_ts = deadline_ts.min(parent.deadline);
-        }
-        let workflow_instance_id = Uuid::now_v7();
-        let mut renewable_grant_id = context.renewable_grant_id;
-        if parent_action.is_none()
-            && context.action.is_none()
-            && renewable_grant_id.is_none()
-            && runtime.invocation_url.starts_with("https://")
-        {
-            renewable_grant_id = Some(
-                acquire_workflow_grant(
-                    runtime,
-                    &user_authorization,
-                    scope_authorization,
-                    &auth.claims,
-                    binding,
-                    deadline_ts,
-                )
-                .await?,
-            );
-        }
-        let request = StartInvocationRequest {
-            renewable_grant_id: parent_action
-                .is_none()
-                .then_some(renewable_grant_id)
-                .flatten(),
-            parent_action_id: parent_action.map(|parent| parent.action_id),
-            contract_version: WORKFLOW_CONTRACT_VERSION,
-            workflow_instance_id,
-            stable_tool_ref: binding.stable_tool_ref,
-            workflow_definition_id: binding.workflow_definition_id,
-            workflow_version: binding.workflow_version.clone(),
-            definition_digest: binding.definition_digest.clone(),
-            schema_digest: binding.schema_digest.clone(),
-            policy_digest: binding.policy_digest.clone(),
-            response_policy_digest: binding.response_policy_digest.clone(),
-            mode: binding.mode,
-            cancellation_policy: binding.cancellation_policy,
-            execution_class,
-            permit_depth,
-            deadline_ts,
-            canonical_input_profile: CANONICAL_INPUT_PROFILE.to_string(),
-            normalized_input_digest: input_digest.clone(),
-            input: arguments.clone(),
-            caller_claims: stable_subject_claims(&auth.claims),
-            idempotency: IdempotencyBinding {
-                kind: binding.idempotency_kind,
-                scoped_key_digest,
-                input_digest,
-                in_flight_until: deadline_ts + chrono::Duration::seconds(30),
-                result_replay_until: deadline_ts
-                    + chrono::Duration::milliseconds(
-                        i64::try_from(binding.result_replay_ms).unwrap_or(i64::MAX),
-                    )
-                    + chrono::Duration::seconds(30),
-            },
-            budget: binding.budget.clone(),
-            correlation_id: context
-                .correlation_id
-                .clone()
-                .unwrap_or_else(|| workflow_instance_id.to_string()),
-        };
-        let start_url = format!("{}/v1/workflow-invocations", runtime.invocation_url);
-        let start_response: Result<(http::StatusCode, bytes::Bytes), String> =
-            if let Some(action) = context.action.as_ref() {
-                let body = serde_json::to_vec(&request)
+                }
+                let output = receipt
+                    .and_then(|value| value.get("output"))
+                    .expect("validated receipt output")
+                    .clone();
+                let compact = serde_json::to_string(&output)
                     .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
-                let mut headers = http::HeaderMap::new();
-                for (name, value) in [
-                    ("content-type", "application/json".to_string()),
-                    ("accept", "application/json".to_string()),
-                    ("authorization", user_authorization.clone()),
-                    ("x-scope-token", scope_authorization.to_string()),
-                ] {
-                    headers.insert(
-                        http::HeaderName::from_bytes(name.as_bytes()).expect("fixed header name"),
-                        value.parse().map_err(|_| {
-                            McpExecutionError::execution_failed("invalid workflow start header")
-                        })?,
-                    );
-                }
-                action
-                    .execute(
-                        binding.stable_tool_ref,
-                        "POST",
-                        &start_url,
-                        headers,
-                        bytes::Bytes::from(body),
-                    )
-                    .await
-                    .map(|response| (response.header.status, response.body))
-            } else {
-                match runtime
-                    .client
-                    .post(&start_url)
-                    .header("authorization", &user_authorization)
-                    .header("x-scope-token", scope_authorization)
-                    .json(&request)
-                    .send()
-                    .await
-                {
-                    Ok(response) => {
-                        let status = response.status();
-                        response
-                            .bytes()
-                            .await
-                            .map(|body| (status, body))
-                            .map_err(|error| error.to_string())
+                let text = match binding.result_text_mode {
+                    ResultTextMode::CompactJson => compact,
+                    ResultTextMode::Summary => {
+                        format!("Workflow completed successfully: {compact}")
                     }
-                    Err(error) => Err(error.to_string()),
-                }
-            };
-        let mut status: InvocationStatus = match start_response {
-            Ok((http_status, body)) if http_status.is_success() => {
-                match serde_json::from_slice(&body) {
-                    Ok(status) => status,
-                    Err(error) => {
-                        if let Some(status) = self
-                            .recover_workflow_start_status(
-                                runtime,
-                                &user_authorization,
-                                &scope_authorization,
-                                workflow_instance_id,
-                            )
-                            .await
-                        {
-                            status
-                        } else {
-                            return Ok(workflow_mcp_error_result_with_instance(
-                                ErrorCode::WorkflowInvocationUnavailable,
-                                format!(
-                                    "Workflow start response was invalid and acceptance could not be confirmed: {error}"
-                                ),
-                                context.correlation_id.as_deref(),
-                                workflow_instance_id,
-                            ));
-                        }
-                    }
-                }
-            }
-            Ok((http_status, body)) => {
-                let upstream_code = serde_json::from_slice::<InvocationError>(&body)
-                    .ok()
-                    .and_then(|error| serde_json::to_value(error.code).ok())
-                    .and_then(|code| code.as_str().map(str::to_string));
-                let error_code = workflow_start_error_code(http_status);
-                let prefix = if error_code == ErrorCode::WorkflowInvocationUnavailable {
-                    "WORKFLOW_INVOCATION_UNAVAILABLE"
-                } else {
-                    "WORKFLOW_START_REJECTED"
                 };
-                let upstream_code = upstream_code
-                    .map(|code| format!(" ({code})"))
-                    .unwrap_or_default();
-                return Ok(workflow_error(
-                    error_code,
-                    format!(
-                        "{prefix}: workflow service returned HTTP {}{upstream_code}",
-                        http_status.as_u16(),
-                    ),
-                ));
+                Ok(json!({
+                    "content": [{"type": "text", "text": text}],
+                    "structuredContent": output,
+                    "isError": false,
+                }))
             }
-            Err(error) => {
-                if let Some(status) = self
-                    .recover_workflow_start_status(
-                        runtime,
-                        &user_authorization,
-                        &scope_authorization,
-                        workflow_instance_id,
-                    )
-                    .await
-                {
-                    status
-                } else {
-                    return Ok(workflow_mcp_error_result_with_instance(
-                        ErrorCode::WorkflowInvocationUnavailable,
-                        format!(
-                            "Workflow start outcome could not be resolved after recovery: {error}"
-                        ),
-                        context.correlation_id.as_deref(),
-                        workflow_instance_id,
-                    ));
-                }
-            }
-        };
-        // An idempotent replay returns the already accepted invocation, which
-        // can differ from the candidate UUID allocated for this start attempt.
-        let accepted_instance_id = status.workflow_instance_id;
-        tracing::info!(
-            target: "light_pingora::mcp::workflow",
-            toolName = %tool.name,
-            workflowInstanceId = %accepted_instance_id,
-            workflowDefinitionId = %binding.workflow_definition_id,
-            workflowVersion = %binding.workflow_version,
-            executionClass = ?execution_class,
-            permitDepth = permit_depth,
-            acceptanceDurationMs = workflow_started.elapsed().as_millis(),
-            correlationId = ?context.correlation_id,
-            "workflow MCP invocation durably accepted"
-        );
-        if binding.mode == InvocationMode::Async {
-            let handle = json!({
-                "workflowInstanceId": status.workflow_instance_id,
-                "status": status.state,
-                "submittedAt": status.accepted_ts
-            });
-            return Ok(json!({
-                "content": [{
-                    "type": "text",
-                    "text": format!("Workflow accepted: {}", status.workflow_instance_id)
-                }],
-                "structuredContent": handle,
-                "isError": false
-            }));
-        }
-        while !status.state.is_terminal() {
-            let remaining_ms = (deadline_ts - chrono::Utc::now()).num_milliseconds();
-            if remaining_ms <= 0 {
-                return Ok(workflow_error(
-                    ErrorCode::WorkflowTimeout,
-                    format!(
-                        "WORKFLOW_TIMEOUT: workflow instance {accepted_instance_id} exceeded its synchronous deadline after durable acceptance"
-                    ),
-                ));
-            }
-            let wait_ms = binding
-                .wait_timeout_ms
-                .min(u64::try_from(remaining_ms).unwrap_or_default())
-                .max(1);
-            let wait_url = format!(
-                "{}/v1/workflow-invocations/{accepted_instance_id}/wait",
-                runtime.invocation_url
-            );
-            let response = runtime
-                .client
-                .post(wait_url)
-                .header("authorization", &user_authorization)
-                .header("x-scope-token", scope_authorization)
-                .json(&json!({"waitMs": wait_ms, "observedVersion": status.state_version}))
-                .send()
-                .await;
-            let response = match response {
-                Ok(response) => response,
-                Err(error) => {
-                    return Ok(workflow_error(
-                        ErrorCode::WorkflowInvocationUnavailable,
-                        format!(
-                            "Workflow instance {accepted_instance_id} wait request failed: {error}"
-                        ),
-                    ));
-                }
-            };
-            if !response.status().is_success() {
-                return Ok(workflow_error(
+            Err(NativeWorkflowError::Rpc(error)) => Err(error),
+            Err(NativeWorkflowError::Transport(reason)) => {
+                tracing::warn!(
+                    target: "light_pingora::mcp::workflow",
+                    toolName = %tool.name,
+                    reason = %reason,
+                    "native Workflow MCP invoke transport failed"
+                );
+                Ok(workflow_error(
                     ErrorCode::WorkflowInvocationUnavailable,
-                    format!(
-                        "WORKFLOW_INVOCATION_UNAVAILABLE: workflow instance {accepted_instance_id} could not be resumed"
-                    ),
-                ));
-            }
-            status = response
-                .json()
-                .await
-                .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
-            if !status.state.is_terminal() {
-                tokio::time::sleep(Duration::from_millis(25)).await;
+                    "WORKFLOW_INVOCATION_UNAVAILABLE: native Workflow MCP invoke failed"
+                        .to_string(),
+                ))
             }
         }
-        if status.state != InvocationState::Completed {
-            let (code, message) = status.error.map_or_else(
-                || {
-                    (
-                        ErrorCode::WorkflowTaskFailed,
-                        format!("workflow ended in state {:?}", status.state),
-                    )
-                },
-                |error| (error.code, error.message),
-            );
-            tracing::warn!(
-                target: "light_pingora::mcp::workflow",
-                toolName = %tool.name,
-                workflowInstanceId = %accepted_instance_id,
-                terminalState = ?status.state,
-                totalDurationMs = workflow_started.elapsed().as_millis(),
-                correlationId = ?context.correlation_id,
-                "workflow MCP invocation ended without a result"
-            );
-            return Ok(workflow_error(
-                code,
-                format!("{message} (workflow instance {accepted_instance_id})"),
-            ));
-        }
-        let result = status.public_result.unwrap_or_else(|| json!({}));
-        if !result.is_object() {
-            return Ok(workflow_error(
-                ErrorCode::WorkflowOutputInvalid,
-                format!(
-                    "WORKFLOW_OUTPUT_INVALID: workflow instance {accepted_instance_id} returned a non-object result"
-                ),
-            ));
-        }
-        let compact = serde_json::to_string(&result)
-            .map_err(|error| McpExecutionError::execution_failed(error.to_string()))?;
-        let text = match binding.result_text_mode {
-            ResultTextMode::CompactJson => compact,
-            ResultTextMode::Summary => format!("Workflow completed successfully: {compact}"),
-        };
-        tracing::info!(
-            target: "light_pingora::mcp::workflow",
-            toolName = %tool.name,
-            workflowInstanceId = %accepted_instance_id,
-            terminalState = ?status.state,
-            totalDurationMs = workflow_started.elapsed().as_millis(),
-            correlationId = ?context.correlation_id,
-            "workflow MCP invocation completed"
-        );
-        Ok(json!({
-            "content": [{"type": "text", "text": text}],
-            "structuredContent": result,
-            "isError": false
-        }))
-    }
-
-    async fn recover_workflow_start_status(
-        &self,
-        runtime: &WorkflowDispatchRuntime,
-        user_authorization: &str,
-        scope_authorization: &str,
-        workflow_instance_id: Uuid,
-    ) -> Option<InvocationStatus> {
-        let url = format!(
-            "{}/v1/workflow-invocations/{workflow_instance_id}",
-            runtime.invocation_url
-        );
-        let response = runtime
-            .client
-            .get(url)
-            .header("authorization", user_authorization)
-            .header("x-scope-token", scope_authorization)
-            .send()
-            .await
-            .ok()?;
-        if !response.status().is_success() {
-            return None;
-        }
-        response.json().await.ok()
     }
 
     async fn execute_workflow_lifecycle_tool(
@@ -4781,7 +4514,7 @@ impl McpRouterRuntime {
         tool: &McpToolConfig,
         arguments: &JsonValue,
         context: &McpRequestContext,
-        _policy_headers: &[(String, String)],
+        publisher_token: Option<&str>,
     ) -> Result<JsonValue, McpExecutionError> {
         let error_result = |code: ErrorCode, message: String| {
             workflow_mcp_error_result(code, message, context.correlation_id.as_deref())
@@ -4830,6 +4563,37 @@ impl McpRouterRuntime {
                 ));
             }
         };
+        if matches!(
+            tool.name.as_str(),
+            "workflow_get_status" | "workflow_get_result" | "workflow_cancel"
+        ) {
+            return match call_native_workflow_tool(
+                runtime,
+                &user_authorization,
+                scope_authorization,
+                publisher_token,
+                &tool.name,
+                arguments.clone(),
+            )
+            .await
+            {
+                Ok(result) => Ok(result),
+                Err(NativeWorkflowError::Rpc(error)) => Err(error),
+                Err(NativeWorkflowError::Transport(reason)) => {
+                    tracing::warn!(
+                        target: "light_pingora::mcp::workflow",
+                        toolName = %tool.name,
+                        correlationId = ?context.correlation_id,
+                        reason = %reason,
+                        "native Workflow MCP lifecycle operation failed"
+                    );
+                    Ok(error_result(
+                        ErrorCode::WorkflowInvocationUnavailable,
+                        format!("WORKFLOW_INVOCATION_UNAVAILABLE: {} failed", tool.name),
+                    ))
+                }
+            };
+        }
         let mut request = runtime
             .client
             .request(method, format!("{}{route}", runtime.invocation_url));
@@ -4838,9 +4602,14 @@ impl McpRouterRuntime {
         }
         let response = request
             .header("authorization", user_authorization)
-            .header("x-scope-token", scope_authorization)
-            .send()
-            .await;
+            .header("x-scope-token", scope_authorization);
+        let response = if let Some(token) = publisher_token {
+            response.header("x-publisher-token", token)
+        } else {
+            response
+        }
+        .send()
+        .await;
         let response = match response {
             Ok(response) => response,
             Err(error) => {
@@ -5316,6 +5085,56 @@ impl McpRouterRuntime {
                 "stateless MCP adapter received an incompatible backend profile",
             ));
         }
+        if tool_backend_credential_mode(tool) == McpBackendCredentialMode::Workflow
+            && matches!(
+                tool.name.as_str(),
+                "workflow_get_status" | "workflow_get_result" | "workflow_cancel"
+            )
+        {
+            let Some(runtime) = self.workflow_dispatch.as_ref() else {
+                return Ok(workflow_mcp_error_result(
+                    ErrorCode::WorkflowInvocationUnavailable,
+                    "Workflow invocation service is unavailable",
+                    effective.request.correlation_id.as_deref(),
+                ));
+            };
+            let authorization = self
+                .resolve_backend_authorization(tool, effective)
+                .await?
+                .ok_or_else(|| {
+                    McpExecutionError::execution_failed("Workflow authorization is required")
+                })?;
+            let scope = runtime.scope_authorization.as_deref().ok_or_else(|| {
+                McpExecutionError::execution_failed("Workflow scope token is unavailable")
+            })?;
+            let publisher = effective
+                .transport_headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("x-publisher-token"))
+                .map(|(_, value)| value.as_str());
+            return match call_native_workflow_tool(
+                runtime,
+                &authorization,
+                scope,
+                publisher,
+                &tool.name,
+                arguments.clone(),
+            )
+            .await
+            {
+                Ok(result) => Ok(result),
+                Err(NativeWorkflowError::Rpc(error)) => Err(error),
+                Err(NativeWorkflowError::Transport(reason)) => {
+                    tracing::warn!(target: "light_pingora::mcp::workflow", toolName = %tool.name,
+                        reason = %reason, "native Workflow MCP lifecycle transport failed");
+                    Ok(workflow_mcp_error_result(
+                        ErrorCode::WorkflowInvocationUnavailable,
+                        format!("WORKFLOW_INVOCATION_UNAVAILABLE: {} failed", tool.name),
+                        effective.request.correlation_id.as_deref(),
+                    ))
+                }
+            };
+        }
         let authorization = if effective.request.action.is_some() {
             None
         } else {
@@ -5373,6 +5192,18 @@ impl McpRouterRuntime {
                     McpExecutionError::execution_failed("invalid Workflow scope token header")
                 })?,
             );
+            if let Some((_, token)) = effective
+                .transport_headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("x-publisher-token"))
+            {
+                headers.insert(
+                    reqwest::header::HeaderName::from_static("x-publisher-token"),
+                    token.parse().map_err(|_| {
+                        McpExecutionError::execution_failed("invalid publisher token header")
+                    })?,
+                );
+            }
         }
         // Content length and host remain transport-owned.
         headers.remove(reqwest::header::CONTENT_LENGTH);
@@ -6305,48 +6136,41 @@ fn mcp_tool_error_result(message: impl Into<String>) -> JsonValue {
 fn workflow_mcp_error_result(
     code: ErrorCode,
     message: impl Into<String>,
-    correlation_id: Option<&str>,
+    _correlation_id: Option<&str>,
 ) -> JsonValue {
     let message = message.into();
     let retryable = matches!(
         code,
         ErrorCode::WorkflowCapacityExhausted | ErrorCode::WorkflowInvocationUnavailable
     );
+    let status = match code {
+        ErrorCode::WorkflowTimeout => "timeout",
+        ErrorCode::WorkflowCancelled => "cancelled",
+        ErrorCode::WorkflowStartRejected
+        | ErrorCode::WorkflowInputInvalid
+        | ErrorCode::WorkflowPolicyDenied
+        | ErrorCode::WorkflowDefinitionMismatch => "rejected",
+        _ => "failed",
+    };
     let code = serde_json::to_value(code)
         .unwrap_or_else(|_| JsonValue::String("WORKFLOW_TASK_FAILED".to_string()));
-    let correlation_id = correlation_id.unwrap_or("unavailable");
+    let text = format!(
+        "{}: {message}",
+        code.as_str().unwrap_or("WORKFLOW_TASK_FAILED")
+    );
     json!({
-        "content": [{"type": "text", "text": message}],
+        "content": [{"type": "text", "text": text}],
         "structuredContent": {
+            "status": status,
             "error": {
                 "code": code,
                 "message": message,
                 "retryable": retryable,
-                "correlationId": correlation_id
+                "afterEffect": false
             }
         },
         "isError": true
     })
-}
-
-fn workflow_mcp_error_result_with_instance(
-    code: ErrorCode,
-    message: impl Into<String>,
-    correlation_id: Option<&str>,
-    workflow_instance_id: Uuid,
-) -> JsonValue {
-    let mut result = workflow_mcp_error_result(code, message, correlation_id);
-    if let Some(error) = result
-        .get_mut("structuredContent")
-        .and_then(|value| value.get_mut("error"))
-        .and_then(JsonValue::as_object_mut)
-    {
-        error.insert(
-            "workflowInstanceId".to_string(),
-            JsonValue::String(workflow_instance_id.to_string()),
-        );
-    }
-    result
 }
 
 fn legacy_tool_list(mut result: JsonValue, version: &str) -> JsonValue {
@@ -6801,7 +6625,7 @@ pub fn load_mcp_router_runtime(
         Err(error) => return Err(error),
     };
     let backend_credentials = load_token_runtime(runtime_config, true)?;
-    let mut router = McpRouterRuntime::new_with_discovery_policy_direct_registry_and_client_config(
+    let router = McpRouterRuntime::new_with_discovery_policy_direct_registry_and_client_config(
         config,
         discovery_resolver(runtime_config.registry_client.clone()),
         policy,
@@ -6809,14 +6633,12 @@ pub fn load_mcp_router_runtime(
         client_config,
     )?
     .with_backend_credentials(backend_credentials);
-    // A2's fixed control endpoint is the authenticated Workflow receiver. Never
-    // attach its identity to general private/public Tool HTTP clients.
-    if let Some(actions) = crate::action_gateway::load(runtime_config)? {
-        router.workflow_dispatch = Some(Arc::new(workflow_action_dispatch(
-            &actions.control,
-            &runtime_config.config_dir,
-            &router.config.workflow.permit_pools,
-        )?));
+    if let Some(dispatch) = router.workflow_dispatch.as_ref() {
+        tracing::info!(
+            target: "light_pingora::mcp::workflow",
+            invocationUrl = %dispatch.invocation_url,
+            "native Workflow MCP dispatch target configured"
+        );
     }
     Ok(Some(router))
 }
@@ -6825,6 +6647,7 @@ pub fn load_mcp_router_runtime(
 #[path = "workflow_mcp_transport_tests.rs"]
 mod workflow_mcp_transport_tests;
 
+#[cfg(test)]
 fn workflow_action_dispatch(
     config: &light_client::workflow_actions::Config,
     directory: &std::path::Path,
@@ -7227,49 +7050,22 @@ fn validate_config(config: &McpRouterConfig) -> Result<(), RuntimeError> {
             if binding.stable_tool_ref.is_nil()
                 || binding.workflow_definition_id.is_nil()
                 || binding.workflow_version.trim().is_empty()
-                || (binding.mode == InvocationMode::Sync
-                    && (binding.wait_timeout_ms == 0
-                        || binding.wait_timeout_ms > 20_000
-                        || binding.total_deadline_ms < binding.wait_timeout_ms
-                        || binding.total_deadline_ms > 30_000))
-                || (binding.mode == InvocationMode::Async
-                    && !workflow_invocation_contract::authority_lease_allowed(
-                        workflow_invocation_contract::AuthorityLeaseProfile::WorkflowBacked,
-                        binding.mode,
-                        binding.total_deadline_ms,
-                    ))
-                || (binding.mode == InvocationMode::Sync
-                    && binding.execution_class != ExecutionClass::Interactive)
-                || (binding.idempotency_kind != IdempotencyKind::Derived
-                    && binding
-                        .idempotency_input
-                        .as_deref()
-                        .map(str::trim)
-                        .is_none_or(str::is_empty))
-                || binding.budget.validate().is_err()
+                || binding.wait_timeout_ms == 0
+                || binding.wait_timeout_ms > 20_000
+                || binding.budget.maximum_request_bytes == 0
             {
                 return Err(RuntimeError::Unsupported(format!(
                     "mcp-router workflow tool `{name}` has an invalid synchronous binding"
                 )));
             }
-            for digest in [
-                &binding.definition_digest,
-                &binding.schema_digest,
-                &binding.policy_digest,
-                &binding.response_policy_digest,
-            ] {
+            for digest in [&binding.definition_digest] {
                 validate_digest(digest).map_err(|error| {
                     RuntimeError::Unsupported(format!(
                         "mcp-router workflow tool `{name}` has an invalid digest: {error}"
                     ))
                 })?;
             }
-            if config.workflow.invocation_url.trim().is_empty()
-                || (binding.mode == InvocationMode::Sync
-                    && (config.workflow.permit_pools.len()
-                        <= usize::from(binding.budget.maximum_delegation_depth)
-                        || config.workflow.permit_pools.contains(&0)))
-            {
+            if config.workflow.invocation_url.trim().is_empty() {
                 return Err(RuntimeError::Unsupported(format!(
                     "mcp-router workflow runtime cannot admit tool `{name}` at its declared delegation depth"
                 )));
@@ -8629,6 +8425,7 @@ fn should_regenerate_header(name: &str) -> bool {
             | "proxy-authorization"
             | "proxy-authenticate"
             | "authorization"
+            | "x-publisher-token"
             | "cookie"
             | "accept-encoding"
             | MCP_SESSION_ID_HEADER
@@ -9459,57 +9256,6 @@ fn default_object() -> JsonValue {
     json!({})
 }
 
-/// Internal acquisition only: no browser-facing authorization Tool or redirect.
-async fn acquire_workflow_grant(
-    runtime: &WorkflowDispatchRuntime,
-    user_authorization: &str,
-    app_authorization: &str,
-    claims: &JsonValue,
-    binding: &McpWorkflowBindingConfig,
-    expires: chrono::DateTime<chrono::Utc>,
-) -> Result<Uuid, McpExecutionError> {
-    let denied = || {
-        McpExecutionError::execution_failed("Workflow credential acquisition unavailable or denied")
-    };
-    let scope = claims
-        .get("scope")
-        .and_then(JsonValue::as_str)
-        .filter(|s| !s.trim().is_empty() && s.len() <= 1024 && !s.chars().any(char::is_control))
-        .ok_or_else(denied)?;
-    let mut response = runtime
-        .client
-        .post(format!(
-            "{}/workflow/credentials/enroll",
-            runtime.invocation_url
-        ))
-        .header("authorization", user_authorization)
-        .header("x-scope-token", app_authorization)
-        .json(&json!({"scope":scope,"expiresAt":expires,"binding":{
-            "profile":"workflow-action-v1","workflowDefinitionId":binding.workflow_definition_id,
-            "definitionDigest":binding.definition_digest,"policyDigest":binding.policy_digest,
-            "responsePolicyDigest":binding.response_policy_digest
-        }}))
-        .send()
-        .await
-        .map_err(|_| denied())?;
-    if !response.status().is_success() {
-        return Err(denied());
-    }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| denied())? {
-        if bytes.len() + chunk.len() > 4096 {
-            return Err(denied());
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    let result: JsonValue = serde_json::from_slice(&bytes).map_err(|_| denied())?;
-    result
-        .get("grantId")
-        .and_then(JsonValue::as_str)
-        .and_then(|s| Uuid::parse_str(s).ok())
-        .ok_or_else(denied)
-}
-
 fn workflow_lifecycle_route(
     name: &str,
     arguments: &JsonValue,
@@ -9711,7 +9457,7 @@ fn resolve_workflow_contract_refs(value: &JsonValue, shared: &JsonValue) -> Json
 
 fn frozen_workflow_admin_schema(name: &str) -> Option<JsonValue> {
     let manifest: JsonValue = serde_json::from_str(include_str!(
-        "../../../apps/light-workflow/contracts/workflow-admin/tool-manifest.json"
+        "../../../apps/light-workflow/contracts/workflow-admin/workflow-tools-list-full.json"
     ))
     .expect("frozen Workflow admin manifest is valid JSON");
     let shared: JsonValue = serde_json::from_str(include_str!(
@@ -9836,14 +9582,40 @@ const WORKFLOW_LIFECYCLE_TOOLS: [(&str, &str, bool); 17] = [
     ),
 ];
 
-const WORKFLOW_NATIVE_BACKEND_TOOLS: [&str; 7] = [
-    "workflow_rule_test",
+const WORKFLOW_NATIVE_BACKEND_TOOLS: [&str; 33] = [
     "workflow_start",
     "workflow_decide_tool_access",
     "workflow_delete_process",
     "workflow_get_task",
     "workflow_add_process_note",
     "workflow_list_process_notes",
+    "workflow_list_processes",
+    "workflow_get_process",
+    "workflow_list_features",
+    "workflow_get_feature",
+    "workflow_get_status",
+    "workflow_get_result",
+    "workflow_wait_result",
+    "workflow_cancel",
+    "workflow_cancel_feature",
+    "workflow_get_human_task_inbox_summary",
+    "workflow_list_human_tasks",
+    "workflow_get_human_task",
+    "workflow_claim_human_task",
+    "workflow_release_human_task",
+    "workflow_complete_human_task",
+    "workflow_rule_test",
+    "workflow_definition_save",
+    "workflow_definition_publish",
+    "workflow_definition_retire",
+    "workflow_definition_grants_sync",
+    "workflow_binding_publish",
+    "workflow_binding_retire",
+    "workflow_binding_get",
+    "workflow_binding_list",
+    "workflow_binding_decide",
+    "workflow_binding_revoke",
+    "workflow_invoke",
 ];
 
 fn native_start_receipt_matches(arguments: &JsonValue, result: &JsonValue) -> bool {
@@ -9855,6 +9627,9 @@ fn native_start_receipt_matches(arguments: &JsonValue, result: &JsonValue) -> bo
                 .is_some_and(|id| Uuid::parse_str(id).is_ok())
         })
         && receipt["workflowDefinitionId"] == arguments["workflowDefinitionId"]
+        && arguments
+            .get("expectedDefinitionDigest")
+            .is_none_or(|expected| receipt.get("definitionDigest") == Some(expected))
         && receipt["definitionDigest"]
             .as_str()
             .is_some_and(|value| value.starts_with("sha256:") && value.len() == 71)
@@ -9995,6 +9770,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
+    use workflow_invocation_contract::stable_subject_claims;
 
     #[test]
     fn r6_seeded_parser_mutation_corpus_is_bounded_and_panic_free() {
@@ -10152,13 +9928,11 @@ tools:
     }
 
     #[test]
-    fn workflow_credential_policy_rejects_delegation_and_non_user_authentication() {
-        assert!(
-            workflow_user_authorization(Some("Bearer delegated-envelope"), true)
-                .unwrap_err()
-                .contains("agent-delegated")
+    fn workflow_start_forwards_user_authorization_for_delegated_calls() {
+        assert_eq!(
+            workflow_user_authorization(Some("Bearer user-jwt"), true).unwrap(),
+            "Bearer user-jwt"
         );
-
         assert!(
             workflow_user_authorization(None, false)
                 .unwrap_err()
@@ -10168,18 +9942,6 @@ tools:
         assert_eq!(
             workflow_user_authorization(Some("bearer user-jwt"), false).unwrap(),
             "Bearer user-jwt"
-        );
-    }
-
-    #[test]
-    fn workflow_start_classifies_jwks_outage_as_retryable_unavailability() {
-        assert_eq!(
-            workflow_start_error_code(reqwest::StatusCode::SERVICE_UNAVAILABLE),
-            ErrorCode::WorkflowInvocationUnavailable
-        );
-        assert_eq!(
-            workflow_start_error_code(reqwest::StatusCode::UNAUTHORIZED),
-            ErrorCode::WorkflowStartRejected
         );
     }
 
@@ -10464,7 +10226,6 @@ tools:
         let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
         let principal = |user: &str| McpRequestContext {
             action: None,
-            renewable_grant_id: None,
             auth: Some(AuthPrincipal {
                 issuer: Some("https://issuer.example".to_string()),
                 user_id: Some(user.to_string()),
@@ -10518,7 +10279,6 @@ tools:
         let runtime = McpRouterRuntime::new(McpRouterConfig::default()).expect("runtime");
         let anonymous = |binding: Option<&str>| McpRequestContext {
             action: None,
-            renewable_grant_id: None,
             anonymous_binding: binding.map(str::to_string),
             ..McpRequestContext::default()
         };
@@ -11024,7 +10784,6 @@ tools:
         .expect("runtime");
         let client_key = request_principal_binding(&McpRequestContext {
             action: None,
-            renewable_grant_id: None,
             anonymous_binding: Some("in-process-test-client".to_string()),
             ..McpRequestContext::default()
         })
@@ -11258,7 +11017,6 @@ endpointRules:
                 },
                 McpRequestContext {
                     action: None,
-                    renewable_grant_id: None,
                     auth: Some(AuthPrincipal {
                         role: Some("account-manager".to_string()),
                         claims: json!({
@@ -11369,7 +11127,6 @@ endpointRules:
                 },
                 McpRequestContext {
                     action: None,
-                    renewable_grant_id: None,
                     auth: Some(AuthPrincipal {
                         role: Some("account-manager".to_string()),
                         claims: json!({"role": "account-manager"}),
@@ -12896,7 +12653,6 @@ endpointRules:
             DEFAULT_PROTOCOL_VERSION.to_string(),
             request_principal_binding(&McpRequestContext {
                 action: None,
-                renewable_grant_id: None,
                 anonymous_binding: Some("in-process-test-client".to_string()),
                 ..McpRequestContext::default()
             })
@@ -13111,7 +12867,6 @@ endpointRules:
                 },
                 McpRequestContext {
                                 action: None,
-                                renewable_grant_id:None,
                     auth: Some(AuthPrincipal {
                         role: Some("mcp-reader".to_string()),
                         claims: json!({"role": "mcp-reader"}),
@@ -13189,7 +12944,6 @@ endpointRules:
         let runtime = McpRouterRuntime::new_with_policy(config, Some(policy)).expect("runtime");
         let context = McpRequestContext {
             action: None,
-            renewable_grant_id: None,
             auth: Some(AuthPrincipal {
                 user_id: Some("alice".into()),
                 role: Some("mcp-reader".into()),
@@ -15545,7 +15299,6 @@ endpointRules:
                     stateless_request(method, params, None),
                     McpRequestContext {
                         action: None,
-                        renewable_grant_id: None,
                         auth: Some(AuthPrincipal {
                             user_id: Some("same-user".into()),
                             role: Some("manager".into()),
@@ -15820,7 +15573,6 @@ endpointRules:
                 request,
                 McpRequestContext {
                     action: None,
-                    renewable_grant_id: None,
                     auth: Some(AuthPrincipal {
                         issuer: Some("https://issuer.example".into()),
                         user_id: Some("alice".into()),
@@ -16494,7 +16246,6 @@ endpointRules:
                 ),
                 McpRequestContext {
                     action: None,
-                    renewable_grant_id: None,
                     auth: Some(AuthPrincipal {
                         client_id: Some("subscription-client".to_string()),
                         claims: json!({"exp": expiration}),
@@ -16671,7 +16422,6 @@ endpointRules:
                 request,
                 McpRequestContext {
                     action: None,
-                    renewable_grant_id: None,
                     auth: Some(AuthPrincipal {
                         user_id: Some("user-1".to_string()),
                         claims: json!({"aud":"https://other.example.com/mcp"}),
@@ -16722,7 +16472,6 @@ endpointRules:
                 request,
                 McpRequestContext {
                     action: None,
-                    renewable_grant_id: None,
                     auth: Some(AuthPrincipal {
                         user_id: Some("user-1".to_string()),
                         claims: json!({"aud":["unrelated", resource]}),
@@ -17078,7 +16827,6 @@ endpointRules:
                     stateless_request("tools/list", json!({}), None),
                     McpRequestContext {
                         action: None,
-                        renewable_grant_id: None,
                         auth: Some(AuthPrincipal {
                             issuer: Some("https://issuer.example".to_string()),
                             user_id: Some(user.to_string()),
@@ -17501,7 +17249,6 @@ endpointRules:
     fn stateless_header_policy_is_allowlist_only_and_prefers_trusted_context() {
         let context = McpRequestContext {
             action: None,
-            renewable_grant_id: None,
             auth: Some(AuthPrincipal {
                 user_id: Some("trusted-user".to_string()),
                 host: Some("trusted-host".to_string()),
@@ -17675,7 +17422,6 @@ endpointRules:
                 },
                 McpRequestContext {
                                 action: None,
-                                renewable_grant_id:None,
                     auth: Some(AuthPrincipal {
                         role: Some("manager".to_string()),
                         claims: json!({"role": "manager"}),
@@ -17773,7 +17519,6 @@ endpointRules:
                 },
                 McpRequestContext {
                                 action: None,
-                                renewable_grant_id:None,
                     auth: Some(AuthPrincipal {
                         role: Some("teller".to_string()),
                         claims: json!({"role": "teller"}),
@@ -17878,7 +17623,6 @@ endpointRules:
                 },
                 McpRequestContext {
                                 action: None,
-                                renewable_grant_id:None,
                     auth: Some(AuthPrincipal {
                         role: Some("manager".to_string()),
                         claims: json!({"role": "manager"}),
@@ -17986,7 +17730,6 @@ endpointRules:
                 },
                 McpRequestContext {
                                 action: None,
-                                renewable_grant_id:None,
                     auth: Some(AuthPrincipal {
                         role: Some("manager".to_string()),
                         claims: json!({"role": "manager"}),
@@ -18094,7 +17837,6 @@ endpointRules:
                 },
                 McpRequestContext {
                                 action: None,
-                                renewable_grant_id:None,
                     auth: Some(AuthPrincipal {
                         role: Some("manager".to_string()),
                         claims: json!({"role": "manager"}),
@@ -18199,7 +17941,6 @@ endpointRules:
                 },
                 McpRequestContext {
                                 action: None,
-                                renewable_grant_id:None,
                     auth: Some(AuthPrincipal {
                         role: Some("teller".to_string()),
                         claims: json!({"role": "teller"}),
@@ -18235,7 +17976,7 @@ endpointRules:
     }
 
     #[test]
-    fn workflow_tool_configuration_is_read_only_and_depth_admitted() {
+    fn workflow_tool_configuration_is_read_only_and_legacy_budget_compatible() {
         let yaml = r#"
 enabled: true
 workflow:
@@ -18278,7 +18019,7 @@ tools:
 
         let mut missing_depth_pool = config;
         missing_depth_pool.workflow.permit_pools.truncate(1);
-        assert!(validate_config(&missing_depth_pool).is_err());
+        validate_config(&missing_depth_pool).expect("Gateway no longer computes workflow depth");
     }
 
     #[test]
@@ -18421,7 +18162,7 @@ tools:
 "#;
         let mut config: McpRouterConfig = serde_yaml::from_str(yaml).expect("async config");
         let manifest: JsonValue = serde_json::from_str(include_str!(
-            "../../../apps/light-workflow/contracts/workflow-admin/tool-manifest.json"
+            "../../../apps/light-workflow/contracts/workflow-admin/workflow-tools-list-full.json"
         ))
         .expect("manifest");
         for name in manifest["tools"]
@@ -18508,7 +18249,8 @@ inputSchema: {{type: object}}
         assert!(native_start_receipt_matches(input, &result));
         result["structuredContent"]["definitionDigest"] = json!("sha256:stale");
         assert!(!native_start_receipt_matches(input, &result));
-        result["structuredContent"]["definitionDigest"] = examples["workflow_start"]["output"]["definitionDigest"].clone();
+        result["structuredContent"]["definitionDigest"] =
+            examples["workflow_start"]["output"]["definitionDigest"].clone();
         result["structuredContent"]["processId"] = json!("not-a-uuid");
         assert!(!native_start_receipt_matches(input, &result));
     }
@@ -18556,7 +18298,7 @@ tools:
         assert!(
             error
                 .to_string()
-                .contains("reserved for validated native or generated")
+                .contains("invalid Workflow service contract")
         );
     }
 
@@ -18572,7 +18314,7 @@ tools:
             }
         }
         let manifest: JsonValue = serde_json::from_str(include_str!(
-            "../../../apps/light-workflow/contracts/workflow-admin/tool-manifest.json"
+            "../../../apps/light-workflow/contracts/workflow-admin/workflow-tools-list-full.json"
         ))
         .expect("manifest");
         let manifest_names = manifest["tools"]
@@ -18750,10 +18492,8 @@ toolMetadata:
             "WORKFLOW_CAPACITY_EXHAUSTED"
         );
         assert_eq!(result["structuredContent"]["error"]["retryable"], true);
-        assert_eq!(
-            result["structuredContent"]["error"]["correlationId"],
-            "corr-1"
-        );
+        assert_eq!(result["structuredContent"]["status"], "failed");
+        assert_eq!(result["structuredContent"]["error"]["afterEffect"], false);
     }
 
     #[test]
@@ -19004,6 +18744,811 @@ toolMetadata:
                 }
             }
         }
+    }
+    fn step15_workflow_tool(
+        name: &str,
+        declares_key: bool,
+        binding_digest: Option<&str>,
+    ) -> McpToolConfig {
+        let mut tool = test_tool(
+            name,
+            "Workflow tool",
+            "http://127.0.0.1:1",
+            McpHttpMethod::Call,
+            Some(&format!("{name}@call")),
+            if declares_key {
+                json!({"type":"object","properties":{"idempotencyKey":{"type":"string"}}, "additionalProperties":true})
+            } else {
+                json!({"type":"object","additionalProperties":true})
+            },
+        );
+        tool.execution_placement = McpExecutionPlacement::Workflow;
+        tool.tool_metadata = json!({"readOnly":true,"destructive":false});
+        tool.workflow_binding = Some(
+            serde_json::from_value(json!({
+                "stableToolRef":"15000000-0000-0000-0000-000000000001",
+                "workflowDefinitionId":"15000000-0000-0000-0000-000000000002",
+                "workflowVersion":"1.0.0",
+                "definitionDigest":format!("sha256:{}", "a".repeat(64)),
+                "bindingDigest":binding_digest,
+                "mode":"sync",
+                "waitTimeoutMs":100,
+                "budget":{"maximumRequestBytes":65536}
+            }))
+            .unwrap(),
+        );
+        tool
+    }
+
+    fn step15_runtime(base: &str, tools: Vec<McpToolConfig>) -> McpRouterRuntime {
+        let mut config = McpRouterConfig {
+            tools,
+            ..McpRouterConfig::default()
+        };
+        config.workflow.invocation_url = base.to_string();
+        let mut runtime = McpRouterRuntime::new(config).unwrap();
+        runtime.workflow_dispatch = Some(Arc::new(WorkflowDispatchRuntime {
+            client: reqwest::Client::new(),
+            invocation_url: base.to_string(),
+            scope_authorization: Some("Bearer scope-test".to_string()),
+            permit_pools: Vec::new(),
+        }));
+        runtime
+    }
+
+    async fn step15_call(
+        runtime: &McpRouterRuntime,
+        name: &str,
+        arguments: JsonValue,
+        publisher: Option<&str>,
+        user: bool,
+    ) -> JsonValue {
+        step15_call_as(
+            runtime,
+            name,
+            arguments,
+            publisher,
+            user,
+            Some(if user { "user" } else { "app" }),
+            None,
+        )
+        .await
+    }
+
+    async fn step15_call_as(
+        runtime: &McpRouterRuntime,
+        name: &str,
+        arguments: JsonValue,
+        publisher: Option<&str>,
+        user: bool,
+        purpose: Option<&str>,
+        role: Option<&str>,
+    ) -> JsonValue {
+        let mut headers = accept_json_with_session(runtime);
+        headers.push(("authorization".into(), "Bearer caller-test".into()));
+        if let Some(token) = publisher {
+            headers.push(("x-publisher-token".into(), token.into()));
+        }
+        let response = runtime
+            .handle_request_with_context(
+                McpHttpRequest {
+                    method: "POST".into(),
+                    path: "/mcp".into(),
+                    headers,
+                    body: serde_json::to_vec(&json!({
+                        "jsonrpc":"2.0","id":1,"method":"tools/call",
+                        "params":{"name":name,"arguments":arguments}
+                    }))
+                    .unwrap(),
+                },
+                McpRequestContext {
+                    auth: Some(AuthPrincipal {
+                        client_id: Some("f7d42348-c647-4efb-a52d-4c5787421e72".into()),
+                        user_id: user.then(|| "user-test".into()),
+                        host: Some("15000000-0000-0000-0000-000000000003".into()),
+                        role: role.map(str::to_owned),
+                        claims: purpose
+                            .map(|purpose| json!({"token_use":purpose}))
+                            .unwrap_or_else(|| json!({})),
+                        ..AuthPrincipal::default()
+                    }),
+                    authorization: Some("Bearer caller-test".into()),
+                    ..McpRequestContext::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        serde_json::from_slice(response.body.buffered().unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn step15_invoke_uses_one_native_call_and_preserves_error() {
+        let error_result = json!({
+            "resultType":"complete","isError":true,
+            "content":[{"type":"text","text":"WORKFLOW_TIMEOUT: still running"}],
+            "structuredContent":{"status":"timeout","error":{
+                "code":"WORKFLOW_TIMEOUT","message":"still running",
+                "retryable":true,"afterEffect":true,
+                "details":{"appliedRevision":7}
+            }}
+        });
+        let response = http_json_response(json!({
+            "jsonrpc":"2.0","id":"backend","result":error_result
+        }));
+        let (base, received) = spawn_http_sequence_server(vec![response]).await;
+        let tool = step15_workflow_tool(
+            "published",
+            true,
+            Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        );
+        let runtime = step15_runtime(&base, vec![tool]);
+        let result = step15_call(
+            &runtime,
+            "published",
+            json!({"idempotencyKey":"client-key","x":1}),
+            Some("raw-publisher"),
+            true,
+        )
+        .await;
+        assert_eq!(result["result"]["content"], error_result["content"]);
+        assert_eq!(
+            result["result"]["structuredContent"],
+            error_result["structuredContent"]
+        );
+        let requests = received.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let request = request_json_body(&requests[0]);
+        assert_eq!(request["params"]["name"], "workflow_invoke");
+        assert_eq!(
+            request["params"]["arguments"],
+            json!({
+                "stableToolRef":"15000000-0000-0000-0000-000000000001",
+                "expectedBindingDigest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "expectedDefinitionDigest":format!("sha256:{}", "a".repeat(64)),
+                "input":{"idempotencyKey":"client-key","x":1},
+                "idempotencyKey":"client-key"
+            })
+        );
+        assert!(
+            requests[0]
+                .to_ascii_lowercase()
+                .contains("\r\nx-publisher-token: raw-publisher\r\n")
+        );
+    }
+
+    #[tokio::test]
+    async fn step15_legacy_binding_only_rejects_its_own_tool_and_direct_invoke() {
+        let valid = step15_workflow_tool(
+            "valid",
+            false,
+            Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        );
+        let old = step15_workflow_tool("old", false, None);
+        let mut asynchronous = step15_workflow_tool(
+            "asynchronous",
+            false,
+            Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        );
+        asynchronous.workflow_binding.as_mut().unwrap().mode = InvocationMode::Async;
+        let receipt = http_json_response(json!({
+            "jsonrpc":"2.0","id":"backend",
+            "result":{"resultType":"complete","isError":false,
+                "content":[{"type":"text","text":"native receipt"}],
+                "structuredContent":{"status":"completed",
+                    "workflowInstanceId":"15000000-0000-0000-0000-000000000004",
+                    "definitionDigest":format!("sha256:{}", "a".repeat(64)),
+                    "output":{"status":"completed"}}}
+        }));
+        let (base, received) = spawn_http_sequence_server(vec![receipt]).await;
+        let runtime = step15_runtime(&base, vec![valid, old, asynchronous]);
+        let rejected = step15_call(&runtime, "old", json!({}), None, true).await;
+        assert_eq!(
+            rejected["result"]["structuredContent"]["error"]["code"],
+            "WORKFLOW_START_REJECTED"
+        );
+        assert!(
+            rejected["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("republish this Tool")
+        );
+        let rejected_mode = step15_call(&runtime, "asynchronous", json!({}), None, true).await;
+        assert_eq!(
+            rejected_mode["result"]["structuredContent"]["error"]["code"],
+            "WORKFLOW_START_REJECTED"
+        );
+        let sibling = step15_call(&runtime, "valid", json!({}), None, true).await;
+        assert_eq!(
+            sibling["result"]["structuredContent"]["status"],
+            "completed"
+        );
+        assert_eq!(received.await.unwrap().len(), 1);
+        let direct = step15_call(&runtime, "workflow_invoke", json!({}), None, true).await;
+        assert_eq!(direct["error"]["message"], "tool is not available");
+        let listed = runtime.tools_list_response_from_names(vec![
+            "valid".into(),
+            "old".into(),
+            "workflow_invoke".into(),
+        ]);
+        assert_eq!(listed["tools"].as_array().unwrap().len(), 2);
+        let list_response = runtime
+            .handle_request_with_context(
+                McpHttpRequest {
+                    method: "POST".into(),
+                    path: "/mcp".into(),
+                    headers: accept_json_with_session(&runtime),
+                    body: br#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#.to_vec(),
+                },
+                McpRequestContext::default(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let catalog: JsonValue =
+            serde_json::from_slice(list_response.body.buffered().unwrap()).unwrap();
+        assert!(
+            !catalog["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == "workflow_invoke")
+        );
+    }
+
+    #[tokio::test]
+    async fn step15_undeclared_key_is_not_forwarded_and_size_is_checked() {
+        let success = http_json_response(json!({
+            "jsonrpc":"2.0","id":"backend",
+            "result":{"resultType":"complete","isError":false,
+                "content":[{"type":"text","text":"native receipt"}],
+                "structuredContent":{"status":"completed",
+                    "workflowInstanceId":"15000000-0000-0000-0000-000000000004",
+                    "definitionDigest":format!("sha256:{}", "a".repeat(64)),
+                    "output":{"status":"completed"}}}
+        }));
+        let (base, received) = spawn_http_sequence_server(vec![success]).await;
+        let tool = step15_workflow_tool(
+            "plain",
+            false,
+            Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        );
+        let runtime = step15_runtime(&base, vec![tool]);
+        let result = step15_call(
+            &runtime,
+            "plain",
+            json!({"idempotencyKey":"ignored"}),
+            None,
+            true,
+        )
+        .await;
+        assert_eq!(result["result"]["structuredContent"]["status"], "completed");
+        let requests = received.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            request_json_body(&requests[0])["params"]["arguments"]
+                .get("idempotencyKey")
+                .is_none()
+        );
+
+        let mut limited = step15_workflow_tool(
+            "limited",
+            false,
+            Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        );
+        limited
+            .workflow_binding
+            .as_mut()
+            .unwrap()
+            .budget
+            .maximum_request_bytes = 2;
+        let runtime = step15_runtime("http://127.0.0.1:1", vec![limited]);
+        let rejected = step15_call(&runtime, "limited", json!({"long":"value"}), None, true).await;
+        assert_eq!(
+            rejected["result"]["structuredContent"]["error"]["code"],
+            "WORKFLOW_INPUT_INVALID"
+        );
+    }
+
+    #[tokio::test]
+    async fn step15_json_rpc_errors_remain_rpc_and_transport_errors_are_unavailable() {
+        let rpc = http_json_response_with_status(
+            401,
+            json!({
+                "jsonrpc":"2.0","id":"backend","error":{"code":-32001,"message":"verified identity rejected"}
+            }),
+        );
+        let (base, received) = spawn_http_sequence_server(vec![rpc]).await;
+        let tool = step15_workflow_tool(
+            "rpc",
+            false,
+            Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        );
+        let runtime = step15_runtime(&base, vec![tool]);
+        let result = step15_call(&runtime, "rpc", json!({}), None, true).await;
+        assert_eq!(result["error"]["code"], -32001);
+        assert_eq!(result["error"]["message"], "verified identity rejected");
+        assert_eq!(received.await.unwrap().len(), 1);
+
+        let tool = step15_workflow_tool(
+            "offline",
+            false,
+            Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        );
+        let runtime = step15_runtime("http://127.0.0.1:1", vec![tool]);
+        let result = step15_call(&runtime, "offline", json!({}), None, true).await;
+        assert_eq!(
+            result["result"]["structuredContent"]["error"]["code"],
+            "WORKFLOW_INVOCATION_UNAVAILABLE"
+        );
+    }
+
+    #[tokio::test]
+    async fn step15_publisher_token_is_stripped_from_non_workflow_backend() {
+        let (base, received) =
+            spawn_http_sequence_server(vec![http_json_response(json!({"ok":true}))]).await;
+        let runtime = McpRouterRuntime::new(McpRouterConfig {
+            tools: vec![test_tool(
+                "ordinary",
+                "Ordinary",
+                &base,
+                McpHttpMethod::Post,
+                None,
+                json!({"type":"object"}),
+            )],
+            ..McpRouterConfig::default()
+        })
+        .unwrap();
+        let _ = step15_call(&runtime, "ordinary", json!({}), Some("raw-publisher"), true).await;
+        let requests = received.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            !requests[0]
+                .to_ascii_lowercase()
+                .contains("x-publisher-token")
+        );
+        let legacy =
+            ForwardedHeaderContext::legacy(&[("x-publisher-token".into(), "raw-publisher".into())]);
+        assert!(legacy.backend_headers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn step15_verified_app_identity_uses_endpoint_scoped_cel_rules() {
+        let receipt = http_json_response(json!({
+            "jsonrpc":"2.0","id":"backend",
+            "result":{"resultType":"complete","isError":false,
+                "content":[{"type":"text","text":"saved"}],
+                "structuredContent":{"result":"saved"}}
+        }));
+        let (base, received) =
+            spawn_http_sequence_server(vec![receipt.clone(), receipt.clone(), receipt]).await;
+        let mut config = McpRouterConfig::default();
+        config.workflow.invocation_url = base.clone();
+        for name in [
+            "workflow_definition_save",
+            "workflow_definition_grants_sync",
+            "workflow_definition_publish",
+            "workflow_start",
+        ] {
+            config.tools.push(
+                serde_yaml::from_str::<McpToolConfig>(&format!(
+                    r#"
+name: {name}
+endpointName: {name}
+serviceId: com.networknt.workflow-1.0.0
+path: /mcp
+method: CALL
+endpoint: {name}@call
+apiType: mcp
+inputSchema: {{type: object}}
+"#
+                ))
+                .unwrap(),
+            );
+        }
+        let policy = Arc::new(crate::access_control::AccessControlRuntime::new(
+            Some(crate::access_control::AccessControlConfig::default()),
+            serde_yaml::from_str::<crate::access_control::RuleFileConfig>(r#"
+ruleBodies:
+  sync:
+    common: Y
+    ruleId: sync
+    ruleName: Workflow sync identity
+    ruleType: req-acc
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+    expression: "(('client_id' in auditInfo.subject_claims.ClaimsMap && auditInfo.subject_claims.ClaimsMap.client_id == 'f7d42348-c647-4efb-a52d-4c5787421e72' && auditInfo.subject_claims.ClaimsMap.token_use == 'app' && toolName in ['workflow_definition_save', 'workflow_definition_grants_sync']) || ('role' in auditInfo.subject_claims.ClaimsMap && auditInfo.subject_claims.ClaimsMap.role == 'workflow-admin'))"
+endpointRules:
+  workflow_definition_save@call:
+    req-acc: [sync]
+  workflow_definition_grants_sync@call:
+    req-acc: [sync]
+"#).unwrap(),
+        ));
+        let discovery: Arc<dyn McpDiscoveryResolver> = Arc::new(FakeDiscovery::new(
+            discovery_snapshot(&base, "com.networknt.workflow-1.0.0", None, Some("http")),
+        ));
+        let mut runtime =
+            McpRouterRuntime::new_with_discovery_and_policy(config, Some(discovery), Some(policy))
+                .unwrap();
+        runtime.workflow_dispatch = Some(Arc::new(WorkflowDispatchRuntime {
+            client: reqwest::Client::new(),
+            invocation_url: base,
+            scope_authorization: Some("Bearer scope-test".into()),
+            permit_pools: Vec::new(),
+        }));
+        for name in [
+            "workflow_definition_save",
+            "workflow_definition_grants_sync",
+        ] {
+            let accepted =
+                step15_call(&runtime, name, json!({"actor":"claimed-user"}), None, false).await;
+            assert_eq!(accepted["result"]["structuredContent"]["result"], "saved");
+            let denied_user = step15_call(&runtime, name, json!({}), None, true).await;
+            assert_eq!(denied_user["error"]["code"], -32001, "{denied_user}");
+        }
+        let app_with_user = step15_call_as(
+            &runtime,
+            "workflow_definition_save",
+            json!({}),
+            None,
+            true,
+            Some("app"),
+            None,
+        )
+        .await;
+        assert_eq!(
+            app_with_user["result"]["structuredContent"]["result"],
+            "saved"
+        );
+        for name in ["workflow_definition_publish", "workflow_start"] {
+            let denied = step15_call(&runtime, name, json!({}), None, false).await;
+            assert_eq!(denied["error"]["code"], -32001);
+            let app_with_user = step15_call_as(
+                &runtime,
+                name,
+                json!({}),
+                None,
+                true,
+                Some("app"),
+                Some("workflow-admin"),
+            )
+            .await;
+            assert_eq!(app_with_user["error"]["code"], -32001);
+            assert_eq!(
+                app_with_user["error"]["message"],
+                "Workflow operation requires an authenticated user"
+            );
+        }
+        let requests = received.await.unwrap();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(
+            request_json_body(&requests[0])["params"]["name"],
+            "workflow_definition_save"
+        );
+        assert_eq!(
+            request_json_body(&requests[1])["params"]["name"],
+            "workflow_definition_grants_sync"
+        );
+        assert_eq!(
+            request_json_body(&requests[2])["params"]["name"],
+            "workflow_definition_save"
+        );
+    }
+
+    #[tokio::test]
+    async fn step15_status_result_cancel_preserve_native_error_boundary() {
+        let error_result = json!({
+            "resultType":"complete","isError":true,
+            "content":[{"type":"text","text":"WORKFLOW_TASK_FAILED: exact text"}],
+            "structuredContent":{"status":"failed","error":{
+                "code":"WORKFLOW_TASK_FAILED","message":"exact text",
+                "retryable":false,"afterEffect":true,"details":{"task":"fetch"}
+            }}
+        });
+        let (base, received) = spawn_http_sequence_server(vec![
+            http_json_response(json!({"jsonrpc":"2.0","id":"backend","result":error_result})),
+            http_json_response_with_status(401, json!({
+                "jsonrpc":"2.0","id":"backend","error":{"code":-32001,"message":"token rejected"}
+            })),
+        ]).await;
+        let mut config = McpRouterConfig::default();
+        config.workflow.invocation_url = base.clone();
+        for name in [
+            "workflow_get_status",
+            "workflow_get_result",
+            "workflow_cancel",
+        ] {
+            config.tools.push(
+                serde_yaml::from_str::<McpToolConfig>(&format!(
+                    r#"
+name: {name}
+endpointName: {name}
+serviceId: com.networknt.workflow-1.0.0
+path: /mcp
+method: CALL
+endpoint: {name}@call
+apiType: mcp
+inputSchema: {{type: object}}
+"#
+                ))
+                .unwrap(),
+            );
+        }
+        let discovery: Arc<dyn McpDiscoveryResolver> = Arc::new(FakeDiscovery::new(
+            discovery_snapshot(&base, "com.networknt.workflow-1.0.0", None, Some("http")),
+        ));
+        let mut runtime = McpRouterRuntime::new_with_discovery(config, Some(discovery)).unwrap();
+        runtime.workflow_dispatch = Some(Arc::new(WorkflowDispatchRuntime {
+            client: reqwest::Client::new(),
+            invocation_url: base,
+            scope_authorization: Some("Bearer scope-test".into()),
+            permit_pools: Vec::new(),
+        }));
+        let status = step15_call(&runtime, "workflow_get_status", json!({}), None, true).await;
+        assert_eq!(status["result"]["content"], error_result["content"]);
+        assert_eq!(
+            status["result"]["structuredContent"],
+            error_result["structuredContent"]
+        );
+        let result = step15_call(&runtime, "workflow_get_result", json!({}), None, true).await;
+        assert_eq!(result["error"]["code"], -32001);
+        assert_eq!(result["error"]["message"], "token rejected");
+        assert_eq!(received.await.unwrap().len(), 2);
+        let cancel = step15_call(&runtime, "workflow_cancel", json!({}), None, true).await;
+        assert_eq!(
+            cancel["result"]["structuredContent"]["error"]["code"],
+            "WORKFLOW_INVOCATION_UNAVAILABLE"
+        );
+    }
+
+    #[tokio::test]
+    async fn step15_invoke_transport_timeout_includes_two_second_margin() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, received) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let n = stream.read(&mut buffer).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&buffer[..n]);
+                if request_complete(&bytes) {
+                    break;
+                }
+            }
+            let _ = tx.send(String::from_utf8_lossy(&bytes).to_string());
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        });
+        let mut tool = step15_workflow_tool(
+            "slow",
+            false,
+            Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        );
+        tool.workflow_binding.as_mut().unwrap().wait_timeout_ms = 50;
+        let runtime = step15_runtime(&base, vec![tool]);
+        let start = Instant::now();
+        let result = step15_call(&runtime, "slow", json!({}), None, true).await;
+        let elapsed = start.elapsed();
+        assert_eq!(
+            result["result"]["structuredContent"]["error"]["code"],
+            "WORKFLOW_INVOCATION_UNAVAILABLE"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(2_000),
+            "timeout omitted the margin: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(2_900),
+            "timeout exceeded wait + margin: {elapsed:?}"
+        );
+        let request = received.await.unwrap();
+        assert_eq!(
+            request_json_body(&request)["params"]["name"],
+            "workflow_invoke"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn step15_native_publication_forwards_raw_publisher_header() {
+        let receipt = http_json_response(json!({
+            "jsonrpc":"2.0","id":"backend",
+            "result":{"resultType":"complete","isError":false,
+                "content":[{"type":"text","text":"published"}],
+                "structuredContent":{"result":"published"}}
+        }));
+        let (base, received) = spawn_http_sequence_server(vec![receipt]).await;
+        let mut config = McpRouterConfig::default();
+        config.workflow.invocation_url = base.clone();
+        config.tools.push(
+            serde_yaml::from_str::<McpToolConfig>(
+                r#"
+name: workflow_definition_publish
+endpointName: workflow_definition_publish
+serviceId: com.networknt.workflow-1.0.0
+path: /mcp
+method: CALL
+endpoint: workflow_definition_publish@call
+apiType: mcp
+inputSchema: {type: object}
+"#,
+            )
+            .unwrap(),
+        );
+        let discovery: Arc<dyn McpDiscoveryResolver> = Arc::new(FakeDiscovery::new(
+            discovery_snapshot(&base, "com.networknt.workflow-1.0.0", None, Some("http")),
+        ));
+        let mut runtime = McpRouterRuntime::new_with_discovery(config, Some(discovery)).unwrap();
+        runtime.workflow_dispatch = Some(Arc::new(WorkflowDispatchRuntime {
+            client: reqwest::Client::new(),
+            invocation_url: base,
+            scope_authorization: Some("Bearer scope-test".into()),
+            permit_pools: Vec::new(),
+        }));
+        let accepted = step15_call(
+            &runtime,
+            "workflow_definition_publish",
+            json!({}),
+            Some("raw-publisher"),
+            true,
+        )
+        .await;
+        assert_eq!(
+            accepted["result"]["structuredContent"]["result"],
+            "published"
+        );
+        let requests = received.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0]
+                .to_ascii_lowercase()
+                .contains("\r\nx-publisher-token: raw-publisher\r\n")
+        );
+    }
+    #[tokio::test]
+    async fn step15_configured_native_invoke_is_absent_from_catalog_and_unreachable() {
+        let mut config = McpRouterConfig::default();
+        config.tools.push(
+            serde_yaml::from_str::<McpToolConfig>(
+                r#"
+name: workflow_invoke
+endpointName: workflow_invoke
+serviceId: com.networknt.workflow-1.0.0
+path: /mcp
+method: CALL
+endpoint: workflow_invoke@call
+apiType: mcp
+inputSchema: {type: object}
+"#,
+            )
+            .unwrap(),
+        );
+        let runtime = McpRouterRuntime::new(config).unwrap();
+        assert!(runtime.tools.contains_key("workflow_invoke"));
+        let listed = runtime
+            .handle_request(McpHttpRequest {
+                method: "POST".into(),
+                path: "/mcp".into(),
+                headers: accept_json_with_session(&runtime),
+                body: br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.to_vec(),
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        let catalog: JsonValue = serde_json::from_slice(listed.body.buffered().unwrap()).unwrap();
+        assert!(catalog["result"]["tools"].as_array().unwrap().is_empty());
+        let denied = step15_call(&runtime, "workflow_invoke", json!({}), None, true).await;
+        assert_eq!(denied["error"]["message"], "tool is not available");
+    }
+    #[tokio::test]
+    async fn step15_completed_receipt_maps_strict_tool_output_and_text_mode() {
+        let receipt = json!({
+            "status":"completed",
+            "workflowInstanceId":"15000000-0000-0000-0000-000000000004",
+            "definitionDigest":format!("sha256:{}", "a".repeat(64)),
+            "output":{"answer":42}
+        });
+        let response = |receipt: JsonValue| {
+            http_json_response(json!({
+                "jsonrpc":"2.0","id":"backend",
+                "result":{"resultType":"complete","isError":false,
+                    "content":[{"type":"text","text":"native receipt"}],
+                    "structuredContent":receipt}
+            }))
+        };
+        let (base, received) = spawn_http_sequence_server(vec![
+            response(receipt.clone()),
+            response(receipt.clone()),
+            response(json!({
+                "status":"completed",
+                "workflowInstanceId":"15000000-0000-0000-0000-000000000004",
+                "definitionDigest":"sha256:wrong",
+                "output":{"answer":42}
+            })),
+            response(json!({
+                "status":"completed",
+                "workflowInstanceId":"15000000-0000-0000-0000-000000000004",
+                "definitionDigest":format!("sha256:{}", "a".repeat(64)),
+                "output":{"answer":42,"extra":true}
+            })),
+        ])
+        .await;
+        let strict_schema = json!({
+            "type":"object",
+            "properties":{"answer":{"type":"integer"}},
+            "required":["answer"],
+            "additionalProperties":false
+        });
+        let mut compact = step15_workflow_tool(
+            "compact",
+            false,
+            Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        );
+        compact.output_schema = Some(strict_schema.clone());
+        let mut summary = step15_workflow_tool(
+            "summary",
+            false,
+            Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        );
+        summary.output_schema = Some(strict_schema.clone());
+        summary.workflow_binding.as_mut().unwrap().result_text_mode = ResultTextMode::Summary;
+        let mut invalid = step15_workflow_tool(
+            "invalid",
+            false,
+            Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        );
+        invalid.output_schema = Some(strict_schema);
+        let mut schema_fail = step15_workflow_tool(
+            "schema_fail",
+            false,
+            Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        );
+        schema_fail.output_schema = compact.output_schema.clone();
+        let runtime = step15_runtime(&base, vec![compact, summary, invalid, schema_fail]);
+
+        // An unmarked legacy user token still takes the user-only path.
+        let compact_result =
+            step15_call_as(&runtime, "compact", json!({}), None, true, None, None).await;
+        assert_eq!(compact_result["result"]["isError"], false);
+        assert_eq!(
+            compact_result["result"]["structuredContent"],
+            json!({"answer":42})
+        );
+        assert_eq!(
+            compact_result["result"]["content"][0]["text"],
+            r#"{"answer":42}"#
+        );
+
+        let summary_result = step15_call(&runtime, "summary", json!({}), None, true).await;
+        assert_eq!(summary_result["result"]["isError"], false);
+        assert_eq!(
+            summary_result["result"]["structuredContent"],
+            json!({"answer":42})
+        );
+        assert_eq!(
+            summary_result["result"]["content"][0]["text"],
+            "Workflow completed successfully: {\"answer\":42}"
+        );
+
+        let invalid_result = step15_call(&runtime, "invalid", json!({}), None, true).await;
+        assert_eq!(
+            invalid_result["result"]["structuredContent"]["error"]["code"],
+            "WORKFLOW_INVOCATION_UNAVAILABLE"
+        );
+        let schema_result = step15_call(&runtime, "schema_fail", json!({}), None, true).await;
+        assert_eq!(schema_result["result"]["isError"], true);
+        assert!(
+            schema_result["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Tool output did not conform to outputSchema")
+        );
+        assert_eq!(received.await.unwrap().len(), 4);
     }
 }
 

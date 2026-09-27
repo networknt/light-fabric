@@ -50,13 +50,13 @@ pub enum LongError {
     Denied,
 }
 
-struct Keys {
-    active: String,
+pub(crate) struct Keys {
+    pub(crate) active: String,
     keys: BTreeMap<String, [u8; 32]>,
 }
 
 impl Keys {
-    async fn load(path: &Path) -> Result<Self, LongError> {
+    pub(crate) async fn load(path: &Path) -> Result<Self, LongError> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct Ring {
@@ -86,11 +86,16 @@ impl Keys {
             keys,
         })
     }
-    fn seal(&self, id: Uuid, token: &str) -> Result<Vec<u8>, LongError> {
+    pub(crate) fn seal_for(
+        &self,
+        purpose: &str,
+        id: Uuid,
+        token: &str,
+    ) -> Result<Vec<u8>, LongError> {
         let cipher =
             Aes256Gcm::new_from_slice(&self.keys[&self.active]).map_err(|_| LongError::Evidence)?;
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-        let aad = format!("workflow-long-owner:{id}:{}", self.active);
+        let aad = format!("workflow-{purpose}:{id}:{}", self.active);
         let body = cipher
             .encrypt(
                 &nonce,
@@ -102,13 +107,19 @@ impl Keys {
             .map_err(|_| LongError::Evidence)?;
         Ok([nonce.as_slice(), body.as_slice()].concat())
     }
-    fn open(&self, key: &str, id: Uuid, bytes: &[u8]) -> Result<String, LongError> {
+    pub(crate) fn open_for(
+        &self,
+        purpose: &str,
+        key: &str,
+        id: Uuid,
+        bytes: &[u8],
+    ) -> Result<String, LongError> {
         if bytes.len() < 28 {
             return Err(LongError::Evidence);
         }
         let cipher = Aes256Gcm::new_from_slice(self.keys.get(key).ok_or(LongError::Evidence)?)
             .map_err(|_| LongError::Evidence)?;
-        let aad = format!("workflow-long-owner:{id}:{key}");
+        let aad = format!("workflow-{purpose}:{id}:{key}");
         let plain = cipher
             .decrypt(
                 Nonce::from_slice(&bytes[..12]),
@@ -119,6 +130,12 @@ impl Keys {
             )
             .map_err(|_| LongError::Evidence)?;
         String::from_utf8(plain).map_err(|_| LongError::Evidence)
+    }
+    fn seal(&self, id: Uuid, token: &str) -> Result<Vec<u8>, LongError> {
+        self.seal_for("long-owner", id, token)
+    }
+    fn open(&self, key: &str, id: Uuid, bytes: &[u8]) -> Result<String, LongError> {
+        self.open_for("long-owner", key, id, bytes)
     }
 }
 

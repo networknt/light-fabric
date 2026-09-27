@@ -16,12 +16,13 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct JobApi {
     pub pool: PgPool,
-    pub broker: Arc<dyn crate::run_authority::RunAuthority>,
+    pub authority: Arc<dyn crate::run_authority::RunAuthority>,
     pub security: Arc<SecurityRuntime>,
     pub policy: RoutePolicy,
     pub agents: BTreeMap<String, Uuid>,
     pub artifacts: Option<crate::artifact_store::DurableArtifactStore>,
     pub long: Option<Arc<crate::long_authority::LongAuthority>>,
+    pub tokens: Arc<crate::run_token::RunTokenSelector>,
 }
 pub fn router(state: JobApi) -> Result<Router, String> {
     state
@@ -126,25 +127,21 @@ async fn poll_long(
     h: HeaderMap,
     Json(request): Json<light_client::workflow_job_transport::Poll>,
 ) -> Result<Json<Vec<light_client::workflow_job_transport::JobDelivery>>, StatusCode> {
-    let (_, def, long) = token_agent(&s, &target, &h, request.host_id).await?;
+    let (_, def, _) = token_agent(&s, &target, &h, request.host_id).await?;
     let jobs = pending_jobs(&s, request.host_id, def).await?;
     let mut deliveries = Vec::with_capacity(jobs.len());
     for job in jobs {
-        let owner_token =
-            if job.cancellation_requested {
-                None
-            } else {
-                let (run, owner) = authorized_job(&s, job.host_id, job.job_id, def).await?;
-                Some(long.token_for(run, job.host_id, owner).await.map_err(
-                    |error| match error {
-                        crate::long_authority::LongError::Store
-                        | crate::long_authority::LongError::Retryable => {
-                            StatusCode::SERVICE_UNAVAILABLE
-                        }
-                        _ => StatusCode::FORBIDDEN,
-                    },
-                )?)
-            };
+        let owner_token = if job.cancellation_requested {
+            None
+        } else {
+            let (run, owner) = authorized_job(&s, job.host_id, job.job_id, def).await?;
+            Some(
+                s.tokens
+                    .select_run_token(run, job.host_id, owner, chrono::Utc::now())
+                    .await
+                    .map_err(|_| StatusCode::FORBIDDEN)?,
+            )
+        };
         deliveries.push(light_client::workflow_job_transport::JobDelivery { job, owner_token });
     }
     Ok(Json(deliveries))
@@ -415,7 +412,7 @@ async fn authorized_job(
     let run: Uuid = row.get("workflow_instance_id");
     let owner: Uuid = row.get("user_id");
     let _grant = s
-        .broker
+        .authority
         .lock_run_authority(run, row.get("grant_id"), host, owner)
         .await
         .map_err(|_| StatusCode::FORBIDDEN)?;
