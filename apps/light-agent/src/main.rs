@@ -5713,8 +5713,25 @@ async fn build_agent_state(
         &agent_config.operational_store.expected_database,
     )
     .map_err(|error| RuntimeError::Config(error.to_string()))?;
+    let max_connections = match std::env::var("LIGHT_AGENT_DB_MAX_CONNECTIONS") {
+        Ok(value) => value
+            .parse::<u32>()
+            .ok()
+            .filter(|count| *count > 0)
+            .ok_or_else(|| {
+                RuntimeError::Config(
+                    "LIGHT_AGENT_DB_MAX_CONNECTIONS must be a positive integer".to_string(),
+                )
+            })?,
+        Err(std::env::VarError::NotPresent) => 20,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(RuntimeError::Config(
+                "LIGHT_AGENT_DB_MAX_CONNECTIONS must be a positive integer".to_string(),
+            ));
+        }
+    };
     let pool = PgPoolOptions::new()
-        .max_connections(20)
+        .max_connections(max_connections)
         .after_connect(|connection, _metadata| {
             Box::pin(async move {
                 sqlx::query("SET search_path TO agent_ops, operational_meta")
