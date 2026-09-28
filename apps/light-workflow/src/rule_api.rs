@@ -2243,28 +2243,24 @@ pub(crate) async fn wait_for_invocation_state(
 pub(crate) async fn wait_for_terminal_until(
     state: &RuleApiState,
     identity: &InvocationIdentity,
-    generation: &Arc<WorkflowConfigGeneration>,
+    _generation: &Arc<WorkflowConfigGeneration>,
     mut status: InvocationStatus,
     wait_ms: u64,
 ) -> Result<InvocationStatus, ApiError> {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms);
     while !status.state.is_terminal() {
+        // A synchronous invocation must not need another PostgreSQL connection
+        // to observe completion. The shared query pool is already established;
+        // a PgListener connection can stall when the server is near its limit.
+        status = load_status(&state.pool, identity, status.workflow_instance_id).await?;
+        if status.state.is_terminal() {
+            break;
+        }
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             break;
         }
-        let chunk = remaining.as_millis().min(MAX_WAIT_MS as u128) as u64;
-        status = wait_for_invocation_state(
-            state,
-            identity,
-            generation,
-            status.workflow_instance_id,
-            WaitRequest {
-                wait_ms: chunk.max(1),
-                observed_version: status.state_version,
-            },
-        )
-        .await?;
+        tokio::time::sleep(remaining.min(Duration::from_millis(200))).await;
     }
     Ok(status)
 }

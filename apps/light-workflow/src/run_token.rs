@@ -13,6 +13,17 @@ use uuid::Uuid;
 
 type TokenError = Box<dyn std::error::Error + Send + Sync>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunTokenSource {
+    Original,
+    LongExchange,
+}
+
+pub struct SelectedRunToken {
+    pub token: String,
+    pub source: RunTokenSource,
+}
+
 fn denied() -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
@@ -87,6 +98,19 @@ impl RunTokenSelector {
         user: Uuid,
         now: DateTime<Utc>,
     ) -> Result<String, TokenError> {
+        Ok(self
+            .select_run_token_with_source(run, host, user, now)
+            .await?
+            .token)
+    }
+
+    pub async fn select_run_token_with_source(
+        &self,
+        run: Uuid,
+        host: Uuid,
+        user: Uuid,
+        now: DateTime<Utc>,
+    ) -> Result<SelectedRunToken, TokenError> {
         let row = sqlx::query(
             "SELECT a.credential_kind,a.grant_id
              FROM workflow_ops.workflow_action_authority_t a
@@ -136,7 +160,10 @@ impl RunTokenSelector {
                 {
                     return Err(denied().into());
                 }
-                Ok(original)
+                Ok(SelectedRunToken {
+                    token: original,
+                    source: RunTokenSource::Original,
+                })
             }
             "long" => {
                 let long = self.long.as_ref().ok_or_else(denied)?;
@@ -151,8 +178,14 @@ impl RunTokenSelector {
                     .await?;
                 match select_token_decision("long", true, exp, now.timestamp(), self.margin_seconds)
                 {
-                    TokenDecision::Original => Ok((*original.source_token).clone()),
-                    TokenDecision::Exchange => Ok(long.token_for(run, host, user).await?),
+                    TokenDecision::Original => Ok(SelectedRunToken {
+                        token: (*original.source_token).clone(),
+                        source: RunTokenSource::Original,
+                    }),
+                    TokenDecision::Exchange => Ok(SelectedRunToken {
+                        token: long.token_for(run, host, user).await?,
+                        source: RunTokenSource::LongExchange,
+                    }),
                     TokenDecision::Denied => Err(denied().into()),
                 }
             }

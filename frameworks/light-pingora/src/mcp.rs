@@ -4496,10 +4496,12 @@ impl McpRouterRuntime {
                     reason = %reason,
                     "native Workflow MCP invoke transport failed"
                 );
-                Ok(workflow_error(
+                Ok(workflow_mcp_error_result_with_effect(
                     ErrorCode::WorkflowInvocationUnavailable,
                     "WORKFLOW_INVOCATION_UNAVAILABLE: native Workflow MCP invoke failed"
                         .to_string(),
+                    context.correlation_id.as_deref(),
+                    true,
                 ))
             }
         }
@@ -6132,7 +6134,16 @@ fn mcp_tool_error_result(message: impl Into<String>) -> JsonValue {
 fn workflow_mcp_error_result(
     code: ErrorCode,
     message: impl Into<String>,
+    correlation_id: Option<&str>,
+) -> JsonValue {
+    workflow_mcp_error_result_with_effect(code, message, correlation_id, false)
+}
+
+fn workflow_mcp_error_result_with_effect(
+    code: ErrorCode,
+    message: impl Into<String>,
     _correlation_id: Option<&str>,
+    after_effect: bool,
 ) -> JsonValue {
     let message = message.into();
     let retryable = matches!(
@@ -6162,7 +6173,7 @@ fn workflow_mcp_error_result(
                 "code": code,
                 "message": message,
                 "retryable": retryable,
-                "afterEffect": false
+                "afterEffect": after_effect
             }
         },
         "isError": true
@@ -18490,6 +18501,14 @@ toolMetadata:
         assert_eq!(result["structuredContent"]["error"]["retryable"], true);
         assert_eq!(result["structuredContent"]["status"], "failed");
         assert_eq!(result["structuredContent"]["error"]["afterEffect"], false);
+
+        let uncertain = workflow_mcp_error_result_with_effect(
+            ErrorCode::WorkflowInvocationUnavailable,
+            "native Workflow MCP invoke failed",
+            None,
+            true,
+        );
+        assert_eq!(uncertain["structuredContent"]["error"]["afterEffect"], true);
     }
 
     #[test]
@@ -19077,6 +19096,10 @@ toolMetadata:
             result["result"]["structuredContent"]["error"]["code"],
             "WORKFLOW_INVOCATION_UNAVAILABLE"
         );
+        assert_eq!(
+            result["result"]["structuredContent"]["error"]["afterEffect"],
+            true
+        );
     }
 
     #[tokio::test]
@@ -19334,6 +19357,10 @@ inputSchema: {{type: object}}
         assert_eq!(
             result["result"]["structuredContent"]["error"]["code"],
             "WORKFLOW_INVOCATION_UNAVAILABLE"
+        );
+        assert_eq!(
+            result["result"]["structuredContent"]["error"]["afterEffect"],
+            true
         );
         assert!(
             elapsed >= Duration::from_millis(2_000),

@@ -1210,6 +1210,13 @@ The same selector serves bound MCP and protected executor HTTP calls.
 An expired Invoke credential fails the outbound call. Retired broker rows
 have no credential source and fail closed.
 
+For registered protected executor HTTP calls, the target rule follows the
+selected token. A LONG run using its still-valid original user token may call
+the approved endpoint directly. Once the selector exchanges that token, the
+HTTP target must use the configured Gateway origin. A definition whose
+approved endpoint remains direct needs a Gateway route and revised target to
+keep working after the exchange margin is reached.
+
 **Where the original token is kept.** A run can move to another Workflow
 replica, so the token must be stored, not only held in memory.
 
@@ -1540,6 +1547,24 @@ with a fresh 30-second deadline and a full budget.
   and the other Tools keep working. The Gateway keeps the request-size
   pre-check from `runtimeBounds.maximumRequestBytes` as an early rejection;
   Workflow still enforces the full budget.
+- A direct `workflow_start` success proves the definition can start; it does
+  not publish a workflow-backed Tool revision. The Tool must first receive an
+  approved `workflow_binding_publish` revision, then a Gateway Tool publication
+  containing its `bindingDigest` must be activated. The Tool page disables
+  Invoke while Portal reports that its binding needs publication. A confirmed
+  Gateway error with `afterEffect=false` is shown as a rejection, separate
+  from the warning for an unconfirmed network outcome.
+- The Workflow Definition list's binding count is the count awaiting owner
+  review, not the number of Portal source bindings. Its owner binding page
+  lists requested Workflow revisions; a legacy binding with no request time
+  does not appear there until a binding publication succeeds.
+- Legacy Portal source bindings can carry `inFlightDedupMs` and a zero
+  `maximumCostUnits`; neither is accepted by the current binding publication
+  contract. Portal normalizes these values when building a new publication
+  request. A D21 operation already stored with legacy arguments is immutable:
+  repeating Retry cannot change its payload. Such a pending operation needs
+  explicit outcome reconciliation before a new operation for the same binding
+  can be submitted.
 - The Gateway no longer computes the idempotency key.
 - Workflow `isError` results and their `structuredContent` pass through as
   described in **Error envelopes**.

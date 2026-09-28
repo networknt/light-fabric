@@ -638,10 +638,10 @@ impl WorkflowConfiguration {
 
         Ok(Self {
             approval_portal: workflow.approval_portal,
-            long_keyring_file: workflow
-                .long_keyring_file
-                .or_else(|| environment_value("WORKFLOW_LONG_KEYRING_FILE"))
-                .and_then(|value| non_empty(&value).map(PathBuf::from)),
+            long_keyring_file: keyring_file_path(
+                workflow.long_keyring_file,
+                environment_value("WORKFLOW_LONG_KEYRING_FILE"),
+            ),
             original_token_margin_seconds: workflow.run_credential.original_token_margin_seconds,
             action_authorization: workflow.action_authorization,
             environment,
@@ -1082,6 +1082,13 @@ fn non_empty(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
+fn keyring_file_path(configured: Option<String>, environment: Option<String>) -> Option<PathBuf> {
+    configured
+        .and_then(|value| non_empty(&value))
+        .or_else(|| environment.and_then(|value| non_empty(&value)))
+        .map(PathBuf::from)
+}
+
 fn required_secret(
     name: &str,
     environment_value: &dyn Fn(&str) -> Option<String>,
@@ -1302,8 +1309,8 @@ mod tests {
     use super::{
         ArtifactSettings, FixedActionSettings, OperationalStoreProjection,
         RunnerExecutionConfigFile, RunnerSettings, WorkflowConfigManager, WorkflowConfiguration,
-        compatibility_boolean, range, restart_required_differences, validate_scope_token,
-        validate_timeout_ordering, validate_user_expiry_policy,
+        compatibility_boolean, keyring_file_path, range, restart_required_differences,
+        validate_scope_token, validate_timeout_ordering, validate_user_expiry_policy,
     };
     use async_trait::async_trait;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -1313,10 +1320,24 @@ mod tests {
     };
     use light_security::SecurityConfig;
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::TempDir;
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
+
+    #[test]
+    fn empty_configured_keyring_uses_environment_path() {
+        let environment = Some("/run/secrets/run-credential-keyring.json".to_string());
+        assert_eq!(
+            keyring_file_path(Some(String::new()), environment.clone()),
+            Some(PathBuf::from("/run/secrets/run-credential-keyring.json"))
+        );
+        assert_eq!(
+            keyring_file_path(Some("  ".into()), environment),
+            Some(PathBuf::from("/run/secrets/run-credential-keyring.json"))
+        );
+    }
 
     #[test]
     fn portal_a2a_delegation_depth_uses_the_shared_u16_contract() {

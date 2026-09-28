@@ -1633,7 +1633,7 @@ impl TaskExecutor {
         }
 
         if self.bound_mcp.get().is_some()
-            && matches!(task_def,TaskDefinition::Call(call) if !matches!(call,CallTaskDefinition::Mcp(_) | CallTaskDefinition::Agent(_)))
+            && matches!(task_def,TaskDefinition::Call(call) if !matches!(call,CallTaskDefinition::Http(_) | CallTaskDefinition::Mcp(_) | CallTaskDefinition::Agent(_)))
             && self
                 .admission_profile_for_process(claimed.task.host_id, claimed.task.process_id)
                 .await?
@@ -1925,7 +1925,40 @@ impl TaskExecutor {
                 // A private inline endpoint must never receive the caller's
                 // bearer. Registered/Tool-granted targets retain protected
                 // Workflow authorization on the trusted dispatch path.
-                if long_run {
+                let (selected_authorization, long_exchange) = if workflow_backed || protected_target
+                {
+                    if let Some(selector) = self.run_tokens.get() {
+                        let (run, user, _) = run_identity.as_ref().ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                "run authority unavailable",
+                            )
+                        })?;
+                        let selected = selector
+                            .select_run_token_with_source(
+                                *run,
+                                claimed.task.host_id,
+                                *user,
+                                chrono::Utc::now(),
+                            )
+                            .await?;
+                        (
+                            Some(format!("Bearer {}", selected.token)),
+                            selected.source == crate::run_token::RunTokenSource::LongExchange,
+                        )
+                    } else if workflow_backed {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "run credential selector unavailable",
+                        )
+                        .into());
+                    } else {
+                        (None, false)
+                    }
+                } else {
+                    (None, false)
+                };
+                if long_exchange {
                     let gateway = self
                         .bound_mcp
                         .get()
@@ -1936,45 +1969,18 @@ impl TaskExecutor {
                                 "LONG Gateway authority unavailable",
                             )
                         })?;
-                    if validated_uri.origin() != reqwest::Url::parse(&gateway)?.origin() {
+                    if !long_http_target_allowed(
+                        crate::run_token::RunTokenSource::LongExchange,
+                        &validated_uri,
+                        &reqwest::Url::parse(&gateway)?,
+                    ) {
                         return Err(io::Error::new(
                             io::ErrorKind::PermissionDenied,
-                            "private protected HTTP target must traverse Gateway",
+                            "exchanged LONG token requires a Gateway-protected HTTP target",
                         )
                         .into());
                     }
                 }
-                let selected_authorization = if workflow_backed || protected_target {
-                    if let Some(selector) = self.run_tokens.get() {
-                        let (run, user, _) = run_identity.as_ref().ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::PermissionDenied,
-                                "run authority unavailable",
-                            )
-                        })?;
-                        Some(format!(
-                            "Bearer {}",
-                            selector
-                                .select_run_token(
-                                    *run,
-                                    claimed.task.host_id,
-                                    *user,
-                                    chrono::Utc::now()
-                                )
-                                .await?
-                        ))
-                    } else if workflow_backed {
-                        return Err(io::Error::new(
-                            io::ErrorKind::PermissionDenied,
-                            "run credential selector unavailable",
-                        )
-                        .into());
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
                 let workflow_authorization = if workflow_backed
                     || (admission_profile == InvocationAdmissionProfile::PortalExecution
                         && protected_target)
@@ -6424,6 +6430,14 @@ fn resolve_lightapi_http_endpoint(
     })
 }
 
+fn long_http_target_allowed(
+    source: crate::run_token::RunTokenSource,
+    target: &reqwest::Url,
+    gateway: &reqwest::Url,
+) -> bool {
+    source == crate::run_token::RunTokenSource::Original || target.origin() == gateway.origin()
+}
+
 fn workflow_http_authorization_headers(
     user_authorization: Option<&str>,
     scope_authorization: Option<&str>,
@@ -7506,6 +7520,29 @@ do:
         assert_eq!(headers.0, "Bearer current-user-jwt");
         assert_eq!(headers.1, "Bearer workflow-service-token");
         assert!(workflow_http_authorization_headers(None, Some("scope-token")).is_err());
+    }
+
+    #[test]
+    fn long_http_allows_original_user_token_to_registered_service_but_fences_exchange() {
+        use crate::run_token::RunTokenSource;
+        let service =
+            reqwest::Url::parse("http://demo-customer-profile-api:8085/customers/1").unwrap();
+        let gateway = reqwest::Url::parse("https://light-gateway:8443").unwrap();
+        assert!(long_http_target_allowed(
+            RunTokenSource::Original,
+            &service,
+            &gateway
+        ));
+        assert!(!long_http_target_allowed(
+            RunTokenSource::LongExchange,
+            &service,
+            &gateway
+        ));
+        assert!(long_http_target_allowed(
+            RunTokenSource::LongExchange,
+            &gateway,
+            &gateway
+        ));
     }
 
     #[test]

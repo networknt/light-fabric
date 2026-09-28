@@ -53,6 +53,16 @@ struct Fixture {
 
 impl Fixture {
     async fn new(definition: &str, replay_ms: u64, wait_ms: i32, deadline_ms: i32) -> Self {
+        Self::new_with_wait_database_url(definition, replay_ms, wait_ms, deadline_ms, None).await
+    }
+
+    async fn new_with_wait_database_url(
+        definition: &str,
+        replay_ms: u64,
+        wait_ms: i32,
+        deadline_ms: i32,
+        wait_database_url: Option<&str>,
+    ) -> Self {
         let pool = ops_db::runtime_pool();
         let _admin = ops_db::admin_pool(); // Fail closed for either missing URL.
         let host = Uuid::new_v4();
@@ -96,7 +106,9 @@ impl Fixture {
         let security = Arc::new(SecurityRuntime::with_test_hs256_key("step14", KEY).await);
         let router: Router = build_rule_api_router(
             pool.clone(),
-            std::env::var("DATABASE_URL").unwrap(),
+            wait_database_url
+                .map(str::to_owned)
+                .unwrap_or_else(|| std::env::var("DATABASE_URL").unwrap()),
             Arc::new(WorkflowConfigManager::for_publication_test(host)),
             security.clone(),
             "dev".into(),
@@ -239,6 +251,27 @@ async fn first_call_success_returns_stored_output() {
     let stored: Value = sqlx::query_scalar("SELECT public_result FROM workflow_invocation_t WHERE host_id=$1 AND workflow_instance_id=$2")
         .bind(f.host).bind(run).fetch_one(&f.pool).await.unwrap();
     assert_eq!(result["structuredContent"]["output"], stored);
+}
+
+#[tokio::test]
+#[ignore = "requires owned scratch DATABASE_URL and ADMIN_DATABASE_URL"]
+async fn completed_invoke_does_not_require_a_new_listener_connection() {
+    let f = Fixture::new_with_wait_database_url(
+        SUCCESS,
+        0,
+        5000,
+        30000,
+        Some("postgres://unavailable:unavailable@127.0.0.1:1/unavailable"),
+    )
+    .await;
+    let (stop, handle) = f.executor().await;
+    let result = tokio::time::timeout(Duration::from_secs(3), f.invoke())
+        .await
+        .expect("completed invoke should not wait for a new listener connection");
+    stop.cancel();
+    handle.await.unwrap();
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(result["structuredContent"]["status"], "completed");
 }
 
 #[tokio::test]
