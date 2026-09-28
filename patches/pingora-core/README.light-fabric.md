@@ -4,6 +4,14 @@ This directory vendors crates.io `pingora-core` 0.8.1 under its Apache-2.0
 license. It adds an opt-in HTTP/1 request initiation guard for A2. This is a
 transport primitive, not a claim that Gateway's A2 route integration is complete.
 
+The vendored `connectors::tests::test_connect_uds` also differs from crates.io
+0.8.1: it uses a current-thread Tokio runtime and reads the greeting with
+`read_exact`. On a multi-thread runtime, `OwnedMutexGuard` can unlock before
+dropping its `Arc`; the immediate `Arc::try_unwrap` in `reused_stream` may then
+see another reference and open a new connection instead of reusing the pooled
+one. Keep this test-only change when re-vendoring until the upstream reuse
+handoff is fixed. Production connector behavior is unchanged.
+
 The guard is installed only after upstream connection and TLS preparation. The
 HTTP/1 header write scopes the operation; the TCP socket `poll_write` and
 `poll_write_vectored` enforce it underneath TLS and buffering. The synchronous
@@ -23,6 +31,7 @@ Targeted tests:
 
 ```sh
 cargo test -p pingora-core --lib --features rustls request_write_guard
+cargo test -p pingora-core --lib --features rustls connectors::tests::test_connect_uds
 cargo test -p light-pingora --lib guarded_http::tests
 ```
 
