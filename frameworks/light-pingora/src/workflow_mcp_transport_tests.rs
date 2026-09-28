@@ -44,14 +44,14 @@ fn workflow_mtls_rejects_unsafe_targets_and_missing_credentials() {
     ] {
         let mut changed = config.clone();
         changed.base_url = base.into();
-        assert!(workflow_action_dispatch(&changed, directory.path(), &[1]).is_err());
+        assert!(workflow_action_dispatch(&changed, directory.path()).is_err());
     }
     let mut changed = config.clone();
     changed.client_identity_file = "missing".into();
-    assert!(workflow_action_dispatch(&changed, directory.path(), &[1]).is_err());
+    assert!(workflow_action_dispatch(&changed, directory.path()).is_err());
     for scope in ["", "Bearer short", "Bearer valid\r\nInjected: value"] {
         std::fs::write(directory.path().join("scope"), scope).unwrap();
-        assert!(workflow_action_dispatch(&config, directory.path(), &[1]).is_err());
+        assert!(workflow_action_dispatch(&config, directory.path()).is_err());
     }
 }
 
@@ -99,8 +99,7 @@ async fn workflow_mtls_uses_fixed_identity_and_does_not_follow_redirects() {
         stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/credential-sink\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
         stream.flush().unwrap();
     });
-    let transport = workflow_action_dispatch(&config, directory.path(), &[2]).unwrap();
-    assert_eq!(transport.permit_pools[0].available_permits(), 2);
+    let transport = workflow_action_dispatch(&config, directory.path()).unwrap();
     let response = transport
         .client
         .get(format!(

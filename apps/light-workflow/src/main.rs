@@ -781,7 +781,7 @@ impl AxumApp for WorkflowApp {
                 client.clone(),
             ));
         }
-        let mut router = build_rule_api_router(
+        let router = build_rule_api_router(
             pool,
             workflow_config.database_url,
             runtime_config,

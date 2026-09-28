@@ -24,16 +24,20 @@ pub fn runtime_pool() -> PgPool {
     pool_from_env("DATABASE_URL", "DATABASE_URL is required")
 }
 
+// Integration test binaries share this module but use different fixtures.
+#[allow(dead_code)]
 pub fn admin_pool() -> PgPool {
     pool_from_env("ADMIN_DATABASE_URL", "ADMIN_DATABASE_URL is required")
 }
 
+#[allow(dead_code)]
 pub fn random_host_id() -> Uuid {
     Uuid::new_v4()
 }
 
 /// `workflow_ops.wf_definition_t` has no foreign keys, including no FK to a host table.
 /// A fresh host UUID is sufficient and does not require an admin-side host fixture.
+#[allow(dead_code)]
 pub async fn insert_workflow_definition(
     pool: &PgPool,
     host_id: Uuid,
@@ -54,6 +58,7 @@ pub async fn insert_workflow_definition(
     Ok((wf_def_id, name))
 }
 
+#[allow(dead_code)]
 pub fn last_workflow_migration_id() -> String {
     let bundle = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../crates/operational-store/release/bundle/migration-order.tsv");
@@ -70,6 +75,7 @@ pub fn last_workflow_migration_id() -> String {
         .expect("bundle must contain a Workflow migration")
 }
 
+#[allow(dead_code)]
 pub async fn definition_name(pool: &PgPool, wf_def_id: Uuid) -> Result<String, sqlx::Error> {
     let row: PgRow = sqlx::query("SELECT name FROM wf_definition_t WHERE wf_def_id = $1")
         .bind(wf_def_id)

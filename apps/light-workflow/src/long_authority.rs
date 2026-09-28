@@ -16,6 +16,7 @@ use std::{collections::BTreeMap, path::Path};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+#[cfg(test)]
 fn issuer_failure(status: reqwest::StatusCode) -> LongError {
     if status.is_server_error()
         || status == reqwest::StatusCode::REQUEST_TIMEOUT

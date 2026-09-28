@@ -3648,13 +3648,6 @@ async fn evaluate_rule_test(
     })
 }
 
-fn bad_request<E: std::fmt::Display>(err: E) -> (StatusCode, Json<Value>) {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(json!({ "error": err.to_string() })),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

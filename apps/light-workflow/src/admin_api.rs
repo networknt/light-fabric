@@ -33,34 +33,6 @@ pub trait RoleAuthority: Send + Sync {
     ) -> Result<Vec<String>, RoleAuthorityError>;
 }
 
-fn validate_role_snapshot(
-    snapshot: light_client::unattended::CurrentWorkflowRoles,
-    host_id: Uuid,
-    user_id: Uuid,
-) -> Result<Vec<String>, RoleAuthorityError> {
-    let checked_at = DateTime::parse_from_rfc3339(&snapshot.checked_at)
-        .map_err(|_| RoleAuthorityError::Unavailable)?
-        .with_timezone(&Utc);
-    if snapshot.host_id != host_id
-        || snapshot.user_id != user_id
-        || snapshot.authority != "portal-current-role-membership"
-        || (Utc::now() - checked_at).num_seconds().abs() > 30
-        || snapshot
-            .current_role_ids
-            .iter()
-            .any(|role| role.is_empty() || role.len() > 128)
-        || snapshot
-            .current_role_ids
-            .iter()
-            .collect::<HashSet<_>>()
-            .len()
-            != snapshot.current_role_ids.len()
-    {
-        return Err(RoleAuthorityError::Unavailable);
-    }
-    Ok(snapshot.current_role_ids)
-}
-
 pub(crate) async fn dispatch_tool(
     name: &str,
     state: RuleApiState,
@@ -295,14 +267,6 @@ impl AdminError {
             code: "UNAUTHORIZED",
             message: "workflow caller identity is required",
             retryable: false,
-        }
-    }
-    fn authority_unavailable() -> Self {
-        Self {
-            status: StatusCode::SERVICE_UNAVAILABLE,
-            code: "AUTHORITY_UNAVAILABLE",
-            message: "current role authority is unavailable",
-            retryable: true,
         }
     }
 }

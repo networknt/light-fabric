@@ -151,30 +151,49 @@ fn invalid(message: impl Into<String>) -> ApiError {
 }
 
 async fn reject_negative_expected_version(
-    mut tx: Transaction<'_, Postgres>, host: Uuid, operation: Uuid, tool: &str,
+    mut tx: Transaction<'_, Postgres>,
+    host: Uuid,
+    operation: Uuid,
+    tool: &str,
 ) -> Result<Value, ApiError> {
     let message = "expectedAggregateVersion must be nonnegative";
     let evidence = json!({"version":1,"discriminator":"negativeExpectedAggregateVersion",
         "operationId":operation,"toolName":tool});
-    operation_finish(&mut tx, host, operation, &json!({"_requestRejection": {
-        "version":1,"discriminator":"negativeExpectedAggregateVersion",
-        "operationId":operation,"toolName":tool,"code":"WORKFLOW_INPUT_INVALID",
-        "message":message,"evidence":evidence
-    }})).await?;
+    operation_finish(
+        &mut tx,
+        host,
+        operation,
+        &json!({"_requestRejection": {
+            "version":1,"discriminator":"negativeExpectedAggregateVersion",
+            "operationId":operation,"toolName":tool,"code":"WORKFLOW_INPUT_INVALID",
+            "message":message,"evidence":evidence
+        }}),
+    )
+    .await?;
     tx.commit().await.map_err(database_error)?;
     Err(invalid(message).with_details(json!({"requestValidation":evidence})))
 }
 async fn reject_request_fields(
-    mut tx: Transaction<'_, Postgres>, host: Uuid, operation: Uuid,
-    discriminator: &str, section: &str, failure: ApiError,
+    mut tx: Transaction<'_, Postgres>,
+    host: Uuid,
+    operation: Uuid,
+    discriminator: &str,
+    section: &str,
+    failure: ApiError,
 ) -> Result<Value, ApiError> {
     let message = failure.message().to_owned();
     let evidence = json!({"version":2,"discriminator":discriminator,
         "operationId":operation,"toolName":"workflow_binding_publish",
         "requestSection":section});
-    operation_finish(&mut tx, host, operation, &json!({"_requestRejection": {
-        "code":"WORKFLOW_INPUT_INVALID", "message":message, "evidence":evidence
-    }})).await?;
+    operation_finish(
+        &mut tx,
+        host,
+        operation,
+        &json!({"_requestRejection": {
+            "code":"WORKFLOW_INPUT_INVALID", "message":message, "evidence":evidence
+        }}),
+    )
+    .await?;
     tx.commit().await.map_err(database_error)?;
     Err(failure.with_details(json!({"requestValidation":evidence})))
 }
@@ -1182,16 +1201,35 @@ pub async fn publish_binding_verified(
         return Ok(receipt);
     }
     if input.expected_aggregate_version < 0 {
-        return reject_negative_expected_version(tx, input.host_id, input.operation_id,
-            "workflow_binding_publish").await;
+        return reject_negative_expected_version(
+            tx,
+            input.host_id,
+            input.operation_id,
+            "workflow_binding_publish",
+        )
+        .await;
     }
     if let Err(failure) = validate_binding(&input.binding) {
-        return reject_request_fields(tx, input.host_id, input.operation_id,
-            "bindingFields", "binding", failure).await;
+        return reject_request_fields(
+            tx,
+            input.host_id,
+            input.operation_id,
+            "bindingFields",
+            "binding",
+            failure,
+        )
+        .await;
     }
     if let Err(failure) = normalize_payload(&mut input) {
-        return reject_request_fields(tx, input.host_id, input.operation_id,
-            "bindingReach", "reach", failure).await;
+        return reject_request_fields(
+            tx,
+            input.host_id,
+            input.operation_id,
+            "bindingReach",
+            "reach",
+            failure,
+        )
+        .await;
     }
     let (binding_digest, approval_digest) = digests(&input)?;
     let b = &input.binding;
@@ -1419,8 +1457,13 @@ pub async fn retire_binding_verified(
         return Ok(receipt);
     }
     if input.expected_aggregate_version < 0 {
-        return reject_negative_expected_version(tx, input.host_id, input.operation_id,
-            "workflow_binding_retire").await;
+        return reject_negative_expected_version(
+            tx,
+            input.host_id,
+            input.operation_id,
+            "workflow_binding_retire",
+        )
+        .await;
     }
     // The preliminary reads take no locks. Lock every version previously used
     // by this Tool in stable order before taking the head lock. This includes

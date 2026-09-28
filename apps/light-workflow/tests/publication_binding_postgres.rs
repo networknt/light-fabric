@@ -132,48 +132,92 @@ async fn pin_run(
 async fn immutable_invalid_requests_are_fenced_and_replayed() {
     let (pool, _admin) = pools();
     let (host, wf, owner, tool, def, schema) = fixture(&pool, READ).await;
-    let mut request = input(host, wf, tool, Uuid::new_v4(), &def, &schema, true,
-        600_000, -1, "https://example.invalid/read");
+    let mut request = input(
+        host,
+        wf,
+        tool,
+        Uuid::new_v4(),
+        &def,
+        &schema,
+        true,
+        600_000,
+        -1,
+        "https://example.invalid/read",
+    );
     let publish_operation = request["operationId"].as_str().unwrap().to_owned();
     for _ in 0..2 {
-        let error = publication_api::publish_binding_verified(&pool, &request,
-            &owner.to_string(), &[], 16).await.unwrap_err();
+        let error =
+            publication_api::publish_binding_verified(&pool, &request, &owner.to_string(), &[], 16)
+                .await
+                .unwrap_err();
         let body = api_error(error).await;
         assert_eq!(body["code"], "WORKFLOW_INPUT_INVALID");
         assert_eq!(body["afterEffect"], false);
-        assert_eq!(body["details"]["requestValidation"]["operationId"], publish_operation);
-        assert_eq!(body["details"]["requestValidation"]["toolName"], "workflow_binding_publish");
+        assert_eq!(
+            body["details"]["requestValidation"]["operationId"],
+            publish_operation
+        );
+        assert_eq!(
+            body["details"]["requestValidation"]["toolName"],
+            "workflow_binding_publish"
+        );
     }
-    let stored: Value = sqlx::query_scalar("SELECT receipt FROM workflow_publication_operation_t WHERE host_id=$1 AND operation_id=$2")
-        .bind(host).bind(Uuid::parse_str(&publish_operation).unwrap()).fetch_one(&pool).await.unwrap();
+    let stored: Value = sqlx::query_scalar(
+        "SELECT receipt FROM workflow_publication_operation_t WHERE host_id=$1 AND operation_id=$2",
+    )
+    .bind(host)
+    .bind(Uuid::parse_str(&publish_operation).unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert!(stored.get("_requestRejection").is_some());
     let mut legacy = stored.clone();
-    legacy["_requestRejection"].as_object_mut().unwrap().remove("evidence");
-    legacy["_requestRejection"].as_object_mut().unwrap().remove("code");
+    legacy["_requestRejection"]
+        .as_object_mut()
+        .unwrap()
+        .remove("evidence");
+    legacy["_requestRejection"]
+        .as_object_mut()
+        .unwrap()
+        .remove("code");
     sqlx::query("UPDATE workflow_publication_operation_t SET receipt=$3 WHERE host_id=$1 AND operation_id=$2")
         .bind(host).bind(Uuid::parse_str(&publish_operation).unwrap()).bind(&legacy)
         .execute(&pool).await.unwrap();
-    let legacy_replay = api_error(publication_api::publish_binding_verified(&pool, &request,
-        &owner.to_string(), &[], 16).await.unwrap_err()).await;
+    let legacy_replay = api_error(
+        publication_api::publish_binding_verified(&pool, &request, &owner.to_string(), &[], 16)
+            .await
+            .unwrap_err(),
+    )
+    .await;
     assert_eq!(legacy_replay["details"]["requestValidation"]["version"], 1);
-    assert_eq!(legacy_replay["details"]["requestValidation"]["discriminator"],
-        "negativeExpectedAggregateVersion");
+    assert_eq!(
+        legacy_replay["details"]["requestValidation"]["discriminator"],
+        "negativeExpectedAggregateVersion"
+    );
     // Fixture for a success committed under an older validator: replay must win
     // before the current negative-version rule runs.
-    let old_success = json!({"result":"published","status":"active","operationId":publish_operation});
+    let old_success =
+        json!({"result":"published","status":"active","operationId":publish_operation});
     sqlx::query("UPDATE workflow_publication_operation_t SET receipt=$3 WHERE host_id=$1 AND operation_id=$2")
         .bind(host).bind(Uuid::parse_str(&publish_operation).unwrap()).bind(&old_success)
         .execute(&pool).await.unwrap();
-    assert_eq!(publication_api::publish_binding_verified(&pool, &request,
-        &owner.to_string(), &[], 16).await.unwrap(), old_success);
+    assert_eq!(
+        publication_api::publish_binding_verified(&pool, &request, &owner.to_string(), &[], 16)
+            .await
+            .unwrap(),
+        old_success
+    );
     request["expectedAggregateVersion"] = json!(0);
     request["operationId"] = json!(Uuid::new_v4());
     let success = publish(&pool, &request, owner).await;
     assert_eq!(success["result"], "published");
     sqlx::query("UPDATE wf_definition_version_t SET version_status='retired',retired_ts=CURRENT_TIMESTAMP WHERE host_id=$1 AND wf_def_id=$2")
         .bind(host).bind(wf).execute(&pool).await.unwrap();
-    assert_eq!(publish(&pool, &request, owner).await, success,
-        "committed success must replay before the changed version state is checked");
+    assert_eq!(
+        publish(&pool, &request, owner).await,
+        success,
+        "committed success must replay before the changed version state is checked"
+    );
 
     let mut concurrent = request.clone();
     concurrent["expectedAggregateVersion"] = json!(-1);
@@ -181,20 +225,35 @@ async fn immutable_invalid_requests_are_fenced_and_replayed() {
     let actor = owner.to_string();
     let (left, right) = tokio::join!(
         publication_api::publish_binding_verified(&pool, &concurrent, &actor, &[], 16),
-        publication_api::publish_binding_verified(&pool, &concurrent, &actor, &[], 16));
-    assert_eq!(api_error(left.unwrap_err()).await["code"], "WORKFLOW_INPUT_INVALID");
-    assert_eq!(api_error(right.unwrap_err()).await["code"], "WORKFLOW_INPUT_INVALID");
+        publication_api::publish_binding_verified(&pool, &concurrent, &actor, &[], 16)
+    );
+    assert_eq!(
+        api_error(left.unwrap_err()).await["code"],
+        "WORKFLOW_INPUT_INVALID"
+    );
+    assert_eq!(
+        api_error(right.unwrap_err()).await["code"],
+        "WORKFLOW_INPUT_INVALID"
+    );
 
     let retire_operation = Uuid::new_v4();
     let retire = json!({"hostId":host,"toolId":tool,"expectedAggregateVersion":-1,
         "operationId":retire_operation});
     for _ in 0..2 {
-        let error = publication_api::retire_binding_verified(&pool, &retire,
-            &owner.to_string(), &[]).await.unwrap_err();
+        let error =
+            publication_api::retire_binding_verified(&pool, &retire, &owner.to_string(), &[])
+                .await
+                .unwrap_err();
         let body = api_error(error).await;
         assert_eq!(body["code"], "WORKFLOW_INPUT_INVALID");
-        assert_eq!(body["details"]["requestValidation"]["operationId"], retire_operation.to_string());
-        assert_eq!(body["details"]["requestValidation"]["toolName"], "workflow_binding_retire");
+        assert_eq!(
+            body["details"]["requestValidation"]["operationId"],
+            retire_operation.to_string()
+        );
+        assert_eq!(
+            body["details"]["requestValidation"]["toolName"],
+            "workflow_binding_retire"
+        );
     }
 }
 
@@ -203,13 +262,38 @@ async fn immutable_invalid_requests_are_fenced_and_replayed() {
 async fn nonnegative_binding_field_and_reach_rejections_are_durable() {
     let (pool, _admin) = pools();
     let (host, wf, owner, tool, def, schema) = fixture(&pool, READ).await;
-    let base = input(host, wf, tool, Uuid::new_v4(), &def, &schema, true,
-        600_000, 0, "https://example.invalid/read");
+    let base = input(
+        host,
+        wf,
+        tool,
+        Uuid::new_v4(),
+        &def,
+        &schema,
+        true,
+        600_000,
+        0,
+        "https://example.invalid/read",
+    );
     for (discriminator, section, field, bad) in [
         ("bindingFields", "binding", "/binding/toolName", json!(" ")),
-        ("bindingFields", "binding", "/binding/policyDigest", json!("bad")),
-        ("bindingReach", "reach", "/endpointTargets/0/endpointUri", json!("file:///tmp/read")),
-        ("bindingReach", "reach", "/endpointTargets/0/allowedMethods", json!(["TRACE"])),
+        (
+            "bindingFields",
+            "binding",
+            "/binding/policyDigest",
+            json!("bad"),
+        ),
+        (
+            "bindingReach",
+            "reach",
+            "/endpointTargets/0/endpointUri",
+            json!("file:///tmp/read"),
+        ),
+        (
+            "bindingReach",
+            "reach",
+            "/endpointTargets/0/allowedMethods",
+            json!(["TRACE"]),
+        ),
     ] {
         let mut request = base.clone();
         *request.pointer_mut(field).unwrap() = bad;
@@ -217,20 +301,30 @@ async fn nonnegative_binding_field_and_reach_rejections_are_durable() {
         let actor = owner.to_string();
         let (left, right) = tokio::join!(
             publication_api::publish_binding_verified(&pool, &request, &actor, &[], 16),
-            publication_api::publish_binding_verified(&pool, &request, &actor, &[], 16));
+            publication_api::publish_binding_verified(&pool, &request, &actor, &[], 16)
+        );
         let first = api_error(left.unwrap_err()).await;
         let second = api_error(right.unwrap_err()).await;
         assert_eq!(first["code"], "WORKFLOW_INPUT_INVALID");
         assert_eq!(second["message"], first["message"]);
         assert_eq!(second["details"], first["details"]);
         assert_eq!(first["details"]["requestValidation"]["version"], 2);
-        assert_eq!(first["details"]["requestValidation"]["discriminator"], discriminator);
-        assert_eq!(first["details"]["requestValidation"]["requestSection"], section);
+        assert_eq!(
+            first["details"]["requestValidation"]["discriminator"],
+            discriminator
+        );
+        assert_eq!(
+            first["details"]["requestValidation"]["requestSection"],
+            section
+        );
         let operation = Uuid::parse_str(request["operationId"].as_str().unwrap()).unwrap();
         let stored: Value = sqlx::query_scalar("SELECT receipt FROM workflow_publication_operation_t WHERE host_id=$1 AND operation_id=$2")
             .bind(host).bind(operation).fetch_one(&pool).await.unwrap();
         assert_eq!(stored["_requestRejection"]["message"], first["message"]);
-        assert_eq!(stored["_requestRejection"]["evidence"], first["details"]["requestValidation"]);
+        assert_eq!(
+            stored["_requestRejection"]["evidence"],
+            first["details"]["requestValidation"]
+        );
         if field == "/binding/toolName" {
             // Simulate a rejection committed by an older validator. The current
             // validation message must not replace its stored outcome.
@@ -238,19 +332,41 @@ async fn nonnegative_binding_field_and_reach_rejections_are_durable() {
             older["_requestRejection"]["message"] = json!("older validator rejection");
             sqlx::query("UPDATE workflow_publication_operation_t SET receipt=$3 WHERE host_id=$1 AND operation_id=$2")
                 .bind(host).bind(operation).bind(&older).execute(&pool).await.unwrap();
-            let replay = api_error(publication_api::publish_binding_verified(&pool, &request,
-                &actor, &[], 16).await.unwrap_err()).await;
+            let replay = api_error(
+                publication_api::publish_binding_verified(&pool, &request, &actor, &[], 16)
+                    .await
+                    .unwrap_err(),
+            )
+            .await;
             assert_eq!(replay["message"], "older validator rejection");
             assert_eq!(replay["details"], first["details"]);
         }
-        let revision_count: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_tool_binding_t WHERE host_id=$1 AND tool_id=$2")
-            .bind(host).bind(tool).fetch_one(&pool).await.unwrap();
+        let revision_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM workflow_tool_binding_t WHERE host_id=$1 AND tool_id=$2",
+        )
+        .bind(host)
+        .bind(tool)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(revision_count, 0);
-        let projection_count: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_tool_publication_t WHERE host_id=$1 AND tool_id=$2")
-            .bind(host).bind(tool).fetch_one(&pool).await.unwrap();
+        let projection_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM workflow_tool_publication_t WHERE host_id=$1 AND tool_id=$2",
+        )
+        .bind(host)
+        .bind(tool)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(projection_count, 0);
-        let decision_count: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_tool_binding_decision_t WHERE host_id=$1 AND tool_id=$2")
-            .bind(host).bind(tool).fetch_one(&pool).await.unwrap();
+        let decision_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM workflow_tool_binding_decision_t WHERE host_id=$1 AND tool_id=$2",
+        )
+        .bind(host)
+        .bind(tool)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(decision_count, 0);
     }
     // A corrected request is new work with a new operation ID.
@@ -800,17 +916,17 @@ async fn stale_expected_aggregate_version_conflicts_without_revision() {
     let (pool, _admin) = pools();
     let (host, wf, owner, tool, def, schema) = fixture(&pool, READ).await;
     let original = input(
-            host,
-            wf,
-            tool,
-            Uuid::new_v4(),
-            &def,
-            &schema,
-            true,
-            0,
-            0,
-            "https://example.invalid/a",
-        );
+        host,
+        wf,
+        tool,
+        Uuid::new_v4(),
+        &def,
+        &schema,
+        true,
+        0,
+        0,
+        "https://example.invalid/a",
+    );
     let first = publish(&pool, &original, owner).await;
     let stale = input(
         host,
@@ -834,11 +950,10 @@ async fn stale_expected_aggregate_version_conflicts_without_revision() {
     assert_eq!(error["details"]["expectedAggregateVersion"], 0);
     assert_eq!(error["details"]["aggregateVersion"], 1);
     // The stored receipt wins over the now-stale expected version for the same operation.
-    let replay = publication_api::publish_binding_verified(
-        &pool, &original, &owner.to_string(), &[], 16,
-    )
-    .await
-    .unwrap();
+    let replay =
+        publication_api::publish_binding_verified(&pool, &original, &owner.to_string(), &[], 16)
+            .await
+            .unwrap();
     assert_eq!(replay, first);
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM workflow_tool_binding_t WHERE host_id=$1 AND tool_id=$2",

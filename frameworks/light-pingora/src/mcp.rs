@@ -45,7 +45,7 @@ use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{Mutex as AsyncMutex, Semaphore, mpsc};
+use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use url::{Url, form_urlencoded};
 use uuid::Uuid;
 #[cfg(test)]
@@ -1598,7 +1598,6 @@ struct WorkflowDispatchRuntime {
     client: reqwest::Client,
     invocation_url: String,
     scope_authorization: Option<String>,
-    permit_pools: Vec<Arc<Semaphore>>,
 }
 
 #[derive(Debug)]
@@ -2015,12 +2014,6 @@ impl McpRouterRuntime {
                         .trim_end_matches('/')
                         .to_string(),
                     scope_authorization,
-                    permit_pools: config
-                        .workflow
-                        .permit_pools
-                        .iter()
-                        .map(|capacity| Arc::new(Semaphore::new(*capacity)))
-                        .collect(),
                 })),
                 Err(error) => {
                     tracing::error!(
@@ -6658,7 +6651,6 @@ mod workflow_mcp_transport_tests;
 fn workflow_action_dispatch(
     config: &light_client::workflow_actions::Config,
     directory: &std::path::Path,
-    permits: &[usize],
 ) -> Result<WorkflowDispatchRuntime, RuntimeError> {
     let invalid = || RuntimeError::Config("invalid MCP Workflow mTLS transport".into());
     let url = Url::parse(&config.base_url).map_err(|_| invalid())?;
@@ -6704,10 +6696,6 @@ fn workflow_action_dispatch(
         client: builder.build().map_err(|_| invalid())?,
         invocation_url: config.base_url.trim_end_matches('/').to_owned(),
         scope_authorization: Some(scope.to_owned()),
-        permit_pools: permits
-            .iter()
-            .map(|n| Arc::new(Semaphore::new(*n)))
-            .collect(),
     })
 }
 
@@ -18806,7 +18794,6 @@ toolMetadata:
             client: reqwest::Client::new(),
             invocation_url: base.to_string(),
             scope_authorization: Some("Bearer scope-test".to_string()),
-            permit_pools: Vec::new(),
         }));
         runtime
     }
@@ -19139,8 +19126,7 @@ toolMetadata:
                 "content":[{"type":"text","text":"saved"}],
                 "structuredContent":{"result":"saved"}}
         }));
-        let (base, received) =
-            spawn_http_sequence_server(vec![receipt.clone(), receipt]).await;
+        let (base, received) = spawn_http_sequence_server(vec![receipt.clone(), receipt]).await;
         let mut config = McpRouterConfig::default();
         config.workflow.invocation_url = base.clone();
         for name in [
@@ -19194,7 +19180,6 @@ endpointRules:
             client: reqwest::Client::new(),
             invocation_url: base,
             scope_authorization: Some("Bearer scope-test".into()),
-            permit_pools: Vec::new(),
         }));
         for name in [
             "workflow_definition_save",
@@ -19303,7 +19288,6 @@ inputSchema: {{type: object}}
             client: reqwest::Client::new(),
             invocation_url: base,
             scope_authorization: Some("Bearer scope-test".into()),
-            permit_pools: Vec::new(),
         }));
         let status = step15_call(&runtime, "workflow_get_status", json!({}), None, true).await;
         assert_eq!(status["result"]["content"], error_result["content"]);
@@ -19412,7 +19396,6 @@ inputSchema: {type: object}
             client: reqwest::Client::new(),
             invocation_url: base,
             scope_authorization: Some("Bearer scope-test".into()),
-            permit_pools: Vec::new(),
         }));
         let accepted = step15_call(
             &runtime,

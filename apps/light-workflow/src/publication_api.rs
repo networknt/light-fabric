@@ -319,7 +319,9 @@ async fn save_definition(
     let (identity, _) = crate::rule_api::authenticate(state, headers).await?;
     verified_user_id(&identity)?;
     if identity.host_id != host {
-        return Err(ApiError::policy_denied("user Authorization host does not match request host"));
+        return Err(ApiError::policy_denied(
+            "user Authorization host does not match request host",
+        ));
     }
     with_matching_host(args, host, || save_definition_verified(&state.pool, args)).await
 }
@@ -526,7 +528,9 @@ async fn sync_grants(
     let (identity, _) = crate::rule_api::authenticate(state, headers).await?;
     verified_user_id(&identity)?;
     if identity.host_id != host {
-        return Err(ApiError::policy_denied("user Authorization host does not match request host"));
+        return Err(ApiError::policy_denied(
+            "user Authorization host does not match request host",
+        ));
     }
     with_matching_host(args, host, || sync_grants_verified(&state.pool, args)).await
 }
@@ -690,21 +694,29 @@ async fn operation_begin(
     if let Some(rejection) = receipt.get("_requestRejection") {
         // Version-1 rows created before the extension omitted the code; their
         // documented business code is WORKFLOW_INPUT_INVALID.
-        let stored_code = rejection.get("code").and_then(Value::as_str)
+        let stored_code = rejection
+            .get("code")
+            .and_then(Value::as_str)
             .unwrap_or("WORKFLOW_INPUT_INVALID");
         if stored_code != "WORKFLOW_INPUT_INVALID" {
-            return Err(ApiError::new(StatusCode::INTERNAL_SERVER_ERROR,
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
                 workflow_invocation_contract::ErrorCode::WorkflowInputInvalid,
-                "unsupported stored rejection code"));
+                "unsupported stored rejection code",
+            ));
         }
-        let message = rejection.get("message").and_then(Value::as_str)
+        let message = rejection
+            .get("message")
+            .and_then(Value::as_str)
             .unwrap_or("expectedAggregateVersion must be nonnegative");
         // Older rows have no separate evidence member. Preserve their original
         // version-1 marker while replaying newer rows exactly as committed.
-        let evidence = rejection.get("evidence").cloned().unwrap_or_else(|| json!({
-            "version": 1, "discriminator": "negativeExpectedAggregateVersion",
-            "operationId": operation, "toolName": tool
-        }));
+        let evidence = rejection.get("evidence").cloned().unwrap_or_else(|| {
+            json!({
+                "version": 1, "discriminator": "negativeExpectedAggregateVersion",
+                "operationId": operation, "toolName": tool
+            })
+        });
         return Err(ApiError::input_invalid(message).with_details(json!({
             "requestValidation": evidence
         })));
@@ -1036,10 +1048,18 @@ mod tests {
         let authenticated = crate::rule_api::authenticate(&state, &headers).await;
         assert!(authenticated.is_ok(), "{:?}", authenticated.err());
         headers.insert("authorization", format!("Bearer {app}").parse().unwrap());
-        assert!(authenticated_user(&state, &headers, &json!({"hostId":host}), None).await.is_err());
+        assert!(
+            authenticated_user(&state, &headers, &json!({"hostId":host}), None)
+                .await
+                .is_err()
+        );
         headers.insert("authorization", format!("Bearer {user}").parse().unwrap());
         headers.remove("x-scope-token");
-        assert!(crate::rule_api::authenticate(&state, &headers).await.is_err());
+        assert!(
+            crate::rule_api::authenticate(&state, &headers)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1141,7 +1161,9 @@ mod tests {
                 .is_ok()
         );
         let mut sync_headers = user_headers.clone();
-        let (identity, _) = crate::rule_api::authenticate(&state, &sync_headers).await.unwrap();
+        let (identity, _) = crate::rule_api::authenticate(&state, &sync_headers)
+            .await
+            .unwrap();
         assert_eq!(identity.host_id, host);
         let rejected = dispatch(
             "workflow_definition_save",
@@ -1155,12 +1177,23 @@ mod tests {
         .unwrap_err();
         assert_eq!(rejected.into_response().status(), StatusCode::FORBIDDEN);
         sync_headers.insert("authorization", format!("Bearer {app}").parse().unwrap());
-        assert!(authenticated_user(&state, &sync_headers, &json!({"hostId":host}), None).await.is_err());
+        assert!(
+            authenticated_user(&state, &sync_headers, &json!({"hostId":host}), None)
+                .await
+                .is_err()
+        );
         sync_headers.insert("authorization", format!("Bearer {user}").parse().unwrap());
-        sync_headers.insert("x-scope-token",
+        sync_headers.insert(
+            "x-scope-token",
             format!("Bearer {}", signed(scope_claims(host, "wrong-gateway")))
-                .parse().unwrap());
-        assert!(crate::rule_api::authenticate(&state, &sync_headers).await.is_err());
+                .parse()
+                .unwrap(),
+        );
+        assert!(
+            crate::rule_api::authenticate(&state, &sync_headers)
+                .await
+                .is_err()
+        );
     }
     #[test]
     fn digest_fixture_semantics_preserve_order_and_types() {

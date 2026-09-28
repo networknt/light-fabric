@@ -195,7 +195,8 @@ impl SecurityRuntime {
         let jwk: Jwk = serde_json::from_value(serde_json::json!({
             "kty":"oct", "kid":key_id, "alg":"HS256",
             "k":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret)
-        })).expect("test JWK");
+        }))
+        .expect("test JWK");
         runtime.jwks.write().await.insert(key_id.to_owned(), jwk);
         runtime
     }

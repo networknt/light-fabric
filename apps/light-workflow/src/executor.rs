@@ -7040,7 +7040,7 @@ mod tests {
             calls: std::sync::Mutex::new(Vec::new()),
             denied: std::sync::atomic::AtomicBool::new(false),
         });
-        let mut executor = TaskExecutor::new(pool.clone());
+        let executor = TaskExecutor::new(pool.clone());
         executor.bound_mcp.set(gateway.clone()).ok().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -7101,7 +7101,7 @@ mod tests {
         );
         assert_eq!(calls[0].4["arguments"]["claimId"], "CLM-1");
         drop(calls);
-        let mut unbound = TaskExecutor::new(pool.clone());
+        let unbound = TaskExecutor::new(pool.clone());
         assert!(
             unbound
                 .execute_task(&mcp)
