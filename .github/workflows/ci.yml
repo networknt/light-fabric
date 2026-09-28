@@ -19,6 +19,13 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - name: Checkout public Workflow admin fixtures
+        uses: actions/checkout@v7
+        with:
+          repository: lightapi/light-portal-test
+          path: light-portal-test
+      - name: Place Workflow admin fixtures beside Light-Fabric
+        run: mv light-portal-test ../light-portal-test
       - uses: actions/setup-node@v4
         with:
           node-version: 20

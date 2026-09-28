@@ -205,7 +205,17 @@ fn phase0_inventory_covers_static_environment_reads_and_yaml_leaves() {
         assert!(!entry.consumers.is_empty());
         let _ = &entry.default;
     }
-    let actual_environment = static_environment_reads();
+    // The source scan also sees inline #[cfg(test)] modules. Their database
+    // URLs are test fixtures, not production configuration inputs.
+    let test_only_environment = BTreeSet::from([
+        "ADMIN_DATABASE_URL".to_string(),
+        "WORKFLOW_NATIVE_OPS_TEST_DATABASE_URL".to_string(),
+        "WORKFLOW_ROLE_TEST_DATABASE_URL".to_string(),
+    ]);
+    let actual_environment = static_environment_reads()
+        .difference(&test_only_environment)
+        .cloned()
+        .collect::<BTreeSet<_>>();
     assert!(
         actual_environment.is_subset(&declared_environment),
         "undeclared environment reads: {:?}",
@@ -431,7 +441,15 @@ fn phase0_source_characterizes_current_manual_lifecycle() {
     assert!(serve.contains(".with_graceful_shutdown(shutdown.cancelled_owned())"));
     assert!(serve.contains(".await"));
     // Preserve the guard against direct serving outside this managed listener.
-    assert!(!action_listener.replace(&main, "").contains("axum::serve"));
+    let production_main = main
+        .split_once("\n#[cfg(test)]\nmod tests {")
+        .expect("main test module boundary")
+        .0;
+    assert!(
+        !action_listener
+            .replace(production_main, "")
+            .contains("axum::serve")
+    );
     assert!(!main.contains("timeout_at(deadline, &mut tasks)"));
     assert!(main.contains("legacy_event_source_available"));
     assert!(main.contains("workflow.legacy_event_consumer.disabled"));
