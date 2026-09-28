@@ -517,7 +517,8 @@ mod tests {
         assert!(reused);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    // release_stream starts an idle poller; keep its immediate reuse handoff deterministic.
+    #[tokio::test(flavor = "current_thread")]
     #[cfg(unix)]
     async fn test_connect_uds() {
         let socket_path = test_utils::unique_uds_path("transport_connector");
