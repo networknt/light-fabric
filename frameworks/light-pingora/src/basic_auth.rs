@@ -126,8 +126,7 @@ pub fn verify_basic_auth(
     let Some(user) = config.users.iter().find(|user| user.username == username) else {
         return Err(basic_rejection("unknown Basic user"));
     };
-    let password_matches: bool = password.as_bytes().ct_eq(user.password.as_bytes()).into();
-    if !password_matches {
+    if !password_matches(password, &user.password) {
         return Err(basic_rejection("invalid Basic password"));
     }
     if !paths_allow(user.paths.as_slice(), request_path) {
@@ -136,6 +135,12 @@ pub fn verify_basic_auth(
         ));
     }
     Ok(())
+}
+
+fn password_matches(submitted: &str, configured: &str) -> bool {
+    !submitted.is_empty()
+        && !configured.is_empty()
+        && bool::from(submitted.as_bytes().ct_eq(configured.as_bytes()))
 }
 
 fn verify_anonymous(config: &BasicAuthConfig, request_path: &str) -> Result<(), HandlerRejection> {
@@ -299,5 +304,27 @@ users: '[{"username":"bob","password":"secret","paths":["/v1"]}]'
         assert!(paths_allow(&[], "/anything"));
         assert!(paths_allow(&["/api".to_string()], "/api/pets"));
         assert!(!paths_allow(&["/api".to_string()], "/admin"));
+    }
+
+    #[test]
+    fn blank_basic_password_never_authenticates() {
+        let config: BasicAuthConfig = serde_yaml::from_str(
+            "enabled: true\nusers:\n  - username: alice\n  - username: bob\n    password: ''\n",
+        )
+        .expect("parse users with missing and empty passwords");
+        assert!(
+            config
+                .users
+                .iter()
+                .all(|user| !password_matches("", &user.password))
+        );
+        assert!(
+            config
+                .users
+                .iter()
+                .all(|user| !password_matches("secret", &user.password))
+        );
+        assert!(password_matches("secret", "secret"));
+        assert!(!password_matches("wrong", "secret"));
     }
 }
