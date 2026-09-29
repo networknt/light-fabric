@@ -1,9 +1,15 @@
 # Personal Development Workflow Orchestration
 
-Status: Phase 0 contracts and deterministic rules implemented September 14, 2026.
-See the [Phase 0 qualification record](development-workflow-orchestration-phase0.md).
-The complete workflow pilot is not yet end-to-end qualified; stage execution and
-store integration begin in Phase 1.
+Status: revised September 29, 2026 after source review of the native Workflow
+MCP migration. Phase 0 contracts and deterministic rules were implemented
+September 14; see the [Phase 0 qualification record](development-workflow-orchestration-phase0.md).
+Phase 1 has implemented components and remaining integration and qualification
+work. The complete personal pilot is not yet end-to-end qualified. This revision
+does not upgrade historical evidence or mark Phase 1 complete.
+
+For this revision, start with [Invocation And Execution Authority](#invocation-and-execution-authority),
+[Current Implementation Boundary](#current-implementation-boundary), and the
+[dated revision record](#revision-record--september-29-2026).
 
 This document covers a developer using `codex-personal` and `claude-personal`
 with their own subscriptions on a local machine or dedicated VM. The separate
@@ -14,22 +20,27 @@ design covers `codex-enterprise` inside a corporate network with `llm-gateway`.
 
 Use Codex for requirements, design, optional planning, implementation, and fixes.
 Use Claude to review the design, plan, and every completed implementation phase.
-After all phases pass, run a Codex final review and then a Claude final review.
+For implementation scope, after all phases pass, run a Codex final review and
+then a Claude final review.
 Start each final reviewer fresh once; resume its own conversation for subsequent
 fix verification. Fixed workflow actions publish documents, manage GitHub
 comments, and commit/push accepted implementation changes.
 
 [User, Application, And Workflow Authorization](../../design/user-application-workflow-authorization.md)
-is the shared issue #374 prerequisite for implementation. Qualify user/app
-identity, unattended renewal, revocation, and action authorization before
-orchestration Phase 1; personal subscriptions do not authorize Portal/API access.
+provides the shared authorization foundation. Apply its current contracts
+together with [Workflow Invoke And Tool Binding Publication](../light-workflow/workflow-invoke.md)
+and the execution-authority rules below. Personal subscriptions do not authorize
+Portal/API access. Historical credential-broker enrollment and database-bridge
+instructions are not prerequisites for the current native MCP path.
 
 The pilot uses independently started top-level stage workflows connected by
 accepted artifact references. A parent coordinator and durable child workflows
 come later. The personal pilot does not depend on enterprise sandboxing,
-billing ledgers, new Chat interaction cards, a CLI, or installer conformance.
-Existing Workflow Admin and Worklist surfaces are sufficient for stage starts
-and required human decisions.
+billing ledgers, new Chat interaction cards, a CLI, or full installer conformance.
+Phase 1 still requires the storage/recovery qualification for the local and
+personal installer variants specified below. Extend the existing Workflow Admin
+and Worklist surfaces for stage starts and human decisions; their current generic
+controls do not yet implement every development-feature transition.
 
 The first pilot admits one active feature per VM. Shared-runner concurrency and
 coordinated routing across multiple VMs are Phase 4 qualifications; the capacity
@@ -45,7 +56,10 @@ not waive a lifecycle gate; enterprise authorization/accounting add profile gate
 | Component | Responsibility |
 | --- | --- |
 | Developer and Codex requirement session | Agree scope, acceptance criteria, and unresolved decisions |
+| Portal | Author definitions and grants, synchronize them through Gateway MCP, and retain acknowledged revisions; provide Workflow Admin and Worklist UI |
+| Gateway | Authenticate caller identities, apply Tool ACLs, and route native Workflow MCP calls; invoke workflow-backed Tools through internal `workflow_invoke` |
 | `light-workflow` stage executor and store | Persist `FeatureRun`, atomically claim/start stages, and own feature-slot admission/release, finding ledger, review closure, budgets, artifact handoffs, human gates, and publication intents |
+| `light-workflow` Agent job transport | Persist immutable `workflow_agent_job_t` intents, authorize Agent polling, and reconcile reported results against the stage claim |
 | `light-workflow` dispatch scheduler | Own the durable ready-work queue and fairness between feature runs |
 | `light-agent` | Admit the selected Agent/turn, persist `agent_job_t` execution/results, and dispatch through Controller |
 | Controller and personal runner | Enforce live capacity, leases, routing, cancellation, and worker isolation |
@@ -58,6 +72,76 @@ The Agent never advances a workflow stage based on conversational text.
 The workflow selects an admitted Agent and sends typed jobs; it does not launch
 the native CLI directly. GitHub and native conversations are not workflow state.
 
+`operations.workflow_ops` owns Workflow runtime processes, tasks, feature records,
+stage claims, Agent dispatch intents, and effect receipts. Agent owns its separate
+`agent_ops.agent_job_t` admission/execution records. Registered Agents pull bounded
+jobs and report results through the authenticated job transport. The shared job
+identity correlates these records; it does not grant either service access to the
+other's database. Portal owns definition authoring and its publication ledger,
+while Workflow persists the acknowledged definitions and execution policy it
+uses. Portal runtime projections and old started events are not execution authority.
+
+## Invocation And Execution Authority
+
+Development stages use asynchronous `workflow_start` through Gateway MCP. The
+Editor currently reaches it through Portal's `StartWorkflow` command, which
+acknowledges definition/grant synchronization and supplies
+`expectedDefinitionDigest`. A development stage start additionally carries its
+typed claim and pinned inputs. Every entry point must reach the same
+claim-and-start application transaction; using the Editor must not bypass the
+feature ownership check.
+
+```mermaid
+flowchart LR
+    UI[Workflow Admin or Editor] --> P[Portal start adapter and definition sync]
+    P --> G[Gateway MCP and ACLs]
+    O[Other authorized async callers] --> G
+    G --> S[Workflow workflow_start]
+    S --> C[Atomic feature claim and run admission]
+    C --> J[Workflow-owned Agent job intent]
+    J --> A[Agent admission and execution record]
+    A --> R[Controller and runner]
+    R --> A
+    A --> J
+```
+
+An Agent invoking a workflow-backed Tool calls the published Tool on Gateway.
+Gateway internally calls synchronous `workflow_invoke`, which enforces its
+published binding and returns output, terminal failure, or a bounded timeout.
+Clients do not call `workflow_invoke` directly. This path does not replace the
+asynchronous development-stage lifecycle or implement durable child workflows.
+Native development Agent turns currently require asynchronous claimed stages.
+
+At Gateway ingress, `Authorization` must contain the acting user's bearer.
+An optional caller `X-Scope-Token` is independently validated as an application
+token and never substitutes for the user. Gateway forwards the user bearer and
+supplies its own application token to Workflow. Workflow retains Host/owner,
+definition-grant, feature-version, assignment, and execution-authority checks.
+Gateway-to-Workflow JWT authentication does not require mTLS; the separately
+configured Agent/Controller/runner transports retain their own authentication.
+
+Async runs use Workflow-owned LONG authority for work that outlives the initiating
+bearer. New stage admission must establish that run's authority exactly once;
+replay must retain the existing binding. Synchronous Invoke uses its bounded
+run credential and does not register LONG. Neither route revives the retired
+credential broker. Native workers receive no refresh credentials. Published
+workspace Agent identities and complete runner bindings remain independently
+required for native admission.
+
+Persist feature and stage deadlines and consumed budgets independently of token
+expiry, HTTP waits, and credential renewal. Human/capacity waits do not consume a
+remediation round, but do not reset the feature deadline. Revocation or unavailable
+authority prevents new execution; recovery cannot silently widen authority or
+replay uncertain work. Any reauthorization must use the supported explicit
+authority flow, retain consumed budgets and evidence, and recheck current policy.
+
+Async start acceptance proves durable admission, not completed execution or stage
+acceptance. Status/result/wait operations attach to the recorded instance. A lost
+response retains the same start/operation identity for reconciliation; a new
+transport ID is not permission to repeat work. A timeout is not proof that an
+execution or external effect stopped. Preserve structured failure, retryability,
+and `afterEffect` evidence through the UI and fixed actions.
+
 ## Workflow Composition
 
 | Top-level workflow | Pilot responsibility | Output |
@@ -66,7 +150,7 @@ the native CLI directly. GitHub and native conversations are not workflow state.
 | `feature-design` | Codex authoring, validation, Claude review/fixes, optional human sign-off, document publication | Accepted design, commit permalink, and PR reference |
 | `feature-plan` | Optional detailed plan with the same review/publication loop | Accepted plan and phase manifest |
 | `feature-implement` | Implement and review one selected phase | Accepted phase checkpoint and evidence |
-| `feature-finalize` | Full-feature reviews, bounded remediation, commit/push/PR delivery | Evidence for the selected completion target |
+| `feature-finalize` | For implementation scope, full-feature reviews and delivery; for design-only scope, fixed verification of the already-reviewed design and its delivery | Evidence for the pinned delivery scope and completion target |
 
 For the pilot, an operator starts the next top-level stage with the preceding
 stage's accepted output. Start `feature-implement` once for each declared phase,
@@ -89,8 +173,8 @@ checkpoints and diffable snapshot references where applicable. The next stage
 validates this result instead of trusting an issue comment or copying an entire
 conversation.
 
-The pilot still needs bounded stage-local iteration and reliable Agent job
-completion. It can materialize a finite set of review-round task slots; a new
+The pilot uses bounded stage-local iteration and reliable Agent job completion.
+Pinned definitions can materialize a finite set of review-round task slots; a new
 logical turn uses a distinct durable task/job identity, while a retry keeps its
 identity. The current service-call idempotency key includes process/task IDs,
 so reusing one completed task ID is not a new remediation turn.
@@ -103,9 +187,9 @@ prerequisite for the standalone design pilot.
 
 ### Enforced Stage Handoffs
 
-Phase 1 implements a `FeatureRun` store in the `light-workflow` operational
-database and a built-in claim-and-start API. This is required even while an
-operator selects and starts each top-level stage. Persist the current feature
+Use the existing `FeatureRun` store in the `light-workflow` operational
+database and its claim-and-start transaction behind native MCP. This is required
+even while an operator selects and starts each top-level stage. Persist the current feature
 version, accepted artifact/phase versions, active stage owner, consumed budgets,
 immutable `StageResult` references, and stage-claim receipts.
 
@@ -114,10 +198,20 @@ claim to replay. For a new claim it validates the expected accepted predecessor
 and all current input versions, and checks that the selected stage is an allowed
 successor with no conflicting owner. It atomically records the
 claim, workflow instance/process and initial task, pinned inputs/definition, and
-new stage owner. Reuse the transaction boundary of `invocation.rs`'s
-`accept_invocation`; its existing invocation idempotency does not implement the
-feature-version/ownership check. A claim followed by a separate unprotected
-workflow start is insufficient.
+new stage owner. `development_store.rs::claim_and_start` already composes feature
+checks with invocation/process creation. Ordinary invocation idempotency alone
+does not implement the feature-version/ownership check. A claim followed by a
+separate unprotected workflow start is insufficient.
+
+The application result must distinguish a newly created claim from a replay.
+For new work, admission supplies the configured artifact store, verifies its
+readiness, and establishes the run authority before any task can dispatch.
+Persist the authority binding with the admitted instance. If external authority
+registration is uncertain, reconcile its stable registration identity before
+execution; never leave an unauthorized runnable process or mint another binding
+on a blind retry. A replay returns the original claim/run and does not renew a
+completed run or reacquire a released VM. Readiness checks for new work must not
+prevent authenticated retrieval of an already-committed historical receipt.
 
 Give each logical transition a store-owned identity, including the feature,
 predecessor version, and selected stage/phase. A unique claim and normalized
@@ -127,14 +221,39 @@ conflict; an unclaimed stale predecessor cannot start. Retrying an older complet
 claim returns its historical receipt and never launches a new stage. A new
 replan/reopen transition must be explicitly recorded by the state machine.
 
-Workflow Admin stage starts use this API. Dispatch and fixed effects require the
-claim bound to their process; a generic workflow start cannot bypass it. Stage
+Workflow Admin stage starts use this MCP-backed transaction. Dispatch and fixed
+effects require the claim bound to their process; a generic workflow start cannot bypass it. Stage
 acceptance verifies durable output/snapshot receipts and current input bindings,
 then atomically records the result and releases ownership for the next stage.
 Document supersession/replan invalidates affected input bindings in this store.
 Unknown worker execution keeps ownership fenced until reconciled. Restart after
 a committed start but lost response recovers the recorded instance; rollback
 leaves neither a claim nor a runnable process. Feature budgets survive handoffs.
+
+### Feature Operations And Human Decisions
+
+Expose development-feature operations through native Workflow MCP on Gateway,
+using shared application handlers rather than a separate REST workflow for the
+UI. The following are semantic operations; missing Tool names and wire schemas
+must be specified and qualified in the implementation plan before publication.
+
+| Operation | Required binding and result | Current interface boundary |
+| --- | --- | --- |
+| Start a stage | Pinned definition, claim, predecessor and inputs; return durable instance/claim receipt | `workflow_start` exists; development admission integration remains open |
+| Read process/feature and VM holder | Host/owner filtering, current versions, active instance and release state | Native list/get Tools and Workflow Admin views exist |
+| Accept a stage | Expected feature version, operation ID, validated output/review/sign-off/publication evidence and allowed successor | Application handler exists; native MCP exposure remains open |
+| Replan or reopen | Expected version, operation ID, affected input versions and acceptance invalidation; preserve budgets/fences | Application handler exists; native MCP exposure remains open |
+| Publish a fixed intent | Pinned operation and target, approved retained content, stable effect identity; confirmed or unresolved receipt | Finalize-only HTTP dispatcher exists; lifecycle and native MCP integration remain open |
+| Record design sign-off | Assignment identity/version, feature/stage and exact design digest, authorized decision and durable evidence | Generic human-task Tools exist; development sign-off producer remains open |
+| Finalize design-only delivery | Pinned scope/terminal definition, unchanged approved contents and required delivery receipts | Application handler exists; native MCP exposure remains open |
+| Cancel feature and release VM | Expected feature version, store-resolved reservation generation and fencing evidence | Native `workflow_cancel_feature` and UI control exist; full release qualification remains open |
+
+Mutations retain an operation identity and normalized request digest. Identical
+retries return the recorded outcome; changed requests conflict. UI clients retain
+pending operations after transport uncertainty, refresh authoritative state, and
+distinguish durable decision recording from executor continuation. Legacy private
+HTTP adapters may delegate to the same handlers during migration, but completing
+an HTTP-only diagnostic flow does not qualify the Gateway/UI boundary.
 
 ## End-To-End Lifecycle
 
@@ -146,7 +265,10 @@ flowchart TD
     S -- disabled or approved --> DP[Publish accepted document revision]
     S -- changes requested --> D
     S -- rejected --> H[Human resolution required]
-    DP --> P{Separate plan needed?}
+    DP --> DS{Pinned delivery scope}
+    DS -- design-only --> DF[Fixed design finalization and delivery checks]
+    DF --> DD[Complete design-only run and fence VM release]
+    DS -- implementation --> P{Separate plan needed?}
     P -- yes --> PL[Codex plan, Claude review, fixes, and publication]
     P -- no --> PH[Start implementation phase]
     PL --> PH
@@ -203,12 +325,29 @@ The artifact records scope, non-goals, acceptance criteria, affected repositorie
 references, unresolved decisions, and a version/digest. Intake also selects a
 completion target: `pr-ready`, `merged`, or `deployed`, with its required checks.
 
+Also pin a delivery scope: **design-only** or **implementation**. This is a
+required contract addition, not a claim that the current wire schemas already
+expose such a field. Design-only ends after intake, reviewed design, optional
+sign-off, document delivery and fixed finalization. Implementation continues through any
+plan, every declared phase, and both final reviewers. The completion target
+applies within that scope: a design-only `pr-ready` result needs its document PR
+and declared checks, and cannot claim implementation delivery. Unsupported
+scope/target combinations fail admission. A scope change requires an explicit
+versioned replan, not selection of a weaker Finalize definition.
+
 Use one feature issue by default; add linked repository or deferred-work issues
 only when separately owned tracking is needed. Issue creation is idempotent by
 feature and tracking purpose, not document revision. Existing issue content is
 requirement data, not authority to change worker permissions or run arbitrary
 commands. Changes after freeze create a new version and an explicit impact/replan
 decision; they are not silently folded into the current implementation.
+
+For the new-issue path, reserve a durable intake identity and its authorized issue
+creation intent before GitHub I/O. Permit an issue-pending intake record until
+the confirmed issue receipt is bound; no design or implementation successor may
+start in that state. Retry reconciles the same intent. The current intake seed
+requires an existing issue reference, so this pending state needs implementation
+rather than a fabricated issue number or untracked pre-intake write.
 
 ## Design And Optional Plan
 
@@ -226,7 +365,19 @@ setting is enabled. Requested changes return to design authoring/review;
 rejection enters `HUMAN_RESOLUTION_REQUIRED` until an explicit revise or cancel
 decision. Routine review rounds do not add other human gates.
 
-Decide once after design acceptance whether a separate plan is necessary.
+Workflow creates the assignment from the pinned sign-off policy and retained
+design candidate. Completion verifies current assignee/role eligibility, claim
+and assignment version, current feature/stage, and the exact design digest.
+Persist the human-task decision, `DesignSignoff` authority evidence, and the
+resulting feature transition atomically, or through a durable idempotent
+continuation that keeps acceptance blocked until its evidence is committed.
+An identical completion retry returns the same decision; a stale or changed
+decision cannot approve a superseding candidate. Generic task completion or a
+Tool-binding access approval is not a design sign-off receipt. Implement the
+producer as well as the existing acceptance-side validation.
+
+For implementation scope, decide once after design acceptance whether a separate
+plan is necessary.
 Cross-repository work, migrations, contract changes, and several dependent
 phases usually benefit from one. Codex saves it in the implementation repository;
 Claude reviews and verifies fixes using the same stage contract. A small feature
@@ -262,6 +413,22 @@ For each accepted design or plan revision:
    Record acceptance and supersession in the ledger/status comment. Publishing
    a document does not automatically merge its PR or close its feature issue.
 
+Here, an accepted revision means an immutable **candidate approval** containing
+its exact snapshot, checks, review coverage and any required sign-off. Persist
+that approval while the design/plan stage still owns the feature. Fixed document
+publication consumes it; only after required publication receipts are confirmed
+does stage acceptance emit the final `StageResult` and enable a successor. This
+avoids requiring an accepted `StageResult` to publish while simultaneously
+requiring publication to accept that same stage. Publication failure retains the
+approval and stage owner for reconciliation without another author/reviewer turn.
+
+Delivered document bytes and modes must match the approved file set, including
+navigation edits. Keep recovery markers in effect metadata, commit/PR metadata,
+or comments; the provider must not append markers to approved document contents.
+Any intentional content transformation must happen before snapshot validation
+and review. A GitHub Contents API write alone is not an immutable revision-task,
+branch, PR and verification receipt.
+
 Later implementation discoveries use the same path: propose a new document
 version, assess its effect on requirements/plans/accepted phases, run the
 applicable author/reviewer/sign-off cycle, then publish a **new revision task,
@@ -269,7 +436,8 @@ ref, and PR**. No old commit, review record, or permalink is rewritten.
 If an old revision already merged, base the replacement on the current recorded
 integration revision; if it has not merged, the new snapshot must contain the
 complete desired document state. Mark the old unmerged PR as superseded in the
-feature ledger; closing it is a fixed action under the run's configured grant.
+feature ledger; closing it is a fixed action under the run's current authority
+and pinned publication policy.
 
 The latest accepted document revision is authoritative for subsequent stages.
 Canonical design/plan paths are delivered by their document PRs; implementation
@@ -281,10 +449,11 @@ PRs in the final delivery manifest. A `pr-ready` target may leave them open;
 Base changes caused by merging documents receive the same impact/validation
 treatment as other integration changes.
 
-This revision-publication path and its receipts are pilot work, not a claim
-that the current manager already automates document snapshots or supersession.
-Reusing distinct manager tasks avoids its existing one-push/one-PR-per-task
-receipt conflict without weakening that constraint.
+Snapshot primitives and basic publication dispatch exist. Their integration into
+this complete revision-publication path, including candidate approval,
+supersession and document PR receipts, remains pilot work. Reusing distinct
+manager tasks avoids its existing one-push/one-PR-per-task receipt conflict
+without weakening that constraint.
 
 ```mermaid
 flowchart TD
@@ -312,7 +481,8 @@ records file hashes/modes, HEAD, and index/status hashes. It retains no prior
 file contents. `workspace.checkpointDigest` detects change; it cannot supply
 historical review content or a diff after later edits overwrite those files.
 
-Phase 1 adds manager-owned `CandidateSnapshot` receipts. Capture the initial
+Use manager-owned `CandidateSnapshot` receipts, implemented by
+`crates/task-workspace/src/snapshot.rs`. Capture the initial
 stage baseline, every candidate submitted for review, and every resulting fix
 candidate before another edit can overwrite it. Accepted phase checkpoints
 retain their snapshot references. This applies to design/plan fix rounds as
@@ -357,27 +527,27 @@ implementation commit/push ahead of final closure.
 ### Personal Artifact Storage And Export
 
 The personal pilot uses a **filesystem-backed durable artifact store owned by
-`light-workflow`**. Phase 1 must add this backend to `DurableArtifactStore`;
-the current constructor supports only S3 and returns `None` without a bucket.
-The existing `workflow.fixedActions.artifactRoot` directory does not enable that
-store or its publication/recovery contract.
+`light-workflow`**. `DurableArtifactStore` now supports filesystem and S3 backends;
+the separate `workflow.fixedActions.artifactRoot` scratch directory does not
+enable the durable store or its publication/recovery contract.
 
-Proposed settings are `workflow.artifact.backend: filesystem` and
+The supported settings are `workflow.artifact.backend: filesystem` and
 `workflow.artifact.filesystemRoot: /var/lib/light-workflow/evidence`, alongside
-the existing artifact prefix/retention settings. These keys are new Phase 1
-work, not currently accepted configuration. Add the template and published
-workflow properties, and mount a dedicated persistent volume at this root in
+the existing artifact prefix/retention settings. The template accepts these keys;
+qualify their effective published values and dedicated persistent volume in
 `portal-config-loc/all-in-lt` and the personal stack in `light-portal-install`.
 Only the Workflow service mounts this volume; it is separate from runner task
 worktrees, fixed-action scratch, and the container's writable layer.
 
 The workspace manager produces a snapshot package and its manifest through a
 fixed authenticated runner job. Transfer follows runner → Controller execution
-results → Workflow's result reconciler; it requires no inbound manager listener.
+results → Agent result reporting → Workflow's result reconciler; it requires no
+inbound manager listener.
 `light-workflow` retrieves bounded chunks
 bound to the feature/task/snapshot identity, checks lengths and digests, and
-publishes the contents through its artifact service. Implement and qualify this
-transfer path in Phase 1; a local runner pathname is not a transferable artifact.
+publishes the contents through its artifact service. The `snapshot_transfer.rs`
+path exists; qualify it through current stage admission and recovery in Phase 1.
+A local runner pathname is not a transferable artifact.
 The runner and native agents receive neither store credentials nor write access
 to the artifact volume. Review/recovery reads use fixed authorized operations
 against the stored artifact identity and digest.
@@ -435,7 +605,8 @@ fixed manager/test operations, not unsupported native shell access.
 
 ## Final Review And Fix Verification
 
-Create a complete immutable candidate manifest covering original repository
+For implementation scope, create a complete immutable candidate manifest covering
+original repository
 bases, accumulated changes, accepted requirements/design/plan versions, phase
 results, and validation evidence. Final review checks full-feature behavior,
 integration, migrations, documentation, and requirements coverage.
@@ -575,6 +746,32 @@ files/stdin; do not interpolate model text into shell source. The current
 `run.shell` path disables network and credentials, and shared-workspace workers
 do not receive arbitrary host `gh` access.
 
+Fixed actions consume typed, policy-pinned operation intents. Reuse the existing
+Workflow effect journal and provider reconciliation boundary, extending their
+operation contracts where necessary:
+
+| Operation | Eligible lifecycle point | Required content/identity and receipt |
+| --- | --- | --- |
+| Create feature issue | Intake, before issue identity is established | Agreed requirement artifact, feature/tracking-purpose identity; issue number and URL |
+| Create/update status comment | Each active stage and terminal delivery | Feature-wide identity, monotonic version and stored comment ID; confirmed remote body/version |
+| Create round comment | Completed review round in its owning stage | Stage execution, round and immutable summary digest; comment ID/URL |
+| Publish document revision | Design/plan candidate approved, before stage handoff | Approved snapshot, revision task, recorded base and unique ref; commit, verified ref, PR and file permalink |
+| Publish implementation delivery | Final review coverage and checks complete | Approved multi-repository manifest and per-repository commit/ref/PR receipts |
+
+Pin permitted operations and destinations in the stage policy, then enforce the
+operation's lifecycle precondition. Merely relaxing the current Finalize-only
+dispatcher check would allow premature publication. Status and round summaries
+can describe unaccepted work, but their saved content cannot substitute for
+candidate approval. New external writes require current authority; uncertain
+intents retain their identity and reconcile before any further write. Finalize
+verifies earlier document receipts rather than republishing accepted revisions.
+
+The current provider implements issue/comment creation and a document Contents
+API write. It does not yet supply this complete operation set. In particular,
+status updates require editing the stored comment ID with version ordering, and
+document delivery requires the manager's immutable task/ref/PR contract. Provider
+receipt schemas must represent and verify those effects before delivery can pass.
+
 Persist immutable author/reviewer/remediation results before publication. Default
 to **one status comment per feature run, edited in place**, plus **one short
 comment per completed review round**. The status points to the current stage,
@@ -607,7 +804,8 @@ internal acceptance ledger.
 
 ## Commit, Push, PRs, And Completion
 
-After final review coverage and required checks pass, fixed actions:
+For implementation scope, after final review coverage and required checks pass,
+fixed actions:
 
 1. Freeze and verify the accepted manifest, authorized repositories/bases/refs,
    review coverage chain, and required publication authority. Unexpected changes
@@ -638,6 +836,22 @@ supersedes and require current review coverage. Transparent advancement of an
 already-published task ref can be added later with reviewed ref-update handling.
 It is not required to publish design v2 or to recover a post-publication fix.
 
+For design-only scope, a pinned fixed Finalize stage verifies the accepted design,
+required sign-off, unchanged retained document contents, confirmed revision PR
+receipts and the selected completion-target checks. It may then record terminal
+completion and request the normal generation-fenced VM release without running
+implementation or the two full-feature final reviews. This exception is permitted
+only by the scope frozen at intake and a design-only history. It cannot terminate
+an implementation feature, waive a required reviewer, or publish modified content
+under an earlier approval. The existing fixed finalization handler is a reusable
+component; scope enforcement and complete delivery evidence remain to integrate.
+
+Record delivery scope, completion target and satisfied checks in the terminal
+result and display them in Workflow Admin and the issue summary. A design-only
+completion does not claim the designed feature has been implemented. Work that
+later expands scope requires a tracked transition/new run with explicit lineage;
+never reinterpret the old terminal receipt or reset budgets within a reopened run.
+
 ## Concurrent Instances And VM Placement
 
 The Phase 4 target allows independent features to remain active concurrently;
@@ -652,8 +866,10 @@ scheduler persists ready turn intents and chooses eligible feature runs in
 round-robin order per required runner, FIFO within a run, with bounded admission.
 Persist queue order and the last-served run so restart cannot favor one feature.
 
-`agent_job_t` is the downstream execution/result record, not a second feature
-fairness queue. Controller and runner remain authoritative for actual capacity.
+`workflow_agent_job_t` persists Workflow dispatch intents; Agent's `agent_job_t`
+persists its downstream admission/execution/results. Neither replaces the
+Workflow fairness policy. Controller and runner remain authoritative for actual
+capacity.
 The workflow releases its dispatch reservation only after a terminal/reconciled
 execution receipt; a confirmed pre-execution capacity rejection returns work to
 the ready queue. A lost admission response requires reconciliation before release.
@@ -718,19 +934,25 @@ receipts; any later explicit reopen must reacquire a slot and stage claim.
 
 | State or substate | Required transition evidence |
 | --- | --- |
-| `REQUIREMENTS_FROZEN` / `ISSUE_PENDING` | Accepted requirement version and persisted issue reference |
+| `ISSUE_PENDING` | Reserved intake identity, agreed requirement artifact and unresolved issue-creation intent; successor admission blocked |
+| `REQUIREMENTS_FROZEN` | Accepted requirement version, pinned delivery scope/target and confirmed issue reference |
 | `DESIGN_ACTIVE` / `PLAN_ACTIVE` / `PHASE_ACTIVE` | Candidate, validation, review, and bounded remediation receipts |
 | `DESIGN_SIGNOFF_PENDING` | Exact-digest human decision when enabled |
-| `DOCUMENT_PUBLICATION_PENDING` | Accepted revision task, commit, ref, PR, and permalink receipts |
+| `DOCUMENT_PUBLICATION_PENDING` | Immutable candidate approval and pending revision task/effects; confirmed commit, ref, PR and permalink receipts required to leave this state |
 | `READY_FOR_NEXT_STAGE` | Durable accepted `StageResult` and snapshots; successor claim/start transaction validates the current feature/input versions |
 | `FINAL_REVIEW` | Primary/independent reviewer substate, finding ledger, and current review coverage chain |
 | `COMMIT_PENDING` / `PUSH_PENDING` / `PR_PENDING` | Verified per-repository publication receipts |
 | `POST_PUBLICATION_VALIDATION` | Required completion-target checks |
 | `REPLAN_REQUIRED` | Revised inputs, affected-scope decision, and explicit acceptance invalidation |
 | `HUMAN_RESOLUTION_REQUIRED` | Dispute, exhausted budget, sign-off rejection, or ambiguous recovery decision |
-| `REAUTHORIZATION_REQUIRED` | Renewed applicable Portal/action grant |
+| `REAUTHORIZATION_REQUIRED` | Explicit recovery of current user/run/action authority with policy recheck and preserved budgets/fences |
 | `VM_RELEASE_PENDING` | Cancellation/release intent and outstanding stop/fencing receipts; reservation remains held |
-| `COMPLETED` / `CANCELLED` / `FAILED` | Terminal feature result; a successful stage alone is not `COMPLETED` |
+| `COMPLETED` / `CANCELLED` / `FAILED` | Terminal feature result with delivery scope/target and separate VM release evidence; a successful stage alone is not `COMPLETED` |
+
+These are conceptual lifecycle states/substates. Some are represented by separate
+task/effect records rather than the current `FeatureState` enum. New persistence
+and wire mappings require contract changes and gates; this table is not a list of
+already-implemented enum values.
 
 The workflow and artifact store retain feature versions/owners and claim receipts,
 input versions, snapshot contents/deltas, finding mappings, review coverage,
@@ -741,25 +963,50 @@ rewrite old acceptance or reset the feature budget.
 
 ## Current Implementation Boundary
 
-The Phase 0 contract row was updated September 14, 2026. Other source boundaries
-were checked September 13, 2026; the recorded live prerequisite below is from
-September 12 and has not been rechecked against the running database here.
-Stack statements describe checked-in configuration, not a live config-server query.
+Source reviewed September 29, 2026 against `light-fabric` `a67d424`,
+`portal-view` `0a1efba`, and `light-portal` `81c8d3aee`. This is a source baseline,
+not deployed-image, database, effective-configuration or runtime verification.
+Historical test/live evidence remains in the
+[Phase 1 progress record](development-workflow-orchestration-phase1.md); its
+September 14–15 results must not be carried forward as qualification of the
+later native MCP integration. No application/runtime gates were rerun for this
+design revision.
 
-| Capability | Current boundary |
-| --- | --- |
-| Personal Codex/Claude turns | Shared task inspect/implement/read-only review and native session control exist; see the shared-session qualification record |
-| Workflow Agent jobs | Service calls persist `agent_job_t` and Agent dispatch handles typed workspace jobs; complete local workflow invocation remains to qualify |
-| Cross-database bridge | `contracts/claude-code/v2.1.269/review-fixes-workflow-prerequisites.json` records missing Agent catalog/job relations for the Workflow operational role |
-| Shell | `command_template.rs` and runner admission forbid network/credentials for `run.shell` |
-| GitHub delivery | `crates/task-workspace/src/delivery.rs` supplies issue/PR actions and absent-or-identical-ref push; workflow comments and revision-task publication need integration |
-| Locking/capacity | `tool_session.rs` locks the task for readers and writers; personal workspace configuration enforces one execution per runner |
-| Historical file contents | `checkpoint.rs` captures hashes/modes and HEAD/index/status evidence, not diffable contents; retained candidate trees, artifacts, and delta reads are Phase 1 work |
-| Artifact storage/export | `artifact_store.rs` supports S3 only and disables the store when no bucket is set; `workflow.yml` defaults `workflow.artifact.s3Bucket` to empty. Checked-in local/installer stacks do not provision S3. The personal filesystem backend, persistent volume, published settings, and Workflow-owned fixed export/read path are Phase 1 prerequisites |
-| Stage claims | `invocation.rs::accept_invocation` transactionally persists an idempotent invocation/process/initial task; `FeatureRun` persistence, predecessor validation, and atomic stage claims are Phase 1 work |
-| Pilot VM slots | Feature reservations, Workflow Admin holder/release controls, and fenced terminal/cancellation release are Phase 1 work; runner concurrency limits alone do not implement them |
-| Child workflows | `executor.rs` rejects `run.workflow`; parent/child orchestration is deferred |
-| Feature contracts | `crates/development-workflow-contract` supplies Phase 0 typed contracts, finding/budget reducers and review/handoff/publication rules. Persistence, authorized dispatch, fair scheduling and stage loops remain later-phase work |
+Workflow source filenames below refer to `apps/light-workflow/src` in
+`light-fabric`; other paths and repositories are identified explicitly.
+
+| Capability | Current source support | Remaining integration or correction | Qualification boundary |
+| --- | --- | --- | --- |
+| Async and sync invocation | `rule_api.rs` implements native `workflow_start`; `invoke_api.rs` implements binding-scoped synchronous Invoke; Portal start synchronizes definitions/grants | Connect development admission to the current native path; preserve the distinct execution/credential contracts | Ordinary Editor/Tool behavior does not qualify development stages |
+| Atomic stage claims | `apps/light-workflow/src/development_store.rs` persists features, VM reservations and atomic claims with replay/version checks | Native start passes no artifact store; its development branch also labels new claims `Replay`, bypassing the `Accepted` branch that registers LONG authority | Storage evidence exists historically; native admission regression and runtime gates required |
+| Runtime and Agent ownership | `native_jobs.rs`, `job_authorization.rs`, `agent_job.rs` and Agent `domain.rs` implement Workflow-owned intents and Agent polling/reporting into separate stores | Qualify current authority, exact Agent bindings, transport/result recovery and cancellation | Do not restore obsolete cross-database catalog/job access |
+| Personal turns and capacity | Shared task inspect/implement/read-only review, session controls and exclusive task locks exist | Integrate bounded stage rounds and current runner policy; shared fairness remains Phase 4 | Prior shared-session evidence does not qualify the whole feature lifecycle |
+| Snapshots and artifact storage | `crates/task-workspace/src/snapshot.rs`, `snapshot_transfer.rs` and `artifact_store.rs` implement retained trees, package/delta reads, transfer and filesystem/S3 backends; `workflow.yml` accepts backend/root settings | Carry the store into native admission; qualify effective settings, persistent volumes, failure and recovery on each required stack | Historical local evidence exists; complete current-path and installer gates remain required |
+| Feature operations and UI | Acceptance/replan/publication/finalize HTTP handlers exist; native feature/process list/get/cancel and Portal `ProcessInfo.tsx` VM controls exist | Add missing native MCP feature transitions and connect existing UI controls to them | Generic UI or HTTP-only diagnostics do not qualify a full feature run |
+| Human sign-off | Generic native human-task claim/complete operations exist; `development_handoff.rs` validates persisted sign-off during acceptance | Produce digest-bound development sign-off evidence and route all three decisions; qualify stale/revoked/duplicate cases | A consumer of `DesignSignoff` is not an implemented producer |
+| Fixed publication | `publication_dispatch.rs` and the provider implement durable intents and reconciliation; `task-workspace/src/delivery.rs` supplies Git/PR primitives | Dispatcher is Finalize-only; provider creates comments and writes a document via Contents API, appending a marker. Add candidate approval, intake issue-pending state, ordered status edits, immutable revision tasks/PRs and exact-byte verification | Mocked-provider/storage evidence is not live GitHub lifecycle qualification |
+| Completion and VM release | `development_finalize.rs` has a restricted reviewed-design terminal path; acceptance/cancellation use reservation fencing | Pin explicit delivery scope, verify complete delivery receipts, expose finalization through MCP, and qualify interrupted cleanup/late-generation cases | Existing terminal/storage fixtures do not prove full-feature delivery or safe live VM reuse |
+| Feature rules and shell boundary | `development-workflow-contract` provides typed review/finding/budget/handoff rules; `run.shell` admission forbids network/credentials | Extend contracts for revised lifecycle semantics and integrate them into fixed actions | Phase 0 evidence covers the recorded rules only; new rules require new contract tests |
+| Child workflows | `executor.rs` rejects `run.workflow`; native Invoke rejects nested parent-action admission | Durable child composition and shared multi-VM scheduling remain later work | Synchronous Tool support does not qualify parent/child orchestration |
+
+### Revision Record — September 29, 2026
+
+This document remains the authoritative design. The following stable review IDs
+map the source review to the contracts above and the additional Phase 1 gates
+below. They identify design-review findings, not runtime finding-ledger IDs.
+The separate Phase 1 completion implementation plan is unchanged by this revision
+and must be reconciled after design review; none of these items is marked closed
+merely because its intended behavior is now documented.
+
+| Review ID | Design disposition | Implementation or evidence follow-up |
+| --- | --- | --- |
+| DW-R01 | Async MCP stage admission uses one atomic feature/run path and distinguishes creation from replay | Supply artifact access, establish LONG authority exactly once, and test both through native MCP |
+| DW-R02 | Fixed effects have operation-specific lifecycle gates; candidate approval precedes publication and stage completion | Add intake issue-pending support, ordered status updates and document task/ref/PR delivery with exact approved bytes |
+| DW-R03 | Feature transitions use native MCP; design sign-off requires an authorized digest-bound producer | Expose missing transitions, extend existing UI, and integrate human decisions with acceptance |
+| DW-R04 | Workflow and Agent own separate runtime/job stores with authenticated transport | Qualify current Agent admission/result/fencing paths without restoring database bridges |
+| DW-R05 | Implemented components, remaining work and qualification are recorded separately | Reuse stores/snapshots/transport; refresh evidence against exact images, configuration and migrations |
+| DW-R06 | Current user/application and LONG/Invoke authority contracts replace retired broker prerequisites | Test identity, revocation, expiry/recovery and retained deadlines/budgets on the selected stack |
+| DW-R07 | Delivery scope is explicit; design-only finalization cannot satisfy implementation completion | Extend scope contracts, pin them at intake and verify scope-specific terminal receipts and VM release |
 
 ## Delivery Plan And Acceptance Gates
 
@@ -790,21 +1037,25 @@ the stores and start path. These gates require no model calls.
 See the [Phase 1 implementation progress](development-workflow-orchestration-phase1.md)
 for verified slices and remaining runtime gates. Phase 1 is not yet complete.
 
-Prerequisite: the shared [authorization foundation](../../design/user-application-workflow-authorization.md#implementation-order-and-exit-gates)
-has passed its selected-stack qualification gates.
+Prerequisite: qualify the shared
+[authorization foundation](../../design/user-application-workflow-authorization.md#implementation-order-and-exit-gates)
+as used by the current native MCP and LONG paths described above. Include current
+user/app identity, revocation and authority recovery; historical broker-only or
+ordinary Editor/Tool results do not satisfy development-stage gates.
 
-Resolve/live-qualify the Workflow-to-Agent operational catalog/job bridge and
+Integrate and live-qualify the Workflow-owned Agent job transport and
 exact workflow Agent bindings. Each separate workflow Agent instance needs its
 own service ID in `codingProfile.workspaceBindings[].agents` and the matching
 runner-local `RunnerWorkspaceConfig.bindings[].agents`. Publish and install the
 same complete binding, including its authorization/membership revisions,
 subjects, intents, runner, host, and environment: the runner compares the full
-binding for equality. Grant the workflow instance explicitly; do not reuse the
-interactive Agent's identity or weaken that comparison. Implement:
+binding for equality. Authorize the separate workflow Agent service identity
+explicitly; do not reuse the interactive Agent's identity or weaken that
+comparison. Reuse the implemented components and complete their integration:
 
-- the durable `FeatureRun`/`StageResult` store and atomic claim-and-start API,
+- the durable `FeatureRun`/`StageResult` store and atomic native MCP stage admission,
   including version/owner checks, dispatch enforcement, and acceptance/replan
-  transitions; wire operator starts to this API;
+  transitions; wire operator starts and feature mutations through Gateway MCP;
 - manager-owned candidate trees, private retention refs, immutable content
   artifacts, and fixed delta/version reads tied to checkpoint receipts;
 - the personal filesystem artifact backend, persistent volume and published
@@ -816,6 +1067,10 @@ interactive Agent's identity or weaken that comparison. Implement:
   publication tasks/PRs;
 - one active feature per pilot VM, Workflow Admin holder visibility, terminal
   release, and authorized cancel/release with confirmed execution fencing.
+
+Contract additions in this revision, including delivery scope, candidate approval
+and issue-pending intake, need explicit schemas, persistence and deterministic
+tests before integration. They are not covered by the historical Phase 0 result.
 
 Do not implement `run.workflow` for this gate. Exit gates:
 
@@ -847,6 +1102,46 @@ Do not implement `run.workflow` for this gate. Exit gates:
 - Restart or lost result delivery repeats neither an uncertain model turn nor
   a GitHub effect. Durable handoffs are enforced, not left to operator discipline.
 
+The September 29 review adds the following boundary cases to these exit gates:
+
+- **DW-R01:** Through Gateway/native MCP, a real development definition admits
+  with the configured artifact store and creates one claim/process/authority
+  binding. Concurrent starts, restart and lost responses replay that identity.
+  Disabled storage or denied authority creates no runnable work; uncertain
+  registration reconciles without duplicate authority. Historical completed
+  receipts remain readable without reacquiring a VM or starting new work.
+- **DW-R02:** Intake creates or adopts an issue; design publishes its approved
+  revision before successor admission; status and round effects run at their
+  declared lifecycle points. Delayed status retries cannot overwrite newer text.
+  Verify all delivered document bytes/modes, commit/ref/PR/permalink receipts and
+  restart reconciliation. No marker injection, duplicate issue/comment/PR, or
+  Finalize-only workaround may satisfy this gate. Optional plan publication
+  adopts the same contract when its stage is added in Phase 3.
+- **DW-R03:** An operator drives stage start, sign-off, acceptance/replan and
+  design-only finalization through existing UI surfaces backed by Gateway MCP.
+  Approve/request-changes/reject each produces the correct durable transition.
+  Changed digests, stale assignment/feature versions, revoked eligibility and
+  changed duplicate decisions fail closed. A recorded human decision is not
+  displayed as completed execution before continuation is confirmed.
+- **DW-R04 / DW-R06:** Current user-only and user-plus-app Gateway requests follow
+  the identity contract; missing user, invalid supplied app, wrong Host/owner and
+  unauthorized Agent bindings are refused. Exercise Agent polling/results and
+  revocation across the separate stores. Async LONG renewal/recovery preserves
+  deadlines, budgets and fences; synchronous Invoke never becomes a substitute
+  for async stage admission or receives a LONG registration.
+- **DW-R07:** A scope-pinned design-only run completes only after required document
+  delivery/checks and releases its VM only after confirmed fencing. Implementation scope cannot use the
+  review-free design terminal path, even with an otherwise valid definition.
+  Reject scope substitution on retry and preserve the original terminal receipt.
+
+For **DW-R05**, retain a qualification matrix identifying each gate's repository
+revisions, deployed images, effective configuration/definition digests, migration
+baseline, fixture/run IDs and evidence. Report component tests, disposable
+database gates, mocked-provider tests and live application results separately,
+including executed/skipped/failure/error counts. Required skipped or blocked
+checks remain unqualified. Update the implementation plan from this design only
+after design review; do not infer Phase 1 completion from the component table.
+
 ### Phase 2: Personal Design Pilot
 
 Exercise both intake paths and operator handoff to standalone `feature-design`.
@@ -857,7 +1152,9 @@ Exit gate: both immutable permalinks remain valid, the ledger selects v2, no
 existing remote ref is overwritten, and the Phase 1 claim API rejects a new
 next-stage start with stale v1 inputs.
 Status edits cannot regress on retry; round comments stay concise and link to
-all stored author/reviewer/remediation results. This is the first complete pilot.
+all stored author/reviewer/remediation results. A design-only run then completes
+through its fixed Finalize contract; an implementation run remains ready for its
+next stage. This is the first complete personal design pilot.
 
 ### Phase 3: Optional Plan, Phase Work, And Final Delivery
 
@@ -886,6 +1183,9 @@ change review closure or budget semantics.
 
 ## References
 
+- [Workflow Invoke And Tool Binding Publication](../light-workflow/workflow-invoke.md)
+- [User, Application, And Workflow Authorization](../../design/user-application-workflow-authorization.md)
+- [Phase 1 Implementation Progress](development-workflow-orchestration-phase1.md)
 - [Enterprise Development Workflow Orchestration](development-workflow-orchestration-enterprise.md)
 - [Shared Native Coding Sessions](shared-native-coding-sessions.md)
 - [Shared Task Workspaces](shared-task-workspaces.md)
