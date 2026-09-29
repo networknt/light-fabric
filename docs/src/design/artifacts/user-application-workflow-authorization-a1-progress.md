@@ -1,6 +1,15 @@
 # A1 Implementation And Qualification Status
 
-Status: **A1 source implementation complete; scope-consent reuse correction qualified in the short integration suite and deployed locally.**
+> **Historical record.** This report records the former A1 credential-broker
+> implementation and its 2026 qualification evidence. Workflow Invoke later
+> retired the broker, including both browser callback and backend enrollment
+> routes. The current path sends the acting user's bearer through Gateway to
+> Workflow; see [Workflow Invoke](../../product/light-workflow/workflow-invoke.md).
+> The historical commands, deployment steps, and acceptance plans below are
+> not instructions for the current stack. The linked activation receipt retains
+> its original observations, including the retired callback, as audit evidence.
+
+Historical status: **A1 source implementation complete; scope-consent reuse correction qualified in the short integration suite and deployed locally before broker retirement.**
 
 ## Acceptance amendment (2026-09-14)
 
@@ -52,7 +61,7 @@ The implementation follows the frozen [A0 baseline](../user-application-workflow
 It does not admit personal orchestration Phase 1: production receiver enforcement
 and dispatch are A2/A3, and live deployment qualification remains separate.
 
-## Implemented
+## Historical implementation
 
 - **Issuer:** dedicated, reserved `JwtClaims.token_use`; live tenant-bound refresh
   authority; explicit custom-claim sources; PKCE and browser consent; dedicated
@@ -67,9 +76,10 @@ and dispatch are A2/A3, and live deployment qualification remains separate.
 - **Workflow:** encrypted credential storage, a store-to-issuer/client binding,
   durable enrollment and renewal ownership, run binding, key rotation, restart
   recovery, cancellation/revocation fencing, and retryable issuer revocation.
-  Enrollment APIs return references and an authorization URL, never refresh
-  credentials. The browser callback has a separate optional TLS listener and
-  needs stored OAuth state plus backend PKCE, not the original browser JWT.
+  At the time, enrollment APIs returned references and an authorization URL,
+  never refresh credentials. The browser callback used a separate optional TLS
+  listener with stored OAuth state and backend PKCE. Both enrollment routes and
+  the callback listener have since been retired.
 - **Shared client/verifiers:** fixed HTTPS endpoints, explicit CA trust, mTLS,
   bounded responses, signed-token validation and disabled redirects/retries;
   user/app purpose validation including duplicate-marker rejection and the
@@ -89,14 +99,13 @@ inactive clients and provider bindings even though their configuration is retain
 Both distributions' checked-in `postgres-db/init.sql` now include the migration.
 Install the patch before starting the new issuer binary on a preserved database.
 
-The Workflow credential schema is
+The former Workflow credential schema was
 `light-fabric/apps/light-workflow/migrations/credential_broker.sql`.
-Provisioning assets live in `light-fabric/deployment/workflow-broker` and are
-synchronized to `portal-config-loc/all-in-lt/workflow-broker` and
-`light-portal-install/workflow-broker`. Catalog events live in
-`light-portal-event/config/20260913-workflow-broker`; they have not been imported.
+Provisioning assets formerly lived in `light-fabric/deployment/workflow-broker`
+and the matching local and installer overlays. These source assets were retired;
+the paths here identify historical qualification inputs.
 
-## Qualification
+## Historical qualification
 
 [Machine-readable results and local image IDs](authorization-a1/qualification.json)
 and [working-tree source hashes](authorization-a1/source-sha256.json) identify the
@@ -133,7 +142,7 @@ or database persistence, rather than replacing renewal with a mock success.
 These are isolated integration tests, not a claim that the live Portal frontend
 and deployed configuration have been qualified.
 
-Reproduce the issuer/Workflow integration gates with:
+The historical issuer/Workflow integration gates were run with:
 
 ```bash
 portal-service/apps/light-oauth/scripts/run-a1-gates.sh DATABASE_URL_FILE EVIDENCE_DIRECTORY
@@ -224,9 +233,9 @@ were rebuilt and no application services were restarted. Broker registration,
 certificates, configuration activation and selected-stack qualification remain
 pending; the broker profile is not enabled by this migration alone.
 
-## Local Broker Activated
+## Historical local broker activation
 
-The user rebuilt the issuer and Workflow images. The local broker is now enabled
+The user rebuilt the issuer and Workflow images. At the time, the local broker was enabled
 with a dedicated private client CA and a registered 180-day client certificate.
 The existing local issuer HTTPS certificate is used for its internal server and
 localhost callback. Private mounts remain ignored by Git, directories 0700 and
@@ -243,8 +252,9 @@ wrong client and secret-only broker authentication return 401. JWKS returns 200.
 The callback returns 400 without state/code over verified HTTPS.
 
 [Activation receipt](authorization-a1/local-activation-receipt.json) records image
-IDs, snapshot IDs and certificate fingerprint. `deploy-local.sh lt` includes the
-broker overlay when the ignored `workflow-broker/.runtime/enabled` marker exists.
+IDs, snapshot IDs and certificate fingerprint from that historical activation.
+At the time, `deploy-local.sh lt` included a broker overlay when the ignored
+`workflow-broker/.runtime/enabled` marker existed; the overlay was later removed.
 The host system trust store does not trust the local issuer CA; explicit CA-file
 verification passes. Browser trust must be established before consent if absent.
 
@@ -254,19 +264,12 @@ Triage Local Demo, Tech Support LLM Workload Dev, mcp379-local-qualification and
 pylon. No claim-source classifications were changed. The broker has no custom
 claims, so these do not block its registration or activation.
 
-## Remaining For Selected-Stack Acceptance
+## Superseded selected-stack acceptance plan
 
-1. Review custom-claim sources for existing clients that use refresh. In particular,
-   do not classify pylon's roles/userId as static metadata without authority review.
-2. Use a newly issued user token to start enrollment through the actual Gateway,
-   then complete browser login and explicit consent. Verify browser trust first.
-   No dedicated enrollment page exists in portal-view yet; the API returns the
-   issuer authorization URL. Reissuing other pre-marker tokens remains an A2
-   receiver-enforcement prerequisite.
-3. Run the scheduled and full hours-long renewal qualification on this deployed
-   stack, after browser access-token expiry, and record reliability metrics with
-   injected response loss separate from ordinary load.
-4. Assess A1 only after those results. A2/A3 and orchestration admission remain
-   separate. This activation is not an A1 exit-gate pass.
+The former selected-stack plan called for reviewing custom-claim sources,
+enrolling a user through Gateway and a browser authorization flow, and running
+scheduled and hours-long renewal qualification. Those steps were not completed
+as an A1 exit gate. Workflow Invoke subsequently retired that enrollment flow,
+so this plan is no longer a deployment or test procedure.
 
 Changes remain uncommitted.

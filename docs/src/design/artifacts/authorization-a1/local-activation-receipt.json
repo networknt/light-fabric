@@ -1,4 +1,8 @@
 {
+  "historicalRecord": {
+    "note": "Captured during the former A1 broker activation. The browser callback and backend enrollment routes were later retired; this receipt is not current deployment guidance.",
+    "currentContract": "docs/src/product/light-workflow/workflow-invoke.md"
+  },
   "profile": "local-workflow-user-v1",
   "authHostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
   "tenantId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",

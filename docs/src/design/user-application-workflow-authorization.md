@@ -1,5 +1,12 @@
 # User, Application, And Workflow Authorization
 
+> **Historical design baseline.** The A1 credential broker described below was
+> retired by Workflow Invoke. Its browser callback and backend enrollment routes
+> are no longer part of Workflow. For the current Gateway-to-Workflow user-token
+> contract, see [Workflow Invoke](../product/light-workflow/workflow-invoke.md).
+> The A1 [qualification report](artifacts/user-application-workflow-authorization-a1-progress.md)
+> and its activation receipt preserve historical evidence.
+
 Status: accepted design, September 13, 2026. The
 [A0 contract baseline v1](user-application-workflow-authorization-a0.md) is frozen
 after review and records the selected issuer profiles, contracts and migration
