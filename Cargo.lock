@@ -5034,8 +5034,6 @@ dependencies = [
  "async-trait",
  "base64",
  "config-loader",
- "jsonwebtoken",
- "oauth-workflow-contract",
  "reqwest",
  "rustls-pemfile",
  "serde",

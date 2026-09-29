@@ -1,13 +1,19 @@
 # Authorization A2 Implementation Progress
 
-Status: **the A2 source foundation and selected personal coding paths are
-implemented, and all selected services, including both workflow-only Agents,
-pass local runtime qualification; selected-stack A2 acceptance has not passed.**
-The remaining authorize/begin/send/complete, renewal, revocation, receiver and
-recovery matrix is still required. Nothing in this report admits personal
-orchestration Phase 1.
+> **Historical progress snapshot.** The broker grant, enrollment, and renewal
+> paths described below predate Workflow Invoke and were later retired. See
+> [Workflow Invoke](../../product/light-workflow/workflow-invoke.md) for current
+> Gateway-to-Workflow invocation and LONG registration. The old gates below
+> are not instructions for the current stack.
 
-## Implemented foundation
+Historical status: **the A2 source foundation and selected personal coding paths were
+implemented, and all selected services, including both workflow-only Agents,
+passed local runtime qualification; selected-stack A2 acceptance had not passed.**
+At that checkpoint, the remaining authorize/begin/send/complete, renewal,
+revocation, receiver and recovery matrix was still required. This record did
+not admit personal orchestration Phase 1.
+
+## Historical implemented foundation
 
 - `workflow-action` defines server-owned action bindings, canonical attempts,
   owner/boot/fencing identities, exact-byte request digests and child-lineage

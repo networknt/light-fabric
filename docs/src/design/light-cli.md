@@ -508,9 +508,11 @@ Every command supports `--json` for machine consumption, because the daily
 qualification gate is a first-class consumer, not an afterthought. Human
 output is the default; JSON is the contract.
 
-## Current Implementation Boundary
+## Historical implementation boundary (2026-09-19)
 
-Checked 2026-09-19 against the working tree.
+Historical boundary checked 2026-09-19 against the working tree; later changes
+retired the Workflow credential broker. See
+[Workflow Invoke](../product/light-workflow/workflow-invoke.md) for the current path.
 
 | Capability | Current boundary |
 | --- | --- |
@@ -519,8 +521,8 @@ Checked 2026-09-19 against the working tree.
 | Peer trust | Exact leaf pinning only; no CA-based variant exists |
 | Origins | `Interactive`, `Workflow`, `Gateway`, `Receiver`; Workflow-origin callers additionally require an action reference |
 | Interactive caller precedent | `portal-view` registers a server-side ingress application identity with a pinned peer fingerprint; the browser holds no application credential |
-| Credential broker | `apps/light-workflow/src/credential_broker_api.rs` exposes enroll, complete, and revoke on separate listeners |
-| Issuer | `portal-service/apps/light-oauth`, including the workflow broker's one-time-code acquisition over mTLS |
+| Credential broker (retired) | The former `apps/light-workflow/src/credential_broker_api.rs` exposed enroll, complete, and revoke; the routes and listener were removed. |
+| Issuer (historical broker role) | `portal-service/apps/light-oauth` formerly supplied one-time-code acquisition over mTLS for the retired broker. |
 | Device grant | Implemented 2026-09-21 in `light-oauth` (`src/device.rs`) and the CLI (`light auth`); see the design in `light-portal-doc` |
 | Enrollment precedent | `controller-rs` runner enrollment issues durable per-instance identity bound to an approved peer |
 

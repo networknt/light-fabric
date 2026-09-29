@@ -4,7 +4,6 @@ pub mod long_binding;
 pub mod long_source;
 pub mod oauth;
 pub mod provider;
-pub mod unattended;
 pub mod workflow_actions;
 pub mod workflow_job_transport;
 pub mod workflow_jobs;

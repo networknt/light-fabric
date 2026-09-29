@@ -3,15 +3,18 @@
 > **Historical record.** This report records the former A1 credential-broker
 > implementation and its 2026 qualification evidence. Workflow Invoke later
 > retired the broker, including both browser callback and backend enrollment
-> routes. The current path sends the acting user's bearer through Gateway to
-> Workflow; see [Workflow Invoke](../../product/light-workflow/workflow-invoke.md).
+> routes. Current invocation sends the acting user's bearer through Gateway to
+> Workflow. Asynchronous `workflow_start` runs that can outlive that bearer may
+> use a LONG registration exchanged through light-oauth; synchronous
+> `workflow_invoke` does not register LONG. See
+> [Workflow Invoke](../../product/light-workflow/workflow-invoke.md).
 > The historical commands, deployment steps, and acceptance plans below are
 > not instructions for the current stack. The linked activation receipt retains
 > its original observations, including the retired callback, as audit evidence.
 
 Historical status: **A1 source implementation complete; scope-consent reuse correction qualified in the short integration suite and deployed locally before broker retirement.**
 
-## Acceptance amendment (2026-09-14)
+## Historical acceptance amendment (2026-09-14)
 
 The user requires only the existing Portal `portal.r` / `portal.w` scope consent.
 There must be no additional workflow-specific consent screen or second login.
@@ -25,11 +28,11 @@ are no longer A1 acceptance blockers. Historical requirements below describe the
 previous baseline and are superseded by this amendment.
 
 The extra Portal enrollment prompt and generated Gateway `workflow_authorize`
-tool remain removed. Root HTTPS Workflow invocation without a supplied grant now
-acquires one internally through `/workflow/credentials/enroll`. Workflow uses
+tool remained removed. At that time, root HTTPS Workflow invocation without a
+supplied grant acquired one internally through `/workflow/credentials/enroll`. Workflow used
 the issuer's mTLS `/oauth2/{provider}/workflow/enrollments/acquire` endpoint,
-then redeems the returned one-time PKCE code server-to-server. Only a grant UUID
-is returned to Gateway; no redirect, password or second consent is involved.
+then redeemed the returned one-time PKCE code server-to-server. Only a grant UUID
+was returned to Gateway; no redirect, password or second consent was involved.
 
 The issuer records SHA-256 access-token fingerprints in ordinary authorization-code
 and refresh issuance audits. Acquisition requires exact issuance evidence tied
@@ -44,18 +47,18 @@ Short real-HTTPS/mTLS integration passed: initial acquisition, acquisition after
 normal Portal refresh, direct broker renewal, scope-expansion rejection, wrong
 Host rejection, unrecorded-token rejection, missing-provenance rejection and
 source-session revocation. OAuth unit tests: 22 passed, 2 ignored. Workflow library:
-86 passed. MCP module: 175 passed, 3 ignored. Scheduled/hours-long tests remain
+86 passed. MCP module: 175 passed, 3 ignored. Scheduled/hours-long tests were
 waived, not passed. No live personal/native workflow was launched for this change.
 
-The updated OAuth, Workflow and Gateway binaries are running locally with zero
-restarts; the live unauthenticated enrollment probe returned 403. Deployment is
-container-layer qualification, not a rebuilt release image, and is lost on
-container recreation until the normal image build is performed. Rollback binaries
-are under `/tmp/phase1-backend-acquisition.4FBLYy/`. Snapshot
-`01a0a222-a6dc-7288-9845-f709ead64d8e` remains current. The editable instance property
-still contains the historical enrollment ACL assignment; reconcile it before
-capturing a new snapshot. Application databases were not wiped. A separate
-`oauth_a1_qualification` database contains schema-only fixtures and test evidence.
+At that checkpoint, the updated OAuth, Workflow and Gateway binaries were running
+locally with zero restarts; the unauthenticated enrollment probe returned 403.
+This was container-layer qualification, not a rebuilt release image, and would
+have been lost on container recreation. Rollback binaries were recorded under
+`/tmp/phase1-backend-acquisition.4FBLYy/`; their current presence is not assumed. Snapshot
+`01a0a222-a6dc-7288-9845-f709ead64d8e` was current at the time. The editable
+instance property then contained an enrollment ACL assignment; its present
+state requires a separate check. Application databases were not wiped. A separate
+`oauth_a1_qualification` database held schema-only fixtures and test evidence.
 
 The implementation follows the frozen [A0 baseline](../user-application-workflow-authorization-a0.md).
 It does not admit personal orchestration Phase 1: production receiver enforcement
@@ -91,13 +94,11 @@ and dispatch are A2/A3, and live deployment qualification remains separate.
   Portal configuration catalog delta. The OAuth image build now includes the
   complete external Cargo path-dependency manifests needed by A1.
 
-The issuer schema belongs to `portal-db/postgres/patch_20260913_01_workflow_broker.sql`
-and its canonical `schema/base.sql` / generated `ddl.sql`. The SQL under
-`portal-service/apps/light-oauth/migrations` is only an isolated-test fixture.
-The patch includes client relationship policies; runtime authentication rejects
-inactive clients and provider bindings even though their configuration is retained.
-Both distributions' checked-in `postgres-db/init.sql` now include the migration.
-Install the patch before starting the new issuer binary on a preserved database.
+The former issuer schema came from `portal-db/postgres/patch_20260913_01_workflow_broker.sql`
+and was once reflected in canonical DDL and distribution bootstrap SQL. The
+later `portal-db/postgres/migrations/patch_20260928_04_retire_workflow_broker.sql` dropped
+the broker tables. The old patch and bootstrap state are historical evidence,
+not installation instructions; applying the old patch would recreate retired tables.
 
 The former Workflow credential schema was
 `light-fabric/apps/light-workflow/migrations/credential_broker.sql`.
@@ -110,8 +111,8 @@ the paths here identify historical qualification inputs.
 [Machine-readable results and local image IDs](authorization-a1/qualification.json)
 and [working-tree source hashes](authorization-a1/source-sha256.json) identify the
 earlier qualified artifacts. The image IDs are local builds, not published registry
-receipts, and predate the availability fixes below. Rebuild and requalify the issuer
-image before deployment.
+receipts, and predate the availability fixes below. That historical issuer image
+was not a release qualification and is no longer a deployment target.
 
 | Check | Result |
 |---|---|
@@ -142,19 +143,16 @@ or database persistence, rather than replacing renewal with a mock success.
 These are isolated integration tests, not a claim that the live Portal frontend
 and deployed configuration have been qualified.
 
-The historical issuer/Workflow integration gates were run with:
+The historical issuer/Workflow integration gates used
+`portal-service/apps/light-oauth/scripts/run-a1-gates.sh`. That script was
+removed with the broker; the deferred two-hour soak was never recorded as passed.
 
-```bash
-portal-service/apps/light-oauth/scripts/run-a1-gates.sh DATABASE_URL_FILE EVIDENCE_DIRECTORY
-# Deferred to manual testing: the two-hour scheduled/long-run test:
-portal-service/apps/light-oauth/scripts/run-a1-gates.sh DATABASE_URL_FILE EVIDENCE_DIRECTORY --soak
-```
-
-The database must be the disposable `oauth_a1_qualification` database with a
-schema-only `configserver` fixture. Credentials are supplied privately. The script
-records base revisions and actual working-tree source hashes and rejects source
-drift during qualification. Do not confuse the base Git revision with the
-uncommitted A1 implementation. Remote GitHub CI has not been run.
+The historical gate used the disposable `oauth_a1_qualification` database with a
+schema-only `configserver` fixture. Credentials were supplied privately. The
+script recorded base revisions and working-tree source hashes and rejected source
+drift during qualification. The A1 source was later committed and retired; the
+recorded base revision alone was not qualification evidence. Remote GitHub CI
+had not been run at the time.
 
 ## Availability Review Follow-up
 
@@ -197,10 +195,10 @@ All five light-fabric findings are addressed:
 - Canceling one run preserves a valid committed shared-grant rotation and denies
   only that run's token. A sibling run can renew; grant revocation and owner
   fencing still reject late responses.
-- `credentialBroker.legacyLongLivedAppKeys` explicitly configures approved local
-  issuer/key pairs for markerless app fixtures. It defaults empty, applies only
+- At that time, `credentialBroker.legacyLongLivedAppKeys` configured approved local
+  issuer/key pairs for markerless app fixtures. It defaulted empty, applied only
   to `X-Scope-Token`, and cannot override explicit invalid purpose markers or
-  authenticate a user. Both distribution preparation scripts carry the setting.
+  authenticate a user. Former distribution preparation scripts carried the setting.
 
 Short gates passed on a disposable PostgreSQL database with actual HTTPS/mTLS:
 21 OAuth unit tests, explicit live-authority/workload tests, full broker integration,
@@ -211,13 +209,13 @@ verification failure, recovery store failure, sibling-run cancellation, and the
 actual API legacy-key allowlist. [Source hashes](authorization-a1/fabric-review-source-sha256.json)
 identify this follow-up. No soak or deployed-stack acceptance was run. Both
 previous image receipts predate these fixes and require rebuilding/requalification.
-Apply the updated credential-store SQL (the `NOT_SENT` result constraint) before
-starting the updated Workflow image, as well as patching the issuer database
-before its image. No live database or service was changed.
+At that stage, the credential-store SQL (the `NOT_SENT` result constraint) and
+issuer database patch were prerequisites for the then-current images. Both broker
+paths were retired later. No live database or service was changed in this follow-up.
 
 ## Local Database Migration Applied
 
-The local `all-in-lt` PostgreSQL instance now has the issuer patch in
+At this historical migration checkpoint, the local `all-in-lt` PostgreSQL instance had the issuer patch in
 `configserver.configserver` and the credential migration in the newly provisioned
 `workflow_credentials.workflow_secret`. All seven issuer tables, five credential
 tables, the `NOT_SENT` constraint, runtime password authentication and restricted
@@ -225,8 +223,8 @@ role privileges were verified. Cascade validation passes after repairing three
 stale A2A schema references and adding four missing canonical gateway policies.
 [Migration receipt](authorization-a1/local-migration-receipt.json) records hashes
 and checks without secrets. The runtime URL is in the ignored mode-0600 file
-`portal-config-loc/all-in-lt/postgres-db/secrets/workflow-broker-database-url`;
-use it as the private `database-url` input during broker preparation.
+`portal-config-loc/all-in-lt/postgres-db/secrets/workflow-broker-database-url`.
+That file was an input to the retired broker preparation, not a current setup input.
 
 This supersedes earlier statements that no live database was changed. No images
 were rebuilt and no application services were restarted. Broker registration,
@@ -255,8 +253,8 @@ The callback returns 400 without state/code over verified HTTPS.
 IDs, snapshot IDs and certificate fingerprint from that historical activation.
 At the time, `deploy-local.sh lt` included a broker overlay when the ignored
 `workflow-broker/.runtime/enabled` marker existed; the overlay was later removed.
-The host system trust store does not trust the local issuer CA; explicit CA-file
-verification passes. Browser trust must be established before consent if absent.
+At the time, the host system trust store did not trust the local issuer CA;
+explicit CA-file verification passed. The browser consent path was later retired.
 
 This activation supersedes the historical no-import/no-restart statements above.
 The live preflight returned nine unclassified names on four clients: Support
@@ -272,4 +270,4 @@ scheduled and hours-long renewal qualification. Those steps were not completed
 as an A1 exit gate. Workflow Invoke subsequently retired that enrollment flow,
 so this plan is no longer a deployment or test procedure.
 
-Changes remain uncommitted.
+The A1 implementation described here was later committed and retired.

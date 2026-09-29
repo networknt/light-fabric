@@ -113,8 +113,6 @@ pub struct FixedActionSettings {
 struct WorkflowFile {
     #[serde(default)]
     approval_portal: Option<crate::approval_portal::Config>,
-    #[serde(default, rename = "credentialBroker")]
-    _retired_credential_broker: Option<serde_yaml::Value>,
     #[serde(default)]
     run_credential: RunCredentialFile,
     #[serde(default)]
@@ -1309,8 +1307,9 @@ mod tests {
     use super::{
         ArtifactSettings, FixedActionSettings, OperationalStoreProjection,
         RunnerExecutionConfigFile, RunnerSettings, WorkflowConfigManager, WorkflowConfiguration,
-        compatibility_boolean, keyring_file_path, range, restart_required_differences,
-        validate_scope_token, validate_timeout_ordering, validate_user_expiry_policy,
+        WorkflowFile, compatibility_boolean, keyring_file_path, range,
+        restart_required_differences, validate_scope_token, validate_timeout_ordering,
+        validate_user_expiry_policy,
     };
     use async_trait::async_trait;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -1474,6 +1473,18 @@ mod tests {
         ) -> Result<(), RuntimeError> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn retired_credential_broker_configuration_is_rejected() {
+        let error = serde_yaml::from_str::<WorkflowFile>("credentialBroker: {}\n")
+            .err()
+            .expect("retired broker configuration must fail at the Workflow parser");
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `credentialBroker`")
+        );
     }
 
     #[test]

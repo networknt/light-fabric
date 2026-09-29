@@ -1,5 +1,12 @@
 # Authorization A0: Contracts And Issuer Profiles
 
+> **Frozen historical baseline.** The browser authentication, registered
+> callback, and credential-broker provisioning below describe the original A0
+> proposal. Workflow Invoke later retired both browser callback and backend
+> broker enrollment. See [Workflow Invoke](../product/light-workflow/workflow-invoke.md)
+> for the current user-token and LONG registration contracts. The frozen text
+> below remains for provenance and is not current deployment guidance.
+
 Status: A0 contract baseline v1 frozen after review, September 13, 2026. The
 qualified-receiver `complete` variant recorded below is part of the frozen A0
 contract; it does not change the frozen operation set or authorize sends.

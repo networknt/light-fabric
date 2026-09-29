@@ -7,15 +7,14 @@
 > The A1 [qualification report](artifacts/user-application-workflow-authorization-a1-progress.md)
 > and its activation receipt preserve historical evidence.
 
-Status: accepted design, September 13, 2026. The
-[A0 contract baseline v1](user-application-workflow-authorization-a0.md) is frozen
-after review and records the selected issuer profiles, contracts and migration
-inventory. A1–A3
-implementation qualification remains pending. This is the shared authorization
-foundation for [issue #374](https://github.com/networknt/light-fabric/issues/374)
-and a prerequisite for development workflow orchestration implementation.
-Existing dual-token, OAuth, and workflow code provides foundations; the complete
-unattended grant and renewal contract below is not yet qualified.
+Historical status: accepted design, September 13, 2026. The
+[A0 contract baseline v1](user-application-workflow-authorization-a0.md) records
+the then-selected issuer profiles, contracts and migration inventory. A1–A3
+qualification was pending at that checkpoint. This design was a foundation for
+[issue #374](https://github.com/networknt/light-fabric/issues/374) and the
+subsequent orchestration work. The unattended grant and renewal contract below
+was superseded by Workflow Invoke; its historical qualification claims do not
+describe the current deployment.
 
 ## Scope And Related Designs
 
@@ -64,7 +63,7 @@ the user and app credentials specified here.
    effect idempotency. Removing `lad1` must preserve or explicitly replace its
    request binding, replay, and workflow-permit protections.
 
-## Current Implementation Boundary
+## Historical implementation boundary (2026-09-13)
 
 Source inspected September 13, 2026. These are source observations, not a claim
 that current deployment settings or external identity providers are qualified.
@@ -533,12 +532,11 @@ failures. Save a valid rotation for its shared grant even if its requesting run
 was canceled, then deny that run the access token. Grant revocation and expired
 renewal ownership still prevent saving the rotation.
 
-The enrollment API accepts an optional `credentialBroker.legacyLongLivedAppKeys`
-list of approved issuer/key-ID pairs, default empty. This permits only the A0
+The retired enrollment API accepted an optional `credentialBroker.legacyLongLivedAppKeys`
+list of approved issuer/key-ID pairs, default empty. This permitted only the A0
 local long-lived app fixtures in `X-Scope-Token`; signatures, expiry, caller
-service identity and explicit purpose markers remain enforced. It never relaxes
-`Authorization`. Official deployments keep the list empty and use marked app
-tokens. Qualify the actual Gateway credentials before A1 activation.
+service identity and explicit purpose markers remained enforced. It never relaxed
+`Authorization`. This setting and enrollment API are no longer deployed.
 
 A future recovery protocol must bind a durable refresh operation and its result
 to the original authenticated sender/key, recheck current grant state, and

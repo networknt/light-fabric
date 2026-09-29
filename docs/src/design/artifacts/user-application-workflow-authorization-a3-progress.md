@@ -1,10 +1,15 @@
 # Authorization A3 Migration and Removal Progress
 
-Status: **A3 has started; removal is not yet safe.** The selected local A2 stack
-starts with separate workflow-only Agent identities, and new grant-backed action
-invocations no longer persist the caller's reusable access token in ordinary
-Workflow invocation state. The complete A2 integration matrix and the A3
-consumer drain remain open.
+> **Historical progress snapshot.** This record predates Workflow Invoke and
+> the retirement of the A1 credential broker. Its grant-backed enrollment and
+> renewal gates are superseded; see [Workflow Invoke](../../product/light-workflow/workflow-invoke.md)
+> for the current invocation and LONG credential flow.
+
+Historical status: **A3 had started; removal was not yet safe.** The selected local A2 stack
+used separate workflow-only Agent identities, and grant-backed action invocations
+no longer persisted the caller's reusable access token in ordinary Workflow
+invocation state. The complete A2 integration matrix and A3 consumer drain
+remained open at that checkpoint.
 
 ## First migration slice
 
@@ -51,7 +56,9 @@ and the `workflow_action_dispatch_t` evidence/recovery path passes the selected
 stack's first-write, partial-write, uncertainty, restart and receiver-receipt
 tests.
 
-## Remaining gates before removal
+## Superseded gate plan before removal
+
+The following list records the former A3 plan and is not a current rollout procedure.
 
 1. Run the complete A2 authenticated action matrix, including workflow Agent and
    Knowledge paths, cancellation, unauthorized callers, nested depth, private

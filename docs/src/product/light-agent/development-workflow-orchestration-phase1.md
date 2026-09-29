@@ -3,6 +3,13 @@
 Status: **in progress, not qualified for the personal pilot**. This is a partial
 implementation record for issue #392, not a Phase 1 completion announcement.
 
+> The 2026-09-14 credential-broker checkpoints below are historical. Workflow
+> Invoke later retired the enrollment routes and broker grant flow. Current
+> Gateway-to-Workflow invocation uses the acting user's bearer. Asynchronous
+> `workflow_start` runs can register LONG for work that outlives that bearer;
+> synchronous `workflow_invoke` does not. See
+> [Workflow Invoke](../light-workflow/workflow-invoke.md).
+
 ## Live continuation update (2026-09-15)
 
 Latest continuation: historical UNKNOWN retirement is qualified (see the operator
@@ -871,20 +878,17 @@ No cancellation was sent and no run was created. Activation of scoped rules for
 `workflow_get_status@call`, `workflow_get_result@call`, and `workflow_cancel@call`
 requires explicit approval; no ACL changes were made in this continuation.
 
-Grant enrollment is still pending. Source inspection confirms the broker
-`/workflow/credentials/enroll`, `/complete`, and `/revoke` routes use separate
-user/app authentication and the issuer consent/PKCE flow. They are merged into
-the ordinary Workflow router, not the existing action mTLS router. Exposing
-enrollment requires a deliberate authenticated forwarding path; the local MCP
-ingress must not simply forward browser-supplied app credentials or fabricate
-an enrolled grant. The actual root binding pins include profile
+At that checkpoint, grant enrollment was pending. Source inspection then found
+the broker `/workflow/credentials/enroll`, `/complete`, and `/revoke` routes and
+issuer consent/PKCE flow in the ordinary Workflow router. Those routes and the
+broker grant flow were later retired. The actual root binding pins then included profile
 `workflow-action-v1`, workflow definition ID, and definition/policy/response
-policy digests. Native execution remains blocked until enrollment and lifecycle
-authorization/transport are qualified.
+policy digests. Native execution was blocked at that checkpoint pending enrollment
+and lifecycle authorization/transport qualification.
 
-Root workflow admission also requires an owner-authorized renewable grant;
-the UI does not fabricate or auto-enroll one. Grant enrollment and authenticated
-status/cancel controls remain work before a native run can be safely qualified.
+At that checkpoint, root admission required an owner-authorized renewable grant;
+the UI did not fabricate or auto-enroll one. This grant prerequisite was later
+replaced by the Workflow Invoke user-token and LONG registration contracts.
 
 ### Isolated qualification fixture continuation (2026-09-14)
 
@@ -1367,20 +1371,19 @@ and diff whitespace checks passed. Live Portal no longer shows the enrollment
 prompt; Gateway is running with exit code zero after restoration. No database
 wipe, commit or push was performed.
 
-### Backend acquisition correction (2026-09-14)
+### Historical backend acquisition correction (2026-09-14)
 
 This supersedes the remaining acquisition gap in the preceding rollback note.
-Root HTTPS Gateway invocation without a supplied grant now calls Workflow's
-enrollment API internally. The API acquires and redeems a one-time issuer code
-over mTLS using existing Portal scope authorization and returns only a grant ID.
-There is no new consent Tool, browser redirect, or additional login. Nested
-Workflow actions continue to inherit their parent authorization.
+At that checkpoint, root HTTPS Gateway invocation without a supplied grant
+called Workflow's enrollment API internally. The API acquired and redeemed a
+one-time issuer code over mTLS using existing Portal scope authorization and
+returned only a grant ID. There was no new consent Tool, browser redirect, or
+additional login. This acquisition path was later retired by Workflow Invoke.
 
-The issuer validates the exact source access token against its issuance audit,
-active authorization-code session, current client scope and current user authority.
-Only token fingerprints are recorded, not bearer tokens. Source-session revocation
-or lost provenance prevents renewal. Older access tokens need ordinary Portal
-refresh before this new acquisition path can use them.
+The former acquisition path validated the exact source access token against its
+issuance audit, active authorization-code session, client scope and user authority.
+It recorded token fingerprints rather than bearer tokens. Older access tokens
+needed an ordinary Portal refresh before that path could use them.
 
 The short isolated real-mTLS test covers initial and refreshed-token acquisition,
 renewal, scope expansion, wrong Host, missing provenance and source revocation.
@@ -1398,8 +1401,8 @@ Local container-layer binaries installed:
 All three were running with zero restarts after deployment. The unauthenticated
 live Workflow enrollment probe returned 403. Backups are under
 `/tmp/phase1-backend-acquisition.4FBLYy/`; no application database reset occurred.
-These replacements must be incorporated in the normal image build before
-recreating the containers. No commit, push or Phase 1 completion comment was made.
+At the time, these replacements had not been incorporated in normal images.
+No commit, push or Phase 1 completion comment was made at that checkpoint.
 
 ### Native qualification and policy upgrade (2026-09-15 UTC)
 
