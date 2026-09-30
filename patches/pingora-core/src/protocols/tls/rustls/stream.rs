@@ -421,6 +421,15 @@ impl TlsStream<crate::protocols::Stream> {
         self.tls
             .stream
             .as_ref()
+            .is_some_and(|s| s.get_ref().0.as_ref().supports_socket_write_guard())
+    }
+}
+
+impl TlsStream<crate::protocols::l4::stream::Stream> {
+    pub(crate) fn supports_socket_write_guard(&self) -> bool {
+        self.tls
+            .stream
+            .as_ref()
             .is_some_and(|s| s.get_ref().0.supports_socket_write_guard())
     }
 }

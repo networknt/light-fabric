@@ -290,7 +290,7 @@ impl Context {
                 );
                 headers.insert(
                     "x-workflow-action",
-                    self.reference.to_string().parse().map_err(|_| denied())?,
+                    bounds.action_id.to_string().parse().map_err(|_| denied())?,
                 );
             }
             let path = match parsed.query() {

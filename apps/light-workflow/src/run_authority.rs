@@ -103,6 +103,22 @@ impl RunAuthority for PerRunAuthority {
             WHERE host_id=$1 AND run_id=$2 AND grant_id=$3 AND user_id=$4 AND active AND deadline>clock_timestamp()")
             .bind(host).bind(run).bind(grant).bind(user).fetch_optional(&self.pool).await?
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::PermissionDenied, "run authority denied"))?;
+        // Accepted strict P02 runs check operational safety here, not user-token
+        // eligibility. Only a token-requiring producer selects/exchanges a JWT.
+        let verified: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_ops.workflow_verified_invocation_t v WHERE v.host_id=$1 AND v.run_id=$2)")
+            .bind(host).bind(run).fetch_one(&self.pool).await?;
+        if verified {
+            let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_ops.workflow_invocation_t i JOIN workflow_ops.process_info_t p ON p.host_id=i.host_id AND p.process_id=i.process_id WHERE i.host_id=$1 AND i.workflow_instance_id=$2 AND i.end_user_subject=$3 AND i.state IN('ACCEPTED','RUNNING','WAITING') AND i.cancel_requested_ts IS NULL AND (i.deadline_ts>clock_timestamp() OR i.response_policy_snapshot->'privateExecutionProfile'->>'version'='1') AND (p.deadline_ts IS NULL OR p.deadline_ts>clock_timestamp()))")
+                .bind(host).bind(run).bind(user.to_string()).fetch_one(&self.pool).await?;
+            if !live {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "run authority denied",
+                )
+                .into());
+            }
+            return Ok(());
+        }
         match row.get::<&str, _>("credential_kind") {
             "invoke" => self.invoke.lock_run_authority(run, grant, host, user).await,
             "long" => match &self.long {

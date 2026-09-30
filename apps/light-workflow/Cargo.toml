@@ -55,6 +55,10 @@ regex = "1"
 jsonschema = { workspace = true }
 
 [dev-dependencies]
+light-pingora = { path = "../../frameworks/light-pingora" }
+bytes = { workspace = true }
+tokio-rustls = "0.26"
+rustls-pemfile = "2.2"
 light-security = { path = "../../crates/light-security", features = ["test-support"] }
 tempfile = "3"
 rcgen = "0.14"

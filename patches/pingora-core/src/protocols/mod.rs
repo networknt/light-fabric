@@ -108,6 +108,13 @@ pub trait IO:
             return stream.supports_socket_write_guard();
         }
         #[cfg(feature = "rustls")]
+        if let Some(stream) = self
+            .as_any()
+            .downcast_ref::<tls::TlsStream<l4::stream::Stream>>()
+        {
+            return stream.supports_socket_write_guard();
+        }
+        #[cfg(feature = "rustls")]
         if let Some(stream) = self.as_any().downcast_ref::<tls::TlsStream<Stream>>() {
             return stream.supports_socket_write_guard();
         }

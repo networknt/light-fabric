@@ -12,8 +12,8 @@ pub mod configuration;
 pub mod consumer;
 pub mod development_cancel;
 pub mod development_finalize;
-pub mod events;
 pub(crate) mod durable_timer;
+pub mod events;
 pub mod executor;
 pub mod fixed_action;
 pub mod invocation;
@@ -48,3 +48,7 @@ pub mod development_execution;
 pub mod development_handoff;
 pub mod development_intake;
 pub mod development_store;
+pub mod verified_caller;
+pub mod verified_task_context;
+#[cfg(test)]
+mod verified_task_context_tests;

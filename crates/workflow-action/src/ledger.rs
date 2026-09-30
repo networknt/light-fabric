@@ -30,27 +30,40 @@ impl Ledger {
     /// Never call from a model-facing route. The producer must obtain this exact
     /// binding from admitted user/grant state and the pinned dependency registry.
     pub async fn install_permit(&self, binding: &Binding, retry_limit: i64) -> Result<(), Error> {
+        let mut tx = self.pool.begin().await?;
+        self.install_permit_in(&mut tx, binding, retry_limit)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Trusted producer only. The caller commits its immutable task context in
+    /// this same transaction; a failed context check rolls back the permit too.
+    pub async fn install_permit_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        binding: &Binding,
+        retry_limit: i64,
+    ) -> Result<(), Error> {
         binding.validate().map_err(|_| Error::Denied)?;
         if !(1..=100).contains(&retry_limit) {
             return Err(Error::Denied);
         }
-        let mut tx = self.pool.begin().await?;
-        self.authority(&mut tx, binding, true).await?;
+        self.authority(tx, binding, true).await?;
         if let Some(parent) = binding.parent_action_id {
             let parent:serde_json::Value=sqlx::query_scalar("SELECT binding FROM workflow_ops.workflow_action_permit_t WHERE host_id=$1 AND action_id=$2 AND active FOR SHARE")
-                .bind(binding.host_id).bind(parent).fetch_optional(&mut *tx).await?.ok_or(Error::Denied)?;
+                .bind(binding.host_id).bind(parent).fetch_optional(&mut **tx).await?.ok_or(Error::Denied)?;
             binding
                 .validate_child_of(&serde_json::from_value(parent)?)
                 .map_err(|_| Error::Denied)?;
         }
         sqlx::query("INSERT INTO workflow_ops.workflow_action_permit_t(host_id,action_id,run_id,attempt_id,binding,retry_limit) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING")
-            .bind(binding.host_id).bind(binding.action_id).bind(binding.run_id).bind(binding.attempt_id).bind(serde_json::to_value(binding)?).bind(retry_limit).execute(&mut *tx).await?;
+            .bind(binding.host_id).bind(binding.action_id).bind(binding.run_id).bind(binding.attempt_id).bind(serde_json::to_value(binding)?).bind(retry_limit).execute(&mut **tx).await?;
         let stored:serde_json::Value=sqlx::query_scalar("SELECT binding FROM workflow_ops.workflow_action_permit_t WHERE host_id=$1 AND action_id=$2 AND active")
-            .bind(binding.host_id).bind(binding.action_id).fetch_optional(&mut *tx).await?.ok_or(Error::Conflict)?;
+            .bind(binding.host_id).bind(binding.action_id).fetch_optional(&mut **tx).await?.ok_or(Error::Conflict)?;
         if serde_json::from_value::<Binding>(stored)? != *binding {
             return Err(Error::Conflict);
         }
-        tx.commit().await?;
         Ok(())
     }
     async fn authority(
@@ -525,33 +538,51 @@ impl Ledger {
     /// its own verified app/peer identity at the API boundary; this method also
     /// proves that the dispatch belongs to a currently fenced Gateway owner.
     pub async fn receiver_binding(&self, host: Uuid, action: Uuid) -> Result<Binding, Error> {
+        let mut tx = self.pool.begin().await?;
+        let binding = self.receiver_binding_in(&mut tx, host, action).await?;
+        tx.commit().await?;
+        Ok(binding)
+    }
+
+    /// Receiving checks and the caller's operation mutation share this fence.
+    /// Does not authorize, begin, consume, or reinstall a Gateway permit.
+    pub async fn receiver_binding_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        host: Uuid,
+        action: Uuid,
+    ) -> Result<Binding, Error> {
         if host.is_nil() || action.is_nil() {
             return Err(Error::Denied);
         }
-        let mut tx = self.pool.begin().await?;
         let value: serde_json::Value = sqlx::query_scalar(
-            "SELECT binding FROM workflow_ops.workflow_action_permit_t WHERE host_id=$1 AND action_id=$2 AND active FOR SHARE",
+            "SELECT binding FROM workflow_ops.workflow_action_permit_t WHERE host_id=$1 AND action_id=$2 AND active",
         )
         .bind(host)
         .bind(action)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?
         .ok_or(Error::Denied)?;
         let binding: Binding = serde_json::from_value(value)?;
         binding.validate().map_err(|_| Error::Denied)?;
-        self.authority(&mut tx, &binding, true).await?;
-        self.permit(&mut tx, &binding, true).await?;
         let owner_value: serde_json::Value = sqlx::query_scalar(
-            "SELECT owner FROM workflow_ops.workflow_action_dispatch_t WHERE host_id=$1 AND action_id=$2 AND state='SEND_INTENT' ORDER BY generation DESC LIMIT 1 FOR SHARE",
+            "SELECT owner FROM workflow_ops.workflow_action_dispatch_t WHERE host_id=$1 AND action_id=$2 AND state='SEND_INTENT' ORDER BY generation DESC LIMIT 1",
         )
         .bind(host)
         .bind(action)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?
         .ok_or(Error::Denied)?;
         let owner: Owner = serde_json::from_value(owner_value)?;
-        crate::owners::lock_owner(&mut tx, &owner).await?;
-        tx.commit().await?;
+        crate::owners::lock_owner(tx, &owner).await?;
+        self.authority(tx, &binding, true).await?;
+        self.permit(tx, &binding, true).await?;
+        let current: serde_json::Value = sqlx::query_scalar(
+            "SELECT owner FROM workflow_ops.workflow_action_dispatch_t WHERE host_id=$1 AND action_id=$2 AND state='SEND_INTENT' ORDER BY generation DESC LIMIT 1 FOR SHARE",
+        ).bind(host).bind(action).fetch_optional(&mut **tx).await?.ok_or(Error::Denied)?;
+        if serde_json::from_value::<Owner>(current)? != owner {
+            return Err(Error::Denied);
+        }
         Ok(binding)
     }
 }

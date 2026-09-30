@@ -92,7 +92,7 @@ async fn lock_parent_mode(
     let mut private_lifetime = false;
     if let Some(i) = invocation {
         run = Some(i.get("workflow_instance_id"));
-        binding = Some(i.get("binding_id"));
+        binding = i.get::<Option<Uuid>, _>("binding_id");
         private = i.get::<Option<String>, _>("profile").as_deref() == Some("portal_execution");
         private_lifetime = i
             .get::<Option<bool>, _>("private_lifetime")

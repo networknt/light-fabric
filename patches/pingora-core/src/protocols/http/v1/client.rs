@@ -169,7 +169,12 @@ impl HttpSession {
         }
 
         use crate::protocols::request_write_guard::{CancellationFence, Scope, CURRENT};
-        if guard.is_some() && !self.underlying_stream.supports_socket_write_guard() {
+        if guard.is_some()
+            && !self
+                .underlying_stream
+                .as_ref()
+                .supports_socket_write_guard()
+        {
             return Error::e_explain(WriteError, "transport lacks socket-write guard support");
         }
         let scope = guard.map(Scope::new);

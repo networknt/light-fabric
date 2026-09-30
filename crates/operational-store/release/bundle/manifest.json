@@ -323,6 +323,14 @@
       "migrationId": "0021_workflow_durable_timer",
       "path": "crates/workflow-store/migrations/workflow-postgres/0021_workflow_durable_timer.sql",
       "sha256": "25f99ed3f10ec4e227b0e33c80052bc44bde5ab2c556ed2dbd13172650ef132f"
+    },
+    {
+      "order": 41,
+      "owner": "workflow-store",
+      "schema": "workflow_ops",
+      "migrationId": "0022_workflow_verified_task_context",
+      "path": "crates/workflow-store/migrations/workflow-postgres/0022_workflow_verified_task_context.sql",
+      "sha256": "80c8a5215aff12f5e4fc106919c60dc39ffc129167485b1ac4f8fb0a7ccbdc23"
     }
   ],
   "roleProfileVersion": 1,

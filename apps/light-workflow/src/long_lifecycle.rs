@@ -373,9 +373,10 @@ mod tests {
         sqlx::query("INSERT INTO workflow_ops.workflow_tool_binding_t(host_id,binding_id,tool_id,wf_def_id,workflow_version,
             definition_digest,schema_digest,policy_digest,response_policy_digest,invocation_mode,
             sync_wait_ms,total_deadline_ms,execution_class,result_text_mode,idempotency_policy,
-            delegation_policy,runtime_bounds)
-            VALUES($1,$2,$3,$4,'1.0.0',$5,$5,$5,$5,'async',1000,3600000,'standard','compact-json','{}','{}','{}')")
+            delegation_policy,runtime_bounds,revision_status,binding_digest,approval_digest,source_binding_id,requested_by,requested_ts)
+            VALUES($1,$2,$3,$4,'1.0.0',$5,$5,$5,$5,'async',1000,3600000,'standard','compact-json','{}','{}','{}','approved',$5,$5,$2,$6,clock_timestamp())")
             .bind(host).bind(tool_binding).bind(tool).bind(definition).bind(&digest)
+            .bind(owner.to_string())
             .execute(&mut *tx).await.unwrap();
         sqlx::query("INSERT INTO workflow_ops.process_info_t(host_id,process_id,wf_def_id,wf_instance_id,app_id,
             process_type,status_code,ex_trigger_ts) VALUES($1,$2,$3,$4,'test','Workflow','A',now())")
