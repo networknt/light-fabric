@@ -23,6 +23,9 @@ pub const TOOL_ACCESS_APPROVAL_MIGRATION_ID: &str = "0014_workflow_tool_access_a
 pub const NATIVE_PROCESS_OPERATIONS_MIGRATION_ID: &str = "0015_native_process_operations";
 pub const DEFINITION_NATIVE_START_MIGRATION_ID: &str = "0016_definition_native_start";
 pub const TOOL_BINDING_REVISIONS_MIGRATION_ID: &str = "0018_workflow_tool_binding_revisions";
+pub const ARTIFACT_RETIREMENT_MIGRATION_ID: &str = "0020_artifact_legacy_retirement";
+pub const ARTIFACT_RETIREMENT_MIGRATION_SQL: &str =
+    include_str!("../migrations/workflow-postgres/0020_artifact_legacy_retirement.sql");
 pub const ACTION_TABLES: &[&str] = &[
     "workflow_action_authority_t",
     "workflow_action_permit_t",
@@ -341,6 +344,14 @@ pub async fn validate(
     if !native_start_ready {
         return Err(ValidationError::Scope(
             "Workflow definition native start migration is missing".into(),
+        ));
+    }
+    let retirement_ready: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t WHERE migration_owner='workflow-store' AND schema_name='workflow_ops' AND migration_id=$1)",
+    ).bind(ARTIFACT_RETIREMENT_MIGRATION_ID).fetch_one(pool).await?;
+    if !retirement_ready {
+        return Err(ValidationError::Scope(
+            "Workflow artifact retirement migration is missing".into(),
         ));
     }
     let denied: Vec<String> = sqlx::query_scalar(

@@ -1,0 +1,18 @@
+    Blocking waiting for file lock on build directory
+   Compiling light-workflow v0.2.1 (/home/steve/workspace/light-fabric-issue425-a00/apps/light-workflow)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.71s
+     Running tests/artifact_retention_shared_postgres.rs (/home/steve/workspace/light-fabric/target/debug/deps/artifact_retention_shared_postgres-7a7ce4e9c85a2549)
+
+running 8 tests
+test runner_replay_rejects_deleted_and_changed_authority ... ok
+test concurrent_publication_and_cleanup ... ok
+test legacy_legal_hold_sibling ... ok
+test stale_success_and_late_delete ... ok
+test stale_failure_and_late_delete ... ok
+test legacy_retained_sibling ... ok
+test legacy_direct_process_helper ... ok
+test new_keys_retry_and_retired_identity_fence ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.69s
+
+

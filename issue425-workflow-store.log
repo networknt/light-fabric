@@ -1,0 +1,22 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/lib.rs (/home/steve/workspace/light-fabric/target/debug/deps/workflow_store-3c211f84aa88a23c)
+
+running 1 test
+test tests::workflow_inventory_and_boundary_are_frozen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/postgres_binding.rs (/home/steve/workspace/light-fabric/target/debug/deps/postgres_binding-6bff72f5cf225c97)
+
+running 1 test
+test workflow_binding_and_restart_state_are_durable ... ignored, requires WORKFLOW_STORE_TEST_DATABASE_URL
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests workflow_store
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+

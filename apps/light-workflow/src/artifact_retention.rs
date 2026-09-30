@@ -8,8 +8,22 @@ use uuid::Uuid;
 
 #[async_trait]
 pub trait ArtifactObjectStore: Send + Sync {
+    /// Validate row-owned deletion authority. Shared legacy objects are never
+    /// physically deleted by this reconciler, including retries.
+    fn deletion_policy(
+        &self,
+        host_id: Uuid,
+        artifact_id: Uuid,
+        reference: &str,
+        digest: &str,
+    ) -> Result<ArtifactDeletionPolicy, ArtifactStoreError>;
     async fn delete(&self, reference: &str) -> Result<(), ArtifactStoreError>;
     async fn exists(&self, reference: &str) -> Result<bool, ArtifactStoreError>;
+}
+
+pub enum ArtifactDeletionPolicy {
+    Dedicated,
+    LegacyShared,
 }
 
 #[derive(Debug, Error)]
@@ -38,7 +52,7 @@ impl<S: ArtifactObjectStore> ArtifactRetentionReconciler<S> {
         let mut claimed = Vec::new();
         let mut tx = self.pool.begin().await?;
         let rows = sqlx::query(
-            "SELECT host_id,artifact_id,storage_reference,deletion_attempt
+            "SELECT host_id,artifact_id,storage_reference,content_digest,promotion_state,deletion_attempt
              FROM workflow_artifact_t
              WHERE legal_hold=FALSE
                AND ((deletion_state='RETAINED' AND retain_until_ts<=now())
@@ -54,26 +68,50 @@ impl<S: ArtifactObjectStore> ArtifactRetentionReconciler<S> {
                 host_id,
                 artifact_id,
                 row.try_get::<String, _>("storage_reference")?,
+                row.try_get::<String, _>("content_digest")?,
+                row.try_get::<String, _>("promotion_state")?,
                 row.try_get::<i32, _>("deletion_attempt")? + 1,
             ));
         }
         tx.commit().await?;
-        for (host_id, artifact_id, reference, attempt) in &claimed {
-            let outcome = match self.store.delete(reference).await {
-                Ok(()) => match self.store.exists(reference).await {
-                    Ok(false) => Ok(()),
-                    Ok(true) => Err("object still exists after delete".into()),
+        for (host_id, artifact_id, reference, digest, promotion, attempt) in &claimed {
+            if promotion != "BOUND" {
+                // A staging reference is not durable-object deletion authority.
+                // Interrupted copies may also have left unreferenced durable
+                // bytes. Retire the row without storage IO or an absence claim;
+                // physical reclamation belongs to separate staging/orphan work.
+                sqlx::query("UPDATE workflow_artifact_t SET deletion_state='RETIRED',deletion_next_retry_ts=NULL,deletion_evidence=$3,updated_ts=now() WHERE host_id=$1 AND artifact_id=$2 AND deletion_state='DELETING' AND deletion_attempt=$4 AND storage_reference=$5 AND promotion_state=$6")
+                    .bind(host_id).bind(artifact_id).bind(json!({"physicalDeleteDeferred":true,"reason":"unbound-artifact","promotionState":promotion,"reference":reference,"attempt":attempt})).bind(attempt).bind(reference).bind(promotion).execute(&self.pool).await?;
+                continue;
+            }
+            let outcome = match self.store.deletion_policy(
+                *host_id,
+                *artifact_id,
+                reference,
+                digest,
+            ) {
+                Ok(ArtifactDeletionPolicy::LegacyShared) => {
+                    sqlx::query("UPDATE workflow_artifact_t SET deletion_state='RETIRED',deletion_next_retry_ts=NULL,deletion_evidence=$3,updated_ts=now() WHERE host_id=$1 AND artifact_id=$2 AND deletion_state='DELETING' AND deletion_attempt=$4 AND storage_reference=$5")
+                        .bind(host_id).bind(artifact_id).bind(json!({"physicalDeleteDeferred":true,"reason":"legacy-shared-object","reference":reference,"attempt":attempt})).bind(attempt).bind(reference).execute(&self.pool).await?;
+                    continue;
+                }
+                Err(error) => Err(error.to_string()),
+                Ok(ArtifactDeletionPolicy::Dedicated) => match self.store.delete(reference).await {
+                    Ok(()) => match self.store.exists(reference).await {
+                        Ok(false) => Ok(()),
+                        Ok(true) => Err("object still exists after delete".into()),
+                        Err(error) => Err(error.to_string()),
+                    },
                     Err(error) => Err(error.to_string()),
                 },
-                Err(error) => Err(error.to_string()),
             };
             match outcome {
                 Ok(()) => {
-                    sqlx::query("UPDATE workflow_artifact_t SET deletion_state='DELETED',deleted_ts=now(),deletion_next_retry_ts=NULL,deletion_evidence=$3,updated_ts=now() WHERE host_id=$1 AND artifact_id=$2 AND deletion_state='DELETING'").bind(host_id).bind(artifact_id).bind(json!({"verifiedAbsent":true,"reference":reference})).execute(&self.pool).await?;
+                    sqlx::query("UPDATE workflow_artifact_t SET deletion_state='DELETED',deleted_ts=now(),deletion_next_retry_ts=NULL,deletion_evidence=$3,updated_ts=now() WHERE host_id=$1 AND artifact_id=$2 AND deletion_state='DELETING' AND deletion_attempt=$4 AND storage_reference=$5").bind(host_id).bind(artifact_id).bind(json!({"verifiedAbsent":true,"reference":reference,"attempt":attempt})).bind(attempt).bind(reference).execute(&self.pool).await?;
                 }
                 Err(error) => {
                     let backoff = Duration::seconds((1_i64 << (*attempt).min(12)).min(3600));
-                    sqlx::query("UPDATE workflow_artifact_t SET deletion_state='DELETE_FAILED',deletion_next_retry_ts=$3,deletion_evidence=$4,updated_ts=now() WHERE host_id=$1 AND artifact_id=$2 AND deletion_state='DELETING'").bind(host_id).bind(artifact_id).bind(Utc::now()+backoff).bind(json!({"error":error,"attempt":attempt})).execute(&self.pool).await?;
+                    sqlx::query("UPDATE workflow_artifact_t SET deletion_state='DELETE_FAILED',deletion_next_retry_ts=$3,deletion_evidence=$4,updated_ts=now() WHERE host_id=$1 AND artifact_id=$2 AND deletion_state='DELETING' AND deletion_attempt=$5 AND storage_reference=$6").bind(host_id).bind(artifact_id).bind(Utc::now()+backoff).bind(json!({"error":error,"attempt":attempt})).bind(attempt).bind(reference).execute(&self.pool).await?;
                 }
             }
         }
@@ -88,9 +126,7 @@ impl<S: ArtifactObjectStore> ArtifactRetentionReconciler<S> {
             if shutdown.is_cancelled() {
                 return Ok(());
             }
-            // A process may die after claiming but before deleting. Requeue such claims.
-            sqlx::query("UPDATE workflow_artifact_t SET deletion_state='DELETE_FAILED',deletion_next_retry_ts=now(),deletion_evidence=COALESCE(deletion_evidence,'{}'::jsonb)||jsonb_build_object('reason','stale-delete-claim'),updated_ts=now() WHERE deletion_state='DELETING' AND updated_ts < now()-interval '5 minutes'")
-                .execute(&self.pool).await?;
+            self.requeue_stale().await?;
             let changed = self.reconcile_once().await?;
             let delay = if changed == 0 {
                 StdDuration::from_secs(30)
@@ -99,6 +135,13 @@ impl<S: ArtifactObjectStore> ArtifactRetentionReconciler<S> {
             };
             tokio::select! { _ = shutdown.cancelled() => return Ok(()), _ = tokio::time::sleep(delay) => {} }
         }
+    }
+
+    /// Requeue does not cancel remote I/O. The retired identity remains fenced,
+    /// and completions must match the attempt as well as the stored reference.
+    pub async fn requeue_stale(&self) -> Result<u64, sqlx::Error> {
+        Ok(sqlx::query("UPDATE workflow_artifact_t SET deletion_state='DELETE_FAILED',deletion_next_retry_ts=now(),deletion_evidence=COALESCE(deletion_evidence,'{}'::jsonb)||jsonb_build_object('reason','stale-delete-claim'),updated_ts=now() WHERE deletion_state='DELETING' AND updated_ts < now()-interval '5 minutes'")
+            .execute(&self.pool).await?.rows_affected())
     }
 
     pub async fn mark_process_deleted(

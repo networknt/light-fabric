@@ -105,7 +105,7 @@ async fn fixture_stage_variant(pool: &PgPool, terminal: bool, fixed_design: bool
     request.validate(Utc::now()).unwrap();
     sqlx::query("INSERT INTO wf_definition_t(host_id,wf_def_id,namespace,name,version,definition) VALUES($1,$2,'development','feature-design','1.0.0',$3)")
         .bind(host).bind(definition_id).bind(serde_json::to_string(&definition).unwrap()).execute(pool).await.unwrap();
-    sqlx::query("INSERT INTO workflow_tool_binding_t(host_id,binding_id,tool_id,wf_def_id,workflow_version,definition_digest,schema_digest,policy_digest,response_policy_digest,invocation_mode,sync_wait_ms,total_deadline_ms,execution_class,result_text_mode,idempotency_policy,delegation_policy,runtime_bounds) VALUES($1,$2,$3,$4,'1.0.0',$5,$5,$5,$5,'async',1000,3600000,'standard','compact-json','{}','{}','{}')")
+    sqlx::query("INSERT INTO workflow_tool_binding_t(host_id,binding_id,tool_id,wf_def_id,workflow_version,definition_digest,schema_digest,policy_digest,response_policy_digest,invocation_mode,sync_wait_ms,total_deadline_ms,execution_class,result_text_mode,idempotency_policy,delegation_policy,runtime_bounds,revision_status,source_binding_id,binding_digest,approval_digest,requested_by,requested_ts) VALUES($1,$2,$3,$4,'1.0.0',$5,$5,$5,$5,'async',1000,3600000,'standard','compact-json','{}','{}','{}','approved',$2,$5,$5,'fixture',now())")
         .bind(host).bind(binding).bind(tool).bind(definition_id).bind(digest).execute(pool).await.unwrap();
     Fixture {
         host,
@@ -465,12 +465,17 @@ async fn acceptance_variant(pool: &PgPool, terminal: bool, fixed_design: bool) {
             .is_err()
     );
     tx.rollback().await.unwrap();
-    let raw = refs["proof"].digest.trim_start_matches("sha256:");
-    let path = root.path().join(format!(
-        "evidence/tenants/{}/objects/sha256/{}/{raw}",
-        f.host,
-        &raw[..2]
-    ));
+    let reference: String = sqlx::query_scalar(
+        "SELECT storage_reference FROM workflow_artifact_t WHERE host_id=$1 AND artifact_id=$2",
+    )
+    .bind(f.host)
+    .bind(refs["proof"].id.parse::<Uuid>().unwrap())
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    let path = root
+        .path()
+        .join(reference.strip_prefix("object://").unwrap());
     std::fs::write(&path, b"broken").unwrap();
     let mut tx = pool.begin().await.unwrap();
     assert!(
@@ -704,7 +709,7 @@ async fn fixed_design_terminal(
     let request: StartInvocationRequest = serde_json::from_value(value).unwrap();
     sqlx::query("INSERT INTO wf_definition_t(host_id,wf_def_id,namespace,name,version,definition) VALUES($1,$2,'development','feature-finalize','1.0.0',$3)")
         .bind(source.host).bind(definition_id).bind(serde_json::to_string(&definition).unwrap()).execute(pool).await.unwrap();
-    sqlx::query("INSERT INTO workflow_tool_binding_t(host_id,binding_id,tool_id,wf_def_id,workflow_version,definition_digest,schema_digest,policy_digest,response_policy_digest,invocation_mode,sync_wait_ms,total_deadline_ms,execution_class,result_text_mode,idempotency_policy,delegation_policy,runtime_bounds) VALUES($1,$2,$3,$4,'1.0.0',$5,$5,$5,$5,'async',1000,3600000,'standard','compact-json','{}','{}','{}')")
+    sqlx::query("INSERT INTO workflow_tool_binding_t(host_id,binding_id,tool_id,wf_def_id,workflow_version,definition_digest,schema_digest,policy_digest,response_policy_digest,invocation_mode,sync_wait_ms,total_deadline_ms,execution_class,result_text_mode,idempotency_policy,delegation_policy,runtime_bounds,revision_status,source_binding_id,binding_digest,approval_digest,requested_by,requested_ts) VALUES($1,$2,$3,$4,'1.0.0',$5,$5,$5,$5,'async',1000,3600000,'standard','compact-json','{}','{}','{}','approved',$2,$5,$5,'fixture',now())")
         .bind(source.host).bind(binding).bind(tool).bind(definition_id).bind(&digest).execute(pool).await.unwrap();
     let finalize = Fixture {
         host: source.host,
@@ -965,6 +970,25 @@ async fn atomic_claim_replay_conflict_rollback_and_dispatch_fencing() {
         .execute(&pool)
         .await
         .unwrap();
+    // Current admission/handoff source needs the v2 idempotency function and
+    // private lifetime columns, not just the original development migration.
+    for migration in [
+        include_str!(
+            "../../../crates/workflow-store/migrations/workflow-postgres/0007_workflow_action_dispatch.sql"
+        ),
+        include_str!(
+            "../../../crates/workflow-store/migrations/workflow-postgres/0010_workflow_action_runtime_privileges.sql"
+        ),
+        workflow_store::PRIVATE_LIFETIME_MIGRATION_SQL,
+        workflow_store::DEFINITION_NATIVE_START_MIGRATION_SQL,
+        include_str!(
+            "../../../crates/workflow-store/migrations/workflow-postgres/0017_workflow_long_credentials.sql"
+        ),
+        workflow_store::TOOL_BINDING_REVISIONS_MIGRATION_SQL,
+        workflow_store::ARTIFACT_RETIREMENT_MIGRATION_SQL,
+    ] {
+        sqlx::raw_sql(migration).execute(&pool).await.unwrap();
+    }
     pool.close().await;
     let pool = PgPoolOptions::new()
         .max_connections(8)
@@ -1490,9 +1514,23 @@ async fn transactional_artifact_publication(url: &str) {
         );
         tx.rollback().await.unwrap();
     }
+    let reference: String = sqlx::query_scalar(
+        "SELECT storage_reference FROM workflow_artifact_t WHERE host_id=$1 AND artifact_id=$2",
+    )
+    .bind(host)
+    .bind(publication().artifact_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(
         store
-            .read_verified(&host.to_string(), &digest, 1024)
+            .read_verified(
+                &host.to_string(),
+                publication().artifact_id,
+                &reference,
+                &digest,
+                1024
+            )
             .await
             .unwrap(),
         publication().bytes
@@ -2067,12 +2105,17 @@ async fn native_review_allocation(pool: &PgPool) {
         .execute(pool)
         .await
         .unwrap();
-        let hex = digest.strip_prefix("sha256:").unwrap();
-        let object = root.path().join(format!(
-            "evidence/tenants/{}/objects/sha256/{}/{hex}",
-            f.host,
-            &hex[..2]
-        ));
+        let reference: String = sqlx::query_scalar(
+            "SELECT storage_reference FROM workflow_artifact_t WHERE host_id=$1 AND artifact_id=$2",
+        )
+        .bind(f.host)
+        .bind(artifact)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let object = root
+            .path()
+            .join(reference.strip_prefix("object://").unwrap());
         std::fs::write(&object, b"corrupt").unwrap();
         assert!(enqueue(input.clone(), agent).await.is_err());
         std::fs::remove_file(&object).unwrap();

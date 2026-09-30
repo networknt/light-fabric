@@ -1,0 +1,118 @@
+   Compiling light-workflow v0.2.1 (/home/steve/workspace/light-fabric-issue425-a00/apps/light-workflow)
+Warning: truncated output (original token count: 4021)
+Total output lines: 170
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.98s
+     Running unittests src/lib.rs (/home/steve/workspace/light-fabric/target/debug/deps/light_workflow-8ea30c53162509f6)
+
+running 163 tests
+test admin_api::native_process_postgres_tests::native_note_delete_owner_retry_hold_and_definition_preservation ... ignored, requires a disposable migrated Workflow PostgreSQL database
+test admin_api::role_postgres_tests::role_claim_revocation_completion_and_user_regression ... ignored, requires WORKFLOW_ROLE_TEST_DATABASE_URL pointing to a disposable PostgreSQL database
+test admin_api::tests::completion_deadline_is_inclusive_and_optional ... ok
+test admin_api::tests::pagination_is_bounded_and_rejects_bad_cursors ... ok
+test admin_api::tests::process_name_uses_saved_open_workflow_document ... ok
+test agent_job::tests::bridge_narrows_and_detects_cycles ... ok
+test admin_api::role_postgres_tests::role_assignment_uses_verified_acting_user_claims ... ok
+test approval_portal::tests::actor_assertion_is_bounded_to_one_operation ... ok
+test artifact_store::tests::disabled_or_invalid_filesystem_store_does_not_admit_storage ... ok
+test approval_portal::tests::config_rejects_unknown_fields_and_redacts_no_secret_value ... ok
+test approval_portal::tests::request_read_requires_pinned_approval_definition_identity ... ok
+test artifact_store::tests::identical_content_is_isolated_by_tenant_namespace ... ok
+test artifact_store::tests::digest_mismatch_never_creates_a_durable_object ... ok
+test artifact_store::tests::existing_destination_is_reverified_before_reuse ... ok
+test configuration::tests::candidate_validation_reports_all_actionable_paths ... ok
+test command_template::tests::shell_semantics_and_secret_environment_are_rejected ... ok
+test artifact_store::tests::equal_content_new_id_uses_distinct_objects_and_rejects_other_identity_reads ... ok
+test command_template::tests::malformed_parameter_pattern_is_rejected_before_scheduling ... ok
+test configuration::tests::config_rejects_unknown_authority_fields ... ok
+test artifact_store::tests::promotion_is_verified_idempotent_and_deletable ... ok
+test configuration::tests::empty_configured_keyring_uses_environment_path ... ok
+test configuration::tests::invocation_scope_token_expiry_is_enforced_at_startup_but_not_reaged_on_reload ... ok
+test configuration::tests::capacity_consumers_are_notified_of_the_committed_generation ... ok
+test consumer::tests::event_retry_classification_separates_infrastructure_from_poison ... ok
+test artifact_store::tests::stored_reference_reads_support_legacy_and_validate_exact_authority ... ok
+test executor::tests::deadline_sweeper_expires_interactive_only_after_long_wait ... ignored, requires WORKFLOW_ROLE_TEST_DATABASE_URL for isolated PostgreSQL component schema
+test configuration::tests::retired_credential_broker_configuration_is_rejected ... ok
+test configuration::tests::user_expiry_exception_is_typed_and_dev_only ... ok
+test configuration::tests::unchanged_policy_refreshes_provenance_without_advancing_generation ... ok
+test consumer::tests::runtime_definition_enforces_configured_parallelism_ceiling ... ok
+test configuration::tests::portal_a2a_delegation_depth_uses_the_shared_u16_contract ... ok
+test command_template::tests::template_materializes_direct_argv ... ok
+test consumer::tests::runtime_definition_accepts_canonical_http_mcp_and_rejects_stdio ... ok
+test development_cancel::tests::cleanup_receipt_requires_confirmed_exact_host_service_and_job ... ok
+test development_intake::tests::gateway_claim_and_explicit_route_share_the_same_envelope ... ok
+test consumer::tests::runtime_definition_accepts_a_host_side_fork_and_rejects_nested_forks ... ok
+test executor::tests::interactive_host_execution_uses_bounded_concurrency_and_short_leases ... ok
+test development_intake::tests::intake_is_pristine_policy_bounded_and_deterministic ... ok
+test consumer::tests::runtime_definition_accepts_governed_a2a_alias_and_rejects_raw_destinations ... ok
+test executor::tests::lightapi_http_endpoint_without_explicit_authentication_fails_closed ... ok
+test consumer::tests::runtime_definition_rejects_explicit_unsupported_language_and_tasks ... ok
+test executor::tests::non_active_lightapi_http_endpoint_fails_closed ... ok
+test executor::tests::parse_agent_json_output_accepts_fenced_json ... ok
+test executor::tests::phase2_iso8601_deadlines_are_bounded_and_deterministic ... ok
+test executor::tests::long_http_allows_original_user_token_to_registered_service_but_fences_exchange ... ok
+test executor::tests::fork_transition_uses_host_orchestration_policy ... ok
+test executor::tests::private_operational_dispatch_executes_http_mcp_and_agent_without_ordinary_bypass ... ignored, requires WORKFLOW_ROLE_TEST_DATABASE_URL for isolated PostgreSQL component schema
+test command_template::tests::fork_branch_run_shell_resolves_its_synthetic_task_id ... ok
+test configuration::tests::workflow_runtime_generation_swaps_one_complete_policy ... ok
+test executor::tests::retryable_owner_aut…1521 tokens truncated…jections ... ok
+test publication_api::tests::sync_requires_user_and_gateway_before_store ... ok
+test publication_api::tests::handler_authentication_paths_reject_before_lazy_store_or_receipt ... ok
+test publication_api::tests::verified_user_and_position_owner_paths ... ok
+test rule_api::tests::invocation_authentication_preserves_user_token ... ok
+test rule_api::tests::bearer_token_accepts_only_non_empty_bearer_credentials ... ok
+test rule_api::tests::grant_backed_invocation_never_persists_reusable_user_token ... ok
+test rule_api::tests::api_error_details_round_trip_through_mcp_envelope ... ok
+test rule_api::tests::invocation_scope_claims_must_match_gateway_host_and_environment ... ok
+test rule_api::tests::invocation_user_identity_is_derived_from_verified_claims ... ok
+test rule_api::tests::invocation_binding_query_uses_only_workflow_projection_tables ... ok
+test rule_api::tests::jwks_infrastructure_failure_is_retryable_not_policy_denial ... ok
+test rule_api::tests::native_start_keeps_unlimited_v1_replay_window ... ok
+test rule_api::tests::native_wait_result_preserves_completed_and_nonterminal_shapes ... ok
+test rule_api::tests::native_start_accepts_only_public_fields ... ok
+test rule_api::tests::native_wait_result_uses_stored_terminal_error_envelopes ... ok
+test rule_api::tests::orchestration_uses_the_service_parallelism_ceiling_not_the_request_budget ... ok
+test rule_api::tests::development_native_admission_is_scoped_and_bounded ... ok
+test rule_api::tests::phase2_accepts_only_executor_output_selectors_in_task_exports ... ok
+test rule_api::tests::phase2_resolves_legacy_and_canonical_mcp_tool_names ... ok
+test rule_api::tests::phase2_accepts_workflow_tool_authorization_without_endpoint_ref ... ok
+test rule_api::tests::phase2_rejects_fork_shapes_the_reconciler_cannot_preserve ... ok
+test rule_api::tests::phase2_accepts_read_tasks_and_requires_write_effect_policy ... ok
+test rule_api::tests::readiness_reports_background_failure_without_changing_liveness ... ok
+test rule_api::tests::user_jwt_expiry_override_does_not_change_the_default ... ok
+test run_credential::tests::absent_keyring_refuses_vault ... ok
+test rule_api::tests::rejected_configuration_keeps_the_active_generation_ready ... ok
+test run_token::tests::clock_controls_every_token_decision_branch ... ok
+test rule_api::tests::saved_definition_digest_keeps_branch_end_directives ... ok
+test service_runtime::tests::metadata_quiesce_publishes_complete_draining_state ... ok
+test service_runtime::tests::quiesce_stops_a_managed_task_before_shutdown_joins_it ... ok
+test snapshot_transfer::request_tests::first_chunk_optional_digest_round_trips_and_identity_stays_exact ... ok
+test service_runtime::tests::unexpected_task_failure_marks_readiness_and_cancels_siblings ... ok
+test snapshot_validation::tests::absent_checks_are_not_fabricated_and_bad_policies_fail ... ok
+test snapshot_validation::tests::fixed_document_checks_use_exact_retained_lines ... ok
+test rule_api::tests::private_portal_execution_preserves_runner_policy_and_rejects_unsupported_tasks ... ok
+test run_credential::tests::sealed_credential_round_trips_and_refuses_plaintext ... ok
+test rule_api::tests::phase2_rejects_jq_and_accepts_cel_value_expressions ... ok
+test executor::tests::logical_lightapi_http_call_without_a_tool_pin_fails_before_dispatch ... ok
+test executor::tests::ask_task_waits_and_completed_answer_is_forwarded_once ... ok
+test mcp_api::tests::advertised_catalog_has_self_contained_compilable_schemas_and_valid_examples ... ok
+test executor::tests::managed_agent_credentials_reject_literal_references ... ok
+test executor::tests::private_corpus_set_task_executes_on_existing_local_dispatch ... ok
+test executor::tests::failed_assert_is_a_terminal_task_failure ... ok
+test executor::tests::open_workflow_flow_directives_are_control_tokens ... ok
+test executor::tests::completion_merges_exports_and_selects_the_next_task ... ok
+test executor::tests::canonical_mcp_http_transport_resolves_to_runtime_server ... ok
+test executor::tests::legacy_end_true_remains_a_read_compatibility_marker ... ok
+test executor::tests::logical_lightapi_http_call_requires_exact_tool_id_before_database_access ... ok
+test executor::tests::http_query_and_header_templates_resolve_from_context ... ok
+test fixed_action::tests::provider_receives_bounded_typed_idempotent_request ... ok
+test executor::tests::workflow_tool_access_fixture_preserves_typed_approval_contract ... ok
+test executor::tests::lightapi_relative_http_endpoint_preserves_path_placeholders ... ok
+test rule_api::tests::private_portal_execution_accepts_legacy_corpus_and_large_definitions ... ok
+test configuration::tests::embedded_and_remote_values_build_the_same_typed_candidate ... ok
+test artifact_store::tests::filesystem_reopens_recovers_promotions_and_rejects_corruption ... ok
+test fixed_action::tests::uncertain_dispatch_is_unknown_and_status_is_reconciled_by_key ... ok
+
+test result: ok. 148 passed; 0 failed; 15 ignored; 0 measured; 0 filtered out; finished in 0.34s
+
+

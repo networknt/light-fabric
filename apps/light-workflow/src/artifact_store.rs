@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::{
     artifact_publish::ArtifactPublisherStore,
-    artifact_retention::{ArtifactObjectStore, ArtifactStoreError},
+    artifact_retention::{ArtifactDeletionPolicy, ArtifactObjectStore, ArtifactStoreError},
     configuration::ArtifactSettings,
 };
 
@@ -96,7 +96,7 @@ impl DurableArtifactStore {
         if prefix.is_empty()
             || prefix
                 .split('/')
-                .any(|part| part.is_empty() || part == "..")
+                .any(|part| part.is_empty() || part == "." || part == "..")
         {
             return Err(error("artifact object-store prefix is invalid"));
         }
@@ -140,10 +140,13 @@ impl DurableArtifactStore {
     pub async fn read_verified(
         &self,
         namespace: &str,
+        artifact_id: uuid::Uuid,
+        reference: &str,
         digest: &str,
         maximum_bytes: usize,
     ) -> Result<Vec<u8>, ArtifactStoreError> {
-        let path = self.durable_path(namespace, digest)?;
+        self.reference_policy(namespace, artifact_id, reference, digest)?;
+        let path = self.parse_reference(reference)?;
         let object = self.store.get(&path).await.map_err(store_error)?;
         if object.meta.size > maximum_bytes as u64 {
             return Err(error("artifact exceeds read bound"));
@@ -172,13 +175,55 @@ impl DurableArtifactStore {
         safe_namespace(namespace)?;
         let hex = digest
             .strip_prefix("sha256:")
-            .filter(|value| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()))
+            .filter(|value| {
+                value.len() == 64
+                    && value
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
             .ok_or_else(|| error("artifact digest is not canonical SHA-256"))?;
         Ok(Path::from(format!(
             "{}/tenants/{namespace}/objects/sha256/{}/{hex}",
             self.prefix,
             &hex[..2]
         )))
+    }
+
+    fn artifact_path(
+        &self,
+        namespace: &str,
+        artifact_id: uuid::Uuid,
+        digest: &str,
+    ) -> Result<Path, ArtifactStoreError> {
+        Ok(Path::from(format!(
+            "{}/tenants/{namespace}/artifacts/{}/{}",
+            self.prefix,
+            self.durable_path(namespace, digest)?
+                .as_ref()
+                .strip_prefix(&format!("{}/tenants/{namespace}/objects/", self.prefix))
+                .ok_or_else(|| error("invalid durable path"))?,
+            artifact_id
+        )))
+    }
+
+    fn reference_policy(
+        &self,
+        namespace: &str,
+        artifact_id: uuid::Uuid,
+        reference: &str,
+        digest: &str,
+    ) -> Result<ArtifactDeletionPolicy, ArtifactStoreError> {
+        // Compare the original reference, not a normalized path. No alternate
+        // spelling, tenant, digest, artifact identity or staging path is authority.
+        if reference == Self::reference(&self.artifact_path(namespace, artifact_id, digest)?) {
+            Ok(ArtifactDeletionPolicy::Dedicated)
+        } else if reference == Self::reference(&self.durable_path(namespace, digest)?) {
+            Ok(ArtifactDeletionPolicy::LegacyShared)
+        } else {
+            Err(error(
+                "artifact reference does not match tenant, identity and digest",
+            ))
+        }
     }
 
     fn reference(path: &Path) -> String {
@@ -190,7 +235,7 @@ impl DurableArtifactStore {
             .strip_prefix("object://")
             .ok_or_else(|| error("artifact reference scheme is not object"))?;
         let path = Path::parse(value).map_err(store_error)?;
-        if !path.as_ref().starts_with(&format!("{}/", self.prefix)) {
+        if path.as_ref() != value || !path.as_ref().starts_with(&format!("{}/", self.prefix)) {
             return Err(error("artifact reference is outside the configured prefix"));
         }
         Ok(path)
@@ -232,6 +277,7 @@ impl ArtifactPublisherStore for DurableArtifactStore {
     async fn promote(
         &self,
         namespace: &str,
+        artifact_id: uuid::Uuid,
         staging: &str,
         digest: &str,
     ) -> Result<String, ArtifactStoreError> {
@@ -245,7 +291,7 @@ impl ArtifactPublisherStore for DurableArtifactStore {
                 "artifact promotion source is outside the tenant staging namespace",
             ));
         }
-        let destination = self.durable_path(namespace, digest)?;
+        let destination = self.artifact_path(namespace, artifact_id, digest)?;
         if self.store.head(&destination).await.is_ok() {
             self.verify_digest(&destination, digest).await?;
             self.sync_path(&destination)?;
@@ -263,10 +309,31 @@ impl ArtifactPublisherStore for DurableArtifactStore {
         self.store.delete(&source).await.map_err(store_error)?;
         Ok(Self::reference(&destination))
     }
+
+    async fn verify_bound(
+        &self,
+        namespace: &str,
+        artifact_id: uuid::Uuid,
+        reference: &str,
+        digest: &str,
+    ) -> Result<(), ArtifactStoreError> {
+        self.reference_policy(namespace, artifact_id, reference, digest)?;
+        self.verify_digest(&self.parse_reference(reference)?, digest)
+            .await
+    }
 }
 
 #[async_trait]
 impl ArtifactObjectStore for DurableArtifactStore {
+    fn deletion_policy(
+        &self,
+        host_id: uuid::Uuid,
+        artifact_id: uuid::Uuid,
+        reference: &str,
+        digest: &str,
+    ) -> Result<ArtifactDeletionPolicy, ArtifactStoreError> {
+        self.reference_policy(&host_id.to_string(), artifact_id, reference, digest)
+    }
     async fn delete(&self, reference: &str) -> Result<(), ArtifactStoreError> {
         let path = self.parse_reference(reference)?;
         match self.store.delete(&path).await {
@@ -290,7 +357,9 @@ fn safe_key(key: &str) -> Result<(), ArtifactStoreError> {
         || key.starts_with('/')
         || key.contains('\\')
         || key.contains('\0')
-        || key.split('/').any(|part| part.is_empty() || part == "..")
+        || key
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
     {
         return Err(error("artifact object key is invalid"));
     }
@@ -326,6 +395,7 @@ fn error(message: &str) -> ArtifactStoreError {
 mod tests {
     use super::*;
 
+    const ARTIFACT: uuid::Uuid = uuid::Uuid::from_u128(3);
     const HOST_A: &str = "00000000-0000-0000-0000-000000000001";
     const HOST_B: &str = "00000000-0000-0000-0000-000000000002";
 
@@ -354,21 +424,50 @@ mod tests {
         let reopened = DurableArtifactStore::from_configuration(&config)
             .unwrap()
             .unwrap();
-        let reference = reopened.promote(HOST_A, &staged, &digest).await.unwrap();
+        let reference = reopened
+            .promote(HOST_A, ARTIFACT, &staged, &digest)
+            .await
+            .unwrap();
         assert_eq!(
-            reopened.promote(HOST_A, &staged, &digest).await.unwrap(),
+            reopened
+                .promote(HOST_A, ARTIFACT, &staged, &digest)
+                .await
+                .unwrap(),
             reference
         );
         assert_eq!(
-            reopened.read_verified(HOST_A, &digest, 1024).await.unwrap(),
+            reopened
+                .read_verified(HOST_A, ARTIFACT, &reference, &digest, 1024)
+                .await
+                .unwrap(),
             bytes
         );
-        assert!(reopened.read_verified(HOST_A, &digest, 2).await.is_err());
-        assert!(reopened.read_verified(HOST_B, &digest, 1024).await.is_err());
-        let path = reopened.durable_path(HOST_A, &digest).unwrap();
+        assert!(
+            reopened
+                .read_verified(HOST_A, ARTIFACT, &reference, &digest, 2)
+                .await
+                .is_err()
+        );
+        assert!(
+            reopened
+                .read_verified(HOST_B, ARTIFACT, &reference, &digest, 1024)
+                .await
+                .is_err()
+        );
+        let path = reopened.artifact_path(HOST_A, ARTIFACT, &digest).unwrap();
         std::fs::write(directory.path().join(path.as_ref()), b"corrupt").unwrap();
-        assert!(reopened.read_verified(HOST_A, &digest, 1024).await.is_err());
-        assert!(reopened.promote(HOST_A, &staged, &digest).await.is_err());
+        assert!(
+            reopened
+                .read_verified(HOST_A, ARTIFACT, &reference, &digest, 1024)
+                .await
+                .is_err()
+        );
+        assert!(
+            reopened
+                .promote(HOST_A, ARTIFACT, &staged, &digest)
+                .await
+                .is_err()
+        );
     }
 
     #[test]
@@ -403,10 +502,16 @@ mod tests {
             .await
             .unwrap();
 
-        let durable = store.promote(HOST_A, &staged, &digest).await.unwrap();
+        let durable = store
+            .promote(HOST_A, ARTIFACT, &staged, &digest)
+            .await
+            .unwrap();
         assert!(store.exists(&durable).await.unwrap());
         assert_eq!(
-            store.promote(HOST_A, &staged, &digest).await.unwrap(),
+            store
+                .promote(HOST_A, ARTIFACT, &staged, &digest)
+                .await
+                .unwrap(),
             durable
         );
 
@@ -424,10 +529,13 @@ mod tests {
             .unwrap();
         let digest = format!("sha256:{}", "0".repeat(64));
 
-        let error = store.promote(HOST_A, &staged, &digest).await.unwrap_err();
+        let error = store
+            .promote(HOST_A, ARTIFACT, &staged, &digest)
+            .await
+            .unwrap_err();
 
         assert!(error.message.contains("digest does not match"));
-        let destination = store.durable_path(HOST_A, &digest).unwrap();
+        let destination = store.artifact_path(HOST_A, ARTIFACT, &digest).unwrap();
         assert!(matches!(
             store.store.head(&destination).await,
             Err(object_store::Error::NotFound { .. })
@@ -438,8 +546,8 @@ mod tests {
     async fn identical_content_is_isolated_by_tenant_namespace() {
         let store = DurableArtifactStore::in_memory("root");
         let digest = format!("sha256:{}", hex::encode(Sha256::digest(b"same")));
-        let first = store.durable_path(HOST_A, &digest).unwrap();
-        let second = store.durable_path(HOST_B, &digest).unwrap();
+        let first = store.artifact_path(HOST_A, ARTIFACT, &digest).unwrap();
+        let second = store.artifact_path(HOST_B, ARTIFACT, &digest).unwrap();
 
         assert_ne!(first, second);
     }
@@ -453,16 +561,138 @@ mod tests {
             .stage(&format!("{HOST_A}/execution/artifact"), bytes)
             .await
             .unwrap();
-        let destination = store.durable_path(HOST_A, &digest).unwrap();
+        let destination = store.artifact_path(HOST_A, ARTIFACT, &digest).unwrap();
         store
             .store
             .put(&destination, PutPayload::from(b"corrupt".to_vec()))
             .await
             .unwrap();
 
-        let error = store.promote(HOST_A, &staged, &digest).await.unwrap_err();
+        let error = store
+            .promote(HOST_A, ARTIFACT, &staged, &digest)
+            .await
+            .unwrap_err();
 
         assert!(!error.retryable);
         assert!(error.message.contains("digest does not match"));
+    }
+
+    #[tokio::test]
+    async fn stored_reference_reads_support_legacy_and_validate_exact_authority() {
+        let store = DurableArtifactStore::in_memory("root");
+        let bytes = b"same";
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(bytes)));
+        let legacy = store.durable_path(HOST_A, &digest).unwrap();
+        store
+            .store
+            .put(&legacy, PutPayload::from_static(bytes))
+            .await
+            .unwrap();
+        let reference = DurableArtifactStore::reference(&legacy);
+        assert_eq!(
+            store
+                .read_verified(HOST_A, ARTIFACT, &reference, &digest, 4)
+                .await
+                .unwrap(),
+            bytes
+        );
+        assert!(matches!(
+            store
+                .deletion_policy(HOST_A.parse().unwrap(), ARTIFACT, &reference, &digest)
+                .unwrap(),
+            ArtifactDeletionPolicy::LegacyShared
+        ));
+        for invalid in [
+            reference.replace(HOST_A, HOST_B),
+            reference.replace("object://", "file://"),
+            reference.replace("/objects/", "/./objects/"),
+            format!("{reference}/{}", uuid::Uuid::from_u128(4)),
+            reference.replace("root/", "root-other/"),
+        ] {
+            assert!(
+                store
+                    .read_verified(HOST_A, ARTIFACT, &invalid, &digest, 4)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                store
+                    .deletion_policy(HOST_A.parse().unwrap(), ARTIFACT, &invalid, &digest)
+                    .is_err()
+            );
+        }
+        assert!(
+            store
+                .read_verified(HOST_B, ARTIFACT, &reference, &digest, 4)
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .read_verified(HOST_A, ARTIFACT, &reference, &digest, 3)
+                .await
+                .is_err()
+        );
+        store
+            .store
+            .put(&legacy, PutPayload::from_static(b"evil"))
+            .await
+            .unwrap();
+        assert!(
+            store
+                .read_verified(HOST_A, ARTIFACT, &reference, &digest, 4)
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .verify_bound(HOST_A, ARTIFACT, &reference, &digest)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn equal_content_new_id_uses_distinct_objects_and_rejects_other_identity_reads() {
+        let store = DurableArtifactStore::in_memory("root");
+        let bytes = b"same";
+        let digest = format!("sha256:{}", hex::encode(Sha256::digest(bytes)));
+        let other = uuid::Uuid::from_u128(4);
+        let staging = store
+            .stage(&format!("{HOST_A}/attempt/first"), bytes)
+            .await
+            .unwrap();
+        let first = store
+            .promote(HOST_A, ARTIFACT, &staging, &digest)
+            .await
+            .unwrap();
+        let staging = store
+            .stage(&format!("{HOST_A}/attempt/second"), bytes)
+            .await
+            .unwrap();
+        let second = store
+            .promote(HOST_A, other, &staging, &digest)
+            .await
+            .unwrap();
+        assert_ne!(first, second);
+        assert!(
+            store
+                .read_verified(HOST_A, other, &first, &digest, 4)
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .deletion_policy(HOST_A.parse().unwrap(), other, &first, &digest)
+                .is_err()
+        );
+        store.delete(&first).await.unwrap();
+        assert_eq!(
+            store
+                .read_verified(HOST_A, other, &second, &digest, 4)
+                .await
+                .unwrap(),
+            bytes
+        );
     }
 }
