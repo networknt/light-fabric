@@ -259,7 +259,8 @@
   ,{"order":36,"owner":"workflow-store","schema":"workflow_ops","migrationId":"0017_workflow_long_credentials","path":"crates/workflow-store/migrations/workflow-postgres/0017_workflow_long_credentials.sql","sha256":"6e686096aaf28986dfa1e897900ef80ec5e2ff68acfedff5a85664b08af8d5fe"}
   ,{"order":37,"owner":"workflow-store","schema":"workflow_ops","migrationId":"0018_workflow_tool_binding_revisions","path":"crates/workflow-store/migrations/workflow-postgres/0018_workflow_tool_binding_revisions.sql","sha256":"b56b6731bf36baba70b2ef16669eccdeb6e0d24947433dbce5317f86f3220bd9"}
   ,{"order":38,"owner":"workflow-store","schema":"workflow_ops","migrationId":"0019_workflow_binding_read_fields","path":"crates/workflow-store/migrations/workflow-postgres/0019_workflow_binding_read_fields.sql","sha256":"dea3135384ba67c82e77311ab054da600c410eb881e5479a2f4f777b2ca0991f"}
-  ],
+  ,{"order":39,"owner":"workflow-store","schema":"workflow_ops","migrationId":"0020_artifact_legacy_retirement","path":"crates/workflow-store/migrations/workflow-postgres/0020_artifact_legacy_retirement.sql","sha256":"1d676544ade04d1744981102723789afc0f92d24b6b5d4180c8b7763cbde4024"}
+],
   "roleProfileVersion": 1,
   "scopeRootVersion": 2,
   "sourceCommit": "0e917b7f26d9c0415335875588e2767aad89e93f"

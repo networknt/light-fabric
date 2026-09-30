@@ -1,0 +1,69 @@
+   Compiling light-workflow v0.2.1 (/home/steve/workspace/light-fabric-issue425-a00/apps/light-workflow)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.47s
+     Running tests/artifact_retention_shared_postgres.rs (/home/steve/workspace/light-fabric/target/debug/deps/artifact_retention_shared_postgres-7a7ce4e9c85a2549)
+
+running 1 test
+
+thread 'unbound_reference_never_authorizes_another_artifacts_delete' (4006542) panicked at apps/light-workflow/tests/artifact_retention_shared_postgres.rs:659:5:
+assertion `left == right` failed: unbound rows must terminate, not retry forever
+  left: "DELETE_FAILED"
+ right: "RETIRED"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test unbound_reference_never_authorizes_another_artifacts_delete ... FAILED
+
+failures:
+
+failures:
+    unbound_reference_never_authorizes_another_artifacts_delete
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.09s
+
+error: test failed, to rerun pass `-p light-workflow --test artifact_retention_shared_postgres`
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running tests/artifact_retention_shared_postgres.rs (/home/steve/workspace/light-fabric/target/debug/deps/artifact_retention_shared_postgres-7a7ce4e9c85a2549)
+
+running 2 tests
+
+thread 'interrupted_promotion_retires_without_deleting_staging' (4007629) panicked at apps/light-workflow/tests/artifact_retention_shared_postgres.rs:659:5:
+assertion `left == right` failed: unbound rows must terminate, not retry forever
+  left: "DELETE_FAILED"
+ right: "RETIRED"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test interrupted_promotion_retires_without_deleting_staging ... FAILED
+
+thread 'interrupted_promotion_with_missing_staging_terminates' (4007630) panicked at apps/light-workflow/tests/artifact_retention_shared_postgres.rs:659:5:
+assertion `left == right` failed: unbound rows must terminate, not retry forever
+  left: "DELETE_FAILED"
+ right: "RETIRED"
+test interrupted_promotion_with_missing_staging_terminates ... FAILED
+
+failures:
+
+failures:
+    interrupted_promotion_retires_without_deleting_staging
+    interrupted_promotion_with_missing_staging_terminates
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.14s
+
+error: test failed, to rerun pass `-p light-workflow --test artifact_retention_shared_postgres`
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running tests/artifact_retention_shared_postgres.rs (/home/steve/workspace/light-fabric/target/debug/deps/artifact_retention_shared_postgres-7a7ce4e9c85a2549)
+
+running 1 test
+
+thread 'permanent_runner_promotion_failure_retires_truthfully' (4007821) panicked at apps/light-workflow/tests/artifact_retention_shared_postgres.rs:710:5:
+assertion `left == right` failed
+  left: "DELETE_FAILED"
+ right: "RETIRED"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test permanent_runner_promotion_failure_retires_truthfully ... FAILED
+
+failures:
+
+failures:
+    permanent_runner_promotion_failure_retires_truthfully
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.10s
+
+error: test failed, to rerun pass `-p light-workflow --test artifact_retention_shared_postgres`
+

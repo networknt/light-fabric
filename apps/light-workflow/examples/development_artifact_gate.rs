@@ -7,6 +7,7 @@ use light_workflow::{
 use sha2::{Digest, Sha256};
 
 const HOST: &str = "01a0a138-e838-7825-a9ae-2f9c11aa17f4";
+const ARTIFACT: uuid::Uuid = uuid::Uuid::from_u128(3);
 const PREFIX: &str = "phase1-qualification";
 const CONTENT: &[u8] = b"phase1 retained evidence\0\xff\x80\n";
 
@@ -34,31 +35,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let staging = format!("object://{PREFIX}/staging/{key}");
     let digest = format!("sha256:{}", hex::encode(Sha256::digest(CONTENT)));
     let raw = digest.strip_prefix("sha256:").unwrap();
-    let object = format!("{PREFIX}/tenants/{HOST}/objects/sha256/{}/{raw}", &raw[..2]);
+    let object = format!(
+        "{PREFIX}/tenants/{HOST}/artifacts/sha256/{}/{raw}/{ARTIFACT}",
+        &raw[..2]
+    );
     match mode.as_str() {
         "stage" => {
             store.probe_writable().await?;
             assert_eq!(store.stage(&key, CONTENT).await?, staging);
         }
         "promote" => {
-            let first = store.promote(HOST, &staging, &digest).await?;
-            assert_eq!(store.promote(HOST, &staging, &digest).await?, first);
-            assert_eq!(store.read_verified(HOST, &digest, 1024).await?, CONTENT);
+            let first = store.promote(HOST, ARTIFACT, &staging, &digest).await?;
+            assert_eq!(
+                store.promote(HOST, ARTIFACT, &staging, &digest).await?,
+                first
+            );
+            assert_eq!(
+                store
+                    .read_verified(HOST, ARTIFACT, &format!("object://{object}"), &digest, 1024)
+                    .await?,
+                CONTENT
+            );
         }
         "read" => {
-            assert_eq!(store.read_verified(HOST, &digest, 1024).await?, CONTENT);
-            assert!(store.read_verified(HOST, &digest, 1).await.is_err());
+            assert_eq!(
+                store
+                    .read_verified(HOST, ARTIFACT, &format!("object://{object}"), &digest, 1024)
+                    .await?,
+                CONTENT
+            );
             assert!(
                 store
-                    .read_verified("01a0a138-e838-7825-a9ae-2f9c11aa17f5", &digest, 1024)
+                    .read_verified(HOST, ARTIFACT, &format!("object://{object}"), &digest, 1)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                store
+                    .read_verified(
+                        "01a0a138-e838-7825-a9ae-2f9c11aa17f5",
+                        ARTIFACT,
+                        &format!("object://{object}"),
+                        &digest,
+                        1024
+                    )
                     .await
                     .is_err()
             );
         }
         "corrupt" => {
             std::fs::write(std::path::Path::new(root).join(&object), b"corrupt")?;
-            assert!(store.read_verified(HOST, &digest, 1024).await.is_err());
-            assert!(store.promote(HOST, &staging, &digest).await.is_err());
+            assert!(
+                store
+                    .read_verified(HOST, ARTIFACT, &format!("object://{object}"), &digest, 1024)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                store
+                    .promote(HOST, ARTIFACT, &staging, &digest)
+                    .await
+                    .is_err()
+            );
         }
         "unwritable" => {
             assert!(store.probe_writable().await.is_err());

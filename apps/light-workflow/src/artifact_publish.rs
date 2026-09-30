@@ -11,13 +11,22 @@ use crate::artifact_retention::ArtifactStoreError;
 pub trait ArtifactPublisherStore: Send + Sync {
     /// Stage with a provider-native short TTL. The reference grants no read authority.
     async fn stage(&self, key: &str, bytes: &[u8]) -> Result<String, ArtifactStoreError>;
-    /// Atomically bind/copy staged bytes to a content-addressed durable reference.
+    /// Bind verified bytes to the durable key of this never-reused artifact identity.
     async fn promote(
         &self,
         namespace: &str,
+        artifact_id: Uuid,
         staging: &str,
         digest: &str,
     ) -> Result<String, ArtifactStoreError>;
+    /// Verify an existing binding without rewriting legacy evidence.
+    async fn verify_bound(
+        &self,
+        namespace: &str,
+        artifact_id: Uuid,
+        reference: &str,
+        digest: &str,
+    ) -> Result<(), ArtifactStoreError>;
 }
 
 pub struct ArtifactPublication<'a> {
@@ -36,7 +45,7 @@ pub struct ArtifactPublication<'a> {
 
 /// Bind manager-owned bytes in the same transaction as the accepted job report.
 /// No second pool connection is acquired. A rollback may leave unreferenced
-/// content-addressed bytes, but never a committed artifact or accepted result;
+/// per-artifact bytes, but never a committed artifact or accepted result;
 /// the immutable report retry safely repeats promotion using the same identity.
 pub async fn publish_artifact_in_transaction<S: ArtifactPublisherStore>(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -70,48 +79,45 @@ pub async fn publish_artifact_in_transaction<S: ArtifactPublisherStore>(
     if !matching {
         return Err("artifact publication replay changed or evidence was fenced".into());
     }
-    let durable = store
-        .promote(&artifact.host_id.to_string(), &staging, &digest)
-        .await?;
+    let (state, reference): (String, String) = sqlx::query_as("SELECT promotion_state,storage_reference FROM workflow_artifact_t WHERE host_id=$1 AND artifact_id=$2")
+        .bind(artifact.host_id).bind(artifact.artifact_id).fetch_one(&mut **tx).await?;
+    let durable = if state == "BOUND" {
+        store
+            .verify_bound(
+                &artifact.host_id.to_string(),
+                artifact.artifact_id,
+                &reference,
+                &digest,
+            )
+            .await?;
+        reference
+    } else {
+        store
+            .promote(
+                &artifact.host_id.to_string(),
+                artifact.artifact_id,
+                &staging,
+                &digest,
+            )
+            .await?
+    };
     sqlx::query("UPDATE workflow_artifact_t SET storage_reference=$3,promotion_state='BOUND',verification_state='VERIFIED',updated_ts=now() WHERE host_id=$1 AND artifact_id=$2")
         .bind(artifact.host_id).bind(artifact.artifact_id).bind(durable)
         .execute(&mut **tx).await?;
     Ok(digest)
 }
 
-/// Publishes bytes with a crash-safe stage -> metadata -> bind protocol. A crash
-/// before metadata commit leaves only a native-TTL staging object; a crash after
-/// commit is recoverable from `promotion_state='METADATA_COMMITTED'`.
+/// Publish and bind under one metadata transaction. Rollback can leave orphan
+/// staging/durable bytes, but no committed read authority. Existing pending
+/// promotions are resumed under the same row fence.
 pub async fn publish_artifact<S: ArtifactPublisherStore>(
     pool: &PgPool,
     store: &S,
     artifact: ArtifactPublication<'_>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let digest = format!("sha256:{}", hex::encode(Sha256::digest(artifact.bytes)));
-    let staging = store
-        .stage(
-            &format!(
-                "{}/{}/{}",
-                artifact.host_id, artifact.execution_id, artifact.artifact_id
-            ),
-            artifact.bytes,
-        )
-        .await?;
-    sqlx::query("INSERT INTO workflow_artifact_t(host_id,artifact_id,execution_id,process_id,task_id,logical_name,media_type,size_bytes,content_digest,storage_reference,staging_reference,promotion_state,producer,policy_digest,retain_until_ts,verification_state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,'METADATA_COMMITTED',$11,$12,$13,'PENDING') ON CONFLICT(host_id,artifact_id) DO NOTHING")
-        .bind(artifact.host_id).bind(artifact.artifact_id).bind(artifact.execution_id)
-        .bind(artifact.process_id).bind(artifact.task_id).bind(artifact.logical_name)
-        .bind(artifact.media_type).bind(artifact.bytes.len() as i64).bind(&digest)
-        .bind(&staging).bind(artifact.producer).bind(artifact.policy_digest)
-        .bind(artifact.retain_until).execute(pool).await?;
-    let durable = store
-        .promote(&artifact.host_id.to_string(), &staging, &digest)
-        .await?;
-    let result = sqlx::query("UPDATE workflow_artifact_t SET storage_reference=$3,promotion_state='BOUND',verification_state='VERIFIED',updated_ts=now() WHERE host_id=$1 AND artifact_id=$2 AND content_digest=$4 AND promotion_state IN ('METADATA_COMMITTED','BOUND')")
-        .bind(artifact.host_id).bind(artifact.artifact_id).bind(&durable).bind(&digest)
-        .execute(pool).await?;
-    if result.rows_affected() != 1 {
-        return Err("artifact metadata binding was fenced or digest changed".into());
-    }
+    let mut tx = pool.begin().await?;
+    let digest = publish_artifact_in_transaction(&mut tx, store, artifact).await?;
+    tx.commit().await?;
     Ok(digest)
 }
 
@@ -131,44 +137,53 @@ pub async fn promote_artifact_evidence<S: ArtifactPublisherStore>(
     let artifact_id = deterministic_artifact_id(execution_id, artifact);
     let size =
         i64::try_from(artifact.size).map_err(|_| "artifact size exceeds PostgreSQL bigint")?;
+    let mut tx = pool.begin().await?;
     sqlx::query("INSERT INTO workflow_artifact_t(host_id,artifact_id,execution_id,process_id,task_id,logical_name,media_type,size_bytes,content_digest,storage_reference,staging_reference,promotion_state,producer,policy_digest,retain_until_ts,verification_state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,'METADATA_COMMITTED','light-workflow-runner',$11,$12,'PENDING') ON CONFLICT(host_id,artifact_id) DO NOTHING")
         .bind(host_id).bind(artifact_id).bind(execution_id).bind(process_id).bind(task_id)
         .bind(&artifact.logical_name).bind(&artifact.media_type).bind(size).bind(&artifact.digest)
-        .bind(&artifact.reference).bind(policy_digest).bind(retain_until).execute(pool).await?;
-    let existing: (String, i64, String, String) = sqlx::query_as(
-        "SELECT content_digest,size_bytes,staging_reference,promotion_state
-         FROM workflow_artifact_t WHERE host_id=$1 AND artifact_id=$2",
-    )
-    .bind(host_id)
-    .bind(artifact_id)
-    .fetch_one(pool)
-    .await?;
-    if existing.0 != artifact.digest || existing.1 != size || existing.2 != artifact.reference {
-        sqlx::query("UPDATE workflow_artifact_t SET promotion_state='QUARANTINED',verification_state='REJECTED',updated_ts=now() WHERE host_id=$1 AND artifact_id=$2")
-            .bind(host_id).bind(artifact_id).execute(pool).await?;
-        return Err("artifact evidence changed across reconciliation".into());
+        .bind(&artifact.reference).bind(policy_digest).bind(retain_until).execute(&mut *tx).await?;
+    let (matching, state, reference): (bool, String, String) = sqlx::query_as(
+        "SELECT execution_id=$3 AND process_id=$4 AND task_id=$5 AND logical_name=$6 AND media_type=$7 AND size_bytes=$8 AND content_digest=$9 AND staging_reference=$10 AND producer='light-workflow-runner' AND policy_digest=$11 AND promotion_state IN ('METADATA_COMMITTED','BOUND') AND verification_state IN ('PENDING','VERIFIED') AND deletion_state='RETAINED' AND (legal_hold OR retain_until_ts>clock_timestamp()),promotion_state,storage_reference FROM workflow_artifact_t WHERE host_id=$1 AND artifact_id=$2 FOR UPDATE")
+        .bind(host_id).bind(artifact_id).bind(execution_id).bind(process_id).bind(task_id)
+        .bind(&artifact.logical_name).bind(&artifact.media_type).bind(size).bind(&artifact.digest)
+        .bind(&artifact.reference).bind(policy_digest).fetch_one(&mut *tx).await?;
+    if !matching {
+        return Err("artifact evidence replay changed or evidence was fenced".into());
     }
-    if existing.3 == "BOUND" {
+    if state == "BOUND" {
+        store
+            .verify_bound(
+                &host_id.to_string(),
+                artifact_id,
+                &reference,
+                &artifact.digest,
+            )
+            .await?;
+        tx.commit().await?;
         return Ok(());
     }
     let durable = match store
-        .promote(&host_id.to_string(), &artifact.reference, &artifact.digest)
+        .promote(
+            &host_id.to_string(),
+            artifact_id,
+            &artifact.reference,
+            &artifact.digest,
+        )
         .await
     {
         Ok(reference) => reference,
         Err(error) => {
             if !error.retryable {
                 sqlx::query("UPDATE workflow_artifact_t SET promotion_state='QUARANTINED',verification_state='REJECTED',updated_ts=now() WHERE host_id=$1 AND artifact_id=$2")
-                    .bind(host_id).bind(artifact_id).execute(pool).await?;
+                    .bind(host_id).bind(artifact_id).execute(&mut *tx).await?;
+                tx.commit().await?;
             }
             return Err(Box::new(error));
         }
     };
-    let updated = sqlx::query("UPDATE workflow_artifact_t SET storage_reference=$3,promotion_state='BOUND',verification_state='VERIFIED',updated_ts=now() WHERE host_id=$1 AND artifact_id=$2 AND content_digest=$4 AND promotion_state='METADATA_COMMITTED'")
-        .bind(host_id).bind(artifact_id).bind(durable).bind(&artifact.digest).execute(pool).await?;
-    if updated.rows_affected() != 1 {
-        return Err("artifact promotion binding lost its metadata fence".into());
-    }
+    sqlx::query("UPDATE workflow_artifact_t SET storage_reference=$3,promotion_state='BOUND',verification_state='VERIFIED',updated_ts=now() WHERE host_id=$1 AND artifact_id=$2")
+        .bind(host_id).bind(artifact_id).bind(durable).execute(&mut *tx).await?;
+    tx.commit().await?;
     Ok(())
 }
 

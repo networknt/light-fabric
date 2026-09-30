@@ -1,0 +1,22 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.16s
+     Running tests/artifact_retention_shared_postgres.rs (/home/steve/workspace/light-fabric/target/debug/deps/artifact_retention_shared_postgres-7a7ce4e9c85a2549)
+
+running 1 test
+future-retention: survivor_state=RETAINED, object_exists=false, digest_verified_read=false
+legal-hold: survivor_state=RETAINED, object_exists=false, digest_verified_read=false
+process-deletion: survivor_state=RETAINED, object_exists=false, digest_verified_read=false
+
+thread 'cleanup_preserves_equal_bytes_referenced_by_retained_or_held_artifacts' (3671420) panicked at apps/light-workflow/tests/artifact_retention_shared_postgres.rs:142:5:
+cleanup deleted bytes required by retained artifacts: ["future-retention", "legal-hold", "process-deletion"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test cleanup_preserves_equal_bytes_referenced_by_retained_or_held_artifacts ... FAILED
+
+failures:
+
+failures:
+    cleanup_preserves_equal_bytes_referenced_by_retained_or_held_artifacts
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+error: test failed, to rerun pass `-p light-workflow --test artifact_retention_shared_postgres`
+

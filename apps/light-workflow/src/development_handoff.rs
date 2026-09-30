@@ -117,9 +117,9 @@ pub(crate) async fn verify_artifact(
         .id
         .parse()
         .map_err(|_| StoreError::Conflict("durable artifact ID must be a UUID"))?;
-    let size: Option<i64> = sqlx::query_scalar("SELECT size_bytes FROM workflow_artifact_t WHERE host_id=$1 AND artifact_id=$2 AND process_id=$3 AND content_digest=$4 AND promotion_state='BOUND' AND verification_state='VERIFIED' AND deletion_state='RETAINED' AND (legal_hold OR retain_until_ts>clock_timestamp()) FOR SHARE")
+    let binding: Option<(i64, String)> = sqlx::query_as("SELECT size_bytes,storage_reference FROM workflow_artifact_t WHERE host_id=$1 AND artifact_id=$2 AND process_id=$3 AND content_digest=$4 AND promotion_state='BOUND' AND verification_state='VERIFIED' AND deletion_state='RETAINED' AND (legal_hold OR retain_until_ts>clock_timestamp()) FOR SHARE")
         .bind(host).bind(id).bind(process).bind(&artifact.digest).fetch_optional(&mut **tx).await?;
-    let size = size.ok_or(StoreError::Conflict(
+    let (size, reference) = binding.ok_or(StoreError::Conflict(
         "artifact is missing, expired, unbound or belongs to another process",
     ))?;
     check(
@@ -127,7 +127,13 @@ pub(crate) async fn verify_artifact(
         "artifact exceeds handoff bound",
     )?;
     let bytes = store
-        .read_verified(&host.to_string(), &artifact.digest, size as usize)
+        .read_verified(
+            &host.to_string(),
+            id,
+            &reference,
+            &artifact.digest,
+            size as usize,
+        )
         .await
         .map_err(|_| StoreError::Conflict("artifact content is missing or corrupt"))?;
     check(bytes.len() == size as usize, "artifact size mismatch")?;

@@ -806,23 +806,27 @@ async fn deletion_receipt(
     operation: Uuid,
     version: i64,
 ) -> Result<Value, AdminError> {
-    let (pending, failed, deleted, held, retained): (i64, i64, i64, i64, i64) = sqlx::query_as(
-        "SELECT count(*) FILTER(WHERE deletion_state IN ('DELETE_PENDING','DELETING')),
+    let (pending, failed, deleted, held, retained, deferred): (i64, i64, i64, i64, i64, i64) =
+        sqlx::query_as(
+            "SELECT count(*) FILTER(WHERE deletion_state IN ('DELETE_PENDING','DELETING')),
                 count(*) FILTER(WHERE deletion_state='DELETE_FAILED'),
                 count(*) FILTER(WHERE deletion_state='DELETED'),
                 count(*) FILTER(WHERE legal_hold),
-                count(*) FILTER(WHERE deletion_state='RETAINED' AND NOT legal_hold)
+                count(*) FILTER(WHERE deletion_state='RETAINED' AND NOT legal_hold),
+                count(*) FILTER(WHERE deletion_state='RETIRED')
            FROM workflow_artifact_t WHERE host_id=$1 AND process_id=$2",
-    )
-    .bind(host)
-    .bind(process)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(AdminError::database)?;
+        )
+        .bind(host)
+        .bind(process)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(AdminError::database)?;
     let cleanup = if pending > 0 || failed > 0 {
         "PENDING"
     } else if held > 0 || retained > 0 {
         "RETAINED"
+    } else if deferred > 0 {
+        "DEFERRED"
     } else {
         "COMPLETE"
     };
@@ -830,7 +834,7 @@ async fn deletion_receipt(
         json!({"operationId":operation,"processId":process,"lifecycleVersion":version,
         "logicalDeletion":"RECORDED","artifactCleanup":cleanup,
         "artifacts":{"pending":pending,"failed":failed,"deleted":deleted,
-            "legalHold":held,"retained":retained}}),
+            "legalHold":held,"retained":retained,"physicalDeleteDeferred":deferred}}),
     )
 }
 
@@ -1812,6 +1816,19 @@ mod native_process_postgres_tests {
 
     #[async_trait::async_trait]
     impl ArtifactObjectStore for FlakyObjectStore {
+        fn deletion_policy(
+            &self,
+            _: Uuid,
+            _: Uuid,
+            reference: &str,
+            _: &str,
+        ) -> Result<crate::artifact_retention::ArtifactDeletionPolicy, ArtifactStoreError> {
+            Ok(if reference == "fixture://legacy" {
+                crate::artifact_retention::ArtifactDeletionPolicy::LegacyShared
+            } else {
+                crate::artifact_retention::ArtifactDeletionPolicy::Dedicated
+            })
+        }
         async fn delete(&self, _: &str) -> Result<(), ArtifactStoreError> {
             if self.deletes.fetch_add(1, Ordering::SeqCst) == 0 {
                 Err(ArtifactStoreError {
@@ -1878,9 +1895,9 @@ mod native_process_postgres_tests {
             "INSERT INTO workflow_tool_binding_t(host_id,binding_id,tool_id,wf_def_id,
             workflow_version,definition_digest,schema_digest,invocation_mode,sync_wait_ms,
             total_deadline_ms,execution_class,result_text_mode,idempotency_policy,
-            delegation_policy,response_policy_digest,runtime_bounds,policy_digest)
+            delegation_policy,response_policy_digest,runtime_bounds,policy_digest,revision_status,source_binding_id,binding_digest,approval_digest,requested_by,requested_ts)
             VALUES($1,$2,$3,$4,'1.0.0',$5,$5,'async',1000,10000,'standard',
-            'compact-json','{}','{}',$5,'{}',$5)",
+            'compact-json','{}','{}',$5,'{}',$5,'approved',$2,$5,$5,'fixture',now())",
         )
         .bind(host)
         .bind(binding)
@@ -2219,6 +2236,37 @@ mod native_process_postgres_tests {
         .await
         .unwrap();
         assert_eq!(evidence["verifiedAbsent"], true);
+        // Deferred legacy cleanup must never count as physically deleted or COMPLETE.
+        sqlx::query("INSERT INTO workflow_artifact_t(host_id,artifact_id,execution_id,process_id,logical_name,media_type,size_bytes,content_digest,storage_reference,producer,policy_digest,retain_until_ts,verification_state) VALUES($1,$2,$3,$4,'legacy','text/plain',1,'digest','fixture://legacy','fixture','digest',now()-interval '1 minute','VERIFIED')")
+            .bind(host).bind(Uuid::now_v7()).bind(instance).bind(process).execute(&pool).await.unwrap();
+        assert_eq!(retention.reconcile_once().await.unwrap(), 1);
+        let deferred = delete_native_process_for_caller(&pool, &owner, deletion())
+            .await
+            .unwrap();
+        assert_eq!(deferred["artifacts"]["physicalDeleteDeferred"], 1);
+        assert_eq!(deferred["artifacts"]["deleted"], 1);
+        // Retention still takes precedence while the held sibling remains.
+        assert_eq!(deferred["artifactCleanup"], "RETAINED");
+        sqlx::query("UPDATE workflow_artifact_t SET legal_hold=false,storage_reference='fixture://legacy' WHERE host_id=$1 AND process_id=$2 AND legal_hold")
+            .bind(host).bind(process).execute(&pool).await.unwrap();
+        assert_eq!(retention.reconcile_once().await.unwrap(), 1);
+        let deferred = delete_native_process_for_caller(&pool, &owner, deletion())
+            .await
+            .unwrap();
+        assert_eq!(deferred["artifactCleanup"], "DEFERRED");
+        assert_eq!(deferred["artifacts"]["physicalDeleteDeferred"], 2);
+        // A failed unbound promotion is terminal deferred cleanup, not PENDING.
+        sqlx::query("INSERT INTO workflow_artifact_t(host_id,artifact_id,execution_id,process_id,logical_name,media_type,size_bytes,content_digest,storage_reference,staging_reference,promotion_state,producer,policy_digest,retain_until_ts,verification_state) VALUES($1,$2,$3,$4,'failed','text/plain',1,'digest','fixture://staging','fixture://staging','QUARANTINED','fixture','digest',now()-interval '1 minute','REJECTED')")
+            .bind(host).bind(Uuid::now_v7()).bind(instance).bind(process).execute(&pool).await.unwrap();
+        assert_eq!(retention.reconcile_once().await.unwrap(), 1);
+        assert_eq!(retention.reconcile_once().await.unwrap(), 0);
+        let deferred = delete_native_process_for_caller(&pool, &owner, deletion())
+            .await
+            .unwrap();
+        assert_eq!(deferred["artifactCleanup"], "DEFERRED");
+        assert_eq!(deferred["artifacts"]["pending"], 0);
+        assert_eq!(deferred["artifacts"]["failed"], 0);
+        assert_eq!(deferred["artifacts"]["physicalDeleteDeferred"], 3);
         let active: bool = sqlx::query_scalar(
             "SELECT active FROM process_info_t
             WHERE host_id=$1 AND process_id=$2",

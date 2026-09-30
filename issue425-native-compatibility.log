@@ -1,0 +1,11 @@
+    Blocking waiting for file lock on build directory
+   Compiling light-workflow v0.2.1 (/home/steve/workspace/light-fabric-issue425-a00/apps/light-workflow)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.12s
+     Running unittests src/lib.rs (/home/steve/workspace/light-fabric/target/debug/deps/light_workflow-8ea30c53162509f6)
+
+running 1 test
+test admin_api::native_process_postgres_tests::native_note_delete_owner_retry_hold_and_definition_preservation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 162 filtered out; finished in 0.08s
+
+
