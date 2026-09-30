@@ -3960,7 +3960,7 @@ mod tests {
         assert_eq!(resolved.profile.unwrap().id, "mock-ephemeral");
 
         for task in [
-            "wait: PT1S".to_string(),
+            "wait: PT601S".to_string(),
             "call: mcp\n      with:\n        method: tools/list\n        transport:\n          stdio:\n            command: mcp-server".to_string(),
         ] {
             let source = format!("document: {{dsl: 1.0.3, namespace: test, name: denied, version: 1.0.0}}\nevaluate: {{language: cel}}\ndo:\n  - denied:\n      {task}\n");

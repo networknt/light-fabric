@@ -1,0 +1,72 @@
+# P01 executable component fixture. Tools are durable mocks, not capture providers.
+# S00 proposed graph with PT1S to shorten isolated tests and capture reply-loss retry.
+document:
+  dsl: "1.0.3"
+  namespace: light-development
+  name: feature-design-input
+  version: "0.0.0-s00-proposed"
+evaluate:
+  language: cel
+use:
+  mcpSessions:
+    gateway:
+      server:
+        endpoint:
+          uri: https://s00-gateway.invalid/mcp
+        transport: http
+      reuse: true
+do:
+  - capture:
+      call: mcp
+      with:
+        session: gateway
+        tool: workflow_development_input_capture
+        arguments:
+          issueUrl: "${ .issueUrl }"
+      export:
+        as:
+          capture: .output.structuredContent
+      retry:
+        limit:
+          attempt:
+            count: 3
+        delay:
+          milliseconds: 0
+      then: status
+  - status:
+      call: mcp
+      with:
+        session: gateway
+        tool: workflow_development_input_status
+        arguments:
+          captureId: "${ .capture.captureId }"
+      export:
+        as:
+          observed: .output.structuredContent
+      then: terminalOrWait
+  - terminalOrWait:
+      switch:
+        - ready:
+            when: '.observed.state == "READY"'
+            then: readyResult
+        - pending:
+            when: '.observed.state == "CAPTURING"'
+            then: pollDelay
+        - default:
+            then: terminalResult
+  - pollDelay:
+      wait: PT1S
+      then: status
+  - readyResult:
+      set:
+        status: READY
+        captureId: "${ .capture.captureId }"
+        receiptId: "${ .observed.receiptId }"
+        receiptDigest: "${ .observed.receiptDigest }"
+      end: true
+  - terminalResult:
+      set:
+        status: NOT_READY
+        captureId: "${ .capture.captureId }"
+        captureState: "${ .observed.state }"
+      end: true

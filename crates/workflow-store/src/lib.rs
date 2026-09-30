@@ -23,6 +23,9 @@ pub const TOOL_ACCESS_APPROVAL_MIGRATION_ID: &str = "0014_workflow_tool_access_a
 pub const NATIVE_PROCESS_OPERATIONS_MIGRATION_ID: &str = "0015_native_process_operations";
 pub const DEFINITION_NATIVE_START_MIGRATION_ID: &str = "0016_definition_native_start";
 pub const TOOL_BINDING_REVISIONS_MIGRATION_ID: &str = "0018_workflow_tool_binding_revisions";
+pub const DURABLE_TIMER_MIGRATION_ID: &str = "0021_workflow_durable_timer";
+pub const DURABLE_TIMER_MIGRATION_SQL: &str =
+    include_str!("../migrations/workflow-postgres/0021_workflow_durable_timer.sql");
 pub const ARTIFACT_RETIREMENT_MIGRATION_ID: &str = "0020_artifact_legacy_retirement";
 pub const ARTIFACT_RETIREMENT_MIGRATION_SQL: &str =
     include_str!("../migrations/workflow-postgres/0020_artifact_legacy_retirement.sql");
@@ -78,6 +81,7 @@ pub const AUTHORITY_TABLES: &[&str] = &[
     "consumer_offsets",
     "process_info_t",
     "task_info_t",
+    "workflow_task_timer_t",
     "task_asst_t",
     "workflow_approval_t",
     "workflow_artifact_t",
@@ -354,6 +358,14 @@ pub async fn validate(
             "Workflow artifact retirement migration is missing".into(),
         ));
     }
+    let timer_ready: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t WHERE migration_owner='workflow-store' AND schema_name='workflow_ops' AND migration_id=$1)",
+    ).bind(DURABLE_TIMER_MIGRATION_ID).fetch_one(pool).await?;
+    if !timer_ready {
+        return Err(ValidationError::Scope(
+            "Workflow durable timer migration is missing".into(),
+        ));
+    }
     let denied: Vec<String> = sqlx::query_scalar(
         "SELECT t FROM unnest($1::text[]) AS t WHERE NOT (
             has_table_privilege(current_user,'workflow_ops.' || t,'SELECT') AND
@@ -378,7 +390,7 @@ mod tests {
 
     #[test]
     fn workflow_inventory_and_boundary_are_frozen() {
-        assert_eq!(AUTHORITY_TABLES.len(), 26);
+        assert_eq!(AUTHORITY_TABLES.len(), 27);
         assert_eq!(PROJECTION_TABLES.len(), 10);
         for table in AUTHORITY_TABLES
             .iter()
@@ -387,6 +399,7 @@ mod tests {
                 !matches!(
                     **table,
                     "task_asst_t"
+                        | "workflow_task_timer_t"
                         | "workflow_long_owner_binding_t"
                         | "workflow_tool_access_approval_run_t"
                         | "workflow_publication_operation_t"

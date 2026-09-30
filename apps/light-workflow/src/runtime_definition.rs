@@ -156,8 +156,14 @@ pub(crate) fn validate_runtime_task(
         TaskDefinition::Try(_) => {
             return Err(format!("task '{task_name}' uses unimplemented task try"));
         }
-        TaskDefinition::Wait(_) => {
-            return Err(format!("task '{task_name}' uses unimplemented task wait"));
+        TaskDefinition::Wait(wait) => {
+            if inside_fork {
+                return Err(format!(
+                    "fork branch '{task_name}' uses wait, which requires a standalone durable timer"
+                ));
+            }
+            crate::durable_timer::duration_seconds(&wait.wait)
+                .map_err(|error| format!("task '{task_name}': {error}"))?;
         }
     }
     Ok(())
@@ -222,6 +228,7 @@ pub(crate) fn supported_task_type(
         workflow_core::models::task::TaskDefinition::Fork(_) => Some("fork"),
         workflow_core::models::task::TaskDefinition::Set(_) => Some("set"),
         workflow_core::models::task::TaskDefinition::Switch(_) => Some("switch"),
+        workflow_core::models::task::TaskDefinition::Wait(_) => Some("wait"),
         workflow_core::models::task::TaskDefinition::Run(_) => Some("run"),
         _ => None,
     }
@@ -234,6 +241,7 @@ pub(crate) fn policy_task_kind(task_def: &TaskDefinition) -> Result<TaskKind, sq
         TaskDefinition::Fork(_) => Ok(TaskKind::Fork),
         TaskDefinition::Set(_) => Ok(TaskKind::Set),
         TaskDefinition::Switch(_) => Ok(TaskKind::Switch),
+        TaskDefinition::Wait(_) => Ok(TaskKind::Wait),
         TaskDefinition::Call(call) => match call {
             CallTaskDefinition::Agent(_) => Ok(TaskKind::CallAgent),
             CallTaskDefinition::A2a(_) => Ok(TaskKind::CallA2a),

@@ -13,6 +13,7 @@ pub mod consumer;
 pub mod development_cancel;
 pub mod development_finalize;
 pub mod events;
+pub(crate) mod durable_timer;
 pub mod executor;
 pub mod fixed_action;
 pub mod invocation;

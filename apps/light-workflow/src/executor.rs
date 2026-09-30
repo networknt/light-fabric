@@ -413,6 +413,7 @@ impl TaskExecutor {
             TaskDefinition::Fork(_) => Some("fork"),
             TaskDefinition::Set(_) => Some("set"),
             TaskDefinition::Switch(_) => Some("switch"),
+            TaskDefinition::Wait(_) => Some("wait"),
             TaskDefinition::Run(_) => Some("run"),
             _ => None,
         }
@@ -425,6 +426,7 @@ impl TaskExecutor {
             TaskDefinition::Fork(_) => Ok(TaskKind::Fork),
             TaskDefinition::Set(_) => Ok(TaskKind::Set),
             TaskDefinition::Switch(_) => Ok(TaskKind::Switch),
+            TaskDefinition::Wait(_) => Ok(TaskKind::Wait),
             TaskDefinition::Call(call) => match call {
                 CallTaskDefinition::Agent(_) => Ok(TaskKind::CallAgent),
                 CallTaskDefinition::A2a(_) => Ok(TaskKind::CallA2a),
@@ -805,7 +807,223 @@ impl TaskExecutor {
         Ok(())
     }
 
+    async fn sweep_durable_timers(&self) -> Result<u64, DynError> {
+        use crate::durable_timer::{is_lock_contention, record_wake_failure};
+        // No row locks in candidate enumeration. Only due timers or newly
+        // invalid/expired parents are visited; future waits do not serialize
+        // workers. Every authoritative row is acquired parent-first NOWAIT.
+        let started = tokio::time::Instant::now();
+        let budget = Duration::from_millis(250);
+        let candidates: Vec<(Uuid, Uuid, Uuid, i64)> = tokio::time::timeout(budget,
+            sqlx::query_as(
+                "SELECT timer.host_id,timer.task_id,timer.process_id,timer.generation
+                   FROM workflow_task_timer_t timer
+                   JOIN process_info_t p USING(host_id,process_id)
+                   JOIN task_info_t t ON t.host_id=timer.host_id AND t.task_id=timer.task_id
+                   LEFT JOIN workflow_invocation_t i ON i.host_id=timer.host_id AND i.process_id=timer.process_id
+                   LEFT JOIN workflow_action_authority_t a ON a.host_id=i.host_id AND a.run_id=i.workflow_instance_id
+                  WHERE timer.state='ARMED'
+                    AND (timer.retry_after_ts<=clock_timestamp()
+                         OR timer.effective_deadline<=clock_timestamp()
+                         OR p.deadline_ts<=clock_timestamp() OR t.deadline_ts<=clock_timestamp()
+                         OR a.deadline<=clock_timestamp())
+                    AND (timer.wake_at<=clock_timestamp() OR timer.effective_deadline<=clock_timestamp()
+                         OR p.deadline_ts<=clock_timestamp() OR t.deadline_ts<=clock_timestamp()
+                         OR NOT p.active OR p.status_code NOT IN('A','W')
+                         OR NOT t.active OR t.status_code<>'W' OR t.lease_fencing_token<>timer.task_fence
+                         OR i.cancel_requested_ts IS NOT NULL OR i.state NOT IN('ACCEPTED','RUNNING','WAITING')
+                         OR (i.deadline_ts<=clock_timestamp() AND COALESCE(i.response_policy_snapshot->'privateExecutionProfile'->>'version','')<>'1')
+                         OR a.active=false OR a.deadline<=clock_timestamp())
+                  ORDER BY timer.retry_after_ts,timer.wake_at,timer.host_id,timer.task_id LIMIT 64"
+            ).fetch_all(&self.pool)
+        ).await.map_err(|_| io::Error::other("WORKFLOW_TIMER_SCAN_TIMEOUT"))??;
+        let mut fired = 0;
+        for (host, task, process, generation) in candidates {
+            let Some(remaining) = budget.checked_sub(started.elapsed()) else {
+                break;
+            };
+            let outcome = tokio::time::timeout(
+                remaining,
+                self.fire_durable_timer(host, task, process, generation),
+            )
+            .await;
+            match outcome {
+                Ok(Ok(count)) => fired += count,
+                Ok(Err(error)) if is_lock_contention(error.as_ref()) => {}
+                _ => {
+                    // Error rolls back just this timer. Its persisted backoff
+                    // survives restart; three failures terminalize it. A broken
+                    // error journal still cannot abort ordinary task claiming.
+                    match tokio::time::timeout(
+                        Duration::from_millis(100),
+                        record_wake_failure(&self.pool, host, process, task, generation),
+                    )
+                    .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) if is_lock_contention(&error) => {}
+                        _ => {
+                            error!(host=%host, task=%task, "could not record isolated timer wake failure")
+                        }
+                    }
+                }
+            }
+        }
+        Ok(fired)
+    }
+
+    async fn fire_durable_timer(
+        &self,
+        host: Uuid,
+        task: Uuid,
+        process: Uuid,
+        generation: i64,
+    ) -> Result<u64, DynError> {
+        let mut tx = self.pool.begin().await?;
+        // NOWAIT covers explicit row acquisition; these limits also cover implicit
+        // locks/triggers and individual statements during successor insertion.
+        sqlx::query("SET LOCAL lock_timeout='1ms'")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("SET LOCAL statement_timeout='100ms'")
+            .execute(&mut *tx)
+            .await?;
+        let mut parent = crate::durable_timer::try_lock_parent(&mut tx, host, process).await?;
+        let t = sqlx::query("SELECT status_code::text,active,lease_fencing_token,deadline_ts FROM task_info_t WHERE host_id=$1 AND task_id=$2 AND process_id=$3 FOR UPDATE NOWAIT")
+        .bind(host).bind(task).bind(process).fetch_optional(&mut *tx).await?;
+        let timer = sqlx::query("SELECT state,generation,task_fence,wake_at,effective_deadline,retry_after_ts FROM workflow_task_timer_t WHERE host_id=$1 AND task_id=$2 FOR UPDATE NOWAIT")
+        .bind(host).bind(task).fetch_optional(&mut *tx).await?;
+        let (Some(t), Some(timer)) = (t, timer) else {
+            return Ok(0);
+        };
+        if timer.get::<String, _>("state") != "ARMED"
+            || timer.get::<i64, _>("generation") != generation
+        {
+            return Ok(0);
+        }
+        if t.get::<String, _>("status_code") != "W"
+            || !t.get::<bool, _>("active")
+            || t.get::<i64, _>("lease_fencing_token") != timer.get::<i64, _>("task_fence")
+        {
+            parent.blocked = Some("WORKFLOW_TIMER_CANCELLED");
+        }
+        crate::durable_timer::try_check_authority(&mut tx, host, &mut parent).await?;
+        let effective_deadline = [
+            timer.get::<Option<chrono::DateTime<Utc>>, _>("effective_deadline"),
+            parent.deadline,
+            t.get::<Option<chrono::DateTime<Utc>>, _>("deadline_ts"),
+            parent.authority_deadline,
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        let now: chrono::DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await?;
+        if effective_deadline.is_some_and(|d| now >= d) {
+            parent.blocked = Some("WORKFLOW_TIMEOUT");
+        }
+        if let Some(code) = parent.blocked {
+            crate::durable_timer::stop(&mut tx, host, process, task, code).await?;
+            tx.commit().await?;
+            return Ok(0);
+        }
+        if now < timer.get::<chrono::DateTime<Utc>, _>("wake_at")
+            || now < timer.get::<chrono::DateTime<Utc>, _>("retry_after_ts")
+        {
+            return Ok(0);
+        }
+        let active_task = ActiveTask {
+            host_id: host,
+            task_id: task,
+            task_type: "wait".into(),
+            process_id: process,
+            wf_instance_id: String::new(),
+            wf_task_id: String::new(),
+            status_code: "W".into(),
+            result_code: None,
+        };
+        let (context, definition_id, snapshot) =
+            self.get_context_data(&mut tx, &host, &process).await?;
+        let raw = if let Some(snapshot) = snapshot {
+            serde_yaml::to_value(snapshot)?
+        } else {
+            serde_yaml::from_str(
+                &self
+                    .get_workflow_definition(&mut tx, &host, &definition_id)
+                    .await?,
+            )?
+        };
+        let definition: WorkflowDefinition = serde_yaml::from_value(raw.clone())?;
+        let (instance, task_name): (String, String) = sqlx::query_as(
+            "SELECT wf_instance_id,wf_task_id FROM task_info_t WHERE host_id=$1 AND task_id=$2",
+        )
+        .bind(host)
+        .bind(task)
+        .fetch_one(&mut *tx)
+        .await?;
+        let active_task = ActiveTask {
+            wf_instance_id: instance,
+            wf_task_id: task_name,
+            ..active_task
+        };
+        if let Some(wait_def) = self.find_task_definition(&definition, &active_task.wf_task_id)
+            && let Some(next_name) = self.resolve_next_task_name(
+                &definition,
+                &raw,
+                &active_task.wf_task_id,
+                wait_def,
+                None,
+            )
+            && let Some(TaskDefinition::Call(CallTaskDefinition::Mcp(call))) =
+                self.find_task_definition(&definition, &next_name)
+            && let (Some(binding), Some(alias)) = (parent.binding, call.with.tool.as_deref())
+        {
+            let lifecycle: Option<String> = sqlx::query_scalar("SELECT lifecycle_status FROM workflow_tool_dependency_t WHERE host_id=$1 AND outer_binding_id=$2 AND authorization_tool_name=$3 FOR SHARE NOWAIT")
+            .bind(host).bind(binding).bind(alias).fetch_optional(&mut *tx).await?;
+            if lifecycle.as_deref() == Some("revoked") || (parent.private && lifecycle.is_none()) {
+                crate::durable_timer::stop(&mut tx, host, process, task, "AUTHORITY_BLOCKED")
+                    .await?;
+                tx.commit().await?;
+                return Ok(0);
+            }
+        }
+        let accepted = sqlx::query("UPDATE workflow_task_timer_t SET state='FIRED',updated_ts=clock_timestamp() WHERE host_id=$1 AND task_id=$2 AND state='ARMED' AND generation=$3 AND wake_at<=clock_timestamp() AND ($4::timestamptz IS NULL OR $4>clock_timestamp())")
+        .bind(host).bind(task).bind(generation).bind(effective_deadline).execute(&mut *tx).await?;
+        if accepted.rows_affected() != 1 {
+            crate::durable_timer::stop(&mut tx, host, process, task, "WORKFLOW_TIMEOUT").await?;
+            tx.commit().await?;
+            return Ok(0);
+        }
+        sqlx::query("UPDATE process_info_t SET status_code='A' WHERE host_id=$1 AND process_id=$2 AND status_code='W'")
+        .bind(host).bind(process).execute(&mut *tx).await?;
+        let claimed = ClaimedTask {
+            task: active_task,
+            wf_def_id: definition_id,
+            context_data: context,
+            definition,
+            raw_definition: raw,
+            host_lease: None,
+        };
+        self.finish_task(
+            &mut tx,
+            &claimed,
+            TaskExecutionResult {
+                status_code: "C",
+                task_output: json!({"status":"timer_fired"}),
+                next_task: None,
+                context_data: None,
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(1)
+    }
+
     async fn process_next_task(&self, worker_id: Uuid) -> Result<bool, DynError> {
+        if self.sweep_durable_timers().await.is_err() {
+            error!("timer scan failed; continuing ordinary task claiming");
+        }
         let claimed = match self.claim_next_task(worker_id).await? {
             Some(claimed) => claimed,
             None => return Ok(false),
@@ -2206,6 +2424,16 @@ impl TaskExecutor {
                         context_data: None,
                     }),
                 }
+            }
+            TaskDefinition::Wait(wait) => {
+                crate::durable_timer::duration_seconds(&wait.wait)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+                Ok(TaskExecutionResult {
+                    status_code: "W",
+                    task_output: json!({"status":"waiting_for_timer"}),
+                    next_task: None,
+                    context_data: None,
+                })
             }
             TaskDefinition::Set(set_task) => {
                 let output = match &set_task.set {
@@ -4542,6 +4770,27 @@ impl TaskExecutor {
         claimed: &ClaimedTask,
         result: TaskExecutionResult,
     ) -> Result<(), sqlx::Error> {
+        if result.status_code == "W"
+            && let Some(TaskDefinition::Wait(wait)) =
+                self.find_task_definition(&claimed.definition, &claimed.task.wf_task_id)
+        {
+            let seconds = crate::durable_timer::duration_seconds(&wait.wait)
+                .map_err(sqlx::Error::Protocol)?;
+            let lease = claimed
+                .host_lease
+                .ok_or_else(|| sqlx::Error::Protocol("WORKFLOW_TIMER_LEASE_REQUIRED".into()))?;
+            return crate::durable_timer::arm(
+                tx,
+                claimed.task.host_id,
+                claimed.task.process_id,
+                claimed.task.task_id,
+                lease.owner,
+                lease.fencing_token,
+                seconds,
+            )
+            .await;
+        }
+
         if result.status_code == "F"
             && self
                 .schedule_retry_if_allowed(tx, claimed, &result.task_output)
@@ -5573,6 +5822,10 @@ impl TaskExecutor {
                 )
                 .await?;
 
+                if task.task_type == "wait" {
+                    sqlx::query("UPDATE workflow_task_timer_t SET successor_task_id=$3 WHERE host_id=$1 AND task_id=$2 AND state='FIRED' AND successor_task_id IS NULL")
+                        .bind(task.host_id).bind(task.task_id).bind(new_task_id).execute(&mut **tx).await?;
+                }
                 info!(
                     ">>> Transitioned to Next Task: {} ({}, {:?})",
                     next_name, next_type, resolved_policy.placement
@@ -6604,6 +6857,10 @@ fn parse_iso8601_duration_ms(value: &str) -> Option<u64> {
     }
     (digits.is_empty() && total > 0).then_some(total)
 }
+
+#[cfg(test)]
+#[path = "durable_timer_tests.rs"]
+mod durable_timer_tests;
 
 #[cfg(test)]
 mod tests {

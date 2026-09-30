@@ -23,6 +23,7 @@ pub enum TaskKind {
     Fork,
     Set,
     Switch,
+    Wait,
     CallAgent,
     CallA2a,
     CallHttp,
@@ -293,6 +294,12 @@ pub fn resolve_policy(
     security: Option<&WorkflowSecurityPolicy>,
     profiles: &BTreeMap<String, ExecutionProfile>,
 ) -> Result<ResolvedExecutionPolicy, PolicyError> {
+    // Timers are host orchestration and inherit no external capabilities.
+    let security = if task_kind == TaskKind::Wait {
+        None
+    } else {
+        security
+    };
     let agent_mode = security.and_then(|policy| policy.agent_mode);
     if task_kind != TaskKind::CallAgent && agent_mode.is_some() {
         return Err(PolicyError::AgentModeOnNonAgent);
@@ -417,6 +424,15 @@ pub fn resolve_policy(
         protected_paths,
         policy_digest: String::new(),
     };
+    if task_kind == TaskKind::Wait {
+        resolved.network = NetworkMode::DenyAll;
+        resolved.credential_classes.clear();
+        resolved.persistence = PersistenceMode::Ephemeral;
+        resolved.artifact_export = false;
+        resolved.approval_required = false;
+        resolved.approval = None;
+        resolved.protected_paths.clear();
+    }
     resolved.policy_digest =
         canonical_sha256(&resolved).map_err(|error| PolicyError::Digest(error.to_string()))?;
     Ok(resolved)
@@ -597,6 +613,7 @@ fn action_kind(task_kind: TaskKind) -> &'static str {
         TaskKind::Fork => "fork",
         TaskKind::Set => "set",
         TaskKind::Switch => "switch",
+        TaskKind::Wait => "wait",
         TaskKind::CallAgent => "call.agent",
         TaskKind::CallA2a => "call.a2a",
         TaskKind::CallHttp => "call.http",
@@ -617,7 +634,12 @@ fn requires_runner(task_kind: TaskKind) -> bool {
 fn is_pure_orchestration(task_kind: TaskKind) -> bool {
     matches!(
         task_kind,
-        TaskKind::Ask | TaskKind::Assert | TaskKind::Fork | TaskKind::Set | TaskKind::Switch
+        TaskKind::Ask
+            | TaskKind::Assert
+            | TaskKind::Fork
+            | TaskKind::Set
+            | TaskKind::Switch
+            | TaskKind::Wait
     )
 }
 
@@ -674,6 +696,29 @@ mod tests {
     use super::*;
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/v1");
+
+    #[test]
+    fn wait_is_host_only_without_inherited_capabilities() {
+        let security: WorkflowSecurityPolicy = serde_json::from_value(serde_json::json!({
+            "version":1, "placement":"runner", "executionProfileId":"missing",
+            "network":"allowlisted", "credentialClasses":["github"],
+            "artifactExport":true, "approvalRequired":true
+        }))
+        .unwrap();
+        let resolved = resolve_policy(TaskKind::Wait, Some(&security), &BTreeMap::new()).unwrap();
+        assert_eq!(resolved.placement, ExecutionPlacement::Host);
+        assert!(resolved.profile.is_none());
+        assert_eq!(resolved.action_kind, "wait");
+        assert_eq!(resolved.network, NetworkMode::DenyAll);
+        assert!(resolved.credential_classes.is_empty());
+        assert!(!resolved.artifact_export);
+        assert!(!resolved.approval_required);
+        assert!(resolved.approval.is_none());
+        assert_eq!(
+            resolved,
+            resolve_policy(TaskKind::Wait, None, &BTreeMap::new()).unwrap()
+        );
+    }
 
     fn fixture(path: &str) -> String {
         std::fs::read_to_string(format!("{FIXTURES}/{path}"))

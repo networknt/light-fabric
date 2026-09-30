@@ -512,9 +512,12 @@ mod tests {
             "document: { dsl: 1.0.3, namespace: test, name: wait, version: 1.0.0 }\nevaluate: { language: cel }\ndo:\n  - pause:\n      wait: PT1S",
         )
         .unwrap();
+        validate_runtime_definition(&wait, DEFAULT_MAXIMUM_PARALLELISM).unwrap();
+        let task = wait.do_.entries[0].get("pause").unwrap();
+        assert_eq!(supported_task_type(task), Some("wait"));
         assert_eq!(
-            validate_runtime_definition(&wait, DEFAULT_MAXIMUM_PARALLELISM).unwrap_err(),
-            "task 'pause' uses unimplemented task wait"
+            policy_task_kind(task).unwrap(),
+            workflow_policy::TaskKind::Wait
         );
     }
 
