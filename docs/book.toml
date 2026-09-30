@@ -11,4 +11,4 @@ command = "mdbook-mermaid"
 site-url = "/light-fabric/"
 git-repository-url = "https://github.com/networknt/light-fabric"
 edit-url-template = "https://github.com/networknt/light-fabric/edit/master/docs/{path}"
-additional-js = ["mermaid.min.js", "mermaid-init.js"]
+additional-js = ["mermaid.min.js", "mermaid-init.js", "diagram-viewer.js"]
