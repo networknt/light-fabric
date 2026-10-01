@@ -331,6 +331,14 @@
       "migrationId": "0022_workflow_verified_task_context",
       "path": "crates/workflow-store/migrations/workflow-postgres/0022_workflow_verified_task_context.sql",
       "sha256": "80c8a5215aff12f5e4fc106919c60dc39ffc129167485b1ac4f8fb0a7ccbdc23"
+    },
+    {
+      "order": 42,
+      "owner": "workflow-store",
+      "schema": "workflow_ops",
+      "migrationId": "0023_workflow_verified_context_cleanup",
+      "path": "crates/workflow-store/migrations/workflow-postgres/0023_workflow_verified_context_cleanup.sql",
+      "sha256": "77a311e2af27f0f8a0713d45a06a4db8825f110eda5d1edfb2025263e0484b25"
     }
   ],
   "roleProfileVersion": 1,

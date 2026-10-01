@@ -1,10 +1,10 @@
-# P01 executable component fixture. Tools are durable mocks, not capture providers.
-# S00 proposed graph with PT1S to shorten isolated tests and capture reply-loss retry.
+# Generic polling fixture: start an idempotent operation, inspect its result,
+# wait without occupying a worker, then poll again. PT1S keeps tests short.
 document:
   dsl: "1.0.3"
-  namespace: light-development
-  name: feature-design-input
-  version: "0.0.0-s00-proposed"
+  namespace: workflow-examples
+  name: operation-polling
+  version: "1.0.0"
 evaluate:
   language: cel
 use:
@@ -12,20 +12,20 @@ use:
     gateway:
       server:
         endpoint:
-          uri: https://s00-gateway.invalid/mcp
+          uri: https://polling-gateway.invalid/mcp
         transport: http
       reuse: true
 do:
-  - capture:
+  - operation:
       call: mcp
       with:
         session: gateway
-        tool: workflow_development_input_capture
+        tool: mock_operation_start
         arguments:
-          issueUrl: "${ .issueUrl }"
+          requestKey: "${ .requestKey }"
       export:
         as:
-          capture: .output.structuredContent
+          operation: .output.structuredContent
       retry:
         limit:
           attempt:
@@ -37,9 +37,9 @@ do:
       call: mcp
       with:
         session: gateway
-        tool: workflow_development_input_status
+        tool: mock_operation_status
         arguments:
-          captureId: "${ .capture.captureId }"
+          operationId: "${ .operation.operationId }"
       export:
         as:
           observed: .output.structuredContent
@@ -50,7 +50,7 @@ do:
             when: '.observed.state == "READY"'
             then: readyResult
         - pending:
-            when: '.observed.state == "CAPTURING"'
+            when: '.observed.state == "PENDING"'
             then: pollDelay
         - default:
             then: terminalResult
@@ -60,13 +60,13 @@ do:
   - readyResult:
       set:
         status: READY
-        captureId: "${ .capture.captureId }"
-        receiptId: "${ .observed.receiptId }"
-        receiptDigest: "${ .observed.receiptDigest }"
+        operationId: "${ .operation.operationId }"
+        resultId: "${ .observed.resultId }"
+        resultDigest: "${ .observed.resultDigest }"
       end: true
   - terminalResult:
       set:
         status: NOT_READY
-        captureId: "${ .capture.captureId }"
-        captureState: "${ .observed.state }"
+        operationId: "${ .operation.operationId }"
+        operationState: "${ .observed.state }"
       end: true

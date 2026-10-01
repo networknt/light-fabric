@@ -14,6 +14,7 @@ for (const [owner, schema, migrationId] of [
   ['agent-store', 'agent_ops', '0005_workflow_job_owner'],
   ['workflow-store', 'workflow_ops', '0021_workflow_durable_timer'],
   ['workflow-store', 'workflow_ops', '0022_workflow_verified_task_context'],
+  ['workflow-store', 'workflow_ops', '0023_workflow_verified_context_cleanup'],
 ]) {
   const migrationPath = `crates/${owner}/migrations/${schema.replace('_ops', '-postgres')}/${migrationId}.sql`;
   if (!manifest.orderedMigrations.some(m => m.migrationId === migrationId && m.owner === owner)) {

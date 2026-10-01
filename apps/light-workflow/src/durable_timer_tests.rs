@@ -65,7 +65,7 @@ impl Db {
                 .await
                 .unwrap_or_else(|e| panic!("{}: {e}", file.display()));
         }
-        sqlx::raw_sql("CREATE TABLE p01_mock_capture(process uuid PRIMARY KEY,capture uuid NOT NULL,starts integer NOT NULL DEFAULT 1,calls integer NOT NULL DEFAULT 1); CREATE TABLE p01_mock_poll(process uuid NOT NULL,attempt uuid PRIMARY KEY)")
+        sqlx::raw_sql("CREATE TABLE p01_mock_operation(process uuid PRIMARY KEY,operation uuid NOT NULL,starts integer NOT NULL DEFAULT 1,calls integer NOT NULL DEFAULT 1); CREATE TABLE p01_mock_poll(process uuid NOT NULL,attempt uuid PRIMARY KEY)")
             .execute(&pool).await.unwrap();
         Self { pool, admin, name }
     }
@@ -112,7 +112,7 @@ async fn start_host(
     let owner = Uuid::new_v4();
     let deadline = Utc::now() + chrono::Duration::seconds(60);
     let digest = canonical_sha256(&definition).unwrap();
-    let input = json!({"issueUrl":"https://github.invalid/owner/repo/issues/1"});
+    let input = json!({"requestKey":"fixture-operation"});
     let input_digest = canonical_sha256(&input).unwrap();
     let request: StartInvocationRequest = serde_json::from_value(json!({
         "contractVersion":1,"workflowInstanceId":Uuid::new_v4(),"stableToolRef":tool,
@@ -289,18 +289,15 @@ async fn deadline_is_rechecked_after_authority_lock_contention() {
 
 #[tokio::test]
 #[ignore = "requires P01_TIMER_TEST_DATABASE_URL at owned loopback disposable PostgreSQL"]
-async fn preparation_deadline_is_absolute_and_timer_permissions_are_present() {
+async fn ordinary_deadline_and_timer_permissions_are_present() {
     let db = Db::new().await;
-    let yaml = WAIT.replace(
-        "  version: '1.0.0'",
-        "  version: '1.0.0'\n  metadata:\n    developmentInputProfile: capture-v1",
-    );
+    let yaml = WAIT.replace("PT1S", "PT600S");
     let r = start(&db.pool, &yaml, 20).await;
     sqlx::query("UPDATE process_info_t SET started_ts=clock_timestamp()-interval '599 seconds' WHERE host_id=$1 AND process_id=$2")
         .bind(r.host).bind(r.process).execute(&db.pool).await.unwrap();
     let e = TaskExecutor::new(db.pool.clone());
     e.process_next_task(r.owner).await.unwrap();
-    let correct: bool = sqlx::query_scalar("SELECT t.effective_deadline=p.started_ts+interval '600 seconds' AND t.wake_at=t.effective_deadline FROM workflow_task_timer_t t JOIN process_info_t p USING(host_id,process_id) WHERE t.host_id=$1 AND t.task_id=$2")
+    let correct: bool = sqlx::query_scalar("SELECT t.effective_deadline=i.deadline_ts AND t.wake_at=t.effective_deadline FROM workflow_task_timer_t t JOIN workflow_invocation_t i USING(host_id,process_id) WHERE t.host_id=$1 AND t.task_id=$2")
         .bind(r.host).bind(r.task).fetch_one(&db.pool).await.unwrap();
     assert!(correct);
     let privileges: (bool,bool,bool) = sqlx::query_as("SELECT has_table_privilege('operations_workflow_runtime','workflow_task_timer_t','SELECT'),has_table_privilege('operations_workflow_runtime','workflow_task_timer_t','INSERT'),has_table_privilege('operations_workflow_runtime','workflow_task_timer_t','UPDATE')")
@@ -314,7 +311,7 @@ async fn preparation_deadline_is_absolute_and_timer_permissions_are_present() {
 async fn revoked_poll_dependency_blocks_timer_successor() {
     let db = Db::new().await;
     let mut definition: Value =
-        serde_yaml::from_str(include_str!("../tests/fixtures/p01-preparation.yaml")).unwrap();
+        serde_yaml::from_str(include_str!("../tests/fixtures/p01-polling.yaml")).unwrap();
     let mut status = definition["do"][1].clone();
     status["status"]["then"] = json!("end");
     definition["do"] = json!([{"delay":{"wait":"PT1S","then":"status"}}, status]);
@@ -322,7 +319,7 @@ async fn revoked_poll_dependency_blocks_timer_successor() {
     let e = TaskExecutor::new(db.pool.clone());
     e.process_next_task(r.owner).await.unwrap();
     due(&db.pool, &r).await;
-    sqlx::query("INSERT INTO workflow_tool_dependency_t(host_id,outer_binding_id,nested_tool_id,nested_tool_version,contract_digest,compatibility_policy,authorization_tool_name,authorization_endpoint_key,authorization_policy_digest,lifecycle_status,dispatch_target) SELECT host_id,binding_id,$3,'1.0.0',definition_digest,'exact','workflow_development_input_status','fixture',policy_digest,'revoked','{}' FROM workflow_invocation_t WHERE host_id=$1 AND process_id=$2")
+    sqlx::query("INSERT INTO workflow_tool_dependency_t(host_id,outer_binding_id,nested_tool_id,nested_tool_version,contract_digest,compatibility_policy,authorization_tool_name,authorization_endpoint_key,authorization_policy_digest,lifecycle_status,dispatch_target) SELECT host_id,binding_id,$3,'1.0.0',definition_digest,'exact','mock_operation_status','fixture',policy_digest,'revoked','{}' FROM workflow_invocation_t WHERE host_id=$1 AND process_id=$2")
         .bind(r.host).bind(r.process).bind(Uuid::new_v4()).execute(&db.pool).await.unwrap();
     assert_eq!(e.sweep_durable_timers().await.unwrap(), 0);
     assert_eq!(state(&db.pool, &r).await, "CANCELLED");
@@ -521,22 +518,22 @@ impl crate::bound_mcp::Dispatch for MockGateway {
         params: Value,
     ) -> Result<Value, DynError> {
         match alias {
-            "workflow_development_input_capture" => {
-                let (capture,calls):(Uuid,i32)=sqlx::query_as("INSERT INTO p01_mock_capture(process,capture) VALUES($1,$2) ON CONFLICT(process) DO UPDATE SET calls=p01_mock_capture.calls+1 RETURNING capture,calls").bind(process).bind(Uuid::new_v4()).fetch_one(&self.pool).await?;
+            "mock_operation_start" => {
+                let (operation,calls):(Uuid,i32)=sqlx::query_as("INSERT INTO p01_mock_operation(process,operation) VALUES($1,$2) ON CONFLICT(process) DO UPDATE SET calls=p01_mock_operation.calls+1 RETURNING operation,calls").bind(process).bind(Uuid::new_v4()).fetch_one(&self.pool).await?;
                 if self.lose_reply && calls == 1 {
                     return Err(
-                        io::Error::other("mock lost capture reply after durable start").into(),
+                        io::Error::other("mock lost operation reply after durable start").into(),
                     );
                 }
-                Ok(json!({"structuredContent":{"captureId":capture}}))
+                Ok(json!({"structuredContent":{"operationId":operation}}))
             }
-            "workflow_development_input_status" => {
-                let capture: Uuid =
-                    sqlx::query_scalar("SELECT capture FROM p01_mock_capture WHERE process=$1")
+            "mock_operation_status" => {
+                let operation: Uuid =
+                    sqlx::query_scalar("SELECT operation FROM p01_mock_operation WHERE process=$1")
                         .bind(process)
                         .fetch_one(&self.pool)
                         .await?;
-                assert_eq!(params["arguments"]["captureId"], capture.to_string());
+                assert_eq!(params["arguments"]["operationId"], operation.to_string());
                 sqlx::query("INSERT INTO p01_mock_poll(process,attempt) VALUES($1,$2)")
                     .bind(process)
                     .bind(attempt)
@@ -548,7 +545,7 @@ impl crate::bound_mcp::Dispatch for MockGateway {
                         .fetch_one(&self.pool)
                         .await?;
                 Ok(
-                    json!({"structuredContent":{"state":if n>=self.ready_after{"READY"}else{"CAPTURING"},"receiptId":"mock-receipt","receiptDigest":format!("sha256:{}","a".repeat(64))}}),
+                    json!({"structuredContent":{"state":if n>=self.ready_after{"READY"}else{"PENDING"},"resultId":"mock-result","resultDigest":format!("sha256:{}","a".repeat(64))}}),
                 )
             }
             _ => Err(io::Error::other("unexpected P01 alias").into()),
@@ -569,12 +566,12 @@ fn mock_executor(pool: &PgPool, ready_after: i64, lose_reply: bool) -> TaskExecu
 }
 #[tokio::test]
 #[ignore = "requires P01_TIMER_TEST_DATABASE_URL at owned loopback disposable PostgreSQL"]
-async fn preparation_restart_reply_loss_distinct_polls_and_bounded_attempts() {
+async fn polling_restart_reply_loss_distinct_polls_and_bounded_attempts() {
     let db = Db::new().await;
     for bounded in [false, true] {
         let r = start(
             &db.pool,
-            include_str!("../tests/fixtures/p01-preparation.yaml"),
+            include_str!("../tests/fixtures/p01-polling.yaml"),
             if bounded { 8 } else { 30 },
         )
         .await;
@@ -605,7 +602,7 @@ async fn preparation_restart_reply_loss_distinct_polls_and_bounded_attempts() {
         }
         assert!(restarted);
         let starts: (i32, i32) =
-            sqlx::query_as("SELECT starts,calls FROM p01_mock_capture WHERE process=$1")
+            sqlx::query_as("SELECT starts,calls FROM p01_mock_operation WHERE process=$1")
                 .bind(r.process)
                 .fetch_one(&db.pool)
                 .await
@@ -848,17 +845,10 @@ async fn review_private_lifetime_still_enforces_real_deadlines_and_revocation() 
         "task",
         "authority",
         "revoked",
-        "preparation",
+        "old-process",
         "ordinary-invocation",
     ] {
-        let yaml = if expired == "preparation" {
-            WAIT.replace(
-                "  version: '1.0.0'",
-                "  version: '1.0.0'\n  metadata:\n    developmentInputProfile: capture-v1",
-            )
-        } else {
-            WAIT.into()
-        };
+        let yaml = WAIT;
         let private = expired != "ordinary-invocation";
         let r = start_profile(
             &db.pool,
@@ -876,8 +866,8 @@ async fn review_private_lifetime_still_enforces_real_deadlines_and_revocation() 
             sqlx::query("UPDATE workflow_invocation_t SET deadline_ts=clock_timestamp()-interval '1 second' WHERE host_id=$1 AND process_id=$2")
                 .bind(r.host).bind(r.process).execute(&db.pool).await.unwrap();
         }
-        if expired == "preparation" {
-            sqlx::query("UPDATE process_info_t SET started_ts=clock_timestamp()-interval '599.2 seconds' WHERE host_id=$1 AND process_id=$2")
+        if expired == "old-process" {
+            sqlx::query("UPDATE process_info_t SET started_ts=clock_timestamp()-interval '700 seconds' WHERE host_id=$1 AND process_id=$2")
                 .bind(r.host).bind(r.process).execute(&db.pool).await.unwrap();
         }
         let e = TaskExecutor::new(db.pool.clone());
@@ -900,10 +890,12 @@ async fn review_private_lifetime_still_enforces_real_deadlines_and_revocation() 
                     .await
                     .unwrap();
             }
-            "preparation" => {
-                let pinned:bool=sqlx::query_scalar("SELECT t.effective_deadline=p.started_ts+interval '600 seconds' AND t.wake_at=t.effective_deadline FROM workflow_task_timer_t t JOIN process_info_t p USING(host_id,process_id) WHERE t.host_id=$1").bind(r.host).fetch_one(&db.pool).await.unwrap();
-                assert!(pinned);
-                tokio::time::sleep(Duration::from_millis(900)).await;
+            "old-process" => {
+                due(&db.pool, &r).await;
+                assert_eq!(e.sweep_durable_timers().await.unwrap(), 1);
+                assert_eq!(state(&db.pool, &r).await, "FIRED");
+                assert_eq!(successors(&db.pool, &r).await, 1);
+                continue;
             }
             "ordinary-invocation" => {
                 sqlx::query("UPDATE workflow_invocation_t SET deadline_ts=clock_timestamp()-interval '1 second' WHERE host_id=$1 AND process_id=$2").bind(r.host).bind(r.process).execute(&db.pool).await.unwrap();
@@ -995,5 +987,101 @@ async fn review_slow_timer_and_scan_failure_do_not_gate_ordinary_work() {
         .execute(&db.pool)
         .await
         .unwrap();
+    db.close().await;
+}
+
+async fn start_native(pool: &PgPool, yaml: &str, attempts: i64) -> Run {
+    let definition: Value = serde_yaml::from_str(yaml).unwrap();
+    let typed: WorkflowDefinition = serde_json::from_value(definition.clone()).unwrap();
+    crate::runtime_definition::validate_runtime_definition(&typed, 1).unwrap();
+    let first = typed.do_.entries[0].iter().next().unwrap();
+    let kind = TaskExecutor::supported_task_type_name(first.1).unwrap();
+    let host = Uuid::new_v4();
+    let process = Uuid::new_v4();
+    let task = Uuid::new_v4();
+    let def = Uuid::new_v4();
+    let tool = Uuid::new_v4();
+    let owner = Uuid::new_v4();
+    let deadline = Utc::now() + chrono::Duration::seconds(60);
+    let digest = canonical_sha256(&definition).unwrap();
+    let input = json!({"requestKey":"fixture-operation"});
+    let input_digest = canonical_sha256(&input).unwrap();
+    let request: StartInvocationRequest = serde_json::from_value(json!({
+        "contractVersion":1,"workflowInstanceId":Uuid::new_v4(),"stableToolRef":tool,
+        "workflowDefinitionId":def,"workflowVersion":"1.0.0","definitionDigest":digest,
+        "schemaDigest":digest,"policyDigest":digest,"responsePolicyDigest":digest,
+        "mode":"async","executionClass":"standard","permitDepth":0,"deadlineTs":deadline,
+        "canonicalInputProfile":"rfc8785-safe-json-v1","normalizedInputDigest":input_digest,
+        "input":input,"callerClaims":{"sub":"fixture-owner"},"correlationId":"p01-gate",
+        "idempotency":{"kind":"EXPLICIT","scopedKeyDigest":canonical_sha256(&json!([host,process])).unwrap(),"inputDigest":input_digest,"inFlightUntil":deadline,"resultReplayUntil":deadline+chrono::Duration::hours(1)},
+        "budget":{"maximumTaskAttempts":attempts,"maximumNestedCalls":10,"maximumDelegationDepth":2,"maximumParallelism":1,"maximumRequestBytes":65536,"maximumIntermediateBytes":65536,"maximumResultBytes":65536,"maximumCostUnits":100}
+    })).unwrap();
+    sqlx::query("INSERT INTO wf_definition_t(host_id,wf_def_id,namespace,name,version,definition) VALUES($1,$2,'p01',$4,'1.0.0',$3)")
+        .bind(host).bind(def).bind(serde_json::to_string(&definition).unwrap()).bind(format!("fixture-{def}")).execute(pool).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    accept_invocation(
+        &mut tx,
+        &AuthenticatedInvocationContext {
+            host_id: host,
+            principal_subject: "fixture-gateway",
+            end_user_subject: "fixture-owner",
+            update_user: "p01",
+            user_authorization: None,
+            user_authorization_exp: None,
+        },
+        &request,
+        &PreparedInvocationStart {
+            binding_id: None,
+            process_id: process,
+            initial_task_id: task,
+            application_id: "timer",
+            initial_task_name: first.0,
+            initial_task_type: kind,
+            definition_snapshot: &definition,
+            execution_placement: "host",
+            execution_profile_id: "",
+            admission_profile: "portal_execution",
+            policy_snapshot_id: None,
+            task_policy_digest: digest.trim_start_matches("sha256:"),
+            public_output_schema: None,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    Run {
+        host,
+        process,
+        task,
+        owner,
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires P01_TIMER_TEST_DATABASE_URL at owned loopback disposable PostgreSQL"]
+async fn native_null_binding_wait() {
+    let db = Db::new().await;
+    let r = start_native(&db.pool, WAIT, 20).await;
+    authority(&db.pool, &r).await;
+    let binding: Option<Uuid> = sqlx::query_scalar(
+        "SELECT binding_id FROM workflow_invocation_t WHERE host_id=$1 AND process_id=$2",
+    )
+    .bind(r.host)
+    .bind(r.process)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(binding, None);
+    let e = TaskExecutor::new(db.pool.clone());
+    assert!(e.process_next_task(r.owner).await.unwrap());
+    assert_eq!(state(&db.pool, &r).await, "ARMED");
+    due(&db.pool, &r).await;
+    drop(e);
+    let e = TaskExecutor::new(db.pool.clone());
+    assert_eq!(e.sweep_durable_timers().await.unwrap(), 1);
+    assert_eq!(successors(&db.pool, &r).await, 1);
+    assert!(e.process_next_task(r.owner).await.unwrap());
+    assert!(completed(&db.pool, &r).await);
+    assert_eq!(e.sweep_durable_timers().await.unwrap(), 0);
     db.close().await;
 }

@@ -1020,14 +1020,6 @@ impl TaskExecutor {
         Ok(1)
     }
 
-    #[cfg(test)]
-    pub(crate) async fn verified_context_test_tick(
-        &self,
-        worker_id: Uuid,
-    ) -> Result<bool, DynError> {
-        self.process_next_task(worker_id).await
-    }
-
     async fn process_next_task(&self, worker_id: Uuid) -> Result<bool, DynError> {
         if self.sweep_durable_timers().await.is_err() {
             error!("timer scan failed; continuing ordinary task claiming");

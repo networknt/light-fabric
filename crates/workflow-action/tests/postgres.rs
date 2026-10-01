@@ -66,6 +66,14 @@ async fn durable_claims_replay_fencing_and_not_initiated() {
         .await
         .unwrap();
     sqlx::raw_sql(MIGRATION).execute(&pool).await.unwrap();
+    // admit_run reads the generic private-lifetime budget columns introduced
+    // by 0012. Exercise the current schema, not the pre-lifetime fixture.
+    sqlx::raw_sql(include_str!(
+        "../../workflow-store/migrations/workflow-postgres/0012_private_execution_lifetime.sql"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
     sqlx::query("ALTER TABLE workflow_ops.workflow_action_authority_t ADD COLUMN credential_kind varchar(8) NOT NULL CHECK (credential_kind IN ('broker','long','invoke'))")
         .execute(&pool).await.unwrap();
     let b = binding();
@@ -84,8 +92,12 @@ async fn durable_claims_replay_fencing_and_not_initiated() {
     sqlx::query("INSERT INTO workflow_ops.wf_definition_t(host_id,wf_def_id,namespace,name,version,definition) VALUES($1,$2,'test','action','1','test')").bind(b.host_id).bind(def).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO workflow_ops.workflow_tool_binding_t(host_id,binding_id,tool_id,wf_def_id,workflow_version,definition_digest,schema_digest,invocation_mode,sync_wait_ms,total_deadline_ms,execution_class,result_text_mode,idempotency_policy,delegation_policy,response_policy_digest,runtime_bounds,policy_digest) VALUES($1,$2,$3,$4,'1',$5,$5,'async',1,120000,'standard','compact-json','{}','{}',$5,'{}',$5)")
         .bind(b.host_id).bind(tool_binding).bind(b.tool_ref).bind(def).bind(&b.policy_digest).execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO workflow_ops.workflow_invocation_t(host_id,workflow_instance_id,binding_id,stable_tool_ref,wf_def_id,workflow_version,definition_digest,schema_digest,policy_digest,response_policy_digest,principal_subject,end_user_subject,input,input_digest,canonical_input_profile,invocation_mode,execution_class,state,correlation_id,deadline_ts) VALUES($1,$2,$3,$4,$5,'1',$6,$6,$6,$6,'gateway',$7,'{}',$6,'rfc8785-safe-json-v1','async','standard','RUNNING','test',$8)")
-        .bind(b.host_id).bind(b.run_id).bind(tool_binding).bind(b.tool_ref).bind(def).bind(&b.policy_digest).bind(b.user_id.to_string()).bind(b.deadline).execute(&pool).await.unwrap();
+    // Current action admission requires the invocation's durable process row.
+    let process = Uuid::now_v7();
+    sqlx::query("INSERT INTO workflow_ops.process_info_t(host_id,process_id,wf_def_id,wf_instance_id,app_id,process_type,status_code,ex_trigger_ts) VALUES($1,$2,$3,$4,'fixture','Workflow','A',now())")
+        .bind(b.host_id).bind(process).bind(def).bind(b.run_id.to_string()).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO workflow_ops.workflow_invocation_t(host_id,workflow_instance_id,process_id,binding_id,stable_tool_ref,wf_def_id,workflow_version,definition_digest,schema_digest,policy_digest,response_policy_digest,principal_subject,end_user_subject,input,input_digest,canonical_input_profile,invocation_mode,execution_class,state,correlation_id,deadline_ts) VALUES($1,$2,$9,$3,$4,$5,'1',$6,$6,$6,$6,'gateway',$7,'{}',$6,'rfc8785-safe-json-v1','async','standard','RUNNING','test',$8)")
+        .bind(b.host_id).bind(b.run_id).bind(tool_binding).bind(b.tool_ref).bind(def).bind(&b.policy_digest).bind(b.user_id.to_string()).bind(b.deadline).bind(process).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO workflow_ops.workflow_invocation_budget_t(host_id,ledger_id,workflow_instance_id,task_attempt_limit,nested_call_limit,byte_limit,cost_unit_limit,deadline_ts) VALUES($1,$2,$3,100,10,100000,100,$4)")
         .bind(b.host_id).bind(Uuid::now_v7()).bind(b.run_id).bind(b.deadline).execute(&pool).await.unwrap();
     l.admit_run(b.host_id, b.run_id, b.grant_id, b.user_id)
