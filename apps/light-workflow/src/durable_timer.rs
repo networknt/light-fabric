@@ -71,7 +71,7 @@ async fn lock_parent_mode(
     .fetch_optional(&mut **tx)
     .await?;
     let p = sqlx::query(&format!(
-        "SELECT status_code::text,active,deadline_ts,started_ts,definition_snapshot
+        "SELECT status_code::text,active,deadline_ts
            FROM process_info_t WHERE host_id=$1 AND process_id=$2 {lock}",
     ))
     .bind(host)
@@ -113,18 +113,6 @@ async fn lock_parent_mode(
         {
             blocked = Some("WORKFLOW_TIMER_CANCELLED");
         }
-    }
-    // Preparation's absolute budget is anchored to the admitted process, not
-    // each poll or restart. Names alone cannot select an authority profile.
-    let definition: Option<serde_json::Value> = p.get("definition_snapshot");
-    if definition
-        .as_ref()
-        .and_then(|d| d.pointer("/document/metadata/developmentInputProfile"))
-        .and_then(serde_json::Value::as_str)
-        == Some("capture-v1")
-    {
-        let d = p.get::<DateTime<Utc>, _>("started_ts") + chrono::Duration::seconds(600);
-        deadline = Some(deadline.map_or(d, |old| old.min(d)));
     }
     Ok(Parent {
         run,
