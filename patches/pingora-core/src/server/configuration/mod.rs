@@ -68,6 +68,13 @@ pub struct ServerConf {
     /// The path to CA file the SSL library should use. If empty, the default trust store location
     /// defined by the SSL library will be used.
     pub ca_file: Option<String>,
+    /// Explicit outbound trust mode; None retains legacy selection.
+    pub outbound_trust_mode: Option<String>,
+    /// Runtime-only immutable roots shared with startup reload guards.
+    #[cfg(feature = "rustls")]
+    #[serde(skip)]
+    pub resolved_outbound_trust:
+        Option<std::sync::Arc<crate::connectors::outbound_trust::ResolvedTrust>>,
     /// The maximum number of unique s2n configs to cache. Creating a new s2n config is an
     /// expensive operation, so we cache and re-use config objects with identical configurations.
     /// A value of 0 disables the cache.
@@ -125,6 +132,9 @@ impl Default for ServerConf {
             client_bind_to_ipv4: vec![],
             client_bind_to_ipv6: vec![],
             ca_file: None,
+            outbound_trust_mode: None,
+            #[cfg(feature = "rustls")]
+            resolved_outbound_trust: None,
             #[cfg(feature = "s2n")]
             s2n_config_cache_size: None,
             daemon: false,
@@ -292,6 +302,9 @@ mod tests {
             client_bind_to_ipv4: vec!["1.2.3.4".to_string(), "5.6.7.8".to_string()],
             client_bind_to_ipv6: vec![],
             ca_file: None,
+            outbound_trust_mode: None,
+            #[cfg(feature = "rustls")]
+            resolved_outbound_trust: None,
             #[cfg(feature = "s2n")]
             s2n_config_cache_size: None,
             daemon: false,

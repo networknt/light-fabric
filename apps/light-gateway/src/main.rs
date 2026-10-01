@@ -259,6 +259,13 @@ struct GatewayApp {
 impl PingoraApp for GatewayApp {
     type Proxy = GatewayProxy;
 
+    fn startup_outbound_trust(
+        &self,
+        proxy: &Self::Proxy,
+    ) -> Option<Arc<light_pingora::OutboundTrustSnapshot>> {
+        Some(Arc::clone(&proxy.outbound_trust))
+    }
+
     fn proxy(
         &self,
         config: &RuntimeConfig,
@@ -384,6 +391,7 @@ impl RegistryHandler for HmacReplayRegistryHandler {
 }
 
 struct GatewayProxy {
+    outbound_trust: Arc<light_pingora::OutboundTrustSnapshot>,
     workflow_actions: Option<Arc<light_pingora::action_gateway::Runtime>>,
     admission: AdmissionGate,
     workflow_delegation: Option<Arc<DelegationVerifier>>,
@@ -1087,6 +1095,7 @@ impl GatewayProxy {
         admission: AdmissionGate,
         hmac_replay_admin: Arc<HmacReplayAdmin>,
     ) -> Result<Self, RuntimeError> {
+        let outbound_trust = Arc::new(light_pingora::OutboundTrustSnapshot::capture(config)?);
         let active_handlers = load_active_handlers(config, &gateway_handler_registry())?;
         let correlation_config =
             load_correlation_config(config, active_handlers.is_handler_active("correlation"))?;
@@ -1355,6 +1364,7 @@ impl GatewayProxy {
         config.module_registry.register_reloader(
             light_pingora::TOKEN_MODULE_ID,
             Arc::new(TokenReloader {
+                outbound_trust: Arc::clone(&outbound_trust),
                 active_handlers: Arc::clone(&active_handlers),
                 token_runtime: Arc::clone(&token_runtime),
                 stateless_auth: Arc::clone(&stateless_auth),
@@ -1364,6 +1374,7 @@ impl GatewayProxy {
         config.module_registry.register_reloader(
             light_pingora::CLIENT_TOKEN_MODULE_ID,
             Arc::new(TokenReloader {
+                outbound_trust: Arc::clone(&outbound_trust),
                 active_handlers: Arc::clone(&active_handlers),
                 token_runtime: Arc::clone(&token_runtime),
                 stateless_auth: Arc::clone(&stateless_auth),
@@ -1373,6 +1384,7 @@ impl GatewayProxy {
         config.module_registry.register_reloader(
             light_pingora::SIDECAR_MODULE_ID,
             Arc::new(TokenReloader {
+                outbound_trust: Arc::clone(&outbound_trust),
                 active_handlers: Arc::clone(&active_handlers),
                 token_runtime: Arc::clone(&token_runtime),
                 stateless_auth: Arc::clone(&stateless_auth),
@@ -1530,6 +1542,7 @@ impl GatewayProxy {
             })
             .transpose()?;
         Ok(Self {
+            outbound_trust,
             workflow_actions,
             admission,
             workflow_delegation,
@@ -3089,6 +3102,7 @@ impl ReloadableModule for PathPrefixServiceReloader {
 }
 
 struct TokenReloader {
+    outbound_trust: Arc<light_pingora::OutboundTrustSnapshot>,
     active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
     token_runtime: Arc<ConfigManager<Option<TokenRuntime>>>,
     stateless_auth: Arc<ConfigManager<Option<StatelessAuthRuntime>>>,
@@ -3318,6 +3332,10 @@ impl ReloadableModule for AccessControlReloader {
 
 #[async_trait]
 impl ReloadableModule for TokenReloader {
+    fn validate_reload(&self, ctx: &ReloadContext) -> Result<(), RuntimeError> {
+        self.outbound_trust.validate_reload(&ctx.runtime_config)
+    }
+
     async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
         let active_handlers = self.active_handlers.load();
         let active = active_handlers.is_handler_active("token");
@@ -12432,13 +12450,14 @@ tls:
             .reload_modules(reload_ctx, &[light_runtime::CLIENT_MODULE_ID.to_string()])
             .await;
 
-        assert_eq!(result.reloaded, vec![light_runtime::CLIENT_MODULE_ID]);
+        assert!(result.reloaded.is_empty());
+        assert_eq!(result.failed.len(), 1);
+        assert!(result.failed[0].message.contains("restart required"));
         assert!(result.skipped.is_empty());
-        assert!(result.failed.is_empty());
 
-        // Verify updated value in component configs
+        // The rejected candidate must not be displayed as active configuration.
         let updated_configs = config.module_registry.component_configs();
-        assert_eq!(updated_configs["client"]["tls"]["verifyHostname"], true);
+        assert_eq!(updated_configs["client"]["tls"]["verifyHostname"], false);
     }
 
     #[tokio::test]

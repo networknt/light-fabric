@@ -399,6 +399,7 @@ yamlProperties:
   - {file: security.yml, path: jwt.clockSkewInSeconds, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: security.yml, path: bootstrapFromKeyService, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: client.yml, path: tls.verifyHostname, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
+  - {file: client.yml, path: tls.trustMode, finalAuthority: configServer, reloadClass: restartRequired, sensitivity: internal}
   - {file: client.yml, path: tls.caCertPath, finalAuthority: deploymentBootstrap, reloadClass: restartRequired, sensitivity: internal}
   - {file: client.yml, path: tls.clientCertPath, finalAuthority: deploymentBootstrap, reloadClass: restartRequired, sensitivity: internal}
   - {file: client.yml, path: tls.clientKeyPath, finalAuthority: deploymentBootstrap, reloadClass: restartRequired, sensitivity: internal}

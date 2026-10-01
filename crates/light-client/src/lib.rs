@@ -13,7 +13,7 @@ pub use config::{
     AuthServerConfig, ClientConfig, ClientOauthConfig, ClientRequestConfig, ClientTlsConfig,
     OAuthClientCredentialsConfig, OAuthDerefConfig, OAuthKeyConfig, OAuthSignConfig,
     OAuthSignKeyConfig, OAuthTokenAuthorizationCodeConfig, OAuthTokenCacheConfig, OAuthTokenConfig,
-    OAuthTokenExchangeConfig, OAuthTokenRefreshTokenConfig, TlsVersion,
+    OAuthTokenExchangeConfig, OAuthTokenRefreshTokenConfig, OutboundTrustMode, TlsVersion,
 };
 pub use http::{
     CaBundleError, ClientBuildError, ClientFactory, EndpointOptions, build_reqwest_client,

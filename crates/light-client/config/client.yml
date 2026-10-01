@@ -1,4 +1,5 @@
 tls:
+  trustMode: ${client.trustMode:null}
   verifyHostname: ${client.verifyHostname:true}
   caCertPath: ${client.caCertPath:}
   clientCertPath: ${client.clientCertPath:}

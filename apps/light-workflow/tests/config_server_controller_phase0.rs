@@ -209,6 +209,7 @@ fn phase0_inventory_covers_static_environment_reads_and_yaml_leaves() {
     // URLs are test fixtures, not production configuration inputs.
     let test_only_environment = BTreeSet::from([
         "ADMIN_DATABASE_URL".to_string(),
+        "P01_TIMER_TEST_DATABASE_URL".to_string(),
         "WORKFLOW_NATIVE_OPS_TEST_DATABASE_URL".to_string(),
         "WORKFLOW_ROLE_TEST_DATABASE_URL".to_string(),
     ]);

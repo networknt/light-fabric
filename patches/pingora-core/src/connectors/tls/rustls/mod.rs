@@ -54,6 +54,7 @@ impl Connector {
 pub struct TlsConnector {
     config: Arc<RusTlsClientConfig>,
     ca_certs: Arc<RootCertStore>,
+    explicit_trust: bool,
 }
 
 impl TlsConnector {
@@ -76,7 +77,26 @@ impl TlsConnector {
             let mut certs_key = None;
 
             if let Some(conf) = options.as_ref() {
-                if let Some(ca_file_path) = conf.ca_file.as_ref() {
+                if let Some(mode) = conf.outbound_trust_mode.as_deref() {
+                    let trust = match conf.resolved_outbound_trust.as_ref() {
+                        Some(trust) => Arc::clone(trust),
+                        None => Arc::new(crate::connectors::outbound_trust::resolve(
+                            mode,
+                            conf.ca_file.as_deref(),
+                        )?),
+                    };
+                    log::info!(
+                        "outbound TLS trust mode={} platform_source={} platform_count={} configured_count={} digest={}",
+                        mode,
+                        trust.platform_source,
+                        trust.platform_count,
+                        trust.configured_count,
+                        trust.digest
+                    );
+                    ca_certs = trust.roots.clone();
+                } else if let Some(trust) = conf.resolved_outbound_trust.as_ref() {
+                    ca_certs = trust.roots.clone();
+                } else if let Some(ca_file_path) = conf.ca_file.as_ref() {
                     load_ca_file_into_store(ca_file_path, &mut ca_certs)?;
                 } else {
                     load_platform_certs_incl_env_into_store(&mut ca_certs)?;
@@ -121,6 +141,9 @@ impl TlsConnector {
             ctx: Arc::new(TlsConnector {
                 config: Arc::new(config),
                 ca_certs: Arc::new(ca_certs),
+                explicit_trust: options
+                    .as_ref()
+                    .is_some_and(|c| c.outbound_trust_mode.is_some()),
             }),
         })
     }
@@ -136,6 +159,14 @@ where
     T: IO,
     P: Peer + Send + Sync,
 {
+    if tls_ctx.explicit_trust
+        && (peer.sni().is_empty() || !peer.verify_cert() || !peer.verify_hostname())
+    {
+        return Error::e_explain(
+            InvalidCert,
+            "explicit outbound trust requires certificate and destination identity verification",
+        );
+    }
     let config = &tls_ctx.config;
 
     // TODO: setup CA/verify cert store from peer
@@ -205,8 +236,10 @@ where
             Some(VerificationMode::SkipHostname)
         } else {
             // if sni had underscores in leftmost label replace and add
-            if let Some(sni_s) = replace_leftmost_underscore(peer.sni()) {
-                domain = sni_s;
+            if !tls_ctx.explicit_trust {
+                if let Some(sni_s) = replace_leftmost_underscore(peer.sni()) {
+                    domain = sni_s;
+                }
             }
             None
             // to use the custom verifier for the full verify:

@@ -316,3 +316,9 @@ version = "0.5"
 [target."cfg(windows)".dependencies.windows-sys]
 version = "0.59.0"
 features = ["Win32_Networking_WinSock"]
+
+[dependencies.sha2]
+version = "0.10"
+
+[dependencies.rustls-pemfile]
+version = "2"
