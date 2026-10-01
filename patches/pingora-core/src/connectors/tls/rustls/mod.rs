@@ -21,10 +21,10 @@ use pingora_error::{
     OrErr, Result,
 };
 use pingora_rustls::{
-    CertificateDer, CertificateError, ClientConfig as RusTlsClientConfig, DigitallySignedStruct,
-    KeyLogFile, PrivateKeyDer, RootCertStore, RusTlsError, ServerName, SignatureScheme,
-    TlsConnector as RusTlsConnector, UnixTime, WebPkiServerVerifier, load_ca_file_into_store,
-    load_certs_and_key_files, load_platform_certs_incl_env_into_store, version,
+    load_ca_file_into_store, load_certs_and_key_files, load_platform_certs_incl_env_into_store,
+    version, CertificateDer, CertificateError, ClientConfig as RusTlsClientConfig,
+    DigitallySignedStruct, KeyLogFile, PrivateKeyDer, RootCertStore, RusTlsError, ServerName,
+    SignatureScheme, TlsConnector as RusTlsConnector, UnixTime, WebPkiServerVerifier,
 };
 
 // Uses custom certificate verification from rustls's 'danger' module.
@@ -32,7 +32,7 @@ use pingora_rustls::{
     HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier as RusTlsServerCertVerifier,
 };
 
-use crate::protocols::tls::{TlsStream, client::handshake};
+use crate::protocols::tls::{client::handshake, TlsStream};
 use crate::{connectors::ConnectorOptions, listeners::ALPN, protocols::IO, upstreams::peer::Peer};
 
 use super::replace_leftmost_underscore;

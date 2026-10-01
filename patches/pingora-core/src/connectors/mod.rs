@@ -28,10 +28,10 @@ use crate::tls::connectors as tls;
 
 use crate::protocols::Stream;
 use crate::server::configuration::ServerConf;
-use crate::upstreams::peer::{ALPN, Peer};
+use crate::upstreams::peer::{Peer, ALPN};
 
 pub use l4::Connect as L4Connect;
-use l4::{BindTo, connect as l4_connect};
+use l4::{connect as l4_connect, BindTo};
 use log::{debug, error, warn};
 use offload::OffloadRuntime;
 use parking_lot::RwLock;
