@@ -195,10 +195,9 @@ async fn server(dir: &Path, app: Router) -> (String, tokio::task::JoinHandle<()>
     )
     .await
     .unwrap();
-    let url = format!(
-        "https://localhost:{}",
-        listener.bound_addr().unwrap().port()
-    );
+    // Advertise the address we own: localhost can resolve to ::1 first even
+    // though this fixture listens only on IPv4. The certificate has its IP SAN.
+    let url = format!("https://{}", listener.bound_addr().unwrap());
     let job = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
