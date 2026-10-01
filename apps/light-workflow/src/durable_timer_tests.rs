@@ -997,3 +997,99 @@ async fn review_slow_timer_and_scan_failure_do_not_gate_ordinary_work() {
         .unwrap();
     db.close().await;
 }
+
+async fn start_native(pool: &PgPool, yaml: &str, attempts: i64) -> Run {
+    let definition: Value = serde_yaml::from_str(yaml).unwrap();
+    let typed: WorkflowDefinition = serde_json::from_value(definition.clone()).unwrap();
+    crate::runtime_definition::validate_runtime_definition(&typed, 1).unwrap();
+    let first = typed.do_.entries[0].iter().next().unwrap();
+    let kind = TaskExecutor::supported_task_type_name(first.1).unwrap();
+    let host = Uuid::new_v4();
+    let process = Uuid::new_v4();
+    let task = Uuid::new_v4();
+    let def = Uuid::new_v4();
+    let tool = Uuid::new_v4();
+    let owner = Uuid::new_v4();
+    let deadline = Utc::now() + chrono::Duration::seconds(60);
+    let digest = canonical_sha256(&definition).unwrap();
+    let input = json!({"requestId":"neutral-poll"});
+    let input_digest = canonical_sha256(&input).unwrap();
+    let request: StartInvocationRequest = serde_json::from_value(json!({
+        "contractVersion":1,"workflowInstanceId":Uuid::new_v4(),"stableToolRef":tool,
+        "workflowDefinitionId":def,"workflowVersion":"1.0.0","definitionDigest":digest,
+        "schemaDigest":digest,"policyDigest":digest,"responsePolicyDigest":digest,
+        "mode":"async","executionClass":"standard","permitDepth":0,"deadlineTs":deadline,
+        "canonicalInputProfile":"rfc8785-safe-json-v1","normalizedInputDigest":input_digest,
+        "input":input,"callerClaims":{"sub":"fixture-owner"},"correlationId":"p01-gate",
+        "idempotency":{"kind":"EXPLICIT","scopedKeyDigest":canonical_sha256(&json!([host,process])).unwrap(),"inputDigest":input_digest,"inFlightUntil":deadline,"resultReplayUntil":deadline+chrono::Duration::hours(1)},
+        "budget":{"maximumTaskAttempts":attempts,"maximumNestedCalls":10,"maximumDelegationDepth":2,"maximumParallelism":1,"maximumRequestBytes":65536,"maximumIntermediateBytes":65536,"maximumResultBytes":65536,"maximumCostUnits":100}
+    })).unwrap();
+    sqlx::query("INSERT INTO wf_definition_t(host_id,wf_def_id,namespace,name,version,definition) VALUES($1,$2,'p01',$4,'1.0.0',$3)")
+        .bind(host).bind(def).bind(serde_json::to_string(&definition).unwrap()).bind(format!("fixture-{def}")).execute(pool).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    accept_invocation(
+        &mut tx,
+        &AuthenticatedInvocationContext {
+            host_id: host,
+            principal_subject: "fixture-gateway",
+            end_user_subject: "fixture-owner",
+            update_user: "p01",
+            user_authorization: None,
+            user_authorization_exp: None,
+        },
+        &request,
+        &PreparedInvocationStart {
+            binding_id: None,
+            process_id: process,
+            initial_task_id: task,
+            application_id: "timer",
+            initial_task_name: first.0,
+            initial_task_type: kind,
+            definition_snapshot: &definition,
+            execution_placement: "host",
+            execution_profile_id: "",
+            admission_profile: "portal_execution",
+            policy_snapshot_id: None,
+            task_policy_digest: digest.trim_start_matches("sha256:"),
+            public_output_schema: None,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    Run {
+        host,
+        process,
+        task,
+        owner,
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires P01_TIMER_TEST_DATABASE_URL at owned loopback disposable PostgreSQL"]
+async fn native_null_binding_wait() {
+    let db = Db::new().await;
+    let r = start_native(&db.pool, WAIT, 20).await;
+    authority(&db.pool, &r).await;
+    let binding: Option<Uuid> = sqlx::query_scalar(
+        "SELECT binding_id FROM workflow_invocation_t WHERE host_id=$1 AND process_id=$2",
+    )
+    .bind(r.host)
+    .bind(r.process)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(binding, None);
+    let e = TaskExecutor::new(db.pool.clone());
+    assert!(e.process_next_task(r.owner).await.unwrap());
+    assert_eq!(state(&db.pool, &r).await, "ARMED");
+    due(&db.pool, &r).await;
+    drop(e);
+    let e = TaskExecutor::new(db.pool.clone());
+    assert_eq!(e.sweep_durable_timers().await.unwrap(), 1);
+    assert_eq!(successors(&db.pool, &r).await, 1);
+    assert!(e.process_next_task(r.owner).await.unwrap());
+    assert!(completed(&db.pool, &r).await);
+    assert_eq!(e.sweep_durable_timers().await.unwrap(), 0);
+    db.close().await;
+}

@@ -55,6 +55,7 @@ regex = "1"
 jsonschema = { workspace = true }
 
 [dev-dependencies]
+pingora = { version = "=0.8.1", features = ["proxy", "rustls"] }
 light-pingora = { path = "../../frameworks/light-pingora" }
 bytes = { workspace = true }
 tokio-rustls = "0.26"

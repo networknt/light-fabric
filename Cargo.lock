@@ -5442,6 +5442,7 @@ dependencies = [
  "oauth-workflow-contract",
  "object_store",
  "operational-store",
+ "pingora",
  "rcgen",
  "regex",
  "reqwest",

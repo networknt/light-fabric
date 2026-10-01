@@ -487,3 +487,7 @@ impl Runtime {
         value.get("result").cloned().ok_or_else(|| denied().into())
     }
 }
+
+#[cfg(test)]
+#[path = "generic_transport_tests.rs"]
+mod generic_transport_tests;
