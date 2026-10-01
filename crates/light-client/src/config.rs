@@ -65,6 +65,8 @@ impl<'de> Deserialize<'de> for ClientConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientTlsConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_mode: Option<OutboundTrustMode>,
     pub verify_hostname: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_cert_path: Option<PathBuf>,
@@ -80,6 +82,7 @@ impl Default for ClientTlsConfig {
     fn default() -> Self {
         Self {
             verify_hostname: true,
+            trust_mode: None,
             ca_cert_path: None,
             client_cert_path: None,
             client_key_path: None,
@@ -100,6 +103,8 @@ impl<'de> Deserialize<'de> for ClientTlsConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawClientTlsConfig {
+    #[serde(default)]
+    trust_mode: Option<OutboundTrustMode>,
     #[serde(default)]
     verify_hostname: Option<bool>,
     #[serde(default)]
@@ -126,10 +131,28 @@ impl ClientTlsConfig {
                 .verify_hostname
                 .or(top_level_verify_hostname)
                 .unwrap_or(true),
+            trust_mode: raw.trust_mode,
             ca_cert_path: raw.ca_cert_path,
             client_cert_path: raw.client_cert_path,
             client_key_path: raw.client_key_path,
             tls_version: raw.tls_version,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OutboundTrustMode {
+    Platform,
+    ConfiguredOnly,
+    PlatformPlusConfigured,
+}
+impl OutboundTrustMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Platform => "platform",
+            Self::ConfiguredOnly => "configured-only",
+            Self::PlatformPlusConfigured => "platform-plus-configured",
         }
     }
 }

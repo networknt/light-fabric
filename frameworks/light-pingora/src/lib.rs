@@ -51,6 +51,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread::JoinHandle;
 #[cfg(unix)]
 use tokio::sync::watch;
@@ -217,6 +218,11 @@ pub trait PingoraApp: Send + Sync + 'static {
         lifecycle: &LifecycleRegistrar,
         admission: &AdmissionGate,
     ) -> Result<Self::Proxy, RuntimeError>;
+
+    /// Return the exact startup trust value used to register application reload guards.
+    fn startup_outbound_trust(&self, _proxy: &Self::Proxy) -> Option<Arc<OutboundTrustSnapshot>> {
+        None
+    }
 }
 
 pub struct PingoraTransport<A>
@@ -272,11 +278,15 @@ where
         }
 
         let proxy = self.app.proxy(config, lifecycle, admission)?;
+        let startup_trust = match self.app.startup_outbound_trust(&proxy) {
+            Some(trust) => trust,
+            None => Arc::new(OutboundTrustSnapshot::capture(config)?),
+        };
         let mut server_conf = ServerConf::default();
         server_conf.threads = 1;
         server_conf.daemon = false;
         apply_client_request_config(config, &mut server_conf);
-        server_conf.ca_file = upstream_ca_file(config)?;
+        startup_trust.configure_server(&mut server_conf);
         server_conf.grace_period_seconds = Some(0);
         // The shared runtime drains application permits against its absolute
         // deadline before signalling Pingora. Do not restart the original
@@ -477,6 +487,30 @@ fn listen_addr(config: &RuntimeConfig, port: u16) -> Result<String, RuntimeError
 }
 
 fn upstream_ca_file(config: &RuntimeConfig) -> Result<Option<String>, RuntimeError> {
+    if let Some(mode) = config.client.as_ref().and_then(|c| c.tls.trust_mode) {
+        let tls = &config.client.as_ref().unwrap().tls;
+        if !tls.verify_hostname {
+            return Err(RuntimeError::Config(
+                "explicit outbound trust requires effective verifyHostname=true".into(),
+            ));
+        }
+        let path = tls
+            .ca_cert_path
+            .as_ref()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_string_lossy().into_owned());
+        if mode != light_client::OutboundTrustMode::Platform && path.is_none() {
+            return Err(RuntimeError::Config(
+                "explicit configured CA bundle required".into(),
+            ));
+        }
+        return Ok(if mode == light_client::OutboundTrustMode::Platform {
+            None
+        } else {
+            path
+        });
+    }
+
     let Some(path) = config
         .client
         .as_ref()
@@ -710,6 +744,94 @@ iSPqLa2C/InN2hYeU+v8gzdT
     }
 
     #[test]
+    fn outbound_trust_reload_validates_before_requiring_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("roots.pem");
+        let make_ca = || {
+            let mut params = rcgen::CertificateParams::default();
+            params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+            params
+                .self_signed(&rcgen::KeyPair::generate().unwrap())
+                .unwrap()
+                .pem()
+        };
+        std::fs::write(&path, make_ca()).unwrap();
+        let mut config = runtime_config_with_ip("127.0.0.1");
+        let mut client = ClientConfig::default();
+        client.tls.trust_mode = Some(light_client::OutboundTrustMode::ConfiguredOnly);
+        client.tls.ca_cert_path = Some(path.clone());
+        client.tls.verify_hostname = true;
+        config.client = Some(client);
+        let active = OutboundTrustSnapshot::capture(&config).unwrap();
+        active.validate_reload(&config).unwrap();
+        let alternate = temp.path().join("alternate.pem");
+        std::fs::copy(&path, &alternate).unwrap();
+        config.client.as_mut().unwrap().tls.ca_cert_path = Some(alternate);
+        assert!(
+            active
+                .validate_reload(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("restart required")
+        );
+        config.client.as_mut().unwrap().tls.ca_cert_path = Some(path.clone());
+        std::fs::write(&path, make_ca()).unwrap();
+        assert!(
+            active
+                .validate_reload(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("restart required")
+        );
+        std::fs::write(&path, "invalid").unwrap();
+        assert!(
+            !active
+                .validate_reload(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("restart required")
+        );
+        std::fs::write(&path, make_ca()).unwrap();
+        config.client.as_mut().unwrap().tls.verify_hostname = false;
+        assert!(
+            active
+                .validate_reload(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("verifyHostname=true")
+        );
+    }
+
+    #[test]
+    fn outbound_trust_legacy_bootstrap_fallback_is_preserved() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("bootstrap.pem");
+        let mut params = rcgen::CertificateParams::default();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        std::fs::write(
+            &path,
+            params
+                .self_signed(&rcgen::KeyPair::generate().unwrap())
+                .unwrap()
+                .pem(),
+        )
+        .unwrap();
+        let mut config = runtime_config_with_ip("127.0.0.1");
+        config.bootstrap.bootstrap_ca_cert_path = Some(path.clone());
+        assert_eq!(
+            upstream_ca_file(&config).unwrap(),
+            Some(path.to_string_lossy().into_owned())
+        );
+        let mut client = ClientConfig::default();
+        client.tls.trust_mode = Some(light_client::OutboundTrustMode::ConfiguredOnly);
+        config.client = Some(client);
+        assert!(
+            upstream_ca_file(&config).is_err(),
+            "explicit mode cannot fall back to bootstrap"
+        );
+    }
+
+    #[test]
     fn https_listener_tls_paths_returns_none_when_https_disabled() {
         let server = ServerConfig::default();
 
@@ -855,5 +977,77 @@ iSPqLa2C/InN2hYeU+v8gzdT
             unsupported_message(error),
             "invalid server.ip `not an ip`: invalid IP address syntax"
         );
+    }
+}
+
+/// Startup-only outbound trust identity used by the Gateway reload preflight.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutboundTrustSnapshot {
+    mode: Option<String>,
+    ca_reference: Option<String>,
+    ca_content: Option<Vec<u8>>,
+    verify_hostname: bool,
+    resolved: Arc<pingora::connectors::outbound_trust::ResolvedTrust>,
+    platform_overrides: Option<(Option<std::ffi::OsString>, Option<std::ffi::OsString>)>,
+}
+impl OutboundTrustSnapshot {
+    pub fn capture(config: &RuntimeConfig) -> Result<Self, RuntimeError> {
+        let ca_reference = upstream_ca_file(config)?;
+        let mode = config.client.as_ref().and_then(|c| c.tls.trust_mode);
+        let resolved = Arc::new(
+            match mode {
+                Some(mode) => pingora::connectors::outbound_trust::resolve(
+                    mode.as_str(),
+                    ca_reference.as_deref(),
+                ),
+                None => {
+                    pingora::connectors::outbound_trust::resolve_legacy(ca_reference.as_deref())
+                }
+            }
+            .map_err(|e| RuntimeError::Config(e.to_string()))?,
+        );
+        let ca_content = if mode.is_some() {
+            resolved.configured_content.clone()
+        } else {
+            ca_reference.as_ref().map(std::fs::read).transpose()?
+        };
+        let platform_overrides = mode
+            .filter(|m| *m != light_client::OutboundTrustMode::ConfiguredOnly)
+            .map(|_| {
+                (
+                    std::env::var_os("SSL_CERT_FILE"),
+                    std::env::var_os("SSL_CERT_DIR"),
+                )
+            });
+        Ok(Self {
+            mode: config
+                .client
+                .as_ref()
+                .and_then(|c| c.tls.trust_mode)
+                .map(|m| m.as_str().to_owned()),
+            ca_reference,
+            ca_content,
+            verify_hostname: config
+                .client
+                .as_ref()
+                .map_or(true, |c| c.tls.verify_hostname),
+            resolved,
+            platform_overrides,
+        })
+    }
+    /// Install the same immutable roots into both ordinary and modified connectors.
+    pub fn configure_server(&self, server: &mut ServerConf) {
+        server.ca_file = self.ca_reference.clone();
+        server.outbound_trust_mode = self.mode.clone();
+        server.resolved_outbound_trust = Some(Arc::clone(&self.resolved));
+    }
+    pub fn validate_reload(&self, config: &RuntimeConfig) -> Result<(), RuntimeError> {
+        let candidate = Self::capture(config)?;
+        if &candidate != self {
+            return Err(RuntimeError::Config(
+                "outbound TLS trust changed; restart required".into(),
+            ));
+        }
+        Ok(())
     }
 }

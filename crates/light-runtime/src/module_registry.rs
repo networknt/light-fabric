@@ -168,6 +168,11 @@ impl ReloadOutcome {
 
 #[async_trait]
 pub trait ReloadableModule: Send + Sync {
+    /// Validate a candidate before module metadata or any selected state changes.
+    fn validate_reload(&self, _ctx: &ReloadContext) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
     /// Exclusive reloaders must be invoked as the only requested module. This
     /// prevents a broad Reload All operation from mutating unrelated modules
     /// before an application-owned candidate can be validated atomically.
@@ -623,6 +628,29 @@ impl ModuleRegistry {
                 }
             }
             return result;
+        }
+
+        // Preflight all selected reloaders before any metadata/state mutation.
+        for module_id in &target_modules {
+            if let Some(reloader) = self.reloader(module_id) {
+                if let Err(error) = reloader.validate_reload(&ctx) {
+                    let mut result = ReloadModulesResult::default();
+                    self.set_last_reload(module_id, "failed", Some(error.to_string()));
+                    result.failed.push(ReloadFailed {
+                        module_id: module_id.clone(),
+                        message: error.to_string(),
+                    });
+                    for other in &target_modules {
+                        if other != module_id {
+                            result.skipped.push(ReloadSkipped {
+                                module_id: other.clone(),
+                                reason: "blockedByValidation".into(),
+                            });
+                        }
+                    }
+                    return result;
+                }
+            }
         }
 
         // Refresh only the requested modules. A targeted application reload

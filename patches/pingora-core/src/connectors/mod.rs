@@ -17,6 +17,8 @@
 pub mod http;
 pub mod l4;
 mod offload;
+#[cfg(feature = "rustls")]
+pub mod outbound_trust;
 
 #[cfg(feature = "any_tls")]
 mod tls;
@@ -26,10 +28,10 @@ use crate::tls::connectors as tls;
 
 use crate::protocols::Stream;
 use crate::server::configuration::ServerConf;
-use crate::upstreams::peer::{Peer, ALPN};
+use crate::upstreams::peer::{ALPN, Peer};
 
 pub use l4::Connect as L4Connect;
-use l4::{connect as l4_connect, BindTo};
+use l4::{BindTo, connect as l4_connect};
 use log::{debug, error, warn};
 use offload::OffloadRuntime;
 use parking_lot::RwLock;
@@ -49,6 +51,10 @@ pub struct ConnectorOptions {
     /// If `None`, the CA in the [default](https://www.openssl.org/docs/manmaster/man3/SSL_CTX_set_default_verify_paths.html)
     /// locations will be loaded
     pub ca_file: Option<String>,
+    /// Explicit outbound trust policy for the Rustls connector.
+    pub outbound_trust_mode: Option<String>,
+    #[cfg(feature = "rustls")]
+    pub resolved_outbound_trust: Option<Arc<outbound_trust::ResolvedTrust>>,
     /// The maximum number of unique s2n configs to cache. Creating a new s2n config is an
     /// expensive operation, so we cache and re-use config objects with identical configurations.
     /// Defaults to a cache size of 10. A value of 0 disables the cache.
@@ -111,6 +117,9 @@ impl ConnectorOptions {
             .collect();
         ConnectorOptions {
             ca_file: server_conf.ca_file.clone(),
+            outbound_trust_mode: server_conf.outbound_trust_mode.clone(),
+            #[cfg(feature = "rustls")]
+            resolved_outbound_trust: server_conf.resolved_outbound_trust.clone(),
             cert_key_file: None, // TODO: use it
             #[cfg(feature = "s2n")]
             s2n_config_cache_size: server_conf.s2n_config_cache_size,
@@ -126,6 +135,9 @@ impl ConnectorOptions {
     pub fn new(keepalive_pool_size: usize) -> Self {
         ConnectorOptions {
             ca_file: None,
+            outbound_trust_mode: None,
+            #[cfg(feature = "rustls")]
+            resolved_outbound_trust: None,
             #[cfg(feature = "s2n")]
             s2n_config_cache_size: None,
             cert_key_file: None,
