@@ -24,9 +24,6 @@ pub const NATIVE_PROCESS_OPERATIONS_MIGRATION_ID: &str = "0015_native_process_op
 pub const DEFINITION_NATIVE_START_MIGRATION_ID: &str = "0016_definition_native_start";
 pub const TOOL_BINDING_REVISIONS_MIGRATION_ID: &str = "0018_workflow_tool_binding_revisions";
 pub const DURABLE_TIMER_MIGRATION_ID: &str = "0021_workflow_durable_timer";
-pub const VERIFIED_TASK_CONTEXT_MIGRATION_ID: &str = "0022_workflow_verified_task_context";
-pub const VERIFIED_TASK_CONTEXT_MIGRATION_SQL: &str =
-    include_str!("../migrations/workflow-postgres/0022_workflow_verified_task_context.sql");
 pub const DURABLE_TIMER_MIGRATION_SQL: &str =
     include_str!("../migrations/workflow-postgres/0021_workflow_durable_timer.sql");
 pub const ARTIFACT_RETIREMENT_MIGRATION_ID: &str = "0020_artifact_legacy_retirement";
@@ -108,9 +105,6 @@ pub const AUTHORITY_TABLES: &[&str] = &[
     "workflow_tool_approval_evidence_t",
     "workflow_run_credential_t",
     "workflow_tool_binding_decision_t",
-    "workflow_verified_invocation_t",
-    "workflow_verified_task_context_t",
-    "workflow_verified_task_result_t",
 ];
 
 /// Accepted immutable/local projections. These rows are not Portal authoring
@@ -372,22 +366,6 @@ pub async fn validate(
             "Workflow durable timer migration is missing".into(),
         ));
     }
-    let context_ready: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM operational_meta.operational_schema_migration_t WHERE migration_owner='workflow-store' AND schema_name='workflow_ops' AND migration_id=$1)",
-    ).bind(VERIFIED_TASK_CONTEXT_MIGRATION_ID).fetch_one(pool).await?;
-    if !context_ready {
-        return Err(ValidationError::Scope(
-            "Workflow verified task context migration is missing".into(),
-        ));
-    }
-    let context_privileges: bool = sqlx::query_scalar(
-        "SELECT bool_and(has_table_privilege(current_user,'workflow_ops.' || t,'SELECT') AND has_table_privilege(current_user,'workflow_ops.' || t,'INSERT') AND has_table_privilege(current_user,'workflow_ops.' || t,'DELETE')) FROM unnest(ARRAY['workflow_verified_invocation_t','workflow_verified_task_context_t','workflow_verified_task_result_t']) t"
-    ).fetch_one(pool).await?;
-    if !context_privileges {
-        return Err(ValidationError::Scope(
-            "Workflow verified context runtime privileges missing".into(),
-        ));
-    }
     let denied: Vec<String> = sqlx::query_scalar(
         "SELECT t FROM unnest($1::text[]) AS t WHERE NOT (
             has_table_privilege(current_user,'workflow_ops.' || t,'SELECT') AND
@@ -412,7 +390,7 @@ mod tests {
 
     #[test]
     fn workflow_inventory_and_boundary_are_frozen() {
-        assert_eq!(AUTHORITY_TABLES.len(), 30);
+        assert_eq!(AUTHORITY_TABLES.len(), 27);
         assert_eq!(PROJECTION_TABLES.len(), 10);
         for table in AUTHORITY_TABLES
             .iter()
@@ -421,9 +399,6 @@ mod tests {
                 !matches!(
                     **table,
                     "task_asst_t"
-                        | "workflow_verified_invocation_t"
-                        | "workflow_verified_task_context_t"
-                        | "workflow_verified_task_result_t"
                         | "workflow_task_timer_t"
                         | "workflow_long_owner_binding_t"
                         | "workflow_tool_access_approval_run_t"

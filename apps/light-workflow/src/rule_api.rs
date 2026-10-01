@@ -72,23 +72,10 @@ pub struct RuleApiState {
         Arc<std::collections::BTreeMap<String, workflow_policy::ExecutionProfile>>,
     long_authority: Option<Arc<crate::long_authority::LongAuthority>>,
     pub(crate) run_credential_vault: Option<Arc<crate::run_credential::RunCredentialVault>>,
-    #[cfg(test)]
-    pub(crate) test_receiver_gate: Option<Arc<crate::verified_task_context::TestGate>>,
 }
 
 #[cfg(test)]
 impl RuleApiState {
-    pub(crate) fn for_verified_task_test(
-        security: SecurityRuntime,
-        host: Uuid,
-        pool: PgPool,
-        long: Arc<crate::long_authority::LongAuthority>,
-    ) -> Self {
-        let mut state = Self::for_publication_test(security, host);
-        state.pool = pool;
-        state.long_authority = Some(long);
-        state
-    }
     pub(crate) fn for_publication_test(
         security: light_security::SecurityRuntime,
         host: Uuid,
@@ -106,7 +93,6 @@ impl RuleApiState {
             private_execution_profiles: Arc::new(Default::default()),
             long_authority: None,
             run_credential_vault: None,
-            test_receiver_gate: None,
         }
     }
 
@@ -426,8 +412,6 @@ pub fn build_rule_api_router(
         private_execution_profiles: Arc::new(private_execution_profiles),
         long_authority,
         run_credential_vault,
-        #[cfg(test)]
-        test_receiver_gate: None,
     };
 
     Router::new()
@@ -491,15 +475,6 @@ pub(crate) async fn dispatch_native_tool(
     settings: Option<crate::action_api::ActionSettings>,
     approval_portal: Option<Arc<crate::approval_portal::Client>>,
 ) -> Result<Value, axum::response::Response> {
-    #[cfg(test)]
-    if matches!(
-        name,
-        "p02_capture_sink" | "p02_status_sink" | "p02_consumption_sink"
-    ) {
-        return crate::verified_task_context::test_sink(&state, &headers, name, &arguments)
-            .await
-            .map_err(|_| ApiError::unauthorized("verified task sink denied").into_response());
-    }
     let cel_validator = |text: &str| -> Result<(), ApiError> {
         let snapshot: Value = serde_yaml::from_str(text)
             .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
@@ -928,8 +903,7 @@ async fn start_native_workflow(
         ));
     }
     let mut input = parse_native_start_input(arguments)?;
-    let (identity, generation, _) =
-        authenticate_definition(&state, &headers, input.workflow_definition_id, None).await?;
+    let (identity, generation) = authenticate(&state, &headers).await?;
     let approval = if let Some(marker) = input.input.get("workflowToolAccessRequest") {
         let request_id = marker
             .get("requestId")
@@ -1500,13 +1474,7 @@ pub(crate) async fn start_invocation_with_stage(
     approval: Option<ApprovalAdmission>,
     invoke_admission: Option<crate::invoke_api::InvokeAdmission>,
 ) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
-    let (identity, generation, verified_creator) = authenticate_definition(
-        &state,
-        &headers,
-        request.workflow_definition_id,
-        (profile == AdmissionProfile::WorkflowBacked).then_some(request.stable_tool_ref),
-    )
-    .await?;
+    let (identity, generation) = authenticate(&state, &headers).await?;
     let mut parent_binding = None;
     if let Some(policy) = policy.as_ref() {
         let peer = peer
@@ -1759,17 +1727,6 @@ pub(crate) async fn start_invocation_with_stage(
     // not replace the full saved definition in the admission digest check.
     let saved_snapshot: Value = serde_yaml::from_str(&binding.definition)
         .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
-    let accepted_profile = crate::verified_caller::accepted_profile(&saved_snapshot)
-        .map_err(|_| ApiError::definition_mismatch("invalid accepted development input profile"))?;
-    if accepted_profile
-        != verified_creator
-            .as_ref()
-            .map(|(profile, _)| profile.as_str())
-    {
-        return Err(ApiError::definition_mismatch(
-            "strict admission metadata changed during authentication",
-        ));
-    }
     let actual_definition_digest = saved_definition_digest(&saved_snapshot)?;
     if actual_definition_digest != request.definition_digest {
         return Err(ApiError::definition_mismatch(
@@ -1848,15 +1805,6 @@ pub(crate) async fn start_invocation_with_stage(
         user_authorization_exp: stored_user_authorization_exp,
     };
     let mut tx = state.pool.begin().await.map_err(ApiError::database)?;
-    if binding.binding_id.is_none() {
-        let current:Option<String>=sqlx::query_scalar("SELECT definition FROM workflow_ops.wf_definition_t WHERE host_id=$1 AND wf_def_id=$2 AND active FOR SHARE")
-            .bind(identity.host_id).bind(binding.wf_def_id).fetch_optional(&mut *tx).await.map_err(ApiError::database)?;
-        if current.as_deref() != Some(binding.definition.as_str()) {
-            return Err(ApiError::definition_mismatch(
-                "accepted native definition changed",
-            ));
-        }
-    }
     if let Some(admission) = invoke_admission.as_ref() {
         admission
             .fence_revision(&mut tx, identity.host_id, request.stable_tool_ref)
@@ -1921,24 +1869,6 @@ pub(crate) async fn start_invocation_with_stage(
             ..
         } => *workflow_instance_id,
     };
-    if let Some((profile, creator)) = verified_creator.as_ref() {
-        sqlx::query("INSERT INTO workflow_ops.workflow_verified_invocation_t(host_id,run_id,profile,creator) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING")
-            .bind(identity.host_id).bind(accepted_run).bind(profile).bind(serde_json::to_value(creator).map_err(|_| ApiError::unauthorized("invalid creator evidence"))?)
-            .execute(&mut *tx).await.map_err(ApiError::database)?;
-        let stored: (String, Value) = sqlx::query_as("SELECT profile,creator FROM workflow_ops.workflow_verified_invocation_t WHERE host_id=$1 AND run_id=$2")
-            .bind(identity.host_id).bind(accepted_run).fetch_one(&mut *tx).await.map_err(ApiError::database)?;
-        let original: crate::verified_caller::VerifiedUser = serde_json::from_value(stored.1)
-            .map_err(|_| ApiError::unauthorized("invalid stored creator evidence"))?;
-        // The current JWT and membership were verified independently above.
-        // Refresh changes expiry, not the accepted creator or stable authority.
-        let mut current = creator.clone();
-        current.expires_at = original.expires_at;
-        if stored.0 != *profile || original != current {
-            return Err(ApiError::conflict(
-                "verified creator evidence changed on retry",
-            ));
-        }
-    }
     if let Some(admission) = invoke_admission.as_ref() {
         admission
             .apply(
@@ -2082,18 +2012,6 @@ pub(crate) async fn start_invocation_with_stage(
         {
             return Err(ApiError::conflict(
                 "approval request is linked to another run",
-            ));
-        }
-    }
-    if let Some((_, current_creator)) = verified_creator.as_ref() {
-        let valid: bool = sqlx::query_scalar("SELECT clock_timestamp()<to_timestamp($1)")
-            .bind(current_creator.expires_at as f64)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(ApiError::database)?;
-        if !valid {
-            return Err(ApiError::unauthorized(
-                "current user token expired during admission",
             ));
         }
     }
@@ -2700,68 +2618,6 @@ pub(crate) async fn load_status(
             correlation_id,
         }),
     })
-}
-
-/// The accepted definition chooses strict provenance before legacy identity
-/// fallback runs. Scope supplies Host; request IDs only select trusted records.
-async fn authenticate_definition(
-    state: &RuleApiState,
-    headers: &HeaderMap,
-    definition: Uuid,
-    tool: Option<Uuid>,
-) -> Result<
-    (
-        InvocationIdentity,
-        Arc<WorkflowConfigGeneration>,
-        Option<(String, crate::verified_caller::VerifiedUser)>,
-    ),
-    ApiError,
-> {
-    let scope = verify_jwt_token(
-        &state.invocation_security,
-        bearer_token(header(headers, "x-scope-token")?, "scope bearer required")?,
-        JwtExpiryMode::Enforce,
-    )
-    .await
-    .map_err(|_| ApiError::unauthorized("scope token rejected"))?;
-    let host = scope
-        .host
-        .as_deref()
-        .or_else(|| scope.claims.get("hostId").and_then(Value::as_str))
-        .or_else(|| scope.claims.get("host_id").and_then(Value::as_str))
-        .and_then(|s| s.parse::<Uuid>().ok())
-        .ok_or_else(|| ApiError::unauthorized("scope Host required"))?;
-    let raw: String = if let Some(tool) = tool {
-        read_admissible_pinned_binding(&state.pool, host, tool)
-            .await?
-            .try_get("definition")
-            .map_err(ApiError::database)?
-    } else {
-        sqlx::query_scalar("SELECT definition FROM workflow_ops.wf_definition_t WHERE host_id=$1 AND wf_def_id=$2 AND active")
-            .bind(host).bind(definition).fetch_optional(&state.pool).await.map_err(ApiError::database)?
-            .ok_or_else(||ApiError::definition_mismatch("saved workflow definition unavailable"))?
-    };
-    let saved: Value = serde_yaml::from_str(&raw)
-        .map_err(|_| ApiError::definition_mismatch("invalid saved definition"))?;
-    let profile = crate::verified_caller::accepted_profile(&saved)
-        .map_err(|_| ApiError::definition_mismatch("invalid accepted development input profile"))?;
-    let creator = if let Some(profile) = profile {
-        let token = bearer_token(header(headers, "authorization")?, "user bearer required")?;
-        let user = crate::verified_caller::verify_user(&state.invocation_security, token, host)
-            .await
-            .map_err(|_| ApiError::unauthorized("verified end-user provenance required"))?;
-        Some((profile.to_owned(), user))
-    } else {
-        None
-    };
-    let (mut identity, generation) = authenticate(state, headers).await?;
-    if let Some((_, user)) = creator.as_ref() {
-        identity.principal_subject = user.principal.clone();
-        identity.end_user_subject = user.user_id.to_string();
-        identity.caller_claims_digest = user.claims_digest.clone();
-        identity.user_authorization_exp = user.expires_at;
-    }
-    Ok((identity, generation, creator))
 }
 
 pub(crate) async fn authenticate(

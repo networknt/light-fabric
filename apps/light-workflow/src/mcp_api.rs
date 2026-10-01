@@ -315,15 +315,9 @@ async fn handle(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            let test_sink = cfg!(test)
-                && matches!(
-                    name,
-                    "p02_capture_sink" | "p02_status_sink" | "p02_consumption_sink"
-                );
-            if !test_sink
-                && !manifest()["tools"]
-                    .as_array()
-                    .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == name))
+            if !manifest()["tools"]
+                .as_array()
+                .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == name))
             {
                 return rpc_error(
                     id,

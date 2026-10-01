@@ -58,7 +58,6 @@ jsonschema = { workspace = true }
 pingora = { version = "=0.8.1", features = ["proxy", "rustls"] }
 light-pingora = { path = "../../frameworks/light-pingora" }
 bytes = { workspace = true }
-tokio-rustls = "0.26"
 rustls-pemfile = "2.2"
 light-security = { path = "../../crates/light-security", features = ["test-support"] }
 tempfile = "3"

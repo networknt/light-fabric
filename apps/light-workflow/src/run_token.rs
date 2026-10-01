@@ -41,9 +41,6 @@ pub struct RunTokenSelector {
 }
 
 impl RunTokenSelector {
-    pub(crate) fn security_runtime(&self) -> &SecurityRuntime {
-        &self.security
-    }
     pub async fn run_for_process(
         &self,
         host: Uuid,
