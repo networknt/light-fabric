@@ -27,8 +27,7 @@ use workflow_action::{
 };
 fn certs(dir: &Path) -> (String, String) {
     fn run(dir: &Path, args: &[&str]) {
-        let result = std::process::Command::new("rtk")
-            .args(["proxy", "openssl"])
+        let result = std::process::Command::new("openssl")
             .args(args)
             .current_dir(dir)
             .output()
