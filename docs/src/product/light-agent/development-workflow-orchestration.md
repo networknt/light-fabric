@@ -1,15 +1,15 @@
 # Personal Development Workflow Orchestration
 
-Status: revised September 29, 2026 after source review of the native Workflow
-MCP migration. Phase 0 contracts and deterministic rules were implemented
-September 14; see the [Phase 0 qualification record](development-workflow-orchestration-phase0.md).
-Phase 1 has implemented components and remaining integration and qualification
-work. The complete personal pilot is not yet end-to-end qualified. This revision
-does not upgrade historical evidence or mark Phase 1 complete.
+Status: architecture corrected September 30, 2026 by owner direction. External
+API integration belongs in Gateway configuration and workflow definitions.
+The GitHub capture/provider implementation track under #427 is withdrawn; the
+independent #425 artifact fix is retained. This is a documentation/plan revision,
+not a runtime rollback, deployment or live qualification.
 
-For this revision, start with [Invocation And Execution Authority](#invocation-and-execution-authority),
-[Current Implementation Boundary](#current-implementation-boundary), and the
-[dated revision record](#revision-record--september-29-2026).
+The immediate direct API pilot and Ownership sections supersede conflicting
+September 29 capture/provider instructions. Broader development/review/workspace
+contracts remain for separate Phase 1 review; they do not authorize implementing
+external integrations inside the Workflow engine.
 
 This document covers a developer using `codex-personal` and `claude-personal`
 with their own subscriptions on a local machine or dedicated VM. The separate
@@ -23,8 +23,9 @@ Use Claude to review the design, plan, and every completed implementation phase.
 For implementation scope, after all phases pass, run a Codex final review and
 then a Claude final review.
 Start each final reviewer fresh once; resume its own conversation for subsequent
-fix verification. Fixed workflow actions publish documents, manage GitHub
-comments, and commit/push accepted implementation changes.
+fix verification. Workflow definitions invoke registered APIs and generic workspace
+tools to publish documents, update comments and commit/push accepted changes.
+External-system integration does not introduce subsystem-specific engine tasks.
 
 [User, Application, And Workflow Authorization](../../design/user-application-workflow-authorization.md)
 provides the shared authorization foundation. Apply its current contracts
@@ -55,136 +56,59 @@ not waive a lifecycle gate; enterprise authorization/accounting add profile gate
 
 | Component | Responsibility |
 | --- | --- |
-| Developer and Codex requirement session | Agree scope, acceptance criteria, and unresolved decisions |
-| Portal UI and backend | Provide Workflow Admin/Editor stage starts and Worklist human decisions; author definitions, grants, Agent/workspace bindings and GitHub connection/repository policy; synchronize acknowledged revisions and expose authorized preparation receipts |
-| Gateway | Authenticate caller identities, apply Tool ACLs, and route native Workflow MCP calls; invoke workflow-backed Tools through internal `workflow_invoke` |
-| Identity/OAuth and execution-authority services | Supply the shared user/application authentication and Workflow-owned LONG authority contracts, including renewal, revocation and explicit recovery; personal model subscriptions do not grant Portal authority |
-| `light-workflow` stage executor and store | Persist `FeatureRun`, atomically claim/start stages, and own feature-slot admission/release, finding ledger, review closure, budgets, artifact handoffs, human gates, and publication intents |
-| `light-workflow` input preparation and capture store | Validate and pin Portal policy and verified creator identity, request fixed GitHub capture, persist READY/noncancelled capture and consumer records, and enforce receipt admission and retention |
-| `light-workflow` durable timer | Persist preparation polling waits and reconcile restart/cancellation with atomic single-successor wake transitions; a prerequisite for the supplied-input pilot, not client-side result observation |
-| `light-workflow` Agent job transport | Persist immutable `workflow_agent_job_t` intents, authorize Agent polling, and reconcile reported results against the stage claim |
-| `light-workflow` dispatch scheduler | Own the durable ready-work queue and fairness between feature runs |
-| `light-agent` | Admit the selected Agent/turn, persist `agent_job_t` execution/results, and dispatch through Controller |
-| Controller | Route Agent execution to the bound runner and reconcile capacity, lease, cancellation and result receipts |
-| Personal runner | Enforce runner-local bindings, live capacity, leases, cancellation and worker isolation; host the personal workers and shared task workspace |
-| Codex/Claude worker | Execute one bounded author, implementer, or read-only reviewer turn |
-| Workspace manager and fixed test executor | Own task files/checkpoints, diffable candidate snapshots, locks, fixed commands, and validation receipts |
-| Fixed Git/GitHub actions | Commit, push, create PRs, publish summaries, and reconcile retries |
-| GitHub capture provider | Perform service-authenticated, policy-pinned issue/comment reads, verify numeric repository identity, and journal capture receipts; isolate its PAT, secrets and journal from publication |
-| GitHub publication provider | Execute admitted issue/comment/document effects and reconcile remote receipts through its effect journal; extend existing operations for ordered status edits and exact approved revision delivery |
-| `light-workflow` artifact service and store | Export manager-provided snapshot bytes into durable storage; retain immutable requirements, documents, results, snapshot contents/diffs, findings, and validation evidence |
-| GitHub and repository remotes | Hold source issues/comments and delivered commits, refs and PRs; remote content and model conversations do not own workflow state |
+| Developer and workflow author | Define requirements, review steps, data mappings, pagination, retry/error branches and coding-agent inputs |
+| Portal UI and backend | Author/register API tools and workflow definitions, configure grants and approvals, and manage existing product/instance/configuration snapshots |
+| Gateway / mcp-router | Verify user/application credentials, enforce configured ACLs, route registered APIs/tools and apply the configured upstream credential |
+| Identity/OAuth | Supply original-user and demand-driven LONG exchange behavior; reject ineligible renewal |
+| `light-workflow` | Execute generic tasks and transitions, persist ordinary workflow context, enforce existing execution/lease/cancellation rules and invoke registered tools/agents |
+| Registered external APIs | Own external resource semantics; GitHub REST/GraphQL is reached directly through Gateway configuration |
+| `light-agent` and Controller | Admit and route coding-agent work through existing execution mechanisms |
+| Personal runner / workspace manager | Host workers, workspaces, generic Git commands, checkpoints and validation tools |
+| Existing artifact storage | Retain artifacts for existing consumers; issue input does not create a special capture store, receipt or admission subsystem |
 
-The table includes service-owned modules and external dependencies, not just
-separately deployed services. The durable timer, preparation policy/identity/UI
-adapters, and complete publication lifecycle retain the implementation and
-qualification gaps described below. The capture provider is a separate service
-from the publication provider. The workspace manager, fixed tests and Git/PR
-delivery primitives run at the runner boundary; they are not additional model
-workers. The shared authorization services follow the linked authorization
-design rather than reintroducing the retired credential broker.
+The API integration boundary is generic. Adding GitHub, Bitbucket, ServiceNow,
+Salesforce, filesystem or network tools does not add subsystem-specific parsing,
+credentials, policy catalogs or task kinds to the Workflow engine. API-specific
+schemas and workflow expressions are configuration/definition assets. A real
+missing generic capability or defect requires a separate, reviewed change and
+an integration-independent regression.
+
+The earlier `light-github-action-provider` architecture is withdrawn. That app
+currently has branch/PR and document-publication consumers; its retirement must
+migrate or explicitly retire those consumers before removing deployment wiring.
+It is not extended with an issue reader. Existing broader development-stage
+implementation is historical context, not authorization to expand engine-owned
+GitHub orchestration.
 
 ### Component Diagram
 
-This diagram shows the intended component connections for this personal design,
-including supplied-input preparation. It is not a deployed topology or a claim
-of end-to-end qualification. Arrows name requests or data transfers; result and
-reconciliation paths are explicit where ownership matters.
-
 ```mermaid
-flowchart TB
-    D[Developer / authorized human]
-    O[Other authorized async callers]
-    subgraph Portal[Portal]
-        UI[Workflow Admin / Editor / Worklist]
-        P[Backend adapters, definitions, grants,<br/>bindings and repository policy]
-        PL[(Portal publication ledger<br/>and policy revisions)]
-        UI --> P
-        P --> PL
-    end
-    G[Gateway MCP / Tool ACLs]
-    ID[Identity / OAuth<br/>user, application and LONG authority]
-    subgraph Workflow[light-workflow]
-        W[Native MCP / stage executor<br/>claims, acceptance and human gates]
-        I[Input preparation / capture admission]
-        T[Durable preparation timer]
-        Q[Dispatch scheduler]
-        J[Agent job transport / result reconciliation]
-        F[Fixed effect dispatcher / reconciliation]
-        A[Artifact service / snapshot transfer]
-        DB[(operations.workflow_ops<br/>features, tasks, captures, jobs,<br/>timers and effect receipts)]
-        E[(Durable artifact backend<br/>personal filesystem volume;<br/>S3 alternative)]
-        W --> I
-        I --> T
-        T -->|resume polling| I
-        W --> Q
-        Q --> J
-        J -->|validated results| W
-        W --> F
-        W -->|verified evidence reads| A
-        I -->|capture evidence| A
-        J -->|snapshot packages / results| A
-        A --> E
-        W --> DB
-        I --> DB
-        T --> DB
-        Q --> DB
-        J --> DB
-        F --> DB
-        A -->|artifact metadata| DB
-    end
-    subgraph Agent[light-agent]
-        AG[Job polling, admission and execution]
-        AD[(agent_ops.agent_job_t)]
-        AG --> AD
-    end
-    C[Controller]
-    subgraph VM[Personal VM / runner boundary]
-        R[Personal runner / bound capacity and leases]
-        CW[Codex / Claude workers]
-        M[Workspace manager / fixed test executor]
-        GF[Fixed Git / PR delivery primitives]
-        WS[(Task worktrees, retained snapshots<br/>and native session checkpoints)]
-        R -->|bounded model turn| CW
-        R -->|fixed workspace / test job| M
-        CW -->|admitted file tools| M
-        M --> WS
-        M --> GF
-        GF --> WS
-    end
-    CP[GitHub capture provider<br/>isolated PAT / capture journal]
-    PP[GitHub publication provider<br/>publication credentials / effect journal]
-    GH[GitHub API / repository remotes<br/>issues, comments, commits, refs and PRs]
-    D --> UI
-    D -->|broader requirement intake| CW
-    P -->|definition / grant / binding sync;<br/>starts, decisions and receipt reads| G
-    O --> G
-    G -->|authenticated native calls| W
-    G -->|validate caller authority| ID
-    W -->|establish / renew / recover LONG| ID
-    AG -->|authenticated poll / result report| J
-    J -->|bounded job response| AG
-    AG -->|execution request| C
-    C -->|bound job / cancellation| R
-    R -->|execution and snapshot results| C
-    C -->|execution receipts| AG
-    CW -->|published workflow-backed Tool| G
-    I -->|verified Portal policy envelope| CP
-    CP -->|capture receipt / bytes| I
-    CP -->|issue / comment reads| GH
-    F -->|typed publication intents| PP
-    PP -->|effect receipts| F
-    PP -->|issue / comment / document effects| GH
-    F -->|fixed revision / delivery jobs via Agent| J
-    GF -->|push / PR creation and verification| GH
+flowchart LR
+    U[Developer] --> P[Portal editor / API catalog / approvals]
+    P -->|workflow_start| G[Gateway / mcp-router]
+    G --> W[Generic workflow engine]
+    W -->|API/tool call with user and app credentials| G
+    G -->|ACL checked; configured GitHub credential| H[GitHub REST / GraphQL]
+    H -->|API result| G
+    G -->|result or error| W
+    W --> V[Workflow context and definition expressions]
+    V -->|next task / explicit retry or failure branch| W
+    W -->|existing coding-agent task; context input| A[Agent / Controller / runner]
+    W -->|only when a call needs renewal| I[Identity / LONG exchange]
 ```
 
-Workflow and Agent access their own operational stores. Snapshot export returns
-through runner → Controller → Agent → Workflow; only Workflow writes the durable
-artifact backend. Preparation requires no VM or model job. Publication effects
-use the appropriate fixed provider or manager delivery operation and retain
-Workflow-owned intents/receipts. GitHub providers receive verified policy and
-typed operations, while their credentials remain at the provider boundary.
+The user token authenticates to Gateway; the configured GitHub token authenticates
+the outbound GitHub request. Secrets stay in the established protected Gateway
+configuration/secret mechanism, not tool arguments, context, returned JSON or
+model input. The selected upstream and credential are fixed by published API/tool
+configuration, not by an arbitrary URL supplied with a credential.
+
+Workflow definitions map raw API responses into context and coding-agent input.
+Pagination loops, limits and retry/wait/failure decisions are definition behavior
+using supported generic capabilities. There is no autonomous GitHub polling or
+snapshot/receipt creation in Workflow. REST is the initial proposal; GraphQL can
+be selected at the API-contract checkpoint using a configured query and variables.
+Neither choice adds a GitHub-specific engine path.
 
 The dispatch scheduler's shared fairness and multi-VM routing are Phase 4 work;
 the initial pilot still admits one active feature per VM. Optional future
@@ -434,85 +358,92 @@ final work follow the revision loop below before that work can resume.
 
 ## Requirement Intake
 
-### Immediate Pilot: Supplied GitHub Requirements
+### Immediate Pilot: Direct API Issue Input
 
-The immediate design-workflow slice assumes requirements are already agreed in
-an existing GitHub issue. Interactive intake and the session-capable light-cli
-TUI are deferred. The broader intake paths below remain the intended lifecycle;
-Phase 0 findings P0-G05/G06 are deferred for this slice, not closed.
+The owner supplies an issue URL to a workflow started with asynchronous
+`workflow_start`. Reuse the demonstrated demo3-workflow editor/tool setup and
+approval path using `call: http` and registered `lightapi://` API targets.
+Native binding-less MCP is not required by this flow. Obtain its saved definition and API configuration during the new
+plan's first checkpoint; do not infer that a custom capture dispatch path is
+required. Workflow-backed tools continue to use `workflow_invoke` with the target
+tool's existing setup; the calling native workflow needs no outer Tool binding.
 
-An owner first starts `feature-design-input` asynchronously through the Portal
-with an issue URL. Fixed code captures the issue body and all comment pages
-through a token-authenticated GitHub API provider, without a VM or model job.
-The body contains the validated structured requirements block; comments are
-unapproved context and cannot change authority or silently replace requirements.
-Freeze exact content, nullable GitHub author identities, provenance and digest;
-render untrusted bodies with safe fencing. A new start reads GitHub again;
-only retries of the same admitted start reuse the same capture.
+The definition performs these ordinary steps:
 
-Portal is the sole connection/repository-policy authority. Workflow validates
-and pins its revision, canonical bytes and digest, then sends that envelope to
-the service-authenticated provider. The provider journals the envelope and
-checks the numeric repository identity returned by GitHub. The PAT stays with
-the provider and grants access only to selected repositories. It never appears
-in workflow inputs, model context or artifacts. Capture-only mode is a second
-service in the main Compose stack, with isolated port, journal and secrets;
-the existing publication overlay remains separate. Missing optional credentials
-report not-ready without blocking the default stack. Both Workflow/provider
-images need fixed UID/GID 10001:10001 and an explicit owner-run upgrade for
-existing secret/volume ownership.
+1. Validate/derive the registered API arguments from the input URL using supported
+   expressions. The Gateway upstream remains fixed by configuration.
+2. Call registered GitHub REST operations (or a reviewed GraphQL query) through
+   Gateway for the issue and all required comment pages. Authentication, ACLs and
+   upstream credentials follow the normal Gateway configuration path.
+3. Accumulate returned data in ordinary workflow context. Use supported CEL or
+   another already-installed generic transformation facility; jq/JavaScript
+   availability must be demonstrated rather than assumed.
+4. Use the standard HTTP task `retry:` policy for bounded attempts and delay
+   when desired; the engine durably schedules eligible retries via
+   `next_attempt_ts`. No retry policy or exhausted retries fails the workflow.
+   P01 Wait is for polling loops over successful responses, not a prerequisite of
+   failed-call retry. Try/Raise and status-specific error branches are not v1
+   requirements. GraphQL HTTP 200 can carry errors; inspect those if selected.
+5. Pass the structured context to the existing coding-agent task, then expose the
+   design output for owner review. If the existing agent handoff is incomplete,
+   report its exact generic integration gap before changing the engine.
 
-The authoritative preparation result is a READY, noncancelled capture row in
-`workflow_ops.workflow_development_input_capture_t`, bound to receipt ID/digest
-and verified artifacts. A valid receipt artifact alone does not authorize
-admission. Creator authority comes from this row, because artifact rows only
-carry Host ownership. Both capture and consumption require verified end-user
-identity; no service-only or same-Host cross-user consumption. The current
-generic identity fallback is insufficient proof of an end user and requires a
-narrow adapter before this pilot can be admitted.
+Issue bodies/comments and attachment links are input data, not executable
+instructions or authority. Specify attachment metadata versus downloaded bytes
+at the API checkpoint. Download only through approved routes without forwarding
+GitHub credentials to unrelated attachment hosts. Do not claim that one response
+contains every comment page or every attachment's contents.
 
-The owner then starts `feature-design` with the prepared receipt. A new v2
-supplied-input entry mode validates the receipt, exact single repository/base,
-policy and creator, then atomically claims Design and reserves its VM. Do not
-fabricate an Intake result or reviewer approval. Introduce explicit
-`DeliveryScope::DesignOnly`. In this input/admission slice only, the required
-`pr-ready` field is an ignored compatibility placeholder; v2 finalization is
-rejected until real delivery semantics are implemented. This bounded slice does
-not claim the design-document PR or feature completion described below.
+There is no `feature-design-input` capture subsystem, capture/status API family,
+READY capture row, immutable creator/task projection, receipt admission, policy
+currentness lookup or capture retention job for this flow. The issue URL and API
+results are regular context values. Existing artifacts used by other features
+are unaffected. A second start reads the API again unless the definition explicitly
+chooses another behavior.
 
-Retain unused captures for 30 days. Persist per-feature consumers, extend finite
-retention under admission locks, renew daily, and retain for 30 days after the
-last consumer terminates. Cleanup and process deletion must honor active
-consumers even during renewal outages. Independently fix the existing shared
-artifact-object deletion bug before relying on retained capture bytes; see
-[light-fabric #425](https://github.com/networknt/light-fabric/issues/425).
+Normal local/timer execution does not inspect token expiry or renew a token.
+When an operation needs a user token, use the current credential if sufficiently
+valid; otherwise exchange through LONG. Gateway enforces ACLs. Definitive renewal
+denial fails the operation/workflow; transient handling follows the existing
+bounded generic contract. There is no continuous Portal membership check or
+cross-database membership fence. Preserve original user identity through existing
+LONG behavior without adding a special creator table for GitHub.
 
-**Implementation boundary:** MCP task calls are supported, but durable DSL
-`wait` is currently rejected by runtime validation. Preparation polling needs
-a reviewed durable timer implementation and an executable restart/cancellation
-fixture. Client `workflow_wait_result` observation is not that timer. Trusted
-task-context propagation, capture-policy configuration projection and authorized
-receipt UI/read adapters also remain prerequisites. The focused plan and its
-S00 integration mapping in the implementation repository record these gaps;
-architectural acceptance does not qualify runtime behavior. Live capture and
-admission are owner-run Portal runbooks after component gates.
+The former GitHub Issue Input C0/S00/P01–P05/S01–S06 implementation track under
+[issue #427](https://github.com/networknt/light-fabric/issues/427) is withdrawn.
+Its successful component and owner-reported deployment tests remain historical
+evidence, not approval of that architecture. The replacement implementation plan
+is `implementation/light-agent/2026-09-30-DirectApiDesignWorkflowImplementationPlan.md`
+in the sibling implementation repository. Old plans are archived and must not
+be executed. Broader Phase 1 delivery requires separate revalidation.
 
-The S00 gate separates owner approval of the integration design (S00-A) from
-separately approved prerequisite implementation and executable proof (S00-B).
-Documentation alone cannot close S00 or start S01. Proposed prerequisites are a
-persisted timer with atomic single-successor wake transitions, an authenticated
-Gateway action-ID carrier resolved against stored task/permit authority, strict
-explicit user-token provenance before generic identity fallback, Portal-owned
-immutable policy projection and creator-only receipt read controls. The provider
-still receives only Workflow's verified policy envelope; no provider policy-sync
-subsystem is introduced. Preparation status/result reopening reads retained
-Workflow state and artifacts without another GitHub read.
+Keep [issue #425](https://github.com/networknt/light-fabric/issues/425): it fixed a
+pre-existing shared-object deletion defect affecting all artifacts. Its A00
+commit `6bd01e0` (merged by `df64d06`) and migration 0020 are independent of the
+withdrawn GitHub capture design. Do not revert them.
 
-The owner reports A00 PR #426 merged, apps redeployed and light-portal-test
-`make all` passed. September 30 local inspection nevertheless found the current
-checkout does not contain the A00 source commit; source reconciliation is the
-first checkpoint before new code. A00 reserves migration 0020. These reports do
-not establish image provenance, exact counts, S3 qualification or issue closure.
+The #427 correction keeps P01 (`677a3bb`) as the generic durable DSL wait
+capability, including migration 0021, nonblocking wake, cancellation and deadline
+handling. Remove its capture-profile-specific absolute preparation cap and use
+neutral polling fixtures. Current wait support is literal whole-second `PT<n>S`
+for 1–600 seconds inclusive, outside fork branches. Definitions can reuse this
+capability for explicit retry delays; it is not a GitHub subsystem.
+
+Revert P02 (`5a41529`) capture-specific runtime and tests, while carrying its
+independent generic fixes in a small separate change: guarded TLS stream support,
+configured client mTLS loading, LONG fixture repair, inspected action-ID forwarding
+and the timer's nullable binding read (needed for native async waits). Preserve
+working demo3, async start, sync Invoke, LONG and unrelated changes. Keep deployed
+0022 history immutable; after quiesced definition/reference/row-count checks,
+remove its three unused verified-context/result tables with a new forward
+migration (0023 if still free). Nonempty tables block cleanup for review.
+No runtime or database rollback is performed by this design revision.
+
+The adjusted P02 revert must retain those generic fixes and the original 0022
+SQL/package/staging entries before it is committed. Do not merge a broken revert
+and repair it in a later PR. Prove native NULL-bound wait and guarded TLS at the
+revert commit as well as on the final cleanup tree; the implementation plan
+lists the exact migration assets and safe commit order.
 
 ### Broader Intake Lifecycle
 
@@ -629,7 +560,7 @@ approval and stage owner for reconciliation without another author/reviewer turn
 
 Delivered document bytes and modes must match the approved file set, including
 navigation edits. Keep recovery markers in effect metadata, commit/PR metadata,
-or comments; the provider must not append markers to approved document contents.
+or comments; publication steps must not append markers to approved document contents.
 Any intentional content transformation must happen before snapshot validation
 and review. A GitHub Contents API write alone is not an immutable revision-task,
 branch, PR and verification receipt.
@@ -951,9 +882,10 @@ files/stdin; do not interpolate model text into shell source. The current
 `run.shell` path disables network and credentials, and shared-workspace workers
 do not receive arbitrary host `gh` access.
 
-Fixed actions consume typed, policy-pinned operation intents. Reuse the existing
-Workflow effect journal and provider reconciliation boundary, extending their
-operation contracts where necessary:
+The following are product-level publication outcomes. Implement API calls and
+reconciliation as definition/tool behavior using generic facilities, not new
+GitHub operations or provider policies inside Workflow. The former provider
+consumer migration must account for each required outcome:
 
 | Operation | Eligible lifecycle point | Required content/identity and receipt |
 | --- | --- | --- |
@@ -971,11 +903,11 @@ candidate approval. New external writes require current authority; uncertain
 intents retain their identity and reconcile before any further write. Finalize
 verifies earlier document receipts rather than republishing accepted revisions.
 
-The current provider implements issue/comment creation and a document Contents
-API write. It does not yet supply this complete operation set. In particular,
-status updates require editing the stored comment ID with version ordering, and
-document delivery requires the manager's immutable task/ref/PR contract. Provider
-receipt schemas must represent and verify those effects before delivery can pass.
+The retiring provider currently implements issue/comment creation and a document
+Contents API write. Inventory its consumers before removal. Required status edits
+and document delivery must be migrated to registered API calls and generic Git
+tools, or explicitly retired with owner agreement. No replacement provider receipt
+schema or GitHub-specific engine dispatcher is authorized by this design.
 
 Persist immutable author/reviewer/remediation results before publication. Default
 to **one status comment per feature run, edited in place**, plus **one short
@@ -1189,7 +1121,7 @@ Workflow source filenames below refer to `apps/light-workflow/src` in
 | Snapshots and artifact storage | `crates/task-workspace/src/snapshot.rs`, `snapshot_transfer.rs` and `artifact_store.rs` implement retained trees, package/delta reads, transfer and filesystem/S3 backends; `workflow.yml` accepts backend/root settings | Carry the store into native admission; qualify effective settings, persistent volumes, failure and recovery on each required stack | Historical local evidence exists; complete current-path and installer gates remain required |
 | Feature operations and UI | Acceptance/replan/publication/finalize HTTP handlers exist; native feature/process list/get/cancel and Portal `ProcessInfo.tsx` VM controls exist | Add missing native MCP feature transitions and connect existing UI controls to them | Generic UI or HTTP-only diagnostics do not qualify a full feature run |
 | Human sign-off | Generic native human-task claim/complete operations exist; `development_handoff.rs` validates persisted sign-off during acceptance | Produce digest-bound development sign-off evidence and route all three decisions; qualify stale/revoked/duplicate cases | A consumer of `DesignSignoff` is not an implemented producer |
-| Fixed publication | `publication_dispatch.rs` and the provider implement durable intents and reconciliation; `task-workspace/src/delivery.rs` supplies Git/PR primitives | Dispatcher is Finalize-only; provider creates comments and writes a document via Contents API, appending a marker. Add candidate approval, intake issue-pending state, ordered status edits, immutable revision tasks/PRs and exact-byte verification | Mocked-provider/storage evidence is not live GitHub lifecycle qualification |
+| Existing publication consumers (retirement inventory) | `publication_dispatch.rs` and the retiring provider have existing consumers; `task-workspace/src/delivery.rs` supplies Git primitives | Migrate required effects to definition-driven registered APIs/generic tools or explicitly retire unused consumers; do not extend the provider/engine with GitHub operations | Historical mocked-provider evidence is not qualification of the direct API replacement |
 | Completion and VM release | `development_finalize.rs` has a restricted reviewed-design terminal path; acceptance/cancellation use reservation fencing | Pin explicit delivery scope, verify complete delivery receipts, expose finalization through MCP, and qualify interrupted cleanup/late-generation cases | Existing terminal/storage fixtures do not prove full-feature delivery or safe live VM reuse |
 | Feature rules and shell boundary | `development-workflow-contract` provides typed review/finding/budget/handoff rules; `run.shell` admission forbids network/credentials | Extend contracts for revised lifecycle semantics and integrate them into fixed actions | Phase 0 evidence covers the recorded rules only; new rules require new contract tests |
 | Child workflows | `executor.rs` rejects `run.workflow`; native Invoke rejects nested parent-action admission | Durable child composition and shared multi-VM scheduling remain later work | Synchronous Tool support does not qualify parent/child orchestration |
@@ -1385,6 +1317,20 @@ Exit gate: two features retain isolated results and refs; capacity waiting and
 restart preserve fairness; cancellation affects only its feature. Parent/child
 start, result, cancellation, and recovery are qualified separately and do not
 change review closure or budget semantics.
+
+## Revision Record — September 30, 2026
+
+- Replaced the capture subsystem with direct registered API calls and ordinary
+  context data; reused demo3 setup as the required baseline.
+- Withdrew the capture-policy configuration framework, receipt UI/admission,
+  provider extension and additional creator/membership authorization requirements.
+- Planned retirement of light-github-action-provider after consumer migration.
+- Kept independent #425 and generic P01 waits; planned removal of P02 capture
+  machinery with its generic fixes retained separately and deployed migration
+  history preserved. No rollback executed in this revision.
+- Owner reports P02 redeployment and light-portal-test `make all` success; this
+  remains owner-reported general regression evidence, not source/image provenance
+  or proof of the proposed direct API flow.
 
 ## References
 
