@@ -8239,4 +8239,124 @@ do:
                 .is_some_and(|failures| !failures.is_empty())
         );
     }
+
+    // G03 capability probes: these characterize the installed generic runtime,
+    // not a simulated issue-to-design workflow or an implementation of helpers.
+    #[tokio::test]
+    async fn g03_probe_url_extraction_is_not_an_installed_cel_function() {
+        let executor = executor();
+        let context = json!({"issueUrl": "https://github.com/lightapi/light-portal/issues/725"});
+        for expression in ["issueUrl.split('/')", "issueUrl.substring(19)"] {
+            assert!(
+                executor
+                    .value_engine
+                    .evaluate_cel_value("g03-url-probe", expression, &context)
+                    .is_err(),
+                "unexpectedly available URL extraction: {expression}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn g03_probe_failed_value_expression_falls_back_to_literal_text() {
+        let executor = executor();
+        let context = json!({"issueUrl": "https://github.com/lightapi/light-portal/issues/725"});
+        let expression = "issueUrl.split('/')";
+        assert_eq!(
+            executor.resolve_json_value(&json!(format!("${{{{ {expression} }}}}")), &context),
+            json!(expression),
+            "an unsupported helper must not be mistaken for parsed URL data"
+        );
+    }
+
+    #[tokio::test]
+    async fn g03_probe_native_size_and_collection_operations() {
+        let executor = executor();
+        let context = json!({"body": "é", "comments": [{"id": 1}], "page": [{"id": 2}]});
+        for (expression, expected) in [
+            ("size(bytes(body))", json!(2)),
+            ("comments + page", json!([{"id": 1}, {"id": 2}])),
+            ("size(page) < 30", json!(true)),
+            ("has(page[0].id)", json!(true)),
+        ] {
+            assert_eq!(
+                executor
+                    .value_engine
+                    .evaluate_cel_value("g03-value-probe", expression, &context)
+                    .unwrap(),
+                expected,
+                "{expression}"
+            );
+        }
+        assert!(
+            executor
+                .value_engine
+                .evaluate_cel_value("g03-serialize-probe", "string(comments)", &context)
+                .is_err(),
+            "structured values cannot be serialized by assuming string(list)"
+        );
+    }
+
+    #[tokio::test]
+    async fn g03_probe_declared_script_is_not_a_durable_executor_escape_hatch() {
+        let executor = executor();
+        let yaml = "document: {dsl: '1.0.3', namespace: probe, name: g03-script, version: '1.0.0'}\ndo:\n  - parse:\n      run:\n        script:\n          language: javascript\n          code: 'return 1;'\n";
+        let claimed = claimed_from_yaml(yaml, "parse", "run");
+        let error = match executor.execute_task(&claimed).await {
+            Err(error) => error,
+            Ok(_) => panic!("declared scripts must not be assumed executable"),
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported executable task type")
+        );
+    }
+
+    #[tokio::test]
+    async fn g03_probe_url_validation_can_fail_before_dispatch() {
+        let executor = executor();
+        let assertion = AssertDefinition {
+            value: Some(json!("${{ issueUrl }}")),
+            matches: Some(
+                r"^https://github\.com/[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_-][A-Za-z0-9_.-]{0,99}/issues/[1-9][0-9]{0,14}$"
+                    .to_string(),
+            ),
+            ..Default::default()
+        };
+        for url in [
+            "https://github.com/lightapi/light-portal/issues/725",
+            "https://github.com/networknt/light-fabric/issues/429",
+            "https://github.com/a/b/issues/1",
+        ] {
+            let result = executor
+                .execute_assert_task(&assertion, &json!({"issueUrl": url}))
+                .unwrap();
+            assert_eq!(result.status_code, "C", "{url}");
+        }
+        for url in [
+            "http://github.com/a/b/issues/1",
+            "https://github.com.evil.test/a/b/issues/1",
+            "https://user@github.com/a/b/issues/1",
+            "https://github.com:443/a/b/issues/1",
+            "https://github.com/a/../issues/1",
+            "https://github.com/a/%2e%2e/issues/1",
+            "https://github.com/a/b%2fc/issues/1",
+            "https://github.com/a//b/issues/1",
+            "https://github.com/a/b/issues/0",
+            "https://github.com/a/b/issues/-1",
+            "https://github.com/a/b/issues/01",
+            "https://github.com/a/b/issues/9007199254740992",
+            "https://github.com/a/b/issues/1?x=1",
+            "https://github.com/a/b/issues/1#issuecomment-1",
+            "https://github.com/a/b/issues/1/",
+            "https://github.com/a/b/pull/1",
+            "https://github.com/é/b/issues/1",
+        ] {
+            let result = executor
+                .execute_assert_task(&assertion, &json!({"issueUrl": url}))
+                .unwrap();
+            assert_eq!(result.status_code, "F", "{url}");
+        }
+    }
 }
