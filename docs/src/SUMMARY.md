@@ -145,6 +145,7 @@
   - [Workflow-Backed MCP Tools](product/light-gateway/workflow-backed-mcp-tools.md)
 - [Light Identity Issuer](product/light-identity-issuer/service-identity-and-revocation.md)
 - [Light-Workflow](product/light-workflow.md)
+  - [Bounded Workflow Expressions — Evaluator Decision Pending](product/light-workflow/expression-transformations.md)
   - [Start Workflow](product/light-workflow/start-workflow.md)
   - [Workflow Invoke And Tool Binding Publication](product/light-workflow/workflow-invoke.md)
   - [Native Agent Call](product/light-workflow/native-agent-call.md)
