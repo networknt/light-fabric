@@ -171,6 +171,7 @@ async fn admit(
         policy_snapshot_id: None,
         task_policy_digest: &bare_digest,
         public_output_schema: None,
+        expression_admission: None,
     };
     let outcome = accept_invocation(&mut tx, &auth, req, &prepared)
         .await

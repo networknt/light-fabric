@@ -1,3 +1,11 @@
+#[path = "expression_completion.rs"]
+pub(crate) mod expression_completion;
+#[path = "expression_requests.rs"]
+mod expression_requests;
+#[path = "expression_runtime.rs"]
+mod expression_runtime;
+#[path = "terminal_cleanup.rs"]
+mod terminal_cleanup;
 use crate::configuration::{A2aBindingProjection as ConfiguredA2aBinding, WorkflowConfigManager};
 use crate::repositories::{NewTask, TerminalAttempt, WorkflowRepository};
 use a2a_core::{
@@ -6,6 +14,7 @@ use a2a_core::{
 use agent_delegation::{DelegationClaims, DelegationKind, DelegationSigner};
 use chrono::Utc;
 use execution_runner_protocol::canonical_sha256;
+use expression_requests::{RpcRequest, request_error, request_json, request_string};
 use light_rule::{ActionRegistry, MultiThreadRuleExecutor, RuleConfig, RuleEngine};
 use model_provider::{
     AnthropicProvider, ChatMessage, ChatRequest, CompatibleProvider, GeminiProvider,
@@ -28,9 +37,8 @@ use uuid::Uuid;
 use workflow_core::models::duration::OneOfDurationOrIso8601Expression;
 use workflow_core::models::task::{
     A2aArguments, AgentArguments, AskDefinition, AssertComparison, AssertComparisonObject,
-    AssertDefinition, CallTaskDefinition, HasLengthComparison, JsonRpcArguments,
-    JsonRpcErrorPolicy, McpArguments, McpServerDefinition, OpenRpcArguments, SetValue,
-    TaskDefinition, TaskDefinitionFields,
+    AssertDefinition, CallTaskDefinition, HasLengthComparison, JsonRpcArguments, McpArguments,
+    McpServerDefinition, OpenRpcArguments, SetValue, TaskDefinition, TaskDefinitionFields,
 };
 use workflow_core::models::workflow::WorkflowDefinition;
 use workflow_policy::{ExecutionProfile, TaskKind, parse_security_policy, resolve_policy};
@@ -74,7 +82,7 @@ fn read_private_a2a_key(path: &Path) -> Result<Vec<u8>, String> {
     Ok(key)
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(Clone, sqlx::FromRow)]
 pub struct ActiveTask {
     pub host_id: Uuid,
     pub task_id: Uuid,
@@ -86,13 +94,17 @@ pub struct ActiveTask {
     pub result_code: Option<String>,
 }
 
+#[derive(Clone)]
 struct ClaimedTask {
+    expression_profile: String,
+    input_data: Value,
     task: ActiveTask,
     wf_def_id: Uuid,
     context_data: Value,
     definition: WorkflowDefinition,
     raw_definition: YamlValue,
     host_lease: Option<HostTaskLease>,
+    completion_guard: Option<expression_completion::CompletionGuard>,
 }
 
 /// Read a target from the invocation's immutable binding pin. Callers retain
@@ -301,7 +313,15 @@ struct AgentCatalog {
     tools: Vec<AgentToolRecord>,
 }
 
+pub use expression_completion::RunnerReconciliation;
+
 pub struct TaskExecutor {
+    #[cfg(test)]
+    w4_expire_after_evaluation: bool,
+    #[cfg(test)]
+    w5_mock: Option<Arc<expression_requests::Mock>>,
+    expression_engine: Option<workflow_expression::Engine>,
+    supported_profiles: crate::profile_support::SupportedProfiles,
     review_artifacts: Option<crate::artifact_store::DurableArtifactStore>,
     pub bound_mcp: std::sync::OnceLock<Arc<dyn crate::bound_mcp::Dispatch>>,
     pub run_tokens: std::sync::OnceLock<Arc<crate::run_token::RunTokenSelector>>,
@@ -321,6 +341,15 @@ pub struct TaskExecutor {
 }
 
 impl TaskExecutor {
+    pub fn with_expression_engine(mut self, engine: workflow_expression::Engine) -> Self {
+        self.expression_engine = Some(engine);
+        self.supported_profiles = crate::profile_support::SupportedProfiles::from_evaluator(true);
+        self
+    }
+
+    pub fn supported_profiles(&self) -> &crate::profile_support::SupportedProfiles {
+        &self.supported_profiles
+    }
     pub fn with_review_artifacts(
         mut self,
         store: Option<crate::artifact_store::DurableArtifactStore>,
@@ -346,10 +375,47 @@ impl TaskExecutor {
         let process_id: Uuid = row.try_get("workflow_process_id")?;
         let task_id: Uuid = row.try_get("workflow_task_id")?;
         let state: String = row.try_get("state")?;
+        let disposition = self.w4_guard(&mut tx, host_id, process_id).await?;
+        match disposition {
+            expression_completion::ProfileDisposition::Deferred if state == "SUCCEEDED" => {
+                tx.rollback().await?;
+                return Ok(false);
+            }
+            expression_completion::ProfileDisposition::Corrupt => {
+                self.w4_reject(
+                    &mut tx,
+                    host_id,
+                    process_id,
+                    task_id,
+                    "/definition_snapshot/expression_profile",
+                )
+                .await?;
+                tx.commit().await?;
+                return Ok(true);
+            }
+            _ => {}
+        }
         let task=sqlx::query_as::<_,ActiveTask>("SELECT host_id,task_id,task_type,process_id,wf_instance_id,
             wf_task_id,status_code,result_code FROM task_info_t WHERE host_id=$1 AND task_id=$2 AND process_id=$3")
             .bind(host_id).bind(task_id).bind(process_id).fetch_one(&mut *tx).await?;
-        let (context_data, wf_def_id, snapshot) = self
+        let failure = json!({"agentJobId":job_id,"state":state,"error":row.try_get::<Option<Value>,_>("error")?});
+        if terminal_cleanup::complete_if_required(
+            &mut terminal_cleanup::PostgresCleanup {
+                executor: self,
+                tx: &mut tx,
+            },
+            disposition,
+            &state,
+            &task,
+            &expression_completion::CompletionGuard::Agent { job: job_id },
+            &failure,
+        )
+        .await?
+        {
+            tx.commit().await?;
+            return Ok(true);
+        }
+        let (context_data, wf_def_id, snapshot, expression_profile, input_data) = self
             .get_context_data(&mut tx, &host_id, &process_id)
             .await?;
         let (definition, raw_definition) = if let Some(snapshot) = snapshot {
@@ -359,6 +425,7 @@ impl TaskExecutor {
                 serde_yaml::to_value(snapshot).map_err(|e| sqlx::Error::Protocol(e.to_string()))?,
             )
         } else {
+            crate::profile_support::require_legacy_fallback(&expression_profile)?;
             let dsl = self
                 .get_workflow_definition(&mut tx, &host_id, &wf_def_id)
                 .await?;
@@ -393,14 +460,23 @@ impl TaskExecutor {
                 context_data: None,
             }
         };
-        let claimed = ClaimedTask {
+        let mut claimed = ClaimedTask {
+            expression_profile,
+            input_data,
             task,
             wf_def_id,
             context_data,
             definition,
             raw_definition,
             host_lease: None,
+            completion_guard: None,
         };
+        claimed.completion_guard =
+            Some(expression_completion::CompletionGuard::Agent { job: job_id });
+        if state == "SUCCEEDED" && !self.w4_context(&mut tx, &mut claimed).await? {
+            tx.commit().await?;
+            return Ok(true);
+        }
         self.finish_task(&mut tx, &claimed, result).await?;
         tx.commit().await?;
         Ok(true)
@@ -459,6 +535,12 @@ impl TaskExecutor {
             .build()
             .expect("failed to build reqwest HTTP client with timeouts and redirects disabled");
         Self {
+            expression_engine: None,
+            supported_profiles: crate::profile_support::SupportedProfiles::from_evaluator(false),
+            #[cfg(test)]
+            w4_expire_after_evaluation: false,
+            #[cfg(test)]
+            w5_mock: None,
             bound_mcp: std::sync::OnceLock::new(),
             run_tokens: std::sync::OnceLock::new(),
             review_artifacts: None,
@@ -816,17 +898,20 @@ impl TaskExecutor {
         let budget = Duration::from_millis(250);
         let candidates: Vec<(Uuid, Uuid, Uuid, i64)> = tokio::time::timeout(budget,
             sqlx::query_as(
-                "SELECT timer.host_id,timer.task_id,timer.process_id,timer.generation
+                &format!("SELECT timer.host_id,timer.task_id,timer.process_id,timer.generation
                    FROM workflow_task_timer_t timer
                    JOIN process_info_t p USING(host_id,process_id)
                    JOIN task_info_t t ON t.host_id=timer.host_id AND t.task_id=timer.task_id
                    LEFT JOIN workflow_invocation_t i ON i.host_id=timer.host_id AND i.process_id=timer.process_id
                    LEFT JOIN workflow_action_authority_t a ON a.host_id=i.host_id AND a.run_id=i.workflow_instance_id
-                  WHERE timer.state='ARMED'
+                  WHERE timer.state='ARMED' AND ({} OR timer.effective_deadline<=clock_timestamp() OR p.deadline_ts<=clock_timestamp() OR t.deadline_ts<=clock_timestamp() OR a.deadline<=clock_timestamp() OR NOT p.active OR p.status_code NOT IN('A','W') OR NOT t.active OR t.status_code<>'W' OR t.lease_fencing_token<>timer.task_fence OR i.cancel_requested_ts IS NOT NULL OR i.state NOT IN('ACCEPTED','RUNNING','WAITING') OR a.active=false OR (i.deadline_ts<=clock_timestamp() AND COALESCE(i.response_policy_snapshot->'privateExecutionProfile'->>'version','')<>'1'))
                     AND (timer.retry_after_ts<=clock_timestamp()
                          OR timer.effective_deadline<=clock_timestamp()
                          OR p.deadline_ts<=clock_timestamp() OR t.deadline_ts<=clock_timestamp()
-                         OR a.deadline<=clock_timestamp())
+                         OR a.deadline<=clock_timestamp() OR NOT p.active OR p.status_code NOT IN('A','W')
+                         OR NOT t.active OR t.status_code<>'W' OR t.lease_fencing_token<>timer.task_fence
+                         OR i.cancel_requested_ts IS NOT NULL OR i.state NOT IN('ACCEPTED','RUNNING','WAITING')
+                         OR a.active=false OR (i.deadline_ts<=clock_timestamp() AND COALESCE(i.response_policy_snapshot->'privateExecutionProfile'->>'version','')<>'1'))
                     AND (timer.wake_at<=clock_timestamp() OR timer.effective_deadline<=clock_timestamp()
                          OR p.deadline_ts<=clock_timestamp() OR t.deadline_ts<=clock_timestamp()
                          OR NOT p.active OR p.status_code NOT IN('A','W')
@@ -834,8 +919,8 @@ impl TaskExecutor {
                          OR i.cancel_requested_ts IS NOT NULL OR i.state NOT IN('ACCEPTED','RUNNING','WAITING')
                          OR (i.deadline_ts<=clock_timestamp() AND COALESCE(i.response_policy_snapshot->'privateExecutionProfile'->>'version','')<>'1')
                          OR a.active=false OR a.deadline<=clock_timestamp())
-                  ORDER BY timer.retry_after_ts,timer.wake_at,timer.host_id,timer.task_id LIMIT 64"
-            ).fetch_all(&self.pool)
+                  ORDER BY timer.retry_after_ts,timer.wake_at,timer.host_id,timer.task_id LIMIT 64", crate::profile_support::eligible("p","$1"))
+            ).bind(self.supported_profiles.profiles()).fetch_all(&self.pool)
         ).await.map_err(|_| io::Error::other("WORKFLOW_TIMER_SCAN_TIMEOUT"))??;
         let mut fired = 0;
         for (host, task, process, generation) in candidates {
@@ -928,6 +1013,22 @@ impl TaskExecutor {
             tx.commit().await?;
             return Ok(0);
         }
+        match self.w4_guard(&mut tx, host, process).await? {
+            expression_completion::ProfileDisposition::Deferred => return Ok(0),
+            expression_completion::ProfileDisposition::Corrupt => {
+                self.w4_reject(
+                    &mut tx,
+                    host,
+                    process,
+                    task,
+                    "/definition_snapshot/expression_profile",
+                )
+                .await?;
+                tx.commit().await?;
+                return Ok(0);
+            }
+            _ => {}
+        }
         if now < timer.get::<chrono::DateTime<Utc>, _>("wake_at")
             || now < timer.get::<chrono::DateTime<Utc>, _>("retry_after_ts")
         {
@@ -943,11 +1044,12 @@ impl TaskExecutor {
             status_code: "W".into(),
             result_code: None,
         };
-        let (context, definition_id, snapshot) =
+        let (context, definition_id, snapshot, expression_profile, input_data) =
             self.get_context_data(&mut tx, &host, &process).await?;
         let raw = if let Some(snapshot) = snapshot {
             serde_yaml::to_value(snapshot)?
         } else {
+            crate::profile_support::require_legacy_fallback(&expression_profile)?;
             serde_yaml::from_str(
                 &self
                     .get_workflow_definition(&mut tx, &host, &definition_id)
@@ -988,6 +1090,25 @@ impl TaskExecutor {
                 return Ok(0);
             }
         }
+        let mut claimed = ClaimedTask {
+            expression_profile,
+            input_data,
+            task: active_task,
+            wf_def_id: definition_id,
+            context_data: context,
+            definition,
+            raw_definition: raw,
+            host_lease: None,
+            completion_guard: None,
+        };
+        claimed.completion_guard = Some(expression_completion::CompletionGuard::Timer {
+            generation,
+            fence: timer.get("task_fence"),
+        });
+        if !self.w4_context(&mut tx, &mut claimed).await? {
+            tx.commit().await?;
+            return Ok(0);
+        }
         let accepted = sqlx::query("UPDATE workflow_task_timer_t SET state='FIRED',updated_ts=clock_timestamp() WHERE host_id=$1 AND task_id=$2 AND state='ARMED' AND generation=$3 AND wake_at<=clock_timestamp() AND ($4::timestamptz IS NULL OR $4>clock_timestamp())")
         .bind(host).bind(task).bind(generation).bind(effective_deadline).execute(&mut *tx).await?;
         if accepted.rows_affected() != 1 {
@@ -997,25 +1118,25 @@ impl TaskExecutor {
         }
         sqlx::query("UPDATE process_info_t SET status_code='A' WHERE host_id=$1 AND process_id=$2 AND status_code='W'")
         .bind(host).bind(process).execute(&mut *tx).await?;
-        let claimed = ClaimedTask {
-            task: active_task,
-            wf_def_id: definition_id,
-            context_data: context,
-            definition,
-            raw_definition: raw,
-            host_lease: None,
-        };
-        self.finish_task(
-            &mut tx,
-            &claimed,
-            TaskExecutionResult {
-                status_code: "C",
-                task_output: json!({"status":"timer_fired"}),
-                next_task: None,
-                context_data: None,
-            },
-        )
-        .await?;
+        let completion = self
+            .finish_task(
+                &mut tx,
+                &claimed,
+                TaskExecutionResult {
+                    status_code: "C",
+                    task_output: json!({"status":"timer_fired"}),
+                    next_task: None,
+                    context_data: None,
+                },
+            )
+            .await;
+        if let Err(error) = &completion
+            && expression_completion::rollback_completion(error)
+        {
+            tx.rollback().await?;
+            return Ok(0);
+        }
+        completion?;
         tx.commit().await?;
         Ok(1)
     }
@@ -1124,6 +1245,20 @@ impl TaskExecutor {
                 }
             };
             let execution_result = execution.await;
+            if execution_result.as_ref().err().is_some_and(|e| {
+                e.downcast_ref::<sqlx::Error>()
+                    .is_some_and(expression_completion::rollback_completion)
+            }) {
+                if let Some(stop) = heartbeat_stop {
+                    let _ = stop.send(());
+                }
+                if let Some(handle) = heartbeat_handle {
+                    handle
+                        .await
+                        .map_err(|_| io::Error::other("WORKFLOW_STALE_COMPLETION"))??;
+                }
+                return Err(execution_result.err().unwrap());
+            }
             if execution_result.as_ref().err().is_some_and(|error| {
                 matches!(
                     error.downcast_ref::<crate::long_authority::LongError>(),
@@ -1143,8 +1278,33 @@ impl TaskExecutor {
                         ))
                     })??;
                 }
-                self.defer_retryable_authority(&claimed, attempt_budget.as_ref())
-                    .await?;
+                self.defer_retryable_authority(
+                    &claimed,
+                    attempt_budget.as_ref(),
+                    "WORKFLOW_AUTHORITY_RETRYABLE",
+                )
+                .await?;
+                return Ok(true);
+            }
+            if execution_result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.downcast_ref::<expression_runtime::Failure>().is_some())
+            {
+                if let Some(stop) = heartbeat_stop {
+                    let _ = stop.send(());
+                }
+                if let Some(handle) = heartbeat_handle {
+                    handle
+                        .await
+                        .map_err(|_| io::Error::other("WORKFLOW_EXPRESSION_UNAVAILABLE"))??;
+                }
+                self.defer_retryable_authority(
+                    &claimed,
+                    attempt_budget.as_ref(),
+                    "WORKFLOW_EXPRESSION_UNAVAILABLE",
+                )
+                .await?;
                 return Ok(true);
             }
             match execution_result {
@@ -1273,6 +1433,7 @@ impl TaskExecutor {
         &self,
         claimed: &ClaimedTask,
         reservation: Option<&(Uuid, Uuid, i64, i64, i64, Uuid, i64)>,
+        reason: &str,
     ) -> Result<(), DynError> {
         let lease = claimed.host_lease.ok_or_else(|| {
             io::Error::new(io::ErrorKind::PermissionDenied, "host task lease missing")
@@ -1281,7 +1442,7 @@ impl TaskExecutor {
         let changed = sqlx::query(
             "UPDATE task_info_t SET locked='N',lease_owner=NULL,lease_expires_ts=NULL,
                     next_attempt_ts=CURRENT_TIMESTAMP+INTERVAL '15 seconds',
-                    result_code='WORKFLOW_AUTHORITY_RETRYABLE',update_ts=CURRENT_TIMESTAMP
+                    result_code=CASE WHEN $5='WORKFLOW_EXPRESSION_UNAVAILABLE' THEN result_code ELSE 'WORKFLOW_AUTHORITY_RETRYABLE' END,update_ts=CURRENT_TIMESTAMP
               WHERE host_id=$1 AND task_id=$2 AND status_code='A' AND locked='Y'
                 AND lease_owner=$3 AND lease_fencing_token=$4 AND lease_expires_ts>CURRENT_TIMESTAMP",
         )
@@ -1289,6 +1450,7 @@ impl TaskExecutor {
         .bind(claimed.task.task_id)
         .bind(lease.owner)
         .bind(lease.fencing_token)
+        .bind(reason)
         .execute(&mut *tx)
         .await?
         .rows_affected();
@@ -1324,22 +1486,24 @@ impl TaskExecutor {
             }
         }
         sqlx::query(
-            "UPDATE process_info_t SET custom_status_code='WORKFLOW_AUTHORITY_RETRYABLE'
+            "UPDATE process_info_t SET custom_status_code=$3
               WHERE host_id=$1 AND process_id=$2 AND status_code='A'",
         )
         .bind(claimed.task.host_id)
         .bind(claimed.task.process_id)
+        .bind(reason)
         .execute(&mut *tx)
         .await?;
         sqlx::query(
             "UPDATE workflow_invocation_t SET normalized_error=jsonb_build_object(
-                    'code','WORKFLOW_AUTHORITY_RETRYABLE',
-                    'message','owner authority temporarily unavailable','retryable',true),
+                    'code',$3::text,
+                    'message',CASE WHEN $3::text='WORKFLOW_EXPRESSION_UNAVAILABLE' THEN 'execution worker temporarily unavailable' ELSE 'owner authority temporarily unavailable' END,'retryable',true),
                     updated_ts=CURRENT_TIMESTAMP,state_version=state_version+1
               WHERE host_id=$1 AND process_id=$2 AND state IN ('ACCEPTED','RUNNING','WAITING')",
         )
         .bind(claimed.task.host_id)
         .bind(claimed.task.process_id)
+        .bind(reason)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -1438,7 +1602,10 @@ impl TaskExecutor {
         &self,
         tx: &mut Transaction<'_, Postgres>,
         attempt: &TerminalAttempt,
-    ) -> Result<bool, DynError> {
+    ) -> Result<RunnerReconciliation, DynError> {
+        if let Some(outcome) = self.w4_runner_gate(tx, attempt).await? {
+            return Ok(outcome);
+        }
         if let Some(approval_id) = sqlx::query_scalar::<_, Uuid>(
             "SELECT approval_id FROM workflow_approval_t
              WHERE host_id=$1 AND consuming_execution_id=$2 AND state='CONSUMED'",
@@ -1450,10 +1617,39 @@ impl TaskExecutor {
         {
             return self
                 .reconcile_fixed_action_attempt(tx, attempt, approval_id)
-                .await;
+                .await
+                .map(|accepted| {
+                    if accepted {
+                        RunnerReconciliation::Completed
+                    } else {
+                        RunnerReconciliation::Replay
+                    }
+                });
         }
         if !WorkflowRepository::conditionally_accept_terminal_attempt(tx, attempt).await? {
-            return Ok(false);
+            return Ok(RunnerReconciliation::Deferred);
+        }
+        if attempt.state != "SUCCEEDED" {
+            let disposition = self
+                .w4_guard(tx, attempt.host_id, attempt.process_id)
+                .await?;
+            if terminal_cleanup::required(disposition, &attempt.state) {
+                let task = self.load_runner_active_task(tx, attempt).await?;
+                let failure = json!({"executionId":attempt.execution_id,"state":attempt.state,"error":attempt.normalized_error});
+                terminal_cleanup::complete_if_required(
+                    &mut terminal_cleanup::PostgresCleanup { executor: self, tx },
+                    disposition,
+                    &attempt.state,
+                    &task,
+                    &expression_completion::CompletionGuard::Runner {
+                        request: attempt.request_id,
+                        attempt: attempt.attempt_number,
+                    },
+                    &failure,
+                )
+                .await?;
+                return Ok(RunnerReconciliation::Completed);
+            }
         }
         let claimed = self.load_runner_task(tx, attempt).await?;
         let succeeded = attempt.state == "SUCCEEDED";
@@ -1491,20 +1687,18 @@ impl TaskExecutor {
                     .approval
                     .map(|binding| (policy.policy_digest, binding, hold_eligible))
             });
-        if succeeded {
-            if let Some((policy_digest, binding, hold_eligible)) = approval {
-                self.finish_runner_task_waiting_approval(
-                    tx,
-                    &claimed,
-                    attempt,
-                    &task_output,
-                    &policy_digest,
-                    &binding,
-                    hold_eligible,
-                )
-                .await?;
-                return Ok(true);
-            }
+        if succeeded && let Some((policy_digest, binding, hold_eligible)) = approval {
+            self.finish_runner_task_waiting_approval(
+                tx,
+                &claimed,
+                attempt,
+                &task_output,
+                &policy_digest,
+                &binding,
+                hold_eligible,
+            )
+            .await?;
+            return Ok(RunnerReconciliation::Completed);
         }
         self.finish_task(
             tx,
@@ -1517,7 +1711,7 @@ impl TaskExecutor {
             },
         )
         .await?;
-        Ok(true)
+        Ok(RunnerReconciliation::Completed)
     }
 
     async fn reconcile_fixed_action_attempt(
@@ -1526,6 +1720,42 @@ impl TaskExecutor {
         attempt: &TerminalAttempt,
         approval_id: Uuid,
     ) -> Result<bool, DynError> {
+        match self
+            .w4_guard(tx, attempt.host_id, attempt.process_id)
+            .await?
+        {
+            expression_completion::ProfileDisposition::Corrupt => {
+                self.w4_reject(
+                    tx,
+                    attempt.host_id,
+                    attempt.process_id,
+                    attempt.task_id,
+                    "/definition_snapshot/expression_profile",
+                )
+                .await?;
+                return Ok(true);
+            }
+            expression_completion::ProfileDisposition::Deferred if attempt.state == "SUCCEEDED" => {
+                return Err(sqlx::Error::Protocol("WORKFLOW_EXPRESSION_UNAVAILABLE".into()).into());
+            }
+            _ => {}
+        }
+        if attempt.state != "SUCCEEDED"
+            && attempt.state != "UNKNOWN"
+            && self
+                .w4_guard(tx, attempt.host_id, attempt.process_id)
+                .await?
+                != expression_completion::ProfileDisposition::Legacy
+        {
+            let task=sqlx::query_as::<_,ActiveTask>("SELECT host_id,task_id,task_type,process_id,wf_instance_id,wf_task_id,status_code,result_code FROM task_info_t WHERE host_id=$1 AND task_id=$2 FOR UPDATE NOWAIT").bind(attempt.host_id).bind(attempt.task_id).fetch_one(&mut **tx).await?;
+            self.w4_failure(
+                tx,
+                &task,
+                &json!({"code":"FIXED_ACTION_FAILED","retryable":false}),
+            )
+            .await?;
+            return Ok(true);
+        }
         if attempt.state == "UNKNOWN" {
             sqlx::query("UPDATE process_info_t SET status_code='W',custom_status_code='FIXED_ACTION_UNKNOWN',
                         error_info=$1 WHERE host_id=$2 AND process_id=$3")
@@ -1546,7 +1776,7 @@ impl TaskExecutor {
              FOR UPDATE",
         ).bind(attempt.host_id).bind(attempt.task_id).bind(attempt.process_id)
          .fetch_one(&mut **tx).await?;
-        let (context_data, wf_def_id, definition_snapshot) = self
+        let (context_data, wf_def_id, definition_snapshot, expression_profile, input_data) = self
             .get_context_data(tx, &task.host_id, &task.process_id)
             .await?;
         let (definition, raw_definition) = if let Some(snapshot) = definition_snapshot {
@@ -1555,6 +1785,7 @@ impl TaskExecutor {
                 serde_yaml::to_value(snapshot)?,
             )
         } else {
+            crate::profile_support::require_legacy_fallback(&expression_profile)?;
             let dsl = self
                 .get_workflow_definition(tx, &task.host_id, &wf_def_id)
                 .await?;
@@ -1567,6 +1798,27 @@ impl TaskExecutor {
         .bind(task.task_id)
         .fetch_one(&mut **tx)
         .await?;
+        if expression_profile == "cel-workflow-v2" {
+            let mut claimed = ClaimedTask {
+                expression_profile,
+                input_data,
+                task,
+                wf_def_id,
+                context_data,
+                definition,
+                raw_definition,
+                host_lease: None,
+                completion_guard: Some(expression_completion::CompletionGuard::Approval {
+                    approval: approval_id,
+                    execution: attempt.execution_id,
+                }),
+            };
+            if !self.w4_context(tx, &mut claimed).await? {
+                return Ok(true);
+            }
+            self.w4_transition(tx, &claimed, task_output, None).await?;
+            return Ok(true);
+        }
         sqlx::query(
             "UPDATE process_info_t SET status_code='A',custom_status_code=NULL
                     WHERE host_id=$1 AND process_id=$2 AND status_code='W'",
@@ -1597,6 +1849,23 @@ impl TaskExecutor {
         Ok(true)
     }
 
+    fn runner_approval_context(
+        &self,
+        claimed: &ClaimedTask,
+        current: Value,
+        output: &Value,
+    ) -> Value {
+        if claimed.expression_profile == "cel-workflow-v2" {
+            current
+        } else {
+            self.apply_exports(
+                &claimed.raw_definition,
+                &claimed.task.wf_task_id,
+                claimed.context_data.clone(),
+                output,
+            )
+        }
+    }
     async fn finish_runner_task_waiting_approval(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -1607,6 +1876,22 @@ impl TaskExecutor {
         binding: &workflow_policy::ApprovalBinding,
         hold_eligible: bool,
     ) -> Result<(), sqlx::Error> {
+        if !crate::profile_support::success(
+            tx,
+            claimed.task.host_id,
+            claimed.task.process_id,
+            claimed.task.task_id,
+            self.supported_profiles(),
+        )
+        .await?
+        {
+            return Ok(());
+        }
+        if claimed.expression_profile == "cel-workflow-v2"
+            && !self.w4_authority(tx, claimed).await?
+        {
+            return Err(sqlx::Error::Protocol("WORKFLOW_STALE_COMPLETION".into()));
+        }
         let artifact_digests: Value = sqlx::query_scalar(
             "SELECT COALESCE(jsonb_agg(content_digest ORDER BY content_digest), '[]'::jsonb)
              FROM workflow_artifact_t
@@ -1624,8 +1909,13 @@ impl TaskExecutor {
             .and_then(Value::as_str)
             .map(str::to_string);
         let approval_id = Uuid::now_v7();
-        sqlx::query(
-            "UPDATE task_info_t SET status_code = 'C', locked = 'N',
+        if claimed.expression_profile == "cel-workflow-v2"
+            && !self.w4_authority(tx, claimed).await?
+        {
+            return Err(sqlx::Error::Protocol("WORKFLOW_STALE_COMPLETION".into()));
+        }
+        let updated=sqlx::query(
+            "UPDATE task_info_t SET result_code=CASE WHEN $5 THEN 'W4_APPROVAL_PENDING' ELSE result_code END,status_code = 'C', locked = 'N',
                     completed_ts = CURRENT_TIMESTAMP, task_output = $1
              WHERE host_id = $2 AND task_id = $3 AND accepted_attempt = $4",
         )
@@ -1633,14 +1923,24 @@ impl TaskExecutor {
         .bind(attempt.host_id)
         .bind(attempt.task_id)
         .bind(attempt.attempt_number)
+        .bind(claimed.expression_profile=="cel-workflow-v2")
         .execute(&mut **tx)
         .await?;
-        let new_context = self.apply_exports(
-            &claimed.raw_definition,
-            &claimed.task.wf_task_id,
-            claimed.context_data.clone(),
-            task_output,
-        );
+        if updated.rows_affected() != 1 {
+            return Err(sqlx::Error::Protocol("WORKFLOW_STALE_COMPLETION".into()));
+        }
+        let current = if claimed.expression_profile == "cel-workflow-v2" {
+            sqlx::query_scalar(
+                "SELECT context_data FROM process_info_t WHERE host_id=$1 AND process_id=$2",
+            )
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.process_id)
+            .fetch_one(&mut **tx)
+            .await?
+        } else {
+            claimed.context_data.clone()
+        };
+        let new_context = self.runner_approval_context(claimed, current, task_output);
         sqlx::query(
             "INSERT INTO workflow_approval_t (
                 host_id, approval_id, process_id, task_id, preceding_execution_id,
@@ -1674,14 +1974,18 @@ impl TaskExecutor {
         .bind(attempt.process_id)
         .execute(&mut **tx)
         .await?;
+        if claimed.expression_profile == "cel-workflow-v2" {
+            self.sync_invocation_state(tx, claimed, task_output, None)
+                .await?;
+        }
         Ok(())
     }
 
-    async fn load_runner_task(
+    async fn load_runner_active_task(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         attempt: &TerminalAttempt,
-    ) -> Result<ClaimedTask, DynError> {
+    ) -> Result<ActiveTask, sqlx::Error> {
         let task = sqlx::query_as::<_, ActiveTask>(
             "SELECT host_id, task_id, task_type, process_id, wf_instance_id,
                     wf_task_id, status_code, result_code
@@ -1697,7 +2001,16 @@ impl TaskExecutor {
         .bind(attempt.attempt_number)
         .fetch_one(&mut **tx)
         .await?;
-        let (context_data, wf_def_id, definition_snapshot) = self
+        Ok(task)
+    }
+
+    async fn load_runner_task(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        attempt: &TerminalAttempt,
+    ) -> Result<ClaimedTask, DynError> {
+        let task = self.load_runner_active_task(tx, attempt).await?;
+        let (context_data, wf_def_id, definition_snapshot, expression_profile, input_data) = self
             .get_context_data(tx, &task.host_id, &task.process_id)
             .await?;
         let (definition, raw_definition) = if let Some(snapshot) = definition_snapshot {
@@ -1711,6 +2024,7 @@ impl TaskExecutor {
                 process_id = %task.process_id,
                 "runner result used mutable legacy definition because no snapshot exists"
             );
+            crate::profile_support::require_legacy_fallback(&expression_profile)?;
             let dsl_yaml = self
                 .get_workflow_definition(tx, &task.host_id, &wf_def_id)
                 .await?;
@@ -1719,26 +2033,55 @@ impl TaskExecutor {
                 serde_yaml::from_str(&dsl_yaml)?,
             )
         };
-        Ok(ClaimedTask {
+        let mut claimed = ClaimedTask {
+            expression_profile,
+            input_data,
             task,
             wf_def_id,
             context_data,
             definition,
             raw_definition,
             host_lease: None,
-        })
+            completion_guard: None,
+        };
+        claimed.completion_guard = Some(expression_completion::CompletionGuard::Runner {
+            request: attempt.request_id,
+            attempt: attempt.attempt_number,
+        });
+        if attempt.state == "SUCCEEDED" && !self.w4_context(tx, &mut claimed).await? {
+            return Err(io::Error::other("WORKFLOW_STEP_SNAPSHOT_INVALID").into());
+        }
+        Ok(claimed)
     }
 
     async fn claim_next_task(&self, worker_id: Uuid) -> Result<Option<ClaimedTask>, DynError> {
         let mut tx = self.pool.begin().await?;
 
+        let corrupt:Option<(Uuid,Uuid,Uuid)>=sqlx::query_as(&format!("SELECT t.host_id,t.process_id,t.task_id FROM task_info_t t JOIN process_info_t p ON p.host_id=t.host_id AND p.process_id=t.process_id WHERE t.active AND (t.status_code='A' OR (t.status_code='C' AND t.task_type='ask')) AND t.execution_placement='host' AND p.active AND p.status_code IN ('A','W') AND (t.deadline_ts IS NULL OR t.deadline_ts>clock_timestamp()) AND (p.deadline_ts IS NULL OR p.deadline_ts>clock_timestamp()) AND NOT EXISTS(SELECT 1 FROM workflow_invocation_t i WHERE i.host_id=p.host_id AND i.process_id=p.process_id AND (i.cancel_requested_ts IS NOT NULL OR i.state IN ('FAILED','COMPLETED','CANCELLED') OR (i.deadline_ts<=clock_timestamp() AND COALESCE(i.response_policy_snapshot->'privateExecutionProfile'->>'version','')<>'1'))) AND {} ORDER BY t.task_id LIMIT 1 FOR UPDATE OF t SKIP LOCKED",crate::profile_support::mismatch("p")))
+            .fetch_optional(&mut *tx).await?;
+        if let Some((host, process, task)) = corrupt
+            && self.w4_guard(&mut tx, host, process).await?
+                == expression_completion::ProfileDisposition::Corrupt
+        {
+            self.w4_reject(
+                &mut tx,
+                host,
+                process,
+                task,
+                "/definition_snapshot/expression_profile",
+            )
+            .await?;
+            tx.commit().await?;
+            return Ok(None);
+        }
         let task_res = sqlx::query_as::<_, ClaimedHostTask>(
             "SELECT host_id,task_id,task_type,process_id,wf_instance_id,wf_task_id,
                     status_code,result_code,lease_owner,lease_fencing_token
-               FROM workflow_claim_host_task_v1($1,$2)",
+               FROM workflow_claim_host_task_v2($1,$2,$3)",
         )
         .bind(worker_id)
         .bind(DEFAULT_HOST_TASK_LEASE_MS)
+        .bind(self.supported_profiles.profiles())
         .fetch_optional(&mut *tx)
         .await?;
 
@@ -1763,6 +2106,75 @@ impl TaskExecutor {
             status_code: claimed_task.status_code,
             result_code: claimed_task.result_code,
         };
+        match self
+            .w4_guard(&mut tx, task.host_id, task.process_id)
+            .await?
+        {
+            expression_completion::ProfileDisposition::Deferred => {
+                tx.rollback().await?;
+                return Ok(None);
+            }
+            expression_completion::ProfileDisposition::Corrupt => {
+                self.w4_reject(
+                    &mut tx,
+                    task.host_id,
+                    task.process_id,
+                    task.task_id,
+                    "/definition_snapshot/expression_profile",
+                )
+                .await?;
+                tx.commit().await?;
+                return Ok(None);
+            }
+            expression_completion::ProfileDisposition::V2 => {
+                if task.task_type == "call" {
+                    let (_, _, snapshot, _, _) = self
+                        .get_context_data(&mut tx, &task.host_id, &task.process_id)
+                        .await?;
+                    let definition: WorkflowDefinition = serde_json::from_value(
+                        snapshot
+                            .ok_or_else(|| io::Error::other("EVALUATOR_PROFILE_UNSUPPORTED"))?,
+                    )?;
+                    if self
+                        .find_task_definition(&definition, &task.wf_task_id)
+                        .is_none_or(|t| !expression_requests::supported(t))
+                    {
+                        tx.rollback().await?;
+                        return Ok(None);
+                    }
+                }
+                let parent =
+                    crate::durable_timer::try_lock_parent(&mut tx, task.host_id, task.process_id)
+                        .await?;
+                let now: chrono::DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+                    .fetch_one(&mut *tx)
+                    .await?;
+                if parent.blocked.is_some() || parent.deadline.is_some_and(|d| d <= now) {
+                    tx.rollback().await?;
+                    return Ok(None);
+                }
+                if !expression_completion::capture_step(
+                    &mut tx,
+                    task.host_id,
+                    task.process_id,
+                    task.task_id,
+                )
+                .await?
+                {
+                    self.w4_reject(
+                        &mut tx,
+                        task.host_id,
+                        task.process_id,
+                        task.task_id,
+                        "/task_input/stepSnapshot",
+                    )
+                    .await?;
+                    tx.commit().await?;
+                    return Ok(None);
+                }
+            }
+            expression_completion::ProfileDisposition::Legacy => {}
+        }
         sqlx::query(
             "UPDATE workflow_invocation_t SET state='RUNNING',updated_ts=CURRENT_TIMESTAMP,
                     state_version=state_version+1
@@ -1773,7 +2185,7 @@ impl TaskExecutor {
         .execute(&mut *tx)
         .await?;
 
-        let (context_data, wf_def_id, definition_snapshot) = self
+        let (context_data, wf_def_id, definition_snapshot, expression_profile, input_data) = self
             .get_context_data(&mut tx, &task.host_id, &task.process_id)
             .await?;
         let (definition, raw_definition) = if let Some(snapshot) = definition_snapshot {
@@ -1786,6 +2198,7 @@ impl TaskExecutor {
                 process_id = %task.process_id,
                 "workflow process has no definition snapshot; using mutable legacy definition"
             );
+            crate::profile_support::require_legacy_fallback(&expression_profile)?;
             let dsl_yaml = self
                 .get_workflow_definition(&mut tx, &task.host_id, &wf_def_id)
                 .await?;
@@ -1794,16 +2207,23 @@ impl TaskExecutor {
                 serde_yaml::from_str(&dsl_yaml)?,
             )
         };
-        tx.commit().await?;
-
-        Ok(Some(ClaimedTask {
+        let mut claimed = ClaimedTask {
+            expression_profile,
+            input_data,
             task,
             wf_def_id,
             context_data,
             definition,
             raw_definition,
             host_lease: Some(lease),
-        }))
+            completion_guard: None,
+        };
+        if !self.w4_context(&mut tx, &mut claimed).await? {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        tx.commit().await?;
+        Ok(Some(claimed))
     }
 
     async fn admission_profile_for_process(
@@ -1823,16 +2243,101 @@ impl TaskExecutor {
     }
 
     async fn execute_task(&self, claimed: &ClaimedTask) -> Result<TaskExecutionResult, DynError> {
-        let task_def = self
+        let snapshot = serde_json::to_value(&claimed.raw_definition)?;
+        match self.supported_profiles.check(
+            &claimed.expression_profile,
+            Some(&snapshot),
+            canonical_sha256(&snapshot).ok().as_deref(),
+        ) {
+            expression_completion::ProfileDisposition::Deferred => {
+                return Err(sqlx::Error::Protocol("WORKFLOW_EXPRESSION_UNAVAILABLE".into()).into());
+            }
+            expression_completion::ProfileDisposition::Corrupt => {
+                return Ok(TaskExecutionResult {
+                    status_code: "F",
+                    task_output: json!({"code":"EVALUATOR_PROFILE_UNSUPPORTED","retryable":false,"details":{"reason":"snapshot/profile mismatch","field":"/definition_snapshot/expression_profile"}}),
+                    next_task: None,
+                    context_data: None,
+                });
+            }
+            _ => {}
+        }
+        if claimed.expression_profile == "cel-workflow-v2" {
+            let task = self
+                .find_task_definition(&claimed.definition, &claimed.task.wf_task_id)
+                .ok_or_else(|| io::Error::other("EXPRESSION_INVALID"))?;
+            if matches!(
+                task,
+                TaskDefinition::Set(_) | TaskDefinition::Switch(_) | TaskDefinition::Assert(_)
+            ) {
+                return match self.w4_execute(claimed, task).await {
+                    Ok(result) => Ok(result),
+                    Err(error)
+                        if matches!(
+                            error.error,
+                            workflow_expression::WorkerError::Expression(_)
+                        ) =>
+                    {
+                        Ok(error.result(claimed))
+                    }
+                    Err(error) => Err(Box::new(error) as DynError),
+                };
+            }
+            if matches!(task, TaskDefinition::Call(_) | TaskDefinition::Ask(_)) {
+                if !expression_requests::supported(task) {
+                    return Err(io::Error::other("WORKFLOW_EXPRESSION_FIELDS_PENDING").into());
+                }
+                let prepared = match self.w5_prepare(claimed, task).await {
+                    Ok(task) => task,
+                    Err(e)
+                        if matches!(e.error, workflow_expression::WorkerError::Expression(_)) =>
+                    {
+                        return Ok(e.result(claimed));
+                    }
+                    Err(e) => return Err(e.into()),
+                };
+                let result = self.execute_task_dispatch(claimed, &prepared, true).await;
+                return match result {
+                    Err(e)
+                        if e.downcast_ref::<expression_runtime::Failure>()
+                            .is_some_and(|e| {
+                                matches!(e.error, workflow_expression::WorkerError::Expression(_))
+                            }) =>
+                    {
+                        Ok(e.downcast_ref::<expression_runtime::Failure>()
+                            .unwrap()
+                            .result(claimed))
+                    }
+                    Err(e)
+                        if e.downcast_ref::<sqlx::Error>()
+                            .is_some_and(expression_completion::rollback_completion)
+                            || e.downcast_ref::<expression_runtime::Failure>().is_some() =>
+                    {
+                        Err(e)
+                    }
+                    Err(_) => Ok(TaskExecutionResult {
+                        status_code: "F",
+                        task_output: json!({"code":"WORKFLOW_REQUEST_FAILED","retryable":false,"details":{"definitionId":claimed.wf_def_id,"taskId":claimed.task.task_id,"field":"/with"}}),
+                        next_task: None,
+                        context_data: None,
+                    }),
+                    other => other,
+                };
+            }
+        }
+        let task = self
             .find_task_definition(&claimed.definition, &claimed.task.wf_task_id)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("task definition not found: {}", claimed.task.wf_task_id),
-                )
-            })?;
-
+            .ok_or_else(|| io::Error::other("task definition not found"))?;
+        self.execute_task_dispatch(claimed, task, false).await
+    }
+    async fn execute_task_dispatch(
+        &self,
+        claimed: &ClaimedTask,
+        task_def: &TaskDefinition,
+        prepared: bool,
+    ) -> Result<TaskExecutionResult, DynError> {
         if matches!(task_def, TaskDefinition::Call(_) | TaskDefinition::Run(_))
+            && !self.w5_mocked()
             && !claimed.task.process_id.is_nil()
             && self
                 .admission_profile_for_process(claimed.task.host_id, claimed.task.process_id)
@@ -2041,14 +2546,7 @@ impl TaskExecutor {
                 } else {
                     None
                 };
-                let invocation_authorization: Option<(Option<String>, String, Option<String>)> = sqlx::query_as(
-                    "SELECT user_authorization,state,response_policy_snapshot->>'acceptedAdmissionProfile' FROM workflow_invocation_t
-                      WHERE host_id=$1 AND process_id=$2",
-                )
-                .bind(claimed.task.host_id)
-                .bind(claimed.task.process_id)
-                .fetch_optional(&self.pool)
-                .await?;
+                let invocation_authorization = self.w5_invocation(claimed).await?;
                 let admission_profile = invocation_admission_profile(
                     invocation_authorization
                         .as_ref()
@@ -2111,13 +2609,27 @@ impl TaskExecutor {
                     .into());
                 }
                 let configured_uri = granted_uri.or(registered_uri).unwrap_or(inline_uri);
-                let configured_template = OPENAPI_PATH_PLACEHOLDER_REGEX
-                    .replace_all(&configured_uri, |captures: &regex::Captures<'_>| {
-                        format!("${{{{ {} }}}}", &captures[1])
-                    })
-                    .into_owned();
-                let resolved_uri =
-                    self.resolve_template_to_string(&configured_template, &claimed.context_data);
+                let configured_template = if prepared {
+                    configured_uri.clone()
+                } else {
+                    OPENAPI_PATH_PLACEHOLDER_REGEX
+                        .replace_all(&configured_uri, |captures: &regex::Captures<'_>| {
+                            format!("${{{{ {} }}}}", &captures[1])
+                        })
+                        .into_owned()
+                };
+                let resolved_uri = if prepared {
+                    workflow_expression::encode_path_placeholders(
+                        &configured_template,
+                        &claimed.context_data,
+                    )
+                    .map_err(|e| expression_runtime::Failure {
+                        error: e.into(),
+                        field: "/with/endpoint/uri".into(),
+                    })?
+                } else {
+                    self.resolve_template_to_string(&configured_template, &claimed.context_data)
+                };
                 let validated_uri =
                     self.validate_resolved_uri(&configured_template, &resolved_uri)?;
 
@@ -2133,13 +2645,63 @@ impl TaskExecutor {
                     .with
                     .body
                     .as_ref()
-                    .map(|body| self.resolve_json_value(body, &claimed.context_data));
-                let resolved_query = self
-                    .resolve_http_string_map(http_call.with.query.as_ref(), &claimed.context_data);
-                let resolved_headers = self.resolve_http_string_map(
-                    http_call.with.headers.as_ref(),
-                    &claimed.context_data,
-                );
+                    .map(|body| request_json(self, body, &claimed.context_data, prepared));
+                let resolved_query = if prepared {
+                    http_call
+                        .with
+                        .query
+                        .as_ref()
+                        .map(|m| {
+                            m.iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    self.resolve_http_string_map(
+                        http_call.with.query.as_ref(),
+                        &claimed.context_data,
+                    )
+                };
+                let resolved_headers = if prepared {
+                    http_call
+                        .with
+                        .headers
+                        .as_ref()
+                        .map(|m| {
+                            m.iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    self.resolve_http_string_map(
+                        http_call.with.headers.as_ref(),
+                        &claimed.context_data,
+                    )
+                };
+                if prepared {
+                    for (key, _) in &resolved_headers {
+                        let name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
+                            .map_err(|_| {
+                                expression_runtime::failure(
+                                    workflow_expression::Category::ResultType,
+                                    "/with/headers",
+                                )
+                            })?;
+                        if is_protected_workflow_http_header(
+                            &name,
+                            invocation_authorization.is_some(),
+                        ) {
+                            return Err(expression_runtime::failure(
+                                workflow_expression::Category::ResultType,
+                                "/with/headers",
+                            )
+                            .into());
+                        }
+                    }
+                    self.w5_fence(claimed).await?;
+                }
                 // A private inline endpoint must never receive the caller's
                 // bearer. Registered/Tool-granted targets retain protected
                 // Workflow authorization on the trusted dispatch path.
@@ -2247,7 +2809,7 @@ impl TaskExecutor {
                             )
                         })?;
                     let idempotency_key =
-                        self.resolve_template_to_string(key_template, &claimed.context_data);
+                        request_string(self, key_template, &claimed.context_data, prepared);
                     let request_digest = format!(
                         "sha256:{}",
                         canonical_sha256(&json!({
@@ -2315,8 +2877,12 @@ impl TaskExecutor {
                     req_builder = req_builder.header("Idempotency-Key", &claim.idempotency_key);
                 }
 
-                info!(">>> Making HTTP request to: {}", validated_uri);
-                let mut resp = req_builder.send().await?;
+                if !prepared {
+                    info!(">>> Making HTTP request to: {}", validated_uri);
+                }
+                let mut resp = self
+                    .w5_send(prepared.then_some(claimed), req_builder, false)
+                    .await?;
                 let status = resp.status();
                 if resp.content_length().unwrap_or(0) > MAX_HTTP_RESPONSE_BYTES as u64 {
                     return Err(io::Error::new(
@@ -2378,12 +2944,20 @@ impl TaskExecutor {
                 })
             }
             TaskDefinition::Call(CallTaskDefinition::JsonRpc(jsonrpc_call)) => {
-                self.execute_jsonrpc_call(&jsonrpc_call.with, &claimed.context_data)
-                    .await
+                self.execute_jsonrpc_call(
+                    &jsonrpc_call.with,
+                    &claimed.context_data,
+                    prepared.then_some(claimed),
+                )
+                .await
             }
             TaskDefinition::Call(CallTaskDefinition::OpenRpc(openrpc_call)) => {
-                self.execute_openrpc_call(&openrpc_call.with, &claimed.context_data)
-                    .await
+                self.execute_openrpc_call(
+                    &openrpc_call.with,
+                    &claimed.context_data,
+                    prepared.then_some(claimed),
+                )
+                .await
             }
             TaskDefinition::Call(CallTaskDefinition::Mcp(mcp_call)) => {
                 self.execute_mcp_call(&mcp_call.with, &mcp_call.common, claimed)
@@ -2394,16 +2968,8 @@ impl TaskExecutor {
                     .await
             }
             TaskDefinition::Call(CallTaskDefinition::Agent(agent_call)) => {
-                self.execute_agent_call(
-                    &agent_call.with,
-                    &claimed.context_data,
-                    &claimed.raw_definition,
-                    &claimed.task.host_id,
-                    claimed.task.process_id,
-                    claimed.task.task_id,
-                    &claimed.task.wf_task_id,
-                )
-                .await
+                self.execute_agent_call(&agent_call.with, claimed, prepared)
+                    .await
             }
             TaskDefinition::Call(CallTaskDefinition::Rule(rule_call)) => {
                 let rule_id = &rule_call.with.rule_id;
@@ -2533,19 +3099,23 @@ impl TaskExecutor {
         &self,
         args: &JsonRpcArguments,
         context: &Value,
+        claimed: Option<&ClaimedTask>,
     ) -> Result<TaskExecutionResult, DynError> {
         let configured_uri = self.endpoint_to_uri(&args.endpoint);
         self.execute_jsonrpc_request(
-            &configured_uri,
-            &args.method,
-            args.params.as_ref(),
-            args.id.as_ref(),
-            args.notification.unwrap_or(false),
-            args.headers.as_ref(),
-            None,
-            args.output.as_deref(),
-            args.error_policy.as_ref(),
+            RpcRequest {
+                uri: &configured_uri,
+                method: &args.method,
+                params: args.params.as_ref(),
+                id: args.id.as_ref(),
+                notification: args.notification.unwrap_or(false),
+                headers: args.headers.as_ref(),
+                request_timeout: None,
+                output: args.output.as_deref(),
+                error_policy: args.error_policy.as_ref(),
+            },
             context,
+            claimed,
         )
         .await
     }
@@ -2554,26 +3124,65 @@ impl TaskExecutor {
         &self,
         args: &OpenRpcArguments,
         context: &Value,
+        claimed: Option<&ClaimedTask>,
     ) -> Result<TaskExecutionResult, DynError> {
-        let document = self.fetch_external_json(&args.document, context).await?;
-        let method_definition = self.find_openrpc_method(&document, &args.method)?;
+        let document = self
+            .fetch_external_json(&args.document, context, claimed)
+            .await?;
+        let method_definition = self
+            .find_openrpc_method(&document, &args.method)
+            .map_err(|e| request_error(e, claimed, "/with/method"))?;
         let resolved_params = args
             .params
             .as_ref()
-            .map(|params| self.resolve_json_value(params, context));
-        self.validate_openrpc_params(method_definition, &args.method, resolved_params.as_ref())?;
-        let configured_uri = self.resolve_openrpc_server_uri(&document, args.server.as_ref())?;
+            .map(|params| request_json(self, params, context, claimed.is_some()));
+        self.validate_openrpc_params(method_definition, &args.method, resolved_params.as_ref())
+            .map_err(|e| request_error(e, claimed, "/with/params"))?;
+        let authored_target = args.server.as_ref().is_some_and(|v| {
+            v.get("url").is_some()
+                || v.get("endpoint").is_some()
+                || v.as_str()
+                    .is_some_and(|s| s.starts_with("http://") || s.starts_with("https://"))
+        });
+        let target = if claimed.is_some() {
+            self.w5_openrpc_target(&document, args.server.as_ref(), authored_target)?
+        } else {
+            let uri = self.resolve_openrpc_server_uri(&document, args.server.as_ref())?;
+            expression_requests::OpenRpcTarget {
+                configured: uri.clone(),
+                template: uri,
+                span_offsets: Vec::new(),
+            }
+        };
+        let resolved_uri = if let Some(c) = claimed.filter(|_| !authored_target) {
+            self.w5_uri(c, target.template.clone(), "/with/server/url")
+                .await
+                .map_err(|e| target.original_error(e))?
+        } else {
+            target.template.clone()
+        };
+        if claimed.is_some() {
+            self.validate_resolved_uri(&target.configured, &resolved_uri)
+                .map_err(|e| request_error(e, claimed, "/with/server/url"))?;
+        }
         self.execute_jsonrpc_request(
-            &configured_uri,
-            &args.method,
-            resolved_params.as_ref(),
-            args.id.as_ref(),
-            args.notification.unwrap_or(false),
-            None,
-            None,
-            args.output.as_deref(),
-            args.error_policy.as_ref(),
+            RpcRequest {
+                uri: &resolved_uri,
+                method: &args.method,
+                params: resolved_params.as_ref(),
+                id: args.id.as_ref(),
+                notification: args.notification.unwrap_or(false),
+                headers: if claimed.is_some() {
+                    args.headers.as_ref()
+                } else {
+                    None
+                },
+                request_timeout: None,
+                output: args.output.as_deref(),
+                error_policy: args.error_policy.as_ref(),
+            },
             context,
+            claimed,
         )
         .await
     }
@@ -2584,6 +3193,7 @@ impl TaskExecutor {
         common: &TaskDefinitionFields,
         claimed: &ClaimedTask,
     ) -> Result<TaskExecutionResult, DynError> {
+        let prepared = claimed.expression_profile == "cel-workflow-v2";
         let definition = &claimed.definition;
         let context = &claimed.context_data;
         let server = self.resolve_mcp_server(args, definition)?;
@@ -2634,7 +3244,7 @@ impl TaskExecutor {
             (
                 "resources/read".to_string(),
                 json!({
-                    "uri": self.resolve_template_to_string(resource, context)
+                    "uri": request_string(self,resource, context,prepared)
                 }),
             )
         } else if let Some(prompt) = &args.prompt {
@@ -2664,9 +3274,7 @@ impl TaskExecutor {
                 .flatten()
         });
 
-        let admission_profile = self
-            .admission_profile_for_process(claimed.task.host_id, claimed.task.process_id)
-            .await?;
+        let admission_profile = self.w5_admission(claimed).await?;
 
         if admission_profile == InvocationAdmissionProfile::PortalExecution
             && tool_alias.is_some()
@@ -2688,7 +3296,10 @@ impl TaskExecutor {
                     "A2 requires a pinned MCP tool action",
                 )
             })?;
-            let params = self.resolve_json_value(&params, context);
+            let params = request_json(self, &params, context, prepared);
+            if prepared {
+                self.w5_fence(claimed).await?;
+            }
             let result = runtime
                 .call(
                     claimed.task.host_id,
@@ -2913,7 +3524,7 @@ impl TaskExecutor {
                 )
             })?;
             let idempotency_key =
-                self.resolve_template_to_string(key_template, &claimed.context_data);
+                request_string(self, key_template, &claimed.context_data, prepared);
             let request_digest = format!(
                 "sha256:{}",
                 canonical_sha256(&json!({
@@ -2976,16 +3587,19 @@ impl TaskExecutor {
 
         let execution = self
             .execute_jsonrpc_request(
-                &configured_uri,
-                &method,
-                Some(&params),
-                None,
-                false,
-                request_headers.as_ref(),
-                args.timeout.as_ref(),
-                args.output.as_deref().or(Some("result")),
-                None,
+                RpcRequest {
+                    uri: &configured_uri,
+                    method: &method,
+                    params: Some(&params),
+                    id: None,
+                    notification: false,
+                    headers: request_headers.as_ref(),
+                    request_timeout: args.timeout.as_ref(),
+                    output: args.output.as_deref().or(Some("result")),
+                    error_policy: None,
+                },
                 context,
+                prepared.then_some(claimed),
             )
             .await;
         if let Some((host_id, reservation_id, fencing_token, bytes)) = budget_reservation {
@@ -3017,20 +3631,37 @@ impl TaskExecutor {
     async fn execute_agent_call(
         &self,
         args: &AgentArguments,
-        context: &Value,
-        raw_definition: &YamlValue,
-        host_id: &Uuid,
-        process_id: Uuid,
-        task_id: Uuid,
-        task_name: &str,
+        state: &ClaimedTask,
+        prepared: bool,
     ) -> Result<TaskExecutionResult, DynError> {
+        let context = &state.context_data;
+        let raw_definition = &state.raw_definition;
+        let host_id = &state.task.host_id;
+        let process_id = state.task.process_id;
+        let task_id = state.task.task_id;
+        let task_name = state.task.wf_task_id.as_str();
+        let claimed = prepared.then_some(state);
         let task_input = args
             .input
             .as_ref()
-            .map(|input| self.resolve_json_value(input, context))
+            .map(|input| request_json(self, input, context, claimed.is_some()))
             .unwrap_or_else(|| context.clone());
         let output_schema = self.resolve_agent_output_schema(args, raw_definition)?;
         if args.mode == workflow_core::models::task::AgentCallMode::Service {
+            #[cfg(test)]
+            if let Some(mock) = &self.w5_mock {
+                if let Some(c) = claimed {
+                    self.w5_fence(c).await?;
+                }
+                mock.jobs.lock().unwrap().push(task_input.clone());
+                return Ok(TaskExecutionResult {
+                    status_code: "W",
+                    task_output: json!({"agentJobId":task_id,"state":"PENDING"}),
+                    next_task: None,
+                    context_data: None,
+                });
+            }
+
             let agent_id = Uuid::parse_str(&args.agent)?;
             if args.skill.is_some()
                 || !(task_input.get("workspace").is_some() || task_input.get("coding").is_some())
@@ -3065,7 +3696,10 @@ impl TaskExecutor {
                 .into());
             }
             let output_schema = output_schema.unwrap_or_else(|| json!({"type":"object"}));
-            let inserted = crate::native_jobs::enqueue_with_artifacts(
+            if let Some(c) = claimed {
+                self.w5_fence(c).await?;
+            }
+            let inserted = crate::native_jobs::enqueue_with_artifacts_supported(
                 &self.pool,
                 *host_id,
                 process_id,
@@ -3080,6 +3714,13 @@ impl TaskExecutor {
                 depth,
                 maximum_depth,
                 self.review_artifacts.as_ref(),
+                self.supported_profiles(),
+                claimed.map(|c| {
+                    (
+                        c.host_lease.map(|l| (l.owner, l.fencing_token)),
+                        c.expression_profile.as_str(),
+                    )
+                }),
             )
             .await?;
             return Ok(TaskExecutionResult {
@@ -3101,9 +3742,7 @@ impl TaskExecutor {
             )
             .into());
         }
-        let catalog = self
-            .load_agent_catalog(host_id, &args.agent, args.skill.as_deref())
-            .await?;
+        let catalog = self.w5_catalog(host_id, args).await?;
         let retry_count = args
             .on_invalid_output
             .as_ref()
@@ -3119,7 +3758,7 @@ impl TaskExecutor {
 
         for attempt in 1..=max_attempts {
             let raw_output = if let Some(mock_output) = &args.mock_output {
-                serde_json::to_string(&self.resolve_json_value(mock_output, context))?
+                serde_json::to_string(&request_json(self, mock_output, context, claimed.is_some()))?
             } else if Self::is_mock_provider(&catalog.agent.model_provider) {
                 serde_json::to_string(&Self::mock_agent_output(output_schema.as_ref()))?
             } else {
@@ -3129,6 +3768,7 @@ impl TaskExecutor {
                     &task_input,
                     context,
                     output_schema.as_ref(),
+                    claimed,
                 )
                 .await?
             };
@@ -3203,6 +3843,7 @@ impl TaskExecutor {
         common: &TaskDefinitionFields,
         claimed: &ClaimedTask,
     ) -> Result<TaskExecutionResult, DynError> {
+        let prepared = claimed.expression_profile == "cel-workflow-v2";
         if args.agent_card.is_some() || args.server.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -3264,7 +3905,7 @@ impl TaskExecutor {
         let params = args
             .parameters
             .as_ref()
-            .map(|value| self.resolve_json_value(value, &claimed.context_data))
+            .map(|value| request_json(self, value, &claimed.context_data, prepared))
             .unwrap_or_else(|| json!({}));
         let request_id = claimed.task.task_id.to_string();
         let body = serde_json::to_vec(&json!({
@@ -3277,7 +3918,7 @@ impl TaskExecutor {
         let idempotency_key = common
             .idempotency_key
             .as_deref()
-            .map(|value| self.resolve_template_to_string(value, &claimed.context_data))
+            .map(|value| request_string(self, value, &claimed.context_data, prepared))
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| {
                 format!(
@@ -3361,14 +4002,15 @@ impl TaskExecutor {
             })?
             .pop_if_empty()
             .push(agent_ref);
-        let response = self
+        let request = self
             .http_client
             .post(endpoint)
             .header("content-type", "application/json")
             .header("x-light-a2a-context", encoded_context)
             .header("x-light-a2a-signature", encoded_signature)
-            .body(body)
-            .send()
+            .body(body);
+        let response = self
+            .w5_send(prepared.then_some(claimed), request, false)
             .await?;
         let status = response.status();
         let bytes = response.bytes().await?;
@@ -3540,10 +4182,20 @@ impl TaskExecutor {
         task_input: &Value,
         context: &Value,
         output_schema: Option<&Value>,
+        claimed: Option<&ClaimedTask>,
     ) -> Result<String, DynError> {
         let provider = self.build_agent_provider(&catalog.agent)?;
-        let messages =
-            self.build_agent_messages(args, catalog, task_input, context, output_schema)?;
+        let messages = self.build_agent_messages(
+            args,
+            catalog,
+            task_input,
+            context,
+            output_schema,
+            claimed.is_some(),
+        )?;
+        if let Some(c) = claimed {
+            self.w5_fence(c).await?;
+        }
         let response = provider
             .chat(
                 ChatRequest {
@@ -3630,6 +4282,7 @@ impl TaskExecutor {
         task_input: &Value,
         context: &Value,
         output_schema: Option<&Value>,
+        prepared: bool,
     ) -> Result<Vec<ChatMessage>, DynError> {
         let mut system = String::from(
             "You are executing a bounded light-workflow agent task. Workflow context is authoritative. Do not use private memory for cross-step state. Return only one JSON object and no markdown.",
@@ -3673,7 +4326,7 @@ impl TaskExecutor {
 
         if let Some(instructions) = &args.instructions {
             system.push_str("\n\nAdditional instructions:\n");
-            system.push_str(&self.resolve_template_to_string(instructions, context));
+            system.push_str(&request_string(self, instructions, context, prepared));
         }
 
         if let Some(output_schema) = output_schema {
@@ -3686,8 +4339,7 @@ impl TaskExecutor {
             "workflowContext": context,
         });
         if let Some(prompt) = &args.prompt {
-            user_payload["prompt"] =
-                Value::String(self.resolve_template_to_string(prompt, context));
+            user_payload["prompt"] = Value::String(request_string(self, prompt, context, prepared));
         }
 
         Ok(vec![
@@ -4056,19 +4708,25 @@ impl TaskExecutor {
 
     async fn execute_jsonrpc_request(
         &self,
-        configured_uri: &str,
-        method: &str,
-        params: Option<&Value>,
-        id: Option<&Value>,
-        notification: bool,
-        headers: Option<&Value>,
-        request_timeout: Option<&workflow_core::models::duration::OneOfDurationOrIso8601Expression>,
-        output: Option<&str>,
-        error_policy: Option<&JsonRpcErrorPolicy>,
+        request: RpcRequest<'_>,
         context: &Value,
+        claimed: Option<&ClaimedTask>,
     ) -> Result<TaskExecutionResult, DynError> {
-        let resolved_uri = self.resolve_template_to_string(&configured_uri, context);
-        let validated_uri = self.validate_resolved_uri(&configured_uri, &resolved_uri)?;
+        let RpcRequest {
+            uri: configured_uri,
+            method,
+            params,
+            id,
+            notification,
+            headers,
+            request_timeout,
+            output,
+            error_policy,
+        } = request;
+        let resolved_uri = request_string(self, configured_uri, context, claimed.is_some());
+        let validated_uri = self
+            .validate_resolved_uri(configured_uri, &resolved_uri)
+            .map_err(|e| request_error(e, claimed, "/with/endpoint"))?;
 
         let mut request = JsonMap::new();
         request.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
@@ -4076,7 +4734,7 @@ impl TaskExecutor {
         if let Some(params) = params {
             request.insert(
                 "params".to_string(),
-                self.resolve_json_value(params, context),
+                request_json(self, params, context, claimed.is_some()),
             );
         }
         if !notification {
@@ -4095,16 +4753,20 @@ impl TaskExecutor {
         if let Some(timeout_ms) = request_timeout_ms {
             req_builder = req_builder.timeout(Duration::from_millis(timeout_ms.max(1)));
         }
-        if let Some(headers) = headers {
-            if let Value::Object(headers) = self.resolve_json_value(headers, context) {
-                for (key, value) in headers {
-                    req_builder = req_builder.header(key, self.stringify_json_value(&value));
-                }
+        if let Some(headers) = headers
+            && let Value::Object(headers) = request_json(self, headers, context, claimed.is_some())
+        {
+            for (key, value) in headers {
+                req_builder = req_builder.header(key, self.stringify_json_value(&value));
             }
         }
 
-        info!(">>> Making JSON-RPC request to: {}", validated_uri);
-        let resp = req_builder.json(&Value::Object(request)).send().await?;
+        if claimed.is_none() {
+            info!(">>> Making JSON-RPC request to: {}", validated_uri);
+        }
+        let resp = self
+            .w5_send(claimed, req_builder.json(&Value::Object(request)), false)
+            .await?;
         let status = resp.status();
         let body = resp.bytes().await?;
         if body.len() > MAX_HTTP_RESPONSE_BYTES {
@@ -4184,12 +4846,17 @@ impl TaskExecutor {
         &self,
         resource: &workflow_core::models::resource::ExternalResourceDefinition,
         context: &Value,
+        claimed: Option<&ClaimedTask>,
     ) -> Result<Value, DynError> {
         let configured_uri = self.endpoint_to_uri(&resource.endpoint);
-        let resolved_uri = self.resolve_template_to_string(&configured_uri, context);
-        let validated_uri = self.validate_resolved_uri(&configured_uri, &resolved_uri)?;
+        let resolved_uri = request_string(self, &configured_uri, context, claimed.is_some());
+        let validated_uri = self
+            .validate_resolved_uri(&configured_uri, &resolved_uri)
+            .map_err(|e| request_error(e, claimed, "/with/endpoint"))?;
 
-        let resp = self.http_client.get(validated_uri.clone()).send().await?;
+        let resp = self
+            .w5_send(claimed, self.http_client.get(validated_uri.clone()), true)
+            .await?;
         let status = resp.status();
         let body = resp.bytes().await?;
         if body.len() > MAX_HTTP_RESPONSE_BYTES {
@@ -4770,6 +5437,34 @@ impl TaskExecutor {
         claimed: &ClaimedTask,
         result: TaskExecutionResult,
     ) -> Result<(), sqlx::Error> {
+        match self
+            .w4_guard(tx, claimed.task.host_id, claimed.task.process_id)
+            .await?
+        {
+            expression_completion::ProfileDisposition::V2 => {
+                return self.finish_task_v2(tx, claimed, result).await;
+            }
+            expression_completion::ProfileDisposition::Deferred if result.status_code == "F" => {
+                return self.finish_task_v2(tx, claimed, result).await;
+            }
+            expression_completion::ProfileDisposition::Deferred => {
+                return Err(sqlx::Error::Protocol(
+                    "WORKFLOW_EXPRESSION_UNAVAILABLE".into(),
+                ));
+            }
+            expression_completion::ProfileDisposition::Corrupt => {
+                return self
+                    .w4_reject(
+                        tx,
+                        claimed.task.host_id,
+                        claimed.task.process_id,
+                        claimed.task.task_id,
+                        "/definition_snapshot/expression_profile",
+                    )
+                    .await;
+            }
+            expression_completion::ProfileDisposition::Legacy => {}
+        }
         if result.status_code == "W"
             && let Some(TaskDefinition::Wait(wait)) =
                 self.find_task_definition(&claimed.definition, &claimed.task.wf_task_id)
@@ -4895,7 +5590,7 @@ impl TaskExecutor {
             }
         }
 
-        self.sync_invocation_state(tx, claimed, &invocation_output)
+        self.sync_invocation_state(tx, claimed, &invocation_output, None)
             .await?;
 
         Ok(())
@@ -5056,6 +5751,18 @@ impl TaskExecutor {
         succeeded: bool,
         result: &Value,
     ) -> Result<(), sqlx::Error> {
+        if succeeded
+            && !crate::profile_support::success(
+                tx,
+                claimed.task.host_id,
+                claimed.task.process_id,
+                claimed.task.task_id,
+                self.supported_profiles(),
+            )
+            .await?
+        {
+            return Ok(());
+        }
         if !succeeded {
             sqlx::query(
                 "UPDATE workflow_invocation_t SET state='FAILED',terminal_ts=CURRENT_TIMESTAMP,
@@ -5120,6 +5827,17 @@ impl TaskExecutor {
         tx: &mut Transaction<'_, Postgres>,
         claimed: &ClaimedTask,
     ) -> Result<(), sqlx::Error> {
+        if !crate::profile_support::success(
+            tx,
+            claimed.task.host_id,
+            claimed.task.process_id,
+            claimed.task.task_id,
+            self.supported_profiles(),
+        )
+        .await?
+        {
+            return Ok(());
+        }
         let Some(TaskDefinition::Fork(fork)) =
             self.find_task_definition(&claimed.definition, &claimed.task.wf_task_id)
         else {
@@ -5237,6 +5955,18 @@ impl TaskExecutor {
         succeeded: bool,
         result: Value,
     ) -> Result<(), sqlx::Error> {
+        if succeeded
+            && !crate::profile_support::success(
+                tx,
+                claimed.task.host_id,
+                claimed.task.process_id,
+                claimed.task.task_id,
+                self.supported_profiles(),
+            )
+            .await?
+        {
+            return Ok(());
+        }
         let branch: (Uuid, String) = sqlx::query_as(
             "SELECT join_id,branch_name FROM workflow_fork_branch_t
               WHERE host_id=$1 AND task_id=$2 FOR UPDATE",
@@ -5275,20 +6005,9 @@ impl TaskExecutor {
         .bind(branch.0)
         .fetch_all(&mut **tx)
         .await?;
-        let completed = rows
-            .iter()
-            .filter(|(_, state, _)| state != "RUNNING")
-            .count();
-        let failed = rows
-            .iter()
-            .filter(|(_, state, _)| state == "FAILED")
-            .count();
+        let (completed, failed, terminal, success) =
+            expression_completion::fork_status(join.0, join.1, &rows);
         let winner = rows.iter().find(|(_, state, _)| state == "COMPLETED");
-        let terminal = if join.1 {
-            winner.is_some() || completed == usize::try_from(join.0).unwrap_or(usize::MAX)
-        } else {
-            completed == usize::try_from(join.0).unwrap_or(usize::MAX)
-        };
         let mut results = serde_json::Map::new();
         for (name, state, output) in &rows {
             if state != "RUNNING" {
@@ -5309,11 +6028,6 @@ impl TaskExecutor {
         if !terminal {
             return Ok(());
         }
-        let success = if join.1 {
-            winner.is_some()
-        } else {
-            failed == 0
-        };
         if join.1 && success {
             sqlx::query(
                 "UPDATE workflow_fork_branch_t SET state='CANCELLED',completed_ts=CURRENT_TIMESTAMP
@@ -5369,6 +6083,17 @@ impl TaskExecutor {
         } else {
             Value::Object(results)
         };
+        if claimed.expression_profile == "cel-workflow-v2" {
+            let mut parent_claim = claimed.clone();
+            parent_claim.task = parent;
+            parent_claim.host_lease = None;
+            parent_claim.completion_guard =
+                Some(expression_completion::CompletionGuard::Fork { join: branch.0 });
+            if !self.w4_context(tx, &mut parent_claim).await? {
+                return Ok(());
+            }
+            return self.w4_transition(tx, &parent_claim, output, join.3).await;
+        }
         self.handle_transition(
             tx,
             &parent,
@@ -5387,6 +6112,7 @@ impl TaskExecutor {
         tx: &mut Transaction<'_, Postgres>,
         claimed: &ClaimedTask,
         task_output: &Value,
+        prepared_output: Option<&Value>,
     ) -> Result<(), sqlx::Error> {
         let process_status: Option<(String, Option<String>)> = sqlx::query_as(
             "SELECT status_code::text,error_info FROM process_info_t
@@ -5399,6 +6125,18 @@ impl TaskExecutor {
         let Some((status, error_info)) = process_status else {
             return Ok(());
         };
+        if status == "C"
+            && !crate::profile_support::success(
+                tx,
+                claimed.task.host_id,
+                claimed.task.process_id,
+                claimed.task.task_id,
+                self.supported_profiles(),
+            )
+            .await?
+        {
+            return Ok(());
+        }
         let state = match status.as_str() {
             "C" => "COMPLETED",
             "F" => "FAILED",
@@ -5445,7 +6183,7 @@ impl TaskExecutor {
             sqlx::query(
                 "UPDATE process_info_t SET custom_status_code=NULL
                 WHERE host_id=$1 AND process_id=$2
-                  AND custom_status_code='WORKFLOW_AUTHORITY_RETRYABLE'",
+                  AND custom_status_code IN ('WORKFLOW_AUTHORITY_RETRYABLE','WORKFLOW_EXPRESSION_UNAVAILABLE')",
             )
             .bind(claimed.task.host_id)
             .bind(claimed.task.process_id)
@@ -5460,32 +6198,38 @@ impl TaskExecutor {
             .bind(claimed.task.process_id)
             .fetch_one(&mut **tx)
             .await?;
-            if let Some(output) = claimed
-                .definition
-                .output
-                .as_ref()
-                .and_then(|value| value.as_.as_ref())
-            {
-                public_result = if let Some(expression) = output.as_str() {
-                    match self.value_engine.evaluate_cel_value(
-                        "workflow-public-output",
-                        expression,
-                        &context,
-                    ) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            state = "FAILED";
-                            normalized_error = Some(json!({
-                                "code":"WORKFLOW_OUTPUT_INVALID",
-                                "message":error.to_string(),
-                                "retryable":false
-                            }));
-                            json!({})
+            if claimed.expression_profile == "cel-workflow-v2" {
+                public_result = prepared_output
+                    .cloned()
+                    .ok_or_else(|| sqlx::Error::Protocol("WORKFLOW_OUTPUT_NOT_PREPARED".into()))?;
+            } else {
+                if let Some(output) = claimed
+                    .definition
+                    .output
+                    .as_ref()
+                    .and_then(|value| value.as_.as_ref())
+                {
+                    public_result = if let Some(expression) = output.as_str() {
+                        match self.value_engine.evaluate_cel_value(
+                            "workflow-public-output",
+                            expression,
+                            &context,
+                        ) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                state = "FAILED";
+                                normalized_error = Some(json!({
+                                    "code":"WORKFLOW_OUTPUT_INVALID",
+                                    "message":error.to_string(),
+                                    "retryable":false
+                                }));
+                                json!({})
+                            }
                         }
-                    }
-                } else {
-                    self.resolve_json_value(output, &context)
-                };
+                    } else {
+                        self.resolve_json_value(output, &context)
+                    };
+                }
             }
             if !public_result.is_object() {
                 state = "FAILED";
@@ -5551,7 +6295,8 @@ impl TaskExecutor {
                 }));
             }
         }
-        if state == "FAILED"
+        if claimed.expression_profile != "cel-workflow-v2"
+            && state == "FAILED"
             && normalized_error
                 .as_ref()
                 .and_then(|error| error.get("code"))
@@ -5573,7 +6318,7 @@ impl TaskExecutor {
             }
         }
         let terminal = matches!(state, "COMPLETED" | "FAILED");
-        sqlx::query(
+        let synchronized=sqlx::query(
             "UPDATE workflow_invocation_t SET state=$1,updated_ts=CURRENT_TIMESTAMP,
                     state_version=state_version+1,
                     terminal_ts=CASE WHEN $2 THEN CURRENT_TIMESTAMP ELSE NULL END,
@@ -5581,7 +6326,7 @@ impl TaskExecutor {
                     user_authorization_exp=CASE WHEN $2 THEN NULL ELSE user_authorization_exp END,
                     public_result=CASE WHEN $1='COMPLETED' THEN $3 ELSE public_result END,
                     normalized_error=CASE WHEN $1='FAILED' THEN $4
-                      WHEN normalized_error->>'code'='WORKFLOW_AUTHORITY_RETRYABLE' THEN NULL
+                      WHEN normalized_error->>'code' IN ('WORKFLOW_AUTHORITY_RETRYABLE','WORKFLOW_EXPRESSION_UNAVAILABLE') THEN NULL
                       ELSE normalized_error END
               WHERE host_id=$5 AND process_id=$6 AND state NOT IN ('CANCELLED','COMPLETED','FAILED')",
         )
@@ -5593,6 +6338,12 @@ impl TaskExecutor {
         .bind(claimed.task.process_id)
         .execute(&mut **tx)
         .await?;
+        if claimed.expression_profile == "cel-workflow-v2" && synchronized.rows_affected() == 0 {
+            let present:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_invocation_t WHERE host_id=$1 AND process_id=$2)").bind(claimed.task.host_id).bind(claimed.task.process_id).fetch_one(&mut **tx).await?;
+            if present {
+                return Err(sqlx::Error::Protocol("WORKFLOW_STALE_INVOCATION".into()));
+            }
+        }
         Ok(())
     }
 
@@ -5602,6 +6353,26 @@ impl TaskExecutor {
         claimed: &ClaimedTask,
         ask: &AskDefinition,
     ) -> Result<(), sqlx::Error> {
+        self.write_ask_assignments(tx, claimed, ask, false).await
+    }
+    async fn write_ask_assignments(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        claimed: &ClaimedTask,
+        ask: &AskDefinition,
+        prepared: bool,
+    ) -> Result<(), sqlx::Error> {
+        if !crate::profile_support::success(
+            tx,
+            claimed.task.host_id,
+            claimed.task.process_id,
+            claimed.task.task_id,
+            self.supported_profiles(),
+        )
+        .await?
+        {
+            return Ok(());
+        }
         let Some(assignment) = ask.assignment.as_ref() else {
             warn!(
                 "Ask task {} is waiting without an assignment definition",
@@ -5614,13 +6385,13 @@ impl TaskExecutor {
             .category_code
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-            .map(|value| self.resolve_template_to_string(value, &claimed.context_data))
+            .map(|value| request_string(self, value, &claimed.context_data, prepared))
             .unwrap_or_else(|| "(all)".to_string());
         let reason_code = assignment
             .reason_code
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-            .map(|value| self.resolve_template_to_string(value, &claimed.context_data))
+            .map(|value| request_string(self, value, &claimed.context_data, prepared))
             .unwrap_or_else(|| "ask".to_string());
 
         let mut assignment_targets = Vec::new();
@@ -5630,7 +6401,7 @@ impl TaskExecutor {
             .assignee_id
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-            .map(|value| self.resolve_template_to_string(value, &claimed.context_data))
+            .map(|value| request_string(self, value, &claimed.context_data, prepared))
         {
             let key = format!("USER:{assignee_id}");
             if seen.insert(key) {
@@ -5642,7 +6413,7 @@ impl TaskExecutor {
             .role_id
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-            .map(|value| self.resolve_template_to_string(value, &claimed.context_data))
+            .map(|value| request_string(self, value, &claimed.context_data, prepared))
         {
             let key = format!("ROLE:{role_id}");
             if seen.insert(key) {
@@ -5734,15 +6505,55 @@ impl TaskExecutor {
         next_task_override: Option<String>,
         context_data_override: Option<Value>,
     ) -> Result<(), sqlx::Error> {
-        let task_def = match self.find_task_definition(definition, &task.wf_task_id) {
-            Some(task_def) => task_def,
-            None => return Ok(()),
-        };
+        if !crate::profile_support::success(
+            tx,
+            task.host_id,
+            task.process_id,
+            task.task_id,
+            self.supported_profiles(),
+        )
+        .await?
+        {
+            return Ok(());
+        }
+        if self.w4_guard(tx, task.host_id, task.process_id).await?
+            == expression_completion::ProfileDisposition::V2
+        {
+            return Err(sqlx::Error::Protocol("WORKFLOW_STALE_COMPLETION".into()));
+        }
+        if self
+            .find_task_definition(definition, &task.wf_task_id)
+            .is_none()
+        {
+            return Ok(());
+        }
 
         let base_context = context_data_override.unwrap_or(context_data);
         let new_context =
             self.apply_exports(raw_definition, &task.wf_task_id, base_context, &task_output);
 
+        self.advance_transition(
+            tx,
+            task,
+            (definition, raw_definition),
+            new_context,
+            next_task_override,
+        )
+        .await
+    }
+
+    async fn advance_transition(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        task: &ActiveTask,
+        definition_data: (&WorkflowDefinition, &YamlValue),
+        new_context: Value,
+        next_task_override: Option<String>,
+    ) -> Result<(), sqlx::Error> {
+        let (definition, raw_definition) = definition_data;
+        let Some(task_def) = self.find_task_definition(definition, &task.wf_task_id) else {
+            return Ok(());
+        };
         sqlx::query(
             "UPDATE process_info_t SET context_data = $1 WHERE host_id = $2 AND process_id = $3",
         )
@@ -6175,9 +6986,9 @@ impl TaskExecutor {
         tx: &mut Transaction<'_, Postgres>,
         host_id: &Uuid,
         process_id: &Uuid,
-    ) -> Result<(Value, Uuid, Option<Value>), sqlx::Error> {
-        let row: (Option<Value>, Uuid, Option<Value>) = sqlx::query_as(
-            "SELECT context_data, wf_def_id, definition_snapshot
+    ) -> Result<(Value, Uuid, Option<Value>, String, Value), sqlx::Error> {
+        let row: (Option<Value>, Uuid, Option<Value>, String, Option<Value>) = sqlx::query_as(
+            "SELECT context_data, wf_def_id, definition_snapshot, expression_profile, input_data
              FROM process_info_t WHERE host_id = $1 AND process_id = $2",
         )
         .bind(host_id)
@@ -6188,7 +6999,13 @@ impl TaskExecutor {
             Some(Value::Null) | None => json!({}),
             Some(value) => value,
         };
-        Ok((context_data, row.1, row.2))
+        Ok((
+            context_data,
+            row.1,
+            row.2,
+            row.3,
+            row.4.unwrap_or(Value::Null),
+        ))
     }
 
     async fn get_workflow_definition(
@@ -7028,6 +7845,8 @@ mod tests {
 
     fn claimed_from_yaml(yaml: &str, task_name: &str, task_type: &str) -> ClaimedTask {
         ClaimedTask {
+            expression_profile: String::from("cel-workflow-v1"),
+            input_data: Value::Null,
             task: ActiveTask {
                 host_id: Uuid::nil(),
                 task_id: Uuid::nil(),
@@ -7043,6 +7862,7 @@ mod tests {
             definition: serde_yaml::from_str(yaml).expect("fixture must be a workflow"),
             raw_definition: serde_yaml::from_str(yaml).expect("fixture must be YAML"),
             host_lease: None,
+            completion_guard: None,
         }
     }
 
@@ -7207,7 +8027,11 @@ mod tests {
             fencing_token: 7,
         });
         TaskExecutor::new(pool.clone())
-            .defer_retryable_authority(&claimed, Some(&(host, reservation, 7, 100, 2, ledger, 1)))
+            .defer_retryable_authority(
+                &claimed,
+                Some(&(host, reservation, 7, 100, 2, ledger, 1)),
+                "WORKFLOW_AUTHORITY_RETRYABLE",
+            )
             .await
             .unwrap();
         let (locked, code, delayed): (String, String, bool) = sqlx::query_as(
@@ -8240,3 +9064,7 @@ do:
         );
     }
 }
+
+#[cfg(test)]
+#[path = "expression_completion_tests.rs"]
+mod w4_tests;

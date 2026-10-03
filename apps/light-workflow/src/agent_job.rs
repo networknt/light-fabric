@@ -84,12 +84,15 @@ impl AgentJobReconciler {
             if shutdown.is_cancelled() {
                 return Ok(());
             }
-            let jobs: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            let jobs: Vec<(Uuid, Uuid)> = sqlx::query_as(&format!(
                 "SELECT j.host_id,j.job_id FROM workflow_agent_job_t j
                 JOIN task_info_t t ON t.host_id=j.host_id AND t.task_id=j.workflow_task_id
+                JOIN process_info_t p ON p.host_id=t.host_id AND p.process_id=t.process_id
                 WHERE j.state IN('SUCCEEDED','FAILED','CANCELLED','UNKNOWN') AND t.status_code='W'
-                ORDER BY j.updated_ts LIMIT 100",
-            )
+                AND (j.state<>'SUCCEEDED' OR {}) ORDER BY j.updated_ts LIMIT 100",
+                crate::profile_support::eligible("p", "$1")
+            ))
+            .bind(self.executor.supported_profiles().profiles())
             .fetch_all(&self.pool)
             .await?;
             let mut progressed = false;

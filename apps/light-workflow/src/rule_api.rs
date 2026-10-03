@@ -23,6 +23,7 @@ use light_security::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::Digest;
 use sqlx::{PgPool, Row, postgres::PgListener};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -60,6 +61,7 @@ impl AdmissionProfile {
 const MAX_WAIT_MS: u64 = 20_000;
 #[derive(Clone)]
 pub struct RuleApiState {
+    pub(crate) definition_validator: Option<workflow_expression::Engine>,
     engine: Arc<RuleEngine>,
     pub(crate) pool: PgPool,
     pub(crate) invocation_security: Arc<SecurityRuntime>,
@@ -82,6 +84,7 @@ impl RuleApiState {
     ) -> Self {
         let pool = PgPool::connect_lazy("postgres://unused:unused@127.0.0.1:1/unused").unwrap();
         Self {
+            definition_validator: None,
             engine: Arc::new(RuleEngine::new(Arc::new(ActionRegistry::new()))),
             pool,
             invocation_security: Arc::new(security),
@@ -373,6 +376,7 @@ pub(crate) struct InvocationIdentity {
 
 #[derive(sqlx::FromRow)]
 struct BindingRow {
+    source_revision: Option<i64>,
     binding_id: Option<Uuid>,
     wf_def_id: Uuid,
     workflow_version: String,
@@ -386,6 +390,7 @@ struct BindingRow {
 
 #[allow(clippy::too_many_arguments)]
 pub fn build_rule_api_router(
+    validator: workflow_expression::Engine,
     pool: PgPool,
     database_url: String,
     runtime_config: Arc<WorkflowConfigManager>,
@@ -400,7 +405,15 @@ pub fn build_rule_api_router(
     long_authority: Option<Arc<crate::long_authority::LongAuthority>>,
     run_credential_vault: Option<Arc<crate::run_credential::RunCredentialVault>>,
 ) -> Router {
+    let worker_config = validator.config();
+    tracing::info!(
+        stack_bytes = worker_config.stack_bytes,
+        workers = worker_config.workers,
+        aggregate_stack_bytes = worker_config.stack_reservation().unwrap(),
+        "workflow expression compilation workers configured"
+    );
     let state = RuleApiState {
+        definition_validator: Some(validator),
         engine: Arc::new(RuleEngine::new(Arc::new(ActionRegistry::new()))),
         pool,
         invocation_security,
@@ -475,6 +488,16 @@ pub(crate) async fn dispatch_native_tool(
     settings: Option<crate::action_api::ActionSettings>,
     approval_portal: Option<Arc<crate::approval_portal::Client>>,
 ) -> Result<Value, axum::response::Response> {
+    if name == "workflow_start_receipt" {
+        return crate::operational_admission::start_receipt(&state, &headers, arguments)
+            .await
+            .map_err(IntoResponse::into_response);
+    }
+    if name == "workflow_definition_validate" {
+        return crate::definition_validation::validate(&state, &headers, arguments)
+            .await
+            .map_err(|response| *response);
+    }
     let cel_validator = |text: &str| -> Result<(), ApiError> {
         let snapshot: Value = serde_yaml::from_str(text)
             .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
@@ -760,15 +783,47 @@ struct DevelopmentStageStart {
     invocation: StartInvocationRequest,
 }
 
+/// Retain authored field presence while using the same typed request checks.
+struct OriginalRequest<T> {
+    original: Value,
+    request: T,
+}
+impl<'de, T: serde::de::DeserializeOwned> serde::Deserialize<'de> for OriginalRequest<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let original = Value::deserialize(deserializer)?;
+        let request = serde_json::from_value(original.clone()).map_err(serde::de::Error::custom)?;
+        Ok(Self { original, request })
+    }
+}
+
 async fn start_development_stage(
     state: State<RuleApiState>,
     artifacts: Option<axum::Extension<crate::artifact_store::DevelopmentArtifactAccess>>,
     peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
     policy: Option<axum::Extension<crate::action_api::ActionSettings>>,
     headers: HeaderMap,
-    Json(request): Json<DevelopmentStageStart>,
+    Json(captured): Json<OriginalRequest<DevelopmentStageStart>>,
 ) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
-    start_invocation_with_stage(
+    let request = captured.request;
+    let (identity, _) = authenticate(&state.0, &headers).await?;
+    let mut exact = captured.original["invocation"].clone();
+    let object = exact
+        .as_object_mut()
+        .ok_or_else(|| ApiError::input_invalid("invalid stage start identity"))?;
+    object.remove("workflowInstanceId");
+    object.remove("correlationId");
+    object.insert(
+        "callerClaims".into(),
+        workflow_invocation_contract::stable_subject_claims(&request.invocation.caller_claims),
+    );
+    object.insert("stageClaim".into(), captured.original["claim"].clone());
+    let operation = crate::operational_admission::Operation::new(
+        &identity,
+        "workflow_invocation_start",
+        &request.invocation.idempotency.scoped_key_digest,
+        &exact,
+    )?;
+    start_invocation_with_operation(
         state,
         peer,
         policy,
@@ -779,6 +834,7 @@ async fn start_development_stage(
         AdmissionProfile::WorkflowBacked,
         None,
         None,
+        Some(operation),
     )
     .await
 }
@@ -786,6 +842,7 @@ async fn start_development_stage(
 /// Step 05's native handler will call this trusted entry point after deriving
 /// the private binding and caller context. No public route selects this profile.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)] // Retain the trusted legacy adapter; native recovery uses the exact-operation entry point.
 pub(crate) async fn start_private_portal_execution(
     state: State<RuleApiState>,
     peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
@@ -811,10 +868,10 @@ pub(crate) async fn start_private_portal_execution(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct NativeStartInput {
-    workflow_definition_id: Uuid,
+pub(crate) struct NativeStartInput {
+    pub(crate) workflow_definition_id: Uuid,
     input: Value,
-    idempotency_key: String,
+    pub(crate) idempotency_key: String,
     expected_definition_digest: Option<String>,
 }
 
@@ -826,7 +883,7 @@ pub(crate) struct ApprovalAdmission {
     definition_digest: String,
 }
 
-fn parse_native_start_input(arguments: Value) -> Result<NativeStartInput, ApiError> {
+pub(crate) fn parse_native_start_input(arguments: Value) -> Result<NativeStartInput, ApiError> {
     let input: NativeStartInput = serde_json::from_value(arguments)
         .map_err(|_| ApiError::input_invalid("invalid workflow_start arguments"))?;
     if input.workflow_definition_id.is_nil()
@@ -895,188 +952,219 @@ async fn start_native_workflow(
     arguments: Value,
     approval_portal: Option<Arc<crate::approval_portal::Client>>,
 ) -> Result<Value, ApiError> {
-    if state.long_authority.is_none() {
-        return Err(ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            ErrorCode::WorkflowInvocationUnavailable,
-            "Workflow LONG authority is unavailable",
-        ));
+    let original_request = arguments.clone();
+    let parsed = parse_native_start_input(original_request.clone())?;
+    let (receipt_identity, _) = authenticate(&state, &headers).await?;
+    let operation = crate::operational_admission::Operation::new(
+        &receipt_identity,
+        "workflow_start",
+        &parsed.idempotency_key,
+        &original_request,
+    )?;
+    if let Some(committed) = operation.recover(&state.pool).await? {
+        return Ok(committed.receipt);
     }
-    let mut input = parse_native_start_input(arguments)?;
-    let (identity, generation) = authenticate(&state, &headers).await?;
-    let approval = if let Some(marker) = input.input.get("workflowToolAccessRequest") {
-        let request_id = marker
-            .get("requestId")
-            .and_then(Value::as_str)
-            .and_then(|value| Uuid::parse_str(value).ok())
-            .ok_or_else(|| ApiError::input_invalid("approval request ID is invalid"))?;
-        let request_digest = marker
-            .get("requestDigest")
-            .and_then(Value::as_str)
-            .filter(|value| value.starts_with("sha256:") && value.len() == 71)
-            .ok_or_else(|| ApiError::input_invalid("approval request digest is invalid"))?
-            .to_owned();
-        let client = approval_portal.as_ref().ok_or_else(|| {
-            ApiError::new(
+    let result: Result<Value, ApiError> = async {
+        if state.long_authority.is_none() {
+            return Err(ApiError::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 ErrorCode::WorkflowInvocationUnavailable,
-                "Workflow approval Portal client is unavailable",
+                "Workflow LONG authority is unavailable",
+            ));
+        }
+        let mut input = parse_native_start_input(arguments)?;
+        let (identity, generation) = authenticate(&state, &headers).await?;
+        let approval = if let Some(marker) = input.input.get("workflowToolAccessRequest") {
+            let request_id = marker
+                .get("requestId")
+                .and_then(Value::as_str)
+                .and_then(|value| Uuid::parse_str(value).ok())
+                .ok_or_else(|| ApiError::input_invalid("approval request ID is invalid"))?;
+            let request_digest = marker
+                .get("requestDigest")
+                .and_then(Value::as_str)
+                .filter(|value| value.starts_with("sha256:") && value.len() == 71)
+                .ok_or_else(|| ApiError::input_invalid("approval request digest is invalid"))?
+                .to_owned();
+            let client = approval_portal.as_ref().ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    ErrorCode::WorkflowInvocationUnavailable,
+                    "Workflow approval Portal client is unavailable",
+                )
+            })?;
+            let actor = crate::approval_portal::ActorEvidence::new(
+                identity.host_id,
+                request_id,
+                "getWorkflowToolAccessRequestForExecution",
+                &identity.end_user_subject,
+                &identity.caller_claims_digest,
             )
-        })?;
-        let actor = crate::approval_portal::ActorEvidence::new(
+            .map_err(|_| {
+                ApiError::unauthorized("Workflow approval requester evidence is invalid")
+            })?;
+            let read = client
+                .read(
+                    &crate::approval_portal::ReadRequest {
+                        host_id: identity.host_id,
+                        request_id,
+                        request_digest: request_digest.to_string(),
+                    },
+                    &actor,
+                )
+                .await
+                .map_err(|_| ApiError::unauthorized("Workflow approval request read denied"))?;
+            if read.approval_wf_def_id != input.workflow_definition_id
+                || read.requester_subject != identity.end_user_subject
+            {
+                return Err(ApiError::unauthorized(
+                    "Workflow approval request binding denied",
+                ));
+            }
+            input.idempotency_key = format!("approval:{}:{}", request_id, request_digest);
+            input.input = json!({
+                "requestId":request_id,"requestDigest":request_digest,
+                "targetWfDefId":read.target_wf_def_id,"requesterUserId":read.requester_subject,
+                "justification":read.justification,"items":read.items,
+            });
+            Some(ApprovalAdmission {
+                request_id,
+                request_digest: request_digest.to_string(),
+                request_version: read.request_version,
+                definition_digest: read.approval_definition_digest,
+            })
+        } else {
+            None
+        };
+        let (workflow_version, definition_text) = load_saved_head_for_start(
+            &state.pool,
             identity.host_id,
-            request_id,
-            "getWorkflowToolAccessRequestForExecution",
-            &identity.end_user_subject,
-            &identity.caller_claims_digest,
+            input.workflow_definition_id,
+            input.expected_definition_digest.as_deref(),
         )
-        .map_err(|_| ApiError::unauthorized("Workflow approval requester evidence is invalid"))?;
-        let read = client
-            .read(
-                &crate::approval_portal::ReadRequest {
-                    host_id: identity.host_id,
-                    request_id,
-                    request_digest: request_digest.to_string(),
-                },
-                &actor,
-            )
-            .await
-            .map_err(|_| ApiError::unauthorized("Workflow approval request read denied"))?;
-        if read.approval_wf_def_id != input.workflow_definition_id
-            || read.requester_subject != identity.end_user_subject
-        {
-            return Err(ApiError::unauthorized(
-                "Workflow approval request binding denied",
-            ));
+        .await?;
+        let (definition_digest, schema_digest, policy_digest, response_policy_digest) =
+            native_definition_pins(&definition_text, &state.private_execution_profiles)?;
+        verify_expected_definition_digest(
+            input.expected_definition_digest.as_deref(),
+            &definition_digest,
+        )?;
+        if let Some(approval) = approval.as_ref() {
+            if approval.definition_digest != definition_digest {
+                return Err(ApiError::definition_mismatch(
+                    "approval definition revision changed",
+                ));
+            }
         }
-        input.idempotency_key = format!("approval:{}:{}", request_id, request_digest);
-        input.input = json!({
-            "requestId":request_id,"requestDigest":request_digest,
-            "targetWfDefId":read.target_wf_def_id,"requesterUserId":read.requester_subject,
-            "justification":read.justification,"items":read.items,
-        });
-        Some(ApprovalAdmission {
-            request_id,
-            request_digest: request_digest.to_string(),
-            request_version: read.request_version,
-            definition_digest: read.approval_definition_digest,
-        })
-    } else {
-        None
-    };
-    let (workflow_version, definition_text) = load_saved_head_for_start(
-        &state.pool,
-        identity.host_id,
-        input.workflow_definition_id,
-        input.expected_definition_digest.as_deref(),
-    )
-    .await?;
-    let (definition_digest, schema_digest, policy_digest, response_policy_digest) =
-        native_definition_pins(&definition_text, &state.private_execution_profiles)?;
-    verify_expected_definition_digest(
-        input.expected_definition_digest.as_deref(),
-        &definition_digest,
-    )?;
-    if let Some(approval) = approval.as_ref() {
-        if approval.definition_digest != definition_digest {
-            return Err(ApiError::definition_mismatch(
-                "approval definition revision changed",
-            ));
+        let execution_class = ExecutionClass::Interactive;
+        let default_budget = InvocationBudget {
+            maximum_task_attempts: 100,
+            maximum_nested_calls: 20,
+            maximum_delegation_depth: 8,
+            maximum_parallelism: u16::try_from(generation.config.maximum_parallelism.min(16))
+                .unwrap_or(16)
+                .max(1),
+            maximum_request_bytes: 1_048_576,
+            maximum_intermediate_bytes: 4_194_304,
+            maximum_result_bytes: 1_048_576,
+            maximum_cost_units: 1_000_000,
+        };
+        let budget = default_budget;
+        let now = Utc::now();
+        let deadline_ms = 2_592_000_000_i64;
+        let deadline = now + chrono::Duration::milliseconds(deadline_ms);
+        let input_digest = canonical_sha256(&input.input)
+            .map_err(|_| ApiError::input_invalid("workflow input cannot be canonicalized"))?;
+        let scoped_key_digest = canonical_sha256(&json!({
+            "hostId":identity.host_id,
+            "principal":identity.principal_subject,
+            "workflowDefinitionId":input.workflow_definition_id,
+            "definitionDigest":definition_digest,
+            "idempotencyKey":input.idempotency_key,
+        }))
+        .map_err(|_| ApiError::bad_request("workflow idempotency key is invalid"))?;
+        let run = Uuid::now_v7();
+        let request = StartInvocationRequest {
+            renewable_grant_id: None,
+            parent_action_id: None,
+            contract_version: CONTRACT_VERSION,
+            workflow_instance_id: run,
+            stable_tool_ref: input.workflow_definition_id,
+            workflow_definition_id: input.workflow_definition_id,
+            workflow_version,
+            definition_digest,
+            schema_digest,
+            policy_digest,
+            response_policy_digest,
+            mode: InvocationMode::Async,
+            cancellation_policy: CancellationPolicy::BeforeEffectsOnly,
+            execution_class,
+            permit_depth: 0,
+            deadline_ts: deadline,
+            canonical_input_profile: CANONICAL_INPUT_PROFILE.into(),
+            normalized_input_digest: input_digest.clone(),
+            input: input.input,
+            caller_claims: identity.caller_claims,
+            idempotency: IdempotencyBinding {
+                kind: IdempotencyKind::Explicit,
+                scoped_key_digest,
+                input_digest,
+                in_flight_until: deadline,
+                result_replay_until: DateTime::<Utc>::MAX_UTC,
+            },
+            budget,
+            correlation_id: headers
+                .get("x-correlation-id")
+                .and_then(|value| value.to_str().ok())
+                .filter(|value| !value.is_empty() && value.len() <= 128)
+                .map(str::to_string)
+                .unwrap_or_else(|| Uuid::now_v7().to_string()),
+        };
+        let (_, Json(status)) = start_invocation_with_operation(
+            State(state.clone()),
+            None,
+            None,
+            headers,
+            request,
+            None,
+            None,
+            AdmissionProfile::PortalExecution,
+            approval,
+            None,
+            Some(operation.clone()),
+        )
+        .await?;
+        if let Some(committed) = operation.recover(&state.pool).await? {
+            return Ok(committed.receipt);
         }
-    }
-    let execution_class = ExecutionClass::Interactive;
-    let default_budget = InvocationBudget {
-        maximum_task_attempts: 100,
-        maximum_nested_calls: 20,
-        maximum_delegation_depth: 8,
-        maximum_parallelism: u16::try_from(generation.config.maximum_parallelism.min(16))
-            .unwrap_or(16)
-            .max(1),
-        maximum_request_bytes: 1_048_576,
-        maximum_intermediate_bytes: 4_194_304,
-        maximum_result_bytes: 1_048_576,
-        maximum_cost_units: 1_000_000,
-    };
-    let budget = default_budget;
-    let now = Utc::now();
-    let deadline_ms = 2_592_000_000_i64;
-    let deadline = now + chrono::Duration::milliseconds(deadline_ms);
-    let input_digest = canonical_sha256(&input.input)
-        .map_err(|_| ApiError::input_invalid("workflow input cannot be canonicalized"))?;
-    let scoped_key_digest = canonical_sha256(&json!({
-        "hostId":identity.host_id,
-        "principal":identity.principal_subject,
-        "workflowDefinitionId":input.workflow_definition_id,
-        "definitionDigest":definition_digest,
-        "idempotencyKey":input.idempotency_key,
-    }))
-    .map_err(|_| ApiError::bad_request("workflow idempotency key is invalid"))?;
-    let run = Uuid::now_v7();
-    let request = StartInvocationRequest {
-        renewable_grant_id: None,
-        parent_action_id: None,
-        contract_version: CONTRACT_VERSION,
-        workflow_instance_id: run,
-        stable_tool_ref: input.workflow_definition_id,
-        workflow_definition_id: input.workflow_definition_id,
-        workflow_version,
-        definition_digest,
-        schema_digest,
-        policy_digest,
-        response_policy_digest,
-        mode: InvocationMode::Async,
-        cancellation_policy: CancellationPolicy::BeforeEffectsOnly,
-        execution_class,
-        permit_depth: 0,
-        deadline_ts: deadline,
-        canonical_input_profile: CANONICAL_INPUT_PROFILE.into(),
-        normalized_input_digest: input_digest.clone(),
-        input: input.input,
-        caller_claims: identity.caller_claims,
-        idempotency: IdempotencyBinding {
-            kind: IdempotencyKind::Explicit,
-            scoped_key_digest,
-            input_digest,
-            in_flight_until: deadline,
-            result_replay_until: DateTime::<Utc>::MAX_UTC,
-        },
-        budget,
-        correlation_id: headers
-            .get("x-correlation-id")
-            .and_then(|value| value.to_str().ok())
-            .filter(|value| !value.is_empty() && value.len() <= 128)
-            .map(str::to_string)
-            .unwrap_or_else(|| Uuid::now_v7().to_string()),
-    };
-    let (_, Json(status)) = start_private_portal_execution(
-        State(state.clone()),
-        None,
-        None,
-        headers,
-        request,
-        approval,
-    )
-    .await?;
-    let process_id: Uuid = sqlx::query_scalar(
-        "SELECT process_id FROM workflow_invocation_t
+        let process_id: Uuid = sqlx::query_scalar(
+            "SELECT process_id FROM workflow_invocation_t
          WHERE host_id=$1 AND workflow_instance_id=$2",
-    )
-    .bind(identity.host_id)
-    .bind(status.workflow_instance_id)
-    .fetch_one(&state.pool)
-    .await
-    .map_err(ApiError::database)?;
-    Ok(json!({
-        "accepted":true,
-        "workflowInstanceId":status.workflow_instance_id,
-        "processId":process_id,
-        "workflowDefinitionId":input.workflow_definition_id,
-        "definitionDigest":status.definition_digest,
-        "state":status.state,
-        "invocationStateVersion":status.state_version,
-        "acceptedAt":status.accepted_ts,
-        "replayed":status.workflow_instance_id != run,
-    }))
+        )
+        .bind(identity.host_id)
+        .bind(status.workflow_instance_id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(ApiError::database)?;
+        Ok(json!({
+            "accepted":true,
+            "workflowInstanceId":status.workflow_instance_id,
+            "processId":process_id,
+            "workflowDefinitionId":input.workflow_definition_id,
+            "definitionDigest":status.definition_digest,
+            "state":status.state,
+            "invocationStateVersion":status.state_version,
+            "acceptedAt":status.accepted_ts,
+            "replayed":status.workflow_instance_id != run,
+        }))
+    }
+    .await;
+    if result.is_err()
+        && let Some(committed) = operation.recover(&state.pool).await?
+    {
+        return Ok(committed.receipt);
+    }
+    result
 }
 
 async fn get_development_feature(
@@ -1462,7 +1550,147 @@ pub async fn read_admissible_pinned_binding(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)] // Retain the typed internal adapter without inventing a new public start contract.
 pub(crate) async fn start_invocation_with_stage(
+    State(state): State<RuleApiState>,
+    peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
+    policy: Option<axum::Extension<crate::action_api::ActionSettings>>,
+    headers: HeaderMap,
+    request: StartInvocationRequest,
+    stage_claim: Option<development_workflow_contract::StageClaim>,
+    artifacts: Option<crate::artifact_store::DurableArtifactStore>,
+    profile: AdmissionProfile,
+    approval: Option<ApprovalAdmission>,
+    invoke_admission: Option<crate::invoke_api::InvokeAdmission>,
+) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
+    start_invocation_with_operation(
+        State(state),
+        peer,
+        policy,
+        headers,
+        request,
+        stage_claim,
+        artifacts,
+        profile,
+        approval,
+        invoke_admission,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::result_large_err)] // Preserve the established ApiError contract.
+pub(crate) async fn start_invocation_with_operation(
+    State(state): State<RuleApiState>,
+    peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
+    policy: Option<axum::Extension<crate::action_api::ActionSettings>>,
+    headers: HeaderMap,
+    request: StartInvocationRequest,
+    stage_claim: Option<development_workflow_contract::StageClaim>,
+    artifacts: Option<crate::artifact_store::DurableArtifactStore>,
+    profile: AdmissionProfile,
+    approval: Option<ApprovalAdmission>,
+    invoke_admission: Option<crate::invoke_api::InvokeAdmission>,
+    operation: Option<crate::operational_admission::Operation>,
+) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
+    let (identity, _) = authenticate(&state, &headers).await?;
+    // Retain transport authority checks before exact acceptance lookup. Parent
+    // execution prerequisites are needed only for new acceptance below.
+    if let Some(settings) = policy.as_ref() {
+        let peer = peer
+            .as_ref()
+            .ok_or_else(|| ApiError::unauthorized("verified workflow caller peer required"))?;
+        let caller = light_security::dual_identity::authenticate(
+            &state.invocation_security,
+            &settings.policy,
+            &headers,
+            Some(&peer.0.0.fingerprint),
+        )
+        .await
+        .map_err(|_| ApiError::unauthorized("workflow caller identity rejected"))?;
+        if caller.origin != light_security::dual_identity::Origin::Gateway
+            || caller.action_reference != request.parent_action_id
+        {
+            return Err(ApiError::unauthorized("workflow action identity rejected"));
+        }
+    } else if request.parent_action_id.is_some() || request.renewable_grant_id.is_some() {
+        return Err(ApiError::unauthorized(
+            "workflow action authorization is not enabled",
+        ));
+    }
+    let operation = match operation {
+        Some(operation) => operation,
+        None => {
+            let mut exact = serde_json::to_value(&request)
+                .map_err(|_| ApiError::input_invalid("invalid start identity"))?;
+            let map = exact
+                .as_object_mut()
+                .ok_or_else(|| ApiError::input_invalid("invalid start identity"))?;
+            map.remove("workflowInstanceId");
+            map.remove("correlationId");
+            map.insert(
+                "callerClaims".into(),
+                workflow_invocation_contract::stable_subject_claims(&request.caller_claims),
+            );
+            if let Some(claim) = stage_claim.as_ref() {
+                map.insert(
+                    "stageClaim".into(),
+                    serde_json::to_value(claim)
+                        .map_err(|_| ApiError::input_invalid("invalid stage identity"))?,
+                );
+            }
+            crate::operational_admission::Operation::new(
+                &identity,
+                "workflow_invocation_start",
+                &request.idempotency.scoped_key_digest,
+                &exact,
+            )?
+        }
+    };
+    if let Some(committed) = operation.recover(&state.pool).await? {
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(
+                committed
+                    .status
+                    .ok_or_else(crate::operational_admission::unavailable)?,
+            ),
+        ));
+    }
+    let pool = state.pool.clone();
+    let result = start_invocation_new(
+        State(state),
+        peer,
+        policy,
+        headers,
+        request,
+        stage_claim,
+        artifacts,
+        profile,
+        approval,
+        invoke_admission,
+        operation.clone(),
+    )
+    .await;
+    if result.is_err()
+        && let Some(committed) = operation.recover(&pool).await?
+    {
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(
+                committed
+                    .status
+                    .ok_or_else(crate::operational_admission::unavailable)?,
+            ),
+        ));
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::result_large_err)] // Preserve the established ApiError contract.
+pub(crate) async fn start_invocation_new(
     State(state): State<RuleApiState>,
     peer: Option<axum::Extension<axum::extract::ConnectInfo<light_axum::mtls::Peer>>>,
     policy: Option<axum::Extension<crate::action_api::ActionSettings>>,
@@ -1473,6 +1701,7 @@ pub(crate) async fn start_invocation_with_stage(
     profile: AdmissionProfile,
     approval: Option<ApprovalAdmission>,
     invoke_admission: Option<crate::invoke_api::InvokeAdmission>,
+    operation: crate::operational_admission::Operation,
 ) -> Result<(StatusCode, Json<InvocationStatus>), ApiError> {
     let (identity, generation) = authenticate(&state, &headers).await?;
     let mut parent_binding = None;
@@ -1568,8 +1797,8 @@ pub(crate) async fn start_invocation_with_stage(
         ));
     }
     let binding = if profile == AdmissionProfile::PortalExecution {
-        let row: Option<(String, String)> = sqlx::query_as(
-            "SELECT version,definition FROM wf_definition_t
+        let row: Option<(String, String, i64)> = sqlx::query_as(
+            "SELECT version,definition,source_revision FROM wf_definition_t
              WHERE host_id=$1 AND wf_def_id=$2 AND active",
         )
         .bind(identity.host_id)
@@ -1577,12 +1806,13 @@ pub(crate) async fn start_invocation_with_stage(
         .fetch_optional(&state.pool)
         .await
         .map_err(ApiError::database)?;
-        let (workflow_version, definition) = row.ok_or_else(|| {
+        let (workflow_version, definition, source_revision) = row.ok_or_else(|| {
             ApiError::definition_mismatch("saved workflow definition is unavailable")
         })?;
         let (definition_digest, schema_digest, policy_digest, response_policy_digest) =
             native_definition_pins(&definition, &state.private_execution_profiles)?;
         BindingRow {
+            source_revision: Some(source_revision),
             binding_id: None,
             wf_def_id: request.workflow_definition_id,
             workflow_version,
@@ -1608,6 +1838,7 @@ pub(crate) async fn start_invocation_with_stage(
             .try_get("binding_definition_digest")
             .map_err(ApiError::database)?;
         BindingRow {
+            source_revision: None,
             binding_id: Some(row.try_get("binding_id").map_err(ApiError::database)?),
             wf_def_id: row.try_get("wf_def_id").map_err(ApiError::database)?,
             workflow_version: row
@@ -1624,6 +1855,21 @@ pub(crate) async fn start_invocation_with_stage(
         }
     };
     verify_binding(&request, &binding)?;
+    let raw: Value = serde_yaml::from_str(&binding.definition)
+        .map_err(|_| ApiError::definition_mismatch("invalid authored workflow"))?;
+    let expression_profile = crate::operational_admission::profile(&raw)?;
+    if expression_profile == workflow_expression::Profile::CelWorkflowV2 {
+        let historical: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_invocation_idempotency_t WHERE host_id=$1 AND scope_digest=$2)")
+            .bind(identity.host_id).bind(&request.idempotency.scoped_key_digest).fetch_one(&state.pool).await.map_err(ApiError::database)?;
+        if historical {
+            return Err(crate::operational_admission::unavailable());
+        }
+    }
+    let validated = if expression_profile == workflow_expression::Profile::CelWorkflowV2 {
+        Some(crate::operational_admission::validate(&state, raw.clone()).await?)
+    } else {
+        None
+    };
     let definition: WorkflowDefinition = serde_yaml::from_str(&binding.definition)
         .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
     {
@@ -1703,8 +1949,12 @@ pub(crate) async fn start_invocation_with_stage(
         AdmissionProfile::PortalExecution => supported_task_type(initial_task)
             .ok_or_else(|| ApiError::definition_mismatch("unsupported initial task"))?,
     };
-    let definition_snapshot = serde_json::to_value(&definition)
-        .map_err(|error| ApiError::definition_mismatch(error.to_string()))?;
+    let definition_snapshot = if validated.is_some() {
+        raw.clone()
+    } else {
+        serde_json::to_value(&definition)
+            .map_err(|error| ApiError::definition_mismatch(error.to_string()))?
+    };
     let stage_claim =
         crate::development_intake::resolve_claim(&definition_snapshot, &request.input, stage_claim)
             .map_err(development_store_error)?;
@@ -1733,14 +1983,31 @@ pub(crate) async fn start_invocation_with_stage(
             "published workflow definition does not match its pinned digest",
         ));
     }
-    if profile == AdmissionProfile::WorkflowBacked {
+    if profile == AdmissionProfile::WorkflowBacked && validated.is_none() {
         validate_cel_expressions(&state.engine, &definition_snapshot)?;
     }
-    let public_output_schema = definition
-        .output
-        .as_ref()
-        .and_then(|output| output.schema.as_ref())
-        .and_then(|schema| schema.document.as_ref());
+    let binding_output_schema: Option<Value> =
+        if validated.is_some() && profile == AdmissionProfile::WorkflowBacked {
+            sqlx::query_scalar(
+            "SELECT output_schema FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2",
+        )
+        .bind(identity.host_id)
+        .bind(binding.binding_id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(ApiError::database)?
+        } else {
+            None
+        };
+    let public_output_schema = if validated.is_some() {
+        binding_output_schema.as_ref()
+    } else {
+        definition
+            .output
+            .as_ref()
+            .and_then(|output| output.schema.as_ref())
+            .and_then(|schema| schema.document.as_ref())
+    };
     if let Some(schema) = public_output_schema {
         jsonschema::Validator::new(schema).map_err(|error| {
             ApiError::definition_mismatch(format!("invalid workflow output schema: {error}"))
@@ -1790,6 +2057,7 @@ pub(crate) async fn start_invocation_with_stage(
             .map(|policy| policy.policy_digest.as_str())
             .unwrap_or_else(|| request.policy_digest.trim_start_matches("sha256:")),
         public_output_schema,
+        expression_admission: validated.as_ref(),
     };
     let (stored_user_authorization, stored_user_authorization_exp) =
         invocation_authorization_for_storage(
@@ -1804,8 +2072,122 @@ pub(crate) async fn start_invocation_with_stage(
         user_authorization: stored_user_authorization,
         user_authorization_exp: stored_user_authorization_exp,
     };
+    let development_seed = if validated.is_some() {
+        stage_claim
+            .as_ref()
+            .map(|claim| {
+                crate::development_intake::seed(
+                    &definition_snapshot,
+                    &request.input,
+                    claim,
+                    Utc::now().timestamp() as u64,
+                )
+            })
+            .transpose()
+            .map_err(development_store_error)?
+            .flatten()
+    } else {
+        None
+    };
     let mut tx = state.pool.begin().await.map_err(ApiError::database)?;
-    if let Some(admission) = invoke_admission.as_ref() {
+    if validated.is_some() {
+        operation.lock(&mut tx).await?;
+        if let Some(committed) = operation.locked(&mut tx).await? {
+            tx.rollback().await.map_err(ApiError::database)?;
+            return Ok((
+                StatusCode::ACCEPTED,
+                Json(
+                    committed
+                        .status
+                        .ok_or_else(crate::operational_admission::unavailable)?,
+                ),
+            ));
+        }
+        let current: String = if profile == AdmissionProfile::PortalExecution {
+            let (text,version,revision):(String,String,i64) = sqlx::query_as("SELECT definition,version,source_revision FROM wf_definition_t WHERE host_id=$1 AND wf_def_id=$2 AND active FOR SHARE")
+                .bind(identity.host_id).bind(request.workflow_definition_id).fetch_one(&mut *tx).await.map_err(ApiError::database)?;
+            if version != binding.workflow_version || Some(revision) != binding.source_revision {
+                return Err(ApiError::definition_mismatch(
+                    "selected definition revision changed",
+                ));
+            }
+            text
+        } else {
+            // Retire/review lock versions before publication heads, and heads
+            // before binding revisions. Follow that order without taking a
+            // binding lock while waiting for the logical head.
+            let selected: Option<String> = sqlx::query_scalar("SELECT definition FROM wf_definition_version_t WHERE host_id=$1 AND wf_def_id=$2 AND version=$3 AND version_status='active' FOR SHARE")
+                .bind(identity.host_id).bind(binding.wf_def_id).bind(&binding.workflow_version)
+                .fetch_optional(&mut *tx).await.map_err(ApiError::database)?;
+            let selected = selected.ok_or_else(|| {
+                ApiError::definition_mismatch("selected version is no longer active")
+            })?;
+            if selected != binding.definition {
+                return Err(ApiError::definition_mismatch(
+                    "selected authored content changed",
+                ));
+            }
+            if let Some(admission) = invoke_admission.as_ref() {
+                admission
+                    .fence_revision(&mut tx, identity.host_id, request.stable_tool_ref)
+                    .await?;
+            } else {
+                let active: Option<Uuid> = sqlx::query_scalar("SELECT active_binding_id FROM workflow_tool_publication_t WHERE host_id=$1 AND tool_id=$2 FOR SHARE")
+                    .bind(identity.host_id).bind(request.stable_tool_ref).fetch_one(&mut *tx).await.map_err(ApiError::database)?;
+                if active != binding.binding_id {
+                    return Err(ApiError::definition_mismatch(
+                        "selected binding revision changed",
+                    ));
+                }
+            }
+            let selected_binding: Option<Uuid> = sqlx::query_scalar("SELECT binding_id FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2 AND active AND revision_status='approved' AND wf_def_id=$3 AND workflow_version=$4 AND definition_digest=$5 AND schema_digest=$6 AND policy_digest=$7 AND response_policy_digest=$8 FOR SHARE")
+                .bind(identity.host_id).bind(binding.binding_id).bind(request.workflow_definition_id).bind(&request.workflow_version)
+                .bind(&request.definition_digest).bind(&request.schema_digest).bind(&request.policy_digest).bind(&request.response_policy_digest)
+                .fetch_optional(&mut *tx).await.map_err(ApiError::database)?;
+            if selected_binding != binding.binding_id {
+                return Err(ApiError::definition_mismatch(
+                    "selected binding pins changed",
+                ));
+            }
+            selected
+        };
+        if current != binding.definition {
+            return Err(ApiError::definition_mismatch(
+                "selected authored content changed",
+            ));
+        }
+        if let Some(claim) = stage_claim.as_ref() {
+            if let Some(seed) = development_seed.as_ref() {
+                // Fresh intake may have no feature/VM row yet. Serialize the
+                // identity without creating either row before policy admission.
+                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+                    .bind(format!(
+                        "development-vm:{}:{}",
+                        identity.host_id, seed.vm.vm_id
+                    ))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(ApiError::database)?;
+                sqlx::query(
+                    "SELECT vm_id FROM development_vm_t WHERE host_id=$1 AND vm_id=$2 FOR UPDATE",
+                )
+                .bind(identity.host_id)
+                .bind(&seed.vm.vm_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(ApiError::database)?;
+                sqlx::query("SELECT feature_id FROM development_feature_t WHERE host_id=$1 AND feature_id=$2 FOR UPDATE")
+                    .bind(identity.host_id).bind(&claim.feature_run_id).fetch_optional(&mut *tx).await.map_err(ApiError::database)?;
+            } else {
+                crate::development_store::load_feature(&mut tx, &auth, &claim.feature_run_id)
+                    .await
+                    .map_err(development_store_error)?;
+            }
+        }
+        crate::operational_admission::policy(&mut tx).await?;
+    }
+
+    if let Some(admission) = invoke_admission.as_ref().filter(|_| validated.is_none()) {
         admission
             .fence_revision(&mut tx, identity.host_id, request.stable_tool_ref)
             .await?;
@@ -1832,14 +2214,17 @@ pub(crate) async fn start_invocation_with_stage(
             .probe_writable()
             .await
             .map_err(|_| ApiError::conflict("development artifact store is unavailable"))?;
-        if let Some(seed) = crate::development_intake::seed(
-            &definition_snapshot,
-            &request.input,
-            claim,
-            Utc::now().timestamp() as u64,
-        )
-        .map_err(development_store_error)?
-        {
+        if let Some(seed) = if validated.is_some() {
+            development_seed
+        } else {
+            crate::development_intake::seed(
+                &definition_snapshot,
+                &request.input,
+                claim,
+                Utc::now().timestamp() as u64,
+            )
+            .map_err(development_store_error)?
+        } {
             crate::development_intake::create_or_replay(&mut tx, &auth, &seed)
                 .await
                 .map_err(development_store_error)?;
@@ -1848,12 +2233,19 @@ pub(crate) async fn start_invocation_with_stage(
             crate::development_store::claim_and_start(&mut tx, &auth, claim, &request, &prepared)
                 .await
                 .map_err(development_store_error)?;
-        AcceptOutcome::Replay {
-            workflow_instance_id: receipt
-                .workflow_instance_id
-                .parse()
-                .map_err(|_| ApiError::conflict("invalid stored stage instance"))?,
-            generation: 1,
+        let workflow_instance_id = receipt
+            .workflow_instance_id
+            .parse()
+            .map_err(|_| ApiError::conflict("invalid stored stage instance"))?;
+        if validated.is_some() && receipt.process_id == process_id.to_string() {
+            AcceptOutcome::Accepted {
+                workflow_instance_id,
+            }
+        } else {
+            AcceptOutcome::Replay {
+                workflow_instance_id,
+                generation: 1,
+            }
         }
     } else {
         accept_invocation(&mut tx, &auth, &request, &prepared)
@@ -2015,6 +2407,44 @@ pub(crate) async fn start_invocation_with_stage(
             ));
         }
     }
+    let acceptance = if validated.is_some() {
+        if !matches!(outcome, AcceptOutcome::Accepted { .. }) {
+            return Err(crate::operational_admission::unavailable());
+        }
+        let (accepted_ts, updated_ts, deadline_ts, state_version): (DateTime<Utc>,DateTime<Utc>,DateTime<Utc>,i64) =
+            sqlx::query_as("SELECT accepted_ts,updated_ts,deadline_ts,state_version FROM workflow_invocation_t WHERE host_id=$1 AND workflow_instance_id=$2")
+                .bind(identity.host_id).bind(accepted_run).fetch_one(&mut *tx).await.map_err(ApiError::database)?;
+        let status = InvocationStatus {
+            contract_version: CONTRACT_VERSION,
+            workflow_instance_id: accepted_run,
+            stable_tool_ref: request.stable_tool_ref,
+            definition_digest: request.definition_digest.clone(),
+            state: InvocationState::Accepted,
+            state_version,
+            accepted_ts,
+            updated_ts,
+            deadline_ts,
+            retryable: false,
+            effect_state: EffectState::None,
+            non_cancellable_reason: None,
+            public_result: None,
+            error: None,
+        };
+        let receipt = if operation.kind == "workflow_start" {
+            json!({"accepted":true,"workflowInstanceId":accepted_run,"processId":process_id,
+                "workflowDefinitionId":request.workflow_definition_id,"definitionDigest":request.definition_digest,
+                "state":status.state,"invocationStateVersion":state_version,"acceptedAt":accepted_ts,"replayed":false})
+        } else {
+            serde_json::to_value(&status)
+                .map_err(|_| crate::operational_admission::unavailable())?
+        };
+        operation.store(&mut tx,&json!({"definitionSnapshot":raw,"bindingId":binding.binding_id,"sourceRevision":binding.source_revision,
+            "definitionSourceSha256":hex::encode(sha2::Sha256::digest(binding.definition.as_bytes())),
+            "request":request,"expressionProfile":"cel-workflow-v2"}),&receipt,Some(&status)).await?;
+        Some(status)
+    } else {
+        None
+    };
     tx.commit().await.map_err(ApiError::database)?;
     let workflow_instance_id = match outcome {
         AcceptOutcome::Accepted {
@@ -2025,7 +2455,10 @@ pub(crate) async fn start_invocation_with_stage(
             ..
         } => workflow_instance_id,
     };
-    let status = load_status(&state.pool, &identity, workflow_instance_id).await?;
+    let status = match acceptance {
+        Some(status) => status,
+        None => load_status(&state.pool, &identity, workflow_instance_id).await?,
+    };
     Ok((StatusCode::ACCEPTED, Json(status)))
 }
 
@@ -3541,6 +3974,9 @@ impl ApiError {
     }
     fn accept(error: InvocationAcceptError) -> Self {
         match error {
+            InvocationAcceptError::ExpressionProfileUnsupported => {
+                crate::operational_admission::unsupported()
+            }
             InvocationAcceptError::IdempotencyConflict => Self::new(
                 StatusCode::CONFLICT,
                 ErrorCode::WorkflowIdempotencyConflict,

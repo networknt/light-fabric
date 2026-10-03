@@ -873,3 +873,11 @@ mod tests {
         );
     }
 }
+
+/// Additive listing contract; continuation never acknowledges or reserves work.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExecutionResultPage {
+    pub items: Vec<ExecutionResultView>,
+    pub next_cursor: Option<String>,
+}

@@ -994,7 +994,11 @@ pub struct McpArguments {
     pub protocol_version: Option<String>,
     #[serde(rename = "method", skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
-    #[serde(rename = "parameters", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "parameters",
+        alias = "params",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub parameters: Option<Value>,
     #[serde(rename = "timeout", skip_serializing_if = "Option::is_none")]
     pub timeout: Option<OneOfDurationOrIso8601Expression>,
@@ -1164,6 +1168,8 @@ impl Default for CallOpenRpcTaskDefinition {
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OpenRpcArguments {
+    #[serde(rename = "headers", skip_serializing_if = "Option::is_none")]
+    pub headers: Option<Value>,
     #[serde(rename = "document")]
     pub document: ExternalResourceDefinition,
     #[serde(rename = "server", skip_serializing_if = "Option::is_none")]

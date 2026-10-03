@@ -5463,6 +5463,7 @@ dependencies = [
  "uuid",
  "workflow-action",
  "workflow-core",
+ "workflow-expression",
  "workflow-invocation-contract",
  "workflow-policy",
  "workflow-store",
@@ -10081,6 +10082,17 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+]
+
+[[package]]
+name = "workflow-expression"
+version = "0.2.1"
+dependencies = [
+ "cel",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

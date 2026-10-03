@@ -382,11 +382,12 @@ async fn successful_runner_result_uses_existing_workflow_transition_transaction(
     let attempt = attempts.remove(0);
     let executor = TaskExecutor::new(pool.clone());
     let mut tx = pool.begin().await.unwrap();
-    assert!(
+    assert_eq!(
         executor
             .reconcile_runner_attempt(&mut tx, &attempt)
             .await
-            .unwrap()
+            .unwrap(),
+        light_workflow::executor::RunnerReconciliation::Completed
     );
     tx.commit().await.unwrap();
 
@@ -655,11 +656,12 @@ async fn failed_runner_result_fails_task_and_process_transactionally() {
         .unwrap()
         .remove(0);
     let mut tx = pool.begin().await.unwrap();
-    assert!(
+    assert_eq!(
         TaskExecutor::new(pool.clone())
             .reconcile_runner_attempt(&mut tx, &attempt)
             .await
-            .unwrap()
+            .unwrap(),
+        light_workflow::executor::RunnerReconciliation::Completed
     );
     tx.commit().await.unwrap();
 

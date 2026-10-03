@@ -990,5 +990,48 @@
         "afterEffect": false
       }
     }
+  },
+  "workflow_definition_validate": {
+    "input": {
+      "interfaceVersion": "workflow-definition-validation-v1",
+      "validatorVersion": "workflow-admission-v1",
+      "contractDigest": "a2afdd55b5c5208c9f3c80c0cac4cbad5ff7e03e58d972fee59a78d494d6d72d",
+      "hostId": "00000000-0000-4000-8000-000000000001",
+      "wfDefId": "00000000-0000-4000-8000-000000000001",
+      "definition": "{\"document\":{\"dsl\":\"1.0.3\",\"name\":\"validation\",\"version\":\"1.0.0\",\"metadata\":{\"lightExpressionProfile\":\"cel-workflow-v2\"}},\"evaluate\":{\"language\":\"cel\"},\"do\":[{\"t\":{\"set\":{\"x\":\"${ context.x }\"}}}]}",
+      "expectedProfile": "cel-workflow-v2",
+      "definitionSourceSha256": "d790fea555c6df9c240508e544ea1f48968009d0858f79e7088f7e646c5479fc"
+    },
+    "output": {
+      "interfaceVersion": "workflow-definition-validation-v1",
+      "validatorVersion": "workflow-admission-v1",
+      "contractDigest": "a2afdd55b5c5208c9f3c80c0cac4cbad5ff7e03e58d972fee59a78d494d6d72d",
+      "hostId": "00000000-0000-4000-8000-000000000001",
+      "wfDefId": "00000000-0000-4000-8000-000000000001",
+      "definitionSourceSha256": "d790fea555c6df9c240508e544ea1f48968009d0858f79e7088f7e646c5479fc",
+      "valid": true,
+      "validatorBuild": "workflow-admission-source-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "profileId": "cel-workflow-v2",
+      "definitionDigest": "sha256:b87ed5138ea512bb689f7486993857dc01f13334e99a60dd2a1a620262af18ce",
+      "supportedProfiles": [
+        "cel-workflow-v2"
+      ],
+      "diagnostics": []
+    }
+  },
+  "workflow_start_receipt": {
+    "input": {
+      "interfaceVersion": "workflow-start-receipt-v1",
+      "originalRequest": {
+        "workflowDefinitionId": "00000000-0000-4000-8000-000000000001",
+        "input": {},
+        "idempotencyKey": "start-example-001"
+      }
+    },
+    "output": {
+      "interfaceVersion": "workflow-start-receipt-v1",
+      "status": "notFound",
+      "requestDigest": "sha256:6a2ef5300f03dc06d3b94d3777bd85c775ac858f3008078a2563687d3af89e57"
+    }
   }
 }

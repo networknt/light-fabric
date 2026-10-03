@@ -15,6 +15,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct FixedActionExecutor {
     pool: PgPool,
+    supported_profiles: crate::profile_support::SupportedProfiles,
     work_root: PathBuf,
     artifact_root: PathBuf,
     branch_prefix: String,
@@ -332,6 +333,13 @@ fn validate_provider_action(action: &ClaimedAction) -> Result<(), String> {
 }
 
 impl FixedActionExecutor {
+    pub fn with_supported_profiles(
+        mut self,
+        profiles: crate::profile_support::SupportedProfiles,
+    ) -> Self {
+        self.supported_profiles = profiles;
+        self
+    }
     pub fn new(
         pool: PgPool,
         work_root: PathBuf,
@@ -341,6 +349,7 @@ impl FixedActionExecutor {
     ) -> Self {
         Self {
             pool,
+            supported_profiles: crate::profile_support::SupportedProfiles::from_evaluator(false),
             work_root,
             artifact_root,
             branch_prefix: branch_prefix.into(),
@@ -365,7 +374,7 @@ impl FixedActionExecutor {
             return Ok(true);
         }
         let mut tx = self.pool.begin().await?;
-        let action = sqlx::query_as::<_, ClaimedAction>(
+        let action = sqlx::query_as::<_, ClaimedAction>(&format!(
             "SELECT f.host_id,f.fixed_action_id,f.execution_id,f.approval_id,
                     f.repository_reference,f.base_commit,f.repository_object_format,
                     f.target_ref,f.patch_artifact_reference,f.artifact_digest,
@@ -380,17 +389,26 @@ impl FixedActionExecutor {
                AND a.artifact_digest_set ? f.artifact_digest
              JOIN execution_attempt_t e ON e.host_id=f.host_id AND e.execution_id=f.execution_id
                AND e.state='CREATED'
+             JOIN process_info_t p ON p.host_id=a.host_id AND p.process_id=a.process_id
              WHERE f.state='REQUESTED'
+               AND {} AND {}
                AND f.action_kind IN ('apply-patch','create-branch','open-pr','publish','sign')
              ORDER BY f.created_ts,f.fixed_action_id LIMIT 1
              FOR UPDATE OF f,e SKIP LOCKED",
-        )
+            crate::profile_support::eligible("p", "$1"),
+            crate::profile_support::live_selection("p", "false")
+        ))
+        .bind(self.supported_profiles.profiles())
         .fetch_optional(&mut *tx)
         .await?;
         let Some(action) = action else {
             tx.commit().await?;
             return Ok(false);
         };
+        if !self.profile_gate(&mut tx, &action).await? {
+            tx.commit().await?;
+            return Ok(true);
+        }
         sqlx::query(
             "UPDATE execution_fixed_action_t SET state='RUNNING',updated_ts=CURRENT_TIMESTAMP
                     WHERE host_id=$1 AND fixed_action_id=$2 AND state='REQUESTED'",
@@ -450,20 +468,35 @@ impl FixedActionExecutor {
             AND ((e.lease_deadline_ts IS NOT NULL AND e.lease_deadline_ts<=CURRENT_TIMESTAMP)
               OR (e.lease_deadline_ts IS NULL AND f.updated_ts<CURRENT_TIMESTAMP-interval '1 hour'))")
             .execute(&self.pool).await?;
+        // UNKNOWN timeout/operator cleanup cannot wait for evaluator compatibility.
+        let mut cleanup = self.pool.begin().await?;
+        let expired: Vec<(Uuid,Uuid,Uuid)> = sqlx::query_as("SELECT host_id,fixed_action_id,execution_id FROM execution_fixed_action_t WHERE state='UNKNOWN' AND (action_kind='apply-patch' OR unknown_since_ts<CURRENT_TIMESTAMP-interval '24 hours') AND result_evidence->'operatorActionRequired' IS DISTINCT FROM 'true'::jsonb AND (reconciliation_claim_token IS NULL OR reconciliation_lease_expires_ts<=CURRENT_TIMESTAMP) ORDER BY unknown_since_ts LIMIT 32 FOR UPDATE SKIP LOCKED")
+            .fetch_all(&mut *cleanup).await?;
+        for (host, action, execution) in &expired {
+            sqlx::query("UPDATE execution_fixed_action_t SET reconciliation_claim_token=NULL,reconciliation_lease_expires_ts=NULL,next_reconcile_ts=NULL,result_evidence=jsonb_build_object('failureClass','fixed_action_unknown','operatorActionRequired',true),updated_ts=CURRENT_TIMESTAMP WHERE host_id=$1 AND fixed_action_id=$2 AND state='UNKNOWN'")
+                .bind(host).bind(action).execute(&mut *cleanup).await?;
+            sqlx::query("UPDATE execution_attempt_t SET state='UNKNOWN',terminal_ts=CURRENT_TIMESTAMP,normalized_error=jsonb_build_object('failureClass','fixed_action_unknown','operatorActionRequired',true),cleanup_state='NOT_REQUIRED',retry_classification='unsafe',updated_ts=CURRENT_TIMESTAMP WHERE host_id=$1 AND execution_id=$2 AND state='STARTED'")
+                .bind(host).bind(execution).execute(&mut *cleanup).await?;
+        }
+        cleanup.commit().await?;
+        if !expired.is_empty() {
+            return Ok(true);
+        }
         let token = Uuid::now_v7();
         let mut tx = self.pool.begin().await?;
-        let action=sqlx::query_as::<_,ClaimedAction>("WITH candidate AS(
-            SELECT host_id,fixed_action_id FROM execution_fixed_action_t
-            WHERE state='UNKNOWN' AND (next_reconcile_ts IS NULL OR next_reconcile_ts<=CURRENT_TIMESTAMP)
-              AND (reconciliation_claim_token IS NULL OR reconciliation_lease_expires_ts<=CURRENT_TIMESTAMP)
-            ORDER BY unknown_since_ts,fixed_action_id LIMIT 1 FOR UPDATE SKIP LOCKED), claimed AS(
-            UPDATE execution_fixed_action_t f SET reconciliation_claim_token=$1,reconciliation_lease_expires_ts=CURRENT_TIMESTAMP+interval '1 minute',
-              reconciliation_attempt_count=reconciliation_attempt_count+1,updated_ts=CURRENT_TIMESTAMP
-            FROM candidate c WHERE f.host_id=c.host_id AND f.fixed_action_id=c.fixed_action_id
-            RETURNING f.*)
-          SELECT host_id,fixed_action_id,execution_id,approval_id,repository_reference,base_commit,repository_object_format,target_ref,
-            patch_artifact_reference,artifact_digest,policy_digest,changed_paths,action_kind,action_spec,provenance_digest,idempotency_key FROM claimed")
-            .bind(token).fetch_optional(&mut *tx).await?;
+        let action=sqlx::query_as::<_,ClaimedAction>(&format!("SELECT f.host_id,f.fixed_action_id,f.execution_id,f.approval_id,f.repository_reference,f.base_commit,f.repository_object_format,f.target_ref,f.patch_artifact_reference,f.artifact_digest,f.policy_digest,f.changed_paths,f.action_kind,f.action_spec,f.provenance_digest,f.idempotency_key
+            FROM execution_fixed_action_t f JOIN workflow_approval_t a ON a.host_id=f.host_id AND a.approval_id=f.approval_id JOIN process_info_t p ON p.host_id=a.host_id AND p.process_id=a.process_id
+            WHERE f.state='UNKNOWN' AND f.result_evidence->'operatorActionRequired' IS DISTINCT FROM 'true'::jsonb AND (f.next_reconcile_ts IS NULL OR f.next_reconcile_ts<=CURRENT_TIMESTAMP) AND (f.reconciliation_claim_token IS NULL OR f.reconciliation_lease_expires_ts<=CURRENT_TIMESTAMP) AND {} AND {}
+            ORDER BY f.unknown_since_ts,f.fixed_action_id LIMIT 1 FOR UPDATE OF f SKIP LOCKED",crate::profile_support::eligible("p","$1"),crate::profile_support::live_selection("p","false")))
+            .bind(self.supported_profiles.profiles()).fetch_optional(&mut *tx).await?;
+        if let Some(action) = &action {
+            if !self.profile_gate(&mut tx, action).await? {
+                tx.commit().await?;
+                return Ok(true);
+            }
+            sqlx::query("UPDATE execution_fixed_action_t SET reconciliation_claim_token=$1,reconciliation_lease_expires_ts=CURRENT_TIMESTAMP+interval '1 minute',reconciliation_attempt_count=reconciliation_attempt_count+1,updated_ts=CURRENT_TIMESTAMP WHERE host_id=$2 AND fixed_action_id=$3")
+                .bind(token).bind(action.host_id).bind(action.fixed_action_id).execute(&mut *tx).await?;
+        }
         tx.commit().await?;
         let Some(action) = action else {
             return Ok(false);
@@ -510,6 +543,36 @@ impl FixedActionExecutor {
             }
         }
         tx.commit().await?;
+        Ok(true)
+    }
+
+    async fn profile_gate(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        action: &ClaimedAction,
+    ) -> Result<bool, sqlx::Error> {
+        let (process,task):(Uuid,Uuid)=sqlx::query_as("SELECT process_id,task_id FROM workflow_approval_t WHERE host_id=$1 AND approval_id=$2")
+            .bind(action.host_id).bind(action.approval_id).fetch_one(&mut **tx).await?;
+        if !crate::profile_support::success(
+            tx,
+            action.host_id,
+            process,
+            task,
+            &self.supported_profiles,
+        )
+        .await?
+        {
+            return Ok(false);
+        }
+        let parent = crate::durable_timer::try_lock_parent(tx, action.host_id, process).await?;
+        let now: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut **tx)
+            .await?;
+        let live:bool=sqlx::query_scalar("SELECT active AND (deadline_ts IS NULL OR deadline_ts>clock_timestamp()) FROM task_info_t WHERE host_id=$1 AND task_id=$2 FOR SHARE NOWAIT")
+            .bind(action.host_id).bind(task).fetch_one(&mut **tx).await?;
+        if !live || parent.blocked.is_some() || parent.deadline.is_some_and(|d| d <= now) {
+            return Err(sqlx::Error::Protocol("WORKFLOW_STALE_COMPLETION".into()));
+        }
         Ok(true)
     }
 

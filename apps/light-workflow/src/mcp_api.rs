@@ -358,6 +358,59 @@ async fn handle(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn definition_validation_uses_authenticated_mcp_envelopes() {
+        let _expression_fixture = crate::expression_test_support::acquire().await;
+        let (state, mut headers, arguments) = crate::definition_validation::tests::fixture().await;
+        for (key, value) in [
+            ("mcp-protocol-version", VERSION),
+            ("accept", "application/json, text/event-stream"),
+            ("mcp-method", "tools/call"),
+            ("mcp-name", "workflow_definition_validate"),
+        ] {
+            headers.insert(key, value.parse().unwrap());
+        }
+        let request = json!({"jsonrpc":"2.0","id":42,"method":"tools/call",
+            "params":{"name":"workflow_definition_validate","arguments":arguments,
+                "_meta":{"io.modelcontextprotocol/clientCapabilities":{},
+                    "io.modelcontextprotocol/protocolVersion":VERSION}}});
+        let response = handle(
+            State(state.clone()),
+            None,
+            None,
+            headers.clone(),
+            Json(request.clone()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["id"], 42);
+        assert_eq!(body["result"]["isError"], false);
+        assert_eq!(body["result"]["structuredContent"]["valid"], true);
+        let mut malformed = request.clone();
+        malformed["params"]["arguments"]["unexpected"] = json!(true);
+        let response = handle(
+            State(state.clone()),
+            None,
+            None,
+            headers.clone(),
+            Json(malformed),
+        )
+        .await;
+        let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["result"]["isError"], true);
+        assert_eq!(
+            body["result"]["structuredContent"]["error"]["code"],
+            "WORKFLOW_INPUT_INVALID"
+        );
+        headers.remove("authorization");
+        let response = handle(State(state), None, None, headers, Json(request)).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers()["www-authenticate"], "Bearer");
+    }
+
     fn contains_external_ref(value: &Value) -> bool {
         match value {
             Value::Array(items) => items.iter().any(contains_external_ref),
@@ -379,10 +432,12 @@ mod tests {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(names.len(), 33);
+        assert_eq!(names.len(), 35);
         assert_eq!(names.len(), tools.len());
         assert!(names.contains("workflow_wait_result"));
         assert!(names.contains("workflow_invoke"));
+        assert!(names.contains("workflow_definition_validate"));
+        assert!(names.contains("workflow_start_receipt"));
     }
 
     #[test]
@@ -391,7 +446,7 @@ mod tests {
         let examples: Value =
             serde_json::from_str(include_str!("../contracts/workflow-admin/examples.json"))
                 .unwrap();
-        assert_eq!(tools.len(), 33);
+        assert_eq!(tools.len(), 35);
         assert!(
             tools
                 .iter()

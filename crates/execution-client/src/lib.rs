@@ -152,6 +152,22 @@ impl ExecutionClient {
         Ok(serde_json::from_slice(&body)?)
     }
 
+    pub async fn pending_results_page(
+        &self,
+        limit: u16,
+        cursor: Option<&str>,
+    ) -> Result<execution_runner_protocol::ExecutionResultPage, ClientError> {
+        let mut request = self
+            .client
+            .get(self.endpoint.join("internal/execution/results/page")?)
+            .query(&[("limit", limit.clamp(1, 1000))]);
+        if let Some(cursor) = cursor {
+            request = request.query(&[("cursor", cursor)]);
+        }
+        let body = successful_body(request.bearer_auth(self.token()?).send().await?).await?;
+        Ok(serde_json::from_slice(&body)?)
+    }
+
     pub async fn result(&self, execution_id: Uuid) -> Result<ExecutionResultView, ClientError> {
         let response = self
             .client

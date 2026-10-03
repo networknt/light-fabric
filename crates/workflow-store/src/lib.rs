@@ -29,6 +29,12 @@ pub const DURABLE_TIMER_MIGRATION_SQL: &str =
 pub const ARTIFACT_RETIREMENT_MIGRATION_ID: &str = "0020_artifact_legacy_retirement";
 pub const ARTIFACT_RETIREMENT_MIGRATION_SQL: &str =
     include_str!("../migrations/workflow-postgres/0020_artifact_legacy_retirement.sql");
+pub const EXPRESSION_PROFILE_MIGRATION_ID: &str = "0024_workflow_expression_profile";
+pub const OPERATION_RECEIPTS_MIGRATION_ID: &str = "0025_workflow_operation_receipts";
+pub const OPERATION_RECEIPTS_MIGRATION_SQL: &str =
+    include_str!("../migrations/workflow-postgres/0025_workflow_operation_receipts.sql");
+pub const EXPRESSION_PROFILE_MIGRATION_SQL: &str =
+    include_str!("../migrations/workflow-postgres/0024_workflow_expression_profile.sql");
 pub const ACTION_TABLES: &[&str] = &[
     "workflow_action_authority_t",
     "workflow_action_permit_t",

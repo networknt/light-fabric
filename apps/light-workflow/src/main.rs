@@ -38,6 +38,28 @@ const CONFIG_DIR: &str = "config";
 
 struct WorkflowDatabase(PgPool);
 
+struct WorkflowExpressions(workflow_expression::Engine);
+#[async_trait::async_trait]
+impl LifecycleParticipant for WorkflowExpressions {
+    fn name(&self) -> &'static str {
+        "light-workflow-expressions"
+    }
+    async fn shutdown(
+        &self,
+        _config: &RuntimeConfig,
+        context: &ShutdownContext,
+    ) -> Result<(), RuntimeError> {
+        let engine = self.0.clone();
+        let budget = context.remaining();
+        tokio::task::spawn_blocking(move || engine.shutdown(budget))
+            .await
+            .map_err(|_| {
+                WorkflowApp::runtime_error("workflow expression shutdown", "join unavailable")
+            })?
+            .map_err(|e| WorkflowApp::runtime_error("workflow expression shutdown", e))
+    }
+}
+
 #[async_trait::async_trait]
 impl LifecycleParticipant for WorkflowDatabase {
     fn name(&self) -> &'static str {
@@ -374,6 +396,34 @@ impl AxumApp for WorkflowApp {
             .lifecycle
             .register(Arc::new(WorkflowDatabase(pool.clone())))?;
         info!("Connected to Postgres");
+        let workers = std::env::var("WORKFLOW_EXPRESSION_WORKERS")
+            .unwrap_or_else(|_| "1".into())
+            .parse::<usize>()
+            .map_err(|_| {
+                Self::runtime_error("workflow expression configuration", "invalid worker count")
+            })?;
+        let stack_bytes = std::env::var("WORKFLOW_EXPRESSION_STACK_BYTES")
+            .unwrap_or_else(|_| "8388608".into())
+            .parse::<usize>()
+            .map_err(|_| {
+                Self::runtime_error("workflow expression configuration", "invalid stack size")
+            })?;
+        if workers != 1 {
+            return Err(Self::runtime_error(
+                "workflow expression configuration",
+                "W4 requires one worker",
+            ));
+        }
+        let expression_engine =
+            workflow_expression::Engine::new(workflow_expression::WorkerConfig {
+                workers,
+                stack_bytes,
+                ..workflow_expression::WorkerConfig::default()
+            })
+            .map_err(|e| Self::runtime_error("workflow expression startup", e))?;
+        context
+            .lifecycle
+            .register(Arc::new(WorkflowExpressions(expression_engine.clone())))?;
 
         let runner_config = RunnerExecutionConfig::load(&workflow_config.runner)
             .map_err(|error| Self::runtime_error("workflow runner configuration", error))?;
@@ -424,6 +474,7 @@ impl AxumApp for WorkflowApp {
         let artifact_store = DurableArtifactStore::from_configuration(&workflow_config.artifact)
             .map_err(|error| Self::runtime_error("workflow artifact store", error))?;
         let executor = TaskExecutor::new(pool.clone())
+            .with_expression_engine(expression_engine.clone())
             .with_review_artifacts(artifact_store.clone())
             .with_runtime_configuration(
                 workflow_config.database_url.clone(),
@@ -446,6 +497,24 @@ impl AxumApp for WorkflowApp {
             .map_err(|error| Self::runtime_error("workflow A2A binding projection", error))?;
         let executor = Arc::new(executor);
         let cancellation = CancellationToken::new();
+        let capability = light_workflow::worker_capability::Capability::new(
+            executor.supported_profiles().clone(),
+            true,
+        );
+        let heartbeat =
+            light_workflow::worker_capability::Heartbeat::start(capability, Arc::new(pool.clone()))
+                .await
+                .map_err(|e| Self::runtime_error("workflow capability startup", e))?;
+        info!(instance_id=%heartbeat.capability().instance_id, binary_version=%heartbeat.capability().binary_version,
+            supported_profiles=?heartbeat.capability().supported.profiles(), admitting_profiles=?heartbeat.capability().admitting.profiles(),
+            "Workflow worker capability identity");
+        self.register_task(
+            &context,
+            "light-workflow-capability-heartbeat",
+            &cancellation,
+            &health,
+            move |shutdown| async move { heartbeat.run(shutdown).await },
+        )?;
 
         let mut credential_routes = axum::Router::new();
 
@@ -560,6 +629,7 @@ impl AxumApp for WorkflowApp {
                 ));
             }
             let job = light_workflow::job_authorization::JobApi {
+                supported_profiles: executor.supported_profiles().clone(),
                 pool: pool.clone(),
                 authority: authority.clone(),
                 security: invocation_security.clone(),
@@ -598,6 +668,7 @@ impl AxumApp for WorkflowApp {
                         .map_err(|e| Self::runtime_error("workflow job API", e))?,
                 );
                 let router = router.merge(build_rule_api_router(
+                expression_engine.clone(),
                 pool.clone(), workflow_config.database_url.clone(), runtime_config.clone(),
                 invocation_security.clone(), workflow_config.environment.clone(), health.clone(),
                 None, runner_config.profiles.clone(), active_long.clone(), run_credential_vault.clone(),
@@ -697,7 +768,8 @@ impl AxumApp for WorkflowApp {
                 runner_config.clone(),
                 &workflow_config.service_authorization,
             )
-            .map_err(|error| Self::runtime_error("workflow execution client", error))?;
+            .map_err(|error| Self::runtime_error("workflow execution client", error))?
+            .with_executor(Arc::clone(&executor));
             self.register_task(
                 &context,
                 "light-workflow-runner-scheduler",
@@ -782,6 +854,7 @@ impl AxumApp for WorkflowApp {
             ));
         }
         let router = build_rule_api_router(
+            expression_engine,
             pool,
             workflow_config.database_url,
             runtime_config,
@@ -1034,6 +1107,9 @@ mod tests {
                 .unwrap(),
         );
         let job = JobApi {
+            supported_profiles: light_workflow::profile_support::SupportedProfiles::from_evaluator(
+                false,
+            ),
             pool: pool.clone(),
             authority: Arc::new(PerRunAuthority::new(
                 pool.clone(),

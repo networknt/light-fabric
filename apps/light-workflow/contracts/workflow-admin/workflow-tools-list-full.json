@@ -5926,6 +5926,280 @@
         "permission": "workflow.instance.invoke"
       },
       "gatewayPublication": false
+    },
+    {
+      "name": "workflow_definition_validate",
+      "description": "Statically validate an authored v2 Workflow definition using delegated user authority. Does not evaluate, publish, write or grant admission.",
+      "permission": "workflow.definition.validate",
+      "sideEffect": false,
+      "annotations": {
+        "readOnlyHint": true,
+        "permission": "workflow.definition.validate"
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "interfaceVersion",
+          "validatorVersion",
+          "contractDigest",
+          "hostId",
+          "wfDefId",
+          "definition",
+          "expectedProfile",
+          "definitionSourceSha256"
+        ],
+        "properties": {
+          "interfaceVersion": {
+            "const": "workflow-definition-validation-v1"
+          },
+          "validatorVersion": {
+            "const": "workflow-admission-v1"
+          },
+          "contractDigest": {
+            "const": "a2afdd55b5c5208c9f3c80c0cac4cbad5ff7e03e58d972fee59a78d494d6d72d"
+          },
+          "hostId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "wfDefId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "definition": {
+            "type": "string",
+            "maxLength": 2097152
+          },
+          "expectedProfile": {
+            "const": "cel-workflow-v2"
+          },
+          "definitionSourceSha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "interfaceVersion",
+          "validatorVersion",
+          "contractDigest",
+          "hostId",
+          "wfDefId",
+          "definitionSourceSha256",
+          "valid",
+          "validatorBuild",
+          "profileId",
+          "definitionDigest",
+          "supportedProfiles",
+          "diagnostics"
+        ],
+        "properties": {
+          "interfaceVersion": {
+            "const": "workflow-definition-validation-v1"
+          },
+          "validatorVersion": {
+            "const": "workflow-admission-v1"
+          },
+          "contractDigest": {
+            "const": "a2afdd55b5c5208c9f3c80c0cac4cbad5ff7e03e58d972fee59a78d494d6d72d"
+          },
+          "hostId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "wfDefId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "definitionSourceSha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "valid": {
+            "const": true
+          },
+          "validatorBuild": {
+            "type": "string",
+            "pattern": "^workflow-admission-source-sha256:[0-9a-f]{64}$"
+          },
+          "profileId": {
+            "const": "cel-workflow-v2"
+          },
+          "definitionDigest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "supportedProfiles": {
+            "type": "array",
+            "items": {
+              "const": "cel-workflow-v2"
+            },
+            "minItems": 1,
+            "maxItems": 1
+          },
+          "diagnostics": {
+            "type": "array",
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "workflow_start_receipt",
+      "description": "Look up the immutable original v2 acceptance for an exact original start. Absence never authorizes a resend.",
+      "permission": "workflow.instance.start",
+      "sideEffect": false,
+      "annotations": {
+        "readOnlyHint": true,
+        "permission": "workflow.instance.start"
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "interfaceVersion",
+          "originalRequest"
+        ],
+        "properties": {
+          "interfaceVersion": {
+            "const": "workflow-start-receipt-v1"
+          },
+          "originalRequest": {
+            "type": "object",
+            "required": [
+              "workflowDefinitionId",
+              "input",
+              "idempotencyKey"
+            ],
+            "properties": {
+              "workflowDefinitionId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "input": {
+                "type": "object",
+                "maxProperties": 256
+              },
+              "idempotencyKey": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "expectedDefinitionDigest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "interfaceVersion",
+          "status",
+          "requestDigest"
+        ],
+        "properties": {
+          "interfaceVersion": {
+            "const": "workflow-start-receipt-v1"
+          },
+          "status": {
+            "enum": [
+              "committed",
+              "notFound"
+            ]
+          },
+          "requestDigest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "receipt": {
+            "type": "object",
+            "required": [
+              "accepted",
+              "workflowInstanceId",
+              "processId",
+              "workflowDefinitionId",
+              "definitionDigest",
+              "state",
+              "invocationStateVersion",
+              "acceptedAt",
+              "replayed"
+            ],
+            "properties": {
+              "accepted": {
+                "const": true
+              },
+              "workflowInstanceId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "processId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "workflowDefinitionId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "definitionDigest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "state": {
+                "enum": [
+                  "ACCEPTED",
+                  "RUNNING",
+                  "WAITING"
+                ]
+              },
+              "invocationStateVersion": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "acceptedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "replayed": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "oneOf": [
+          {
+            "properties": {
+              "status": {
+                "const": "committed"
+              }
+            },
+            "required": [
+              "receipt"
+            ]
+          },
+          {
+            "properties": {
+              "status": {
+                "const": "notFound"
+              }
+            },
+            "not": {
+              "required": [
+                "receipt"
+              ]
+            }
+          }
+        ]
+      }
     }
   ]
 }

@@ -154,6 +154,7 @@ async fn start_host(
             policy_snapshot_id: None,
             task_policy_digest: digest.trim_start_matches("sha256:"),
             public_output_schema: None,
+            expression_admission: None,
         },
     )
     .await
@@ -1044,6 +1045,7 @@ async fn start_native(pool: &PgPool, yaml: &str, attempts: i64) -> Run {
             policy_snapshot_id: None,
             task_policy_digest: digest.trim_start_matches("sha256:"),
             public_output_schema: None,
+            expression_admission: None,
         },
     )
     .await

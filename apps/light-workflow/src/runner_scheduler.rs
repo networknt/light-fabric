@@ -1,10 +1,12 @@
 use crate::command_template::resolve_run_shell_spec;
 use crate::configuration::RunnerExecutionConfig;
+use crate::executor::{TaskExecutor, expression_completion};
 use crate::repositories::WorkflowRepository;
 use execution_client::ExecutionClient;
 use execution_runner_protocol::{SchedulingRequestSubmission, canonical_sha256};
 use serde_json::Value;
 use sqlx::{PgPool, Postgres, Transaction};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{error, info};
@@ -20,15 +22,17 @@ struct PendingRunnerTask {
     policy_snapshot_id: Uuid,
     task_policy_digest: String,
     resolved_policy: Value,
-    definition_snapshot: Value,
-    definition_digest: String,
+    definition_snapshot: Option<Value>,
+    definition_digest: Option<String>,
     wf_task_id: String,
+    expression_profile: String,
 }
 
 pub struct RunnerScheduler {
     repository: WorkflowRepository,
     config: RunnerExecutionConfig,
     execution: ExecutionClient,
+    executor: Option<Arc<TaskExecutor>>,
 }
 
 impl RunnerScheduler {
@@ -54,9 +58,14 @@ impl RunnerScheduler {
             repository: WorkflowRepository::new(pool),
             config,
             execution,
+            executor: None,
         })
     }
 
+    pub fn with_executor(mut self, executor: Arc<TaskExecutor>) -> Self {
+        self.executor = Some(executor);
+        self
+    }
     pub async fn run(
         &self,
         shutdown: tokio_util::sync::CancellationToken,
@@ -84,11 +93,78 @@ impl RunnerScheduler {
 
     async fn create_pending_request(&self) -> Result<bool, sqlx::Error> {
         let mut tx = self.repository.pool().begin().await?;
-        let task = claim_unscheduled_runner_task(&mut tx).await?;
+        let support = self
+            .executor
+            .as_ref()
+            .map(|e| e.supported_profiles().clone())
+            .unwrap_or_else(|| crate::profile_support::SupportedProfiles::from_evaluator(false));
+        let task = claim_unscheduled_runner_task(&mut tx, &support).await?;
         let Some(task) = task else {
             tx.commit().await?;
             return Ok(false);
         };
+        let disposition = if let Some(executor) = &self.executor {
+            executor
+                .w4_guard(&mut tx, task.host_id, task.process_id)
+                .await?
+        } else {
+            support.check(
+                &task.expression_profile,
+                task.definition_snapshot.as_ref(),
+                task.definition_digest.as_deref(),
+            )
+        };
+        match disposition {
+            expression_completion::ProfileDisposition::Deferred => {
+                tx.rollback().await?;
+                return Ok(false);
+            }
+            expression_completion::ProfileDisposition::Corrupt => {
+                expression_completion::reject_step(
+                    &mut tx,
+                    task.host_id,
+                    task.process_id,
+                    task.task_id,
+                    "/definition_snapshot/expression_profile",
+                )
+                .await?;
+                tx.commit().await?;
+                return Ok(true);
+            }
+            expression_completion::ProfileDisposition::V2 => {
+                let parent =
+                    crate::durable_timer::try_lock_parent(&mut tx, task.host_id, task.process_id)
+                        .await?;
+                let now: chrono::DateTime<chrono::Utc> =
+                    sqlx::query_scalar("SELECT clock_timestamp()")
+                        .fetch_one(&mut *tx)
+                        .await?;
+                if parent.blocked.is_some() || parent.deadline.is_some_and(|d| d <= now) {
+                    tx.rollback().await?;
+                    return Ok(false);
+                }
+                if !expression_completion::capture_step(
+                    &mut tx,
+                    task.host_id,
+                    task.process_id,
+                    task.task_id,
+                )
+                .await?
+                {
+                    expression_completion::reject_step(
+                        &mut tx,
+                        task.host_id,
+                        task.process_id,
+                        task.task_id,
+                        "/task_input/stepSnapshot",
+                    )
+                    .await?;
+                    tx.commit().await?;
+                    return Ok(true);
+                }
+            }
+            expression_completion::ProfileDisposition::Legacy => {}
+        }
         let policy =
             serde_json::from_value::<ResolvedExecutionPolicy>(task.resolved_policy.clone())
                 .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
@@ -104,12 +180,17 @@ impl RunnerScheduler {
                 task.task_id
             ))
         })?;
-        let execution_spec = resolve_run_shell_spec(
-            task.definition_snapshot,
-            &task.wf_task_id,
-            &self.config.command_templates,
-        )
-        .map_err(sqlx::Error::Protocol)?;
+        // Decode nullable persisted identity first so missing v2 snapshots reach
+        // the explicit integrity outcome above rather than a row-decoding error.
+        let snapshot = task.definition_snapshot.ok_or_else(|| {
+            sqlx::Error::Protocol("WORKFLOW_RUNNER_DEFINITION_SNAPSHOT_REQUIRED".into())
+        })?;
+        let definition_digest = task.definition_digest.ok_or_else(|| {
+            sqlx::Error::Protocol("WORKFLOW_RUNNER_DEFINITION_DIGEST_REQUIRED".into())
+        })?;
+        let execution_spec =
+            resolve_run_shell_spec(snapshot, &task.wf_task_id, &self.config.command_templates)
+                .map_err(sqlx::Error::Protocol)?;
         let execution_spec = serde_json::to_value(execution_spec)
             .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
         let fairness_key = format!("{}:{}", task.host_id, task.process_id);
@@ -121,7 +202,7 @@ impl RunnerScheduler {
                 task.host_id,
                 task.process_id,
                 task.task_id,
-                task.definition_digest.as_str(),
+                definition_digest.as_str(),
                 task.task_policy_digest.as_str(),
             ))
             .map_err(|error| sqlx::Error::Protocol(error.to_string()))?
@@ -146,7 +227,7 @@ impl RunnerScheduler {
                     .map_err(|error| sqlx::Error::Protocol(error.to_string()))?,
                 execution_spec,
                 resolved_policy: task.resolved_policy,
-                definition_digest: task.definition_digest,
+                definition_digest,
                 fairness_key,
                 priority: task.priority,
                 workflow_reference_digest: Some(workflow_reference_digest.clone()),
@@ -170,11 +251,18 @@ impl RunnerScheduler {
         let updated = sqlx::query(
             "UPDATE task_info_t SET scheduling_request_id=$1,update_ts=CURRENT_TIMESTAMP
              WHERE host_id=$2 AND task_id=$3 AND execution_placement='runner'
-               AND scheduling_request_id IS NULL",
+               AND scheduling_request_id IS NULL AND ($4::boolean=FALSE OR (status_code='A' AND active AND (deadline_ts IS NULL OR deadline_ts>clock_timestamp())
+                 AND EXISTS (SELECT 1 FROM process_info_t p WHERE p.host_id=task_info_t.host_id AND p.process_id=task_info_t.process_id
+                   AND p.active AND p.status_code IN ('A','W') AND p.expression_profile='cel-workflow-v2'
+                   AND (p.deadline_ts IS NULL OR p.deadline_ts>clock_timestamp()))
+                 AND NOT EXISTS (SELECT 1 FROM workflow_invocation_t i WHERE i.host_id=task_info_t.host_id AND i.process_id=task_info_t.process_id
+                   AND (i.cancel_requested_ts IS NOT NULL OR i.state NOT IN ('ACCEPTED','RUNNING','WAITING')
+                     OR (NOT COALESCE(i.private_lifetime,FALSE) AND i.deadline_ts<=clock_timestamp())))))",
         )
         .bind(request_id)
         .bind(task.host_id)
         .bind(task.task_id)
+        .bind(task.expression_profile=="cel-workflow-v2")
         .execute(self.repository.pool())
         .await?;
         if updated.rows_affected() != 1 {
@@ -193,11 +281,12 @@ impl RunnerScheduler {
 
 async fn claim_unscheduled_runner_task(
     tx: &mut Transaction<'_, Postgres>,
+    support: &crate::profile_support::SupportedProfiles,
 ) -> Result<Option<PendingRunnerTask>, sqlx::Error> {
-    sqlx::query_as::<_, PendingRunnerTask>(
+    sqlx::query_as::<_, PendingRunnerTask>(&format!(
         "SELECT t.host_id, t.task_id, t.process_id, t.priority,
                 p.policy_snapshot_id, t.task_policy_digest, p.resolved_policy,
-                pi.definition_snapshot, pi.definition_digest, t.wf_task_id
+                pi.definition_snapshot, pi.definition_digest, t.wf_task_id,pi.expression_profile
          FROM task_info_t t
          JOIN process_info_t pi
            ON pi.host_id = t.host_id AND pi.process_id = t.process_id
@@ -206,10 +295,12 @@ async fn claim_unscheduled_runner_task(
          WHERE t.active = TRUE AND t.status_code = 'A'
            AND t.execution_placement = 'runner'
            AND t.scheduling_request_id IS NULL
-           AND t.accepted_attempt IS NULL
+           AND t.accepted_attempt IS NULL AND {} AND {} AND (t.deadline_ts IS NULL OR t.deadline_ts>clock_timestamp())
          ORDER BY t.priority DESC, t.started_ts, t.task_id
          LIMIT 1 FOR UPDATE OF t SKIP LOCKED",
-    )
+        crate::profile_support::eligible("pi", "$1"),crate::profile_support::live_selection("pi","t.is_compensation")
+    ))
+    .bind(support.profiles())
     .fetch_optional(&mut **tx)
     .await
 }

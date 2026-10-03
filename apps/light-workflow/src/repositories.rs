@@ -170,6 +170,15 @@ impl WorkflowRepository {
         tx: &mut Transaction<'_, Postgres>,
         process: &NewProcess<'_>,
     ) -> Result<bool, sqlx::Error> {
+        match workflow_expression::resolve_profile(process.definition_snapshot) {
+            Ok(workflow_expression::Profile::LegacyV1) => (),
+            _ => {
+                return Err(sqlx::Error::Protocol(
+                    "EVALUATOR_PROFILE_UNSUPPORTED: use validated atomic invocation admission"
+                        .into(),
+                ));
+            }
+        }
         let inserted: Option<Uuid> = sqlx::query_scalar(
             "INSERT INTO process_info_t (
                 host_id, process_id, wf_def_id, wf_instance_id, app_id,

@@ -23,9 +23,17 @@ pub struct WorkflowApprovalService {
     pool: PgPool,
     origin_service_id: String,
     origin_instance_id: String,
+    supported_profiles: crate::profile_support::SupportedProfiles,
 }
 
 impl WorkflowApprovalService {
+    pub fn with_supported_profiles(
+        mut self,
+        profiles: crate::profile_support::SupportedProfiles,
+    ) -> Self {
+        self.supported_profiles = profiles;
+        self
+    }
     pub fn new(
         pool: PgPool,
         origin_service_id: impl Into<String>,
@@ -33,6 +41,7 @@ impl WorkflowApprovalService {
     ) -> Self {
         Self {
             pool,
+            supported_profiles: crate::profile_support::SupportedProfiles::from_evaluator(false),
             origin_service_id: origin_service_id.into(),
             origin_instance_id: origin_instance_id.into(),
         }
@@ -96,6 +105,20 @@ impl WorkflowApprovalService {
         ) {
             return Err(sqlx::Error::Protocol(
                 "approval requested an unsupported fixed action".into(),
+            ));
+        }
+        if !crate::profile_support::success(
+            &mut tx,
+            decision.host_id,
+            process_id,
+            task_id,
+            &self.supported_profiles,
+        )
+        .await?
+        {
+            tx.commit().await?;
+            return Err(sqlx::Error::Protocol(
+                "EVALUATOR_PROFILE_UNSUPPORTED: snapshot/profile mismatch".into(),
             ));
         }
         self.revalidate_artifacts(

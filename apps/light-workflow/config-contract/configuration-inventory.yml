@@ -22,6 +22,24 @@ staticEnvironment:
     sensitivity: internal
     reloadClass: restartRequired
     consumers: [configBootstrap]
+  - key: WORKFLOW_EXPRESSION_WORKERS
+    currentSource: environment
+    finalAuthority: deploymentBootstrap
+    valueType: integer
+    default: 1
+    validation: W4 requires exactly one worker; multiworker routing is not implemented
+    sensitivity: public
+    reloadClass: restartRequired
+    consumers: [workflowExpressionEngine]
+  - key: WORKFLOW_EXPRESSION_STACK_BYTES
+    currentSource: environment
+    finalAuthority: deploymentBootstrap
+    valueType: integer
+    default: 8388608
+    validation: strictly greater than 2097152; checked aggregate reservation and fallible thread startup
+    sensitivity: public
+    reloadClass: restartRequired
+    consumers: [workflowExpressionEngine]
   - key: DATABASE_URL
     currentSource: environment
     finalAuthority: secretEnvironment

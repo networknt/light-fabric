@@ -37,6 +37,7 @@ pub struct PreparedInvocationStart<'a> {
     pub policy_snapshot_id: Option<Uuid>,
     pub task_policy_digest: &'a str,
     pub public_output_schema: Option<&'a Value>,
+    pub expression_admission: Option<&'a crate::operational_admission::Validated>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +53,8 @@ pub enum AcceptOutcome {
 
 #[derive(Debug, Error)]
 pub enum InvocationAcceptError {
+    #[error("EVALUATOR_PROFILE_UNSUPPORTED")]
+    ExpressionProfileUnsupported,
     #[error("workflow invocation contract is invalid: {0}")]
     Contract(#[from] ContractError),
     #[error("WORKFLOW_IDEMPOTENCY_CONFLICT")]
@@ -84,6 +87,20 @@ pub(crate) async fn accept_invocation_in(
     request: &StartInvocationRequest,
     prepared: &PreparedInvocationStart<'_>,
 ) -> Result<AcceptOutcome, InvocationAcceptError> {
+    let expression_profile = workflow_expression::resolve_profile(prepared.definition_snapshot)
+        .map_err(|_| InvocationAcceptError::ExpressionProfileUnsupported)?;
+    if expression_profile == workflow_expression::Profile::CelWorkflowV2 {
+        if !prepared.expression_admission.is_some_and(|v| {
+            v.profile == expression_profile && v.raw == *prepared.definition_snapshot
+        }) {
+            return Err(InvocationAcceptError::ExpressionProfileUnsupported);
+        }
+        let rows: Vec<bool> = sqlx::query_scalar("SELECT admission_enabled FROM workflow_ops.workflow_expression_profile_policy_t WHERE profile_id='cel-workflow-v2' FOR SHARE")
+            .fetch_all(&mut **tx).await?;
+        if rows.as_slice() != [true] {
+            return Err(InvocationAcceptError::ExpressionProfileUnsupported);
+        }
+    }
     let accepted_at = Utc::now();
     request.validate(accepted_at)?;
     validate_prepared(prepared)?;
@@ -153,8 +170,8 @@ pub(crate) async fn accept_invocation_in(
            host_id,process_id,wf_def_id,wf_instance_id,app_id,process_type,
            status_code,ex_trigger_ts,input_data,context_data,definition_snapshot,
            definition_digest,policy_digest,source_event_id,execution_profile_id,policy_snapshot_id,
-           deadline_ts,update_user)
-         VALUES($1,$2,$3,$4,$5,'Workflow','A',CURRENT_TIMESTAMP,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
+           deadline_ts,update_user,expression_profile)
+         VALUES($1,$2,$3,$4,$5,'Workflow','A',CURRENT_TIMESTAMP,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
     )
     .bind(auth.host_id)
     .bind(prepared.process_id)
@@ -173,6 +190,7 @@ pub(crate) async fn accept_invocation_in(
     .bind(prepared.policy_snapshot_id)
     .bind(process_deadline)
     .bind(auth.update_user)
+    .bind(if expression_profile == workflow_expression::Profile::CelWorkflowV2 { "cel-workflow-v2" } else { "cel-workflow-v1" })
     .execute(&mut **tx)
     .await?;
 
@@ -437,7 +455,7 @@ mod private_profile_tests {
             .await
             .unwrap();
         for statement in [
-            "CREATE TABLE process_info_t (host_id uuid,process_id uuid,wf_def_id uuid,wf_instance_id text,app_id text,process_type text,status_code text,ex_trigger_ts timestamptz,input_data jsonb,context_data jsonb,definition_snapshot jsonb,definition_digest text,policy_digest text,source_event_id text,execution_profile_id text,policy_snapshot_id uuid,deadline_ts timestamptz,update_user text)",
+            "CREATE TABLE process_info_t (host_id uuid,process_id uuid,wf_def_id uuid,wf_instance_id text,app_id text,process_type text,status_code text,ex_trigger_ts timestamptz,input_data jsonb,context_data jsonb,definition_snapshot jsonb,expression_profile text,definition_digest text,policy_digest text,source_event_id text,execution_profile_id text,policy_snapshot_id uuid,deadline_ts timestamptz,update_user text)",
             "CREATE TABLE task_info_t (host_id uuid,task_id uuid,task_type text,process_id uuid,wf_instance_id text,wf_task_id text,status_code text,locked text,priority integer,deadline_ts timestamptz,task_input jsonb,execution_placement text,task_policy_digest text,update_user text,execution_class text)",
             "CREATE TABLE workflow_invocation_t (host_id uuid,workflow_instance_id uuid,binding_id uuid,process_id uuid,stable_tool_ref uuid,wf_def_id uuid,workflow_version text,definition_digest text,schema_digest text,policy_digest text,response_policy_digest text,principal_subject text,end_user_subject text,subject_claims jsonb,user_authorization text,user_authorization_exp bigint,input jsonb,input_digest text,canonical_input_profile text,invocation_mode text,execution_class text,permit_depth integer,state text,correlation_id text,deadline_ts timestamptz,cancellation_policy text,response_policy_snapshot jsonb)",
             "CREATE TABLE workflow_invocation_budget_t (host_id uuid,ledger_id uuid,workflow_instance_id uuid,task_attempt_limit bigint,nested_call_limit bigint,request_byte_limit bigint,byte_limit bigint,result_byte_limit bigint,cost_unit_limit bigint,deadline_ts timestamptz,lifetime_version smallint)",
@@ -508,6 +526,7 @@ mod private_profile_tests {
             policy_snapshot_id: Some(snapshot_id),
             task_policy_digest: "policy-component",
             public_output_schema: None,
+            expression_admission: None,
         };
         let auth = AuthenticatedInvocationContext {
             host_id: Uuid::now_v7(),
@@ -740,6 +759,7 @@ mod private_profile_tests {
             policy_snapshot_id: None,
             task_policy_digest: digest.trim_start_matches("sha256:"),
             public_output_schema: None,
+            expression_admission: None,
         };
         let auth = AuthenticatedInvocationContext {
             host_id: host,
