@@ -1,0 +1,12 @@
+[package]
+name = "workflow-expression"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cel = { version = "=0.14.0", features = ["json"] }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+sha2.workspace = true
+tokio.workspace = true
+tracing.workspace = true

@@ -104,6 +104,11 @@ impl Fixture {
         );
         let security = Arc::new(SecurityRuntime::with_test_hs256_key("step14", KEY).await);
         let router: Router = build_rule_api_router(
+            workflow_expression::Engine::new(workflow_expression::WorkerConfig {
+                workers: 1,
+                ..Default::default()
+            })
+            .unwrap(),
             pool.clone(),
             wait_database_url
                 .map(str::to_owned)

@@ -25,6 +25,7 @@ pub mod long_lifecycle;
 pub mod mcp_api;
 pub mod native_jobs;
 mod native_result;
+pub mod profile_support;
 pub mod provenance;
 pub mod publication_api;
 pub mod publication_dispatch;
@@ -42,9 +43,18 @@ pub mod service_runtime;
 pub mod session_reconciler;
 pub mod snapshot_transfer;
 mod snapshot_validation;
+pub mod worker_capability;
 
 pub mod bound_mcp;
 pub mod development_execution;
 pub mod development_handoff;
 pub mod development_intake;
 pub mod development_store;
+
+pub(crate) mod definition_validation;
+pub mod operational_admission;
+
+mod result_sweep;
+
+#[cfg(test)]
+mod expression_test_support;

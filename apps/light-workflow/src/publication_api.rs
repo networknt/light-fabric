@@ -1,4 +1,5 @@
 //! Portal-authoritative definition publication and grant synchronization.
+use sha2::Digest;
 
 pub(crate) mod binding;
 pub use binding::{
@@ -323,7 +324,36 @@ async fn save_definition(
             "user Authorization host does not match request host",
         ));
     }
-    with_matching_host(args, host, || save_definition_verified(&state.pool, args)).await
+    let wf = uuid(args, "wfDefId")?;
+    let key = format!("{}:{}", wf, field(args, "sourceRevision")?);
+    let op = crate::operational_admission::Operation::new(
+        &identity,
+        "workflow_definition_save",
+        &key,
+        args,
+    )?;
+    if let Some(committed) = op.recover(&state.pool).await? {
+        return Ok(committed.receipt);
+    }
+    let result = async {
+        let raw: Value = serde_yaml::from_str(text(args,"definition")?).map_err(|_| ApiError::definition_mismatch("invalid authored definition"))?;
+        let resolved = crate::operational_admission::profile(&raw)?;
+        if resolved == workflow_expression::Profile::LegacyV1 { return save_definition_verified(&state.pool,args).await; }
+        let historical: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM wf_definition_t WHERE host_id=$1 AND wf_def_id=$2 AND source_revision >= $3)")
+            .bind(host).bind(wf).bind(field(args,"sourceRevision")?.as_i64().ok_or_else(|| ApiError::input_invalid("invalid sourceRevision"))?)
+            .fetch_one(&state.pool).await.map_err(ApiError::database)?;
+        if historical { return Err(crate::operational_admission::unavailable()); }
+        let validated = crate::operational_admission::validate(state,raw).await?;
+        let typed = serde_json::from_value(validated.raw.clone()).map_err(|_| ApiError::definition_mismatch("invalid workflow"))?;
+        crate::runtime_definition::validate_runtime_definition(&typed,crate::configuration::DEFAULT_MAXIMUM_PARALLELISM).map_err(ApiError::definition_mismatch)?;
+        save_definition_inner(&state.pool,args,Some((&op,&validated))).await
+    }.await;
+    if result.is_err()
+        && let Some(committed) = op.recover(&state.pool).await?
+    {
+        return Ok(committed.receipt);
+    }
+    result
 }
 
 /// Apply a definition after the caller and request Host have been verified.
@@ -331,6 +361,22 @@ async fn save_definition(
 pub async fn save_definition_verified(
     pool: &sqlx::PgPool,
     args: &Value,
+) -> Result<Value, ApiError> {
+    let raw: Value = serde_yaml::from_str(text(args, "definition")?)
+        .map_err(|_| ApiError::definition_mismatch("invalid definition"))?;
+    if crate::operational_admission::profile(&raw)? != workflow_expression::Profile::LegacyV1 {
+        return Err(crate::operational_admission::unsupported());
+    }
+    save_definition_inner(pool, args, None).await
+}
+#[allow(clippy::result_large_err)] // Preserve the established ApiError contract.
+async fn save_definition_inner(
+    pool: &sqlx::PgPool,
+    args: &Value,
+    admission: Option<(
+        &crate::operational_admission::Operation,
+        &crate::operational_admission::Validated,
+    )>,
 ) -> Result<Value, ApiError> {
     let host = uuid(args, "hostId")?;
     let wf = uuid(args, "wfDefId")?;
@@ -414,6 +460,29 @@ pub async fn save_definition_verified(
         None => None,
     };
     let mut tx = pool.begin().await.map_err(database_error)?;
+    if let Some((op, validated)) = admission {
+        op.lock(&mut tx).await?;
+        if let Some(committed) = op.locked(&mut tx).await? {
+            tx.rollback().await.map_err(database_error)?;
+            return Ok(committed.receipt);
+        }
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!("workflow-definition:{host}:{wf}"))
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        let raw: Value = serde_yaml::from_str(definition)
+            .map_err(|_| ApiError::definition_mismatch("invalid authored definition"))?;
+        if raw != validated.raw {
+            return Err(ApiError::definition_mismatch(
+                "validated definition changed",
+            ));
+        }
+        // Revision is selected/rechecked before any accepting write.
+        let _ = load_definition_head_for_update(&mut tx, host, wf).await?;
+        crate::operational_admission::policy(&mut tx).await?;
+    }
+
     let existing = load_definition_head(&mut tx, host, wf).await?;
     let inserted = if existing.is_none() {
         // Concurrent first insertion: the unique-key loser then locks and reads
@@ -473,6 +542,9 @@ pub async fn save_definition_verified(
         .await?
         .ok_or_else(|| database_error(sqlx::Error::RowNotFound))?;
     let receipt = json!({"result":result,"wfDefId":wf,"appliedRevision":stored.source_revision,"definitionDigest":definition_digest(&stored.definition)?});
+    if let Some((op, validated)) = admission {
+        op.store(&mut tx,&json!({"wfDefId":wf,"sourceRevision":revision,"definitionSnapshot":validated.raw,"definitionSourceSha256":hex::encode(sha2::Sha256::digest(definition.as_bytes())),"definitionDigest":definition_digest(definition)?}),&receipt,None).await?;
+    }
     tx.commit().await.map_err(database_error)?;
     Ok(receipt)
 }
@@ -747,10 +819,33 @@ async fn publish_definition(
     let identity = authenticated_user(state, headers, args, settings).await?;
     let positions = verified_positions(&identity.caller_claims);
     let actor = verified_user_id(&identity)?.to_owned();
-    with_matching_host(args, identity.host_id, || {
-        publish_definition_verified(&state.pool, args, &actor, &positions, cel_validator)
-    })
-    .await
+    let operation = uuid(args, "operationId")?;
+    let op = crate::operational_admission::Operation::new(
+        &identity,
+        "workflow_definition_publish",
+        &operation.to_string(),
+        args,
+    )?;
+    if let Some(committed) = op.recover(&state.pool).await? {
+        return Ok(committed.receipt);
+    }
+    let result = async {
+        let raw: Value = serde_yaml::from_str(text(args,"definition")?).map_err(|_| ApiError::definition_mismatch("invalid authored definition"))?;
+        if crate::operational_admission::profile(&raw)? == workflow_expression::Profile::LegacyV1 {
+            return publish_definition_verified(&state.pool,args,&actor,&positions,cel_validator).await;
+        }
+        let historical: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_publication_operation_t WHERE host_id=$1 AND operation_id=$2)")
+            .bind(identity.host_id).bind(operation).fetch_one(&state.pool).await.map_err(ApiError::database)?;
+        if historical { return Err(crate::operational_admission::unavailable()); }
+        let validated = crate::operational_admission::validate(state,raw).await?;
+        publish_definition_inner(&state.pool,args,&actor,&positions,cel_validator,Some((&op,&validated))).await
+    }.await;
+    if result.is_err()
+        && let Some(committed) = op.recover(&state.pool).await?
+    {
+        return Ok(committed.receipt);
+    }
+    result
 }
 
 /// Publish after the user, publisher assertion, Gateway and Host are verified.
@@ -760,6 +855,25 @@ pub async fn publish_definition_verified(
     actor: &str,
     positions: &[String],
     cel_validator: &(dyn Fn(&str) -> Result<(), ApiError> + Send + Sync),
+) -> Result<Value, ApiError> {
+    let raw: Value = serde_yaml::from_str(text(args, "definition")?)
+        .map_err(|_| ApiError::definition_mismatch("invalid definition"))?;
+    if crate::operational_admission::profile(&raw)? != workflow_expression::Profile::LegacyV1 {
+        return Err(crate::operational_admission::unsupported());
+    }
+    publish_definition_inner(pool, args, actor, positions, cel_validator, None).await
+}
+#[allow(clippy::result_large_err)] // Preserve the established ApiError contract.
+async fn publish_definition_inner(
+    pool: &sqlx::PgPool,
+    args: &Value,
+    actor: &str,
+    positions: &[String],
+    cel_validator: &(dyn Fn(&str) -> Result<(), ApiError> + Send + Sync),
+    admission: Option<(
+        &crate::operational_admission::Operation,
+        &crate::operational_admission::Validated,
+    )>,
 ) -> Result<Value, ApiError> {
     let host = uuid(args, "hostId")?;
     let wf = uuid(args, "wfDefId")?;
@@ -782,24 +896,44 @@ pub async fn publish_definition_verified(
         crate::configuration::DEFAULT_MAXIMUM_PARALLELISM,
     )
     .map_err(ApiError::definition_mismatch)?;
-    cel_validator(definition_text)?;
+    if admission.is_none() {
+        cel_validator(definition_text)?;
+    }
     let input_schema = parsed
         .pointer("/input/schema/document")
         .cloned()
         .unwrap_or(Value::Null);
     let schema_digest = digest_value(&input_schema)?;
     let mut tx = pool.begin().await.map_err(database_error)?;
-    if let Some(receipt) = operation_begin(
-        &mut tx,
-        host,
-        operation,
-        "workflow_definition_publish",
-        args,
-    )
-    .await?
-    {
-        tx.commit().await.map_err(database_error)?;
-        return Ok(receipt);
+    if let Some((op, validated)) = admission {
+        op.lock(&mut tx).await?;
+        if let Some(committed) = op.locked(&mut tx).await? {
+            tx.rollback().await.map_err(database_error)?;
+            return Ok(committed.receipt);
+        }
+        let historical: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_publication_operation_t WHERE host_id=$1 AND operation_id=$2)")
+            .bind(host).bind(operation).fetch_one(&mut *tx).await.map_err(database_error)?;
+        if historical {
+            return Err(crate::operational_admission::unavailable());
+        }
+        let current: Value = serde_yaml::from_str(definition_text)
+            .map_err(|_| ApiError::definition_mismatch("invalid authored content"))?;
+        if current != validated.raw {
+            return Err(ApiError::definition_mismatch("validated content changed"));
+        }
+    } else {
+        if let Some(receipt) = operation_begin(
+            &mut tx,
+            host,
+            operation,
+            "workflow_definition_publish",
+            args,
+        )
+        .await?
+        {
+            tx.commit().await.map_err(database_error)?;
+            return Ok(receipt);
+        }
     }
     let head:Option<(Option<Uuid>,Option<String>)>=sqlx::query_as("SELECT owner_user_id,owner_position_id FROM wf_definition_t WHERE host_id=$1 AND wf_def_id=$2 FOR SHARE").bind(host).bind(wf).fetch_optional(&mut *tx).await.map_err(database_error)?;
     let (owner_user, owner_position) = head.ok_or_else(|| {
@@ -828,6 +962,9 @@ pub async fn publish_definition_verified(
     } else {
         "carryOver"
     };
+    if admission.is_some() {
+        crate::operational_admission::policy(&mut tx).await?;
+    }
     let result = match exists {
         Some((old, status, stored_schema, stored_approval)) if old == requested_digest => {
             json!({"result":"unchanged","status":status,"wfDefId":wf,"version":version,"definitionDigest":old,"schemaDigest":stored_schema,"bindingApproval":stored_approval})
@@ -858,7 +995,12 @@ pub async fn publish_definition_verified(
             }
         }
     };
-    operation_finish(&mut tx, host, operation, &result).await?;
+    if let Some((op, validated)) = admission {
+        op.store(&mut tx,&json!({"wfDefId":wf,"version":version,"definitionSnapshot":validated.raw,"definitionSourceSha256":hex::encode(sha2::Sha256::digest(definition_text.as_bytes())),"definitionDigest":requested_digest}),&result,None).await?;
+    } else {
+        operation_finish(&mut tx, host, operation, &result).await?;
+    }
+
     tx.commit().await.map_err(database_error)?;
     Ok(result)
 }

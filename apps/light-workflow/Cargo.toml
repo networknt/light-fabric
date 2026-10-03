@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+workflow-expression = { path = "../../crates/workflow-expression" }
 development-workflow-contract = { path = "../../crates/development-workflow-contract" }
 task-workspace = { path = "../../crates/task-workspace" }
 workflow-action = { path = "../../crates/workflow-action" }
@@ -65,4 +66,5 @@ rcgen = "0.14"
 rustls = { version = "0.23", features = ["ring"] }
 
 [build-dependencies]
+sha2.workspace = true
 config-embed-build = { path = "../../crates/config-embed-build" }

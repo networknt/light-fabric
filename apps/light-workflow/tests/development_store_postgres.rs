@@ -41,6 +41,7 @@ impl Fixture {
             policy_snapshot_id: None,
             task_policy_digest: self.request.policy_digest.trim_start_matches("sha256:"),
             public_output_schema: None,
+            expression_admission: None,
         }
     }
 }

@@ -1,0 +1,64 @@
+[
+  {
+    "name": "empty",
+    "json": "{}",
+    "canonical": "{}",
+    "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+  },
+  {
+    "name": "presence",
+    "json": "{\"missingEquivalent\":null,\"input\":{}}",
+    "canonical": "{\"input\":{},\"missingEquivalent\":null}",
+    "digest": "sha256:dfed101f94fa2f0f9819d35e534e3a4254964e5862e64c9b1eb639418b916c90"
+  },
+  {
+    "name": "integers",
+    "json": "{\"min\":-9007199254740991,\"max\":9007199254740991,\"zero\":0}",
+    "canonical": "{\"max\":9007199254740991,\"min\":-9007199254740991,\"zero\":0}",
+    "digest": "sha256:b7b2401ddca2165824e98c61890c0aaec470258d3119dd265d02be9438bf47e6"
+  },
+  {
+    "name": "strings",
+    "json": "{\"s\":\"quote\\\" slash/ backslash\\\\ newline\\n tab\\t control\\u0001 café 𐀀\"}",
+    "canonical": "{\"s\":\"quote\\\" slash/ backslash\\\\ newline\\n tab\\t control\\u0001 café 𐀀\"}",
+    "digest": "sha256:cd6f10073b4fa370f6371620b2750ee1f993e1282a4d8095bff3febe407c9811"
+  },
+  {
+    "name": "utf16-order",
+    "json": "{\"\":1,\"𐀀\":2,\"A\":3}",
+    "canonical": "{\"A\":3,\"𐀀\":2,\"\":1}",
+    "digest": "sha256:352f8d00b49e597c94936284c71600cb75e721787c63655e79cd98d29edbb6f0"
+  },
+  {
+    "name": "nested",
+    "json": "{\"z\":[null,true,false,{\"b\":2,\"a\":1}],\"a\":\"x\"}",
+    "canonical": "{\"a\":\"x\",\"z\":[null,true,false,{\"a\":1,\"b\":2}]}",
+    "digest": "sha256:4bb7c53759fdce3308c229a6c2efcdad2aa9630bbb3e18c0b694525c8081c74e"
+  },
+  {
+    "name": "float-rejected",
+    "json": "{\"n\":1.0}",
+    "invalid": true
+  },
+  {
+    "name": "exponent-rejected",
+    "json": "{\"n\":1e0}",
+    "invalid": true
+  },
+  {
+    "name": "wide-integers",
+    "json": "{\"min\":-9223372036854775808,\"wide\":9007199254740992,\"max\":18446744073709551615}",
+    "canonical": "{\"max\":18446744073709551615,\"min\":-9223372036854775808,\"wide\":9007199254740992}",
+    "digest": "sha256:8df8203b06df4248a624e12e9c44e5637abc4495c0f38abd25c0daa7bd185405"
+  },
+  {
+    "name": "overflow-rejected",
+    "json": "{\"n\":18446744073709551616}",
+    "invalid": true
+  },
+  {
+    "name": "negative-zero-rejected",
+    "json": "{\"n\":-0}",
+    "invalid": true
+  }
+]

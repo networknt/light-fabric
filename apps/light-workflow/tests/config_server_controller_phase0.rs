@@ -212,6 +212,7 @@ fn phase0_inventory_covers_static_environment_reads_and_yaml_leaves() {
         "P01_TIMER_TEST_DATABASE_URL".to_string(),
         "WORKFLOW_NATIVE_OPS_TEST_DATABASE_URL".to_string(),
         "WORKFLOW_ROLE_TEST_DATABASE_URL".to_string(),
+        "W4_TEST_DATABASE_URL".to_string(),
     ]);
     let actual_environment = static_environment_reads()
         .difference(&test_only_environment)

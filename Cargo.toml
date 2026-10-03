@@ -56,3 +56,15 @@ rkyv = { version = "=0.8.12", default-features = false, features = ["std", "byte
 
 [profile.release]
 panic = "unwind"
+
+[profile.dev.package.cel]
+opt-level = 1
+
+[profile.dev.package.antlr4rust]
+opt-level = 1
+
+[profile.test.package.cel]
+opt-level = 1
+
+[profile.test.package.antlr4rust]
+opt-level = 1

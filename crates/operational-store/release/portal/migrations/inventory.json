@@ -1,0 +1,861 @@
+{
+  "knowledge/patch_20260821_01_knowledge_admin_boundary.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "f430601a8bd447a7a3a87be185aec5804defdef9eba8475815bbe58cf08ad922"
+  },
+  "knowledge/patch_20260821_02_canonical_knowledge_boundary.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "b97d2f6a591fd82cd9509118758672340c4fe72e68c086af168f39347ddd5087"
+  },
+  "knowledge/patch_20260821_03_snapshot_command_boundary.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "495c13e9169f9747f7d676817e562ad231e82a91a1b5b3a85ba48c8370c4adbd"
+  },
+  "knowledge/patch_20260821_04_configserver_knowledge_control_only.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "No exact-path gate dependency establishes coverage for this retained artifact; similarly named copies do not qualify it. Add a baseline-specific gate before reuse or modification.",
+    "sha256": "d149248abc1c62913bf7c0ac2b2c8bacd26e0c8a66923f87114962262cacc9c7"
+  },
+  "knowledge/patch_20260821_05_admin_api.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "b8b4ae3fc6b2c6a91154e1d11cda4a8697f18119d62f4ebc3765db34680320ff"
+  },
+  "knowledge/patch_20260821_06_knowledge_admin_pgcrypto.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "ba3d824051fe0688b9ca662778bbe7ffebf470417d486cd9c01b1370f5351bc9"
+  },
+  "knowledge/patch_20260821_07_knowledge_admin_audit_retention.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "a1bbb5f8ca48059706025dc27e35db7ffe7c5b63ff63d5f9ab7a48f707a17268"
+  },
+  "patch_20260225.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "00bf7194595b5d10037ae7c5c09b64d00434ceaa0f74119907188bfb814823fc"
+  },
+  "patch_20260325.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "2ad86984c63472e05f5c0d9f539fdc267a6e303818f5ec918347daa89a2918d1"
+  },
+  "patch_20260328.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "5c06271efda3067a93fa3c5bcef8b0a1ed96cf8e8060376e48c24940e09eb8cd"
+  },
+  "patch_20260329.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "3a94929d7530e14763581e5058da369126bad104835bb1247fca91a4caaa6212"
+  },
+  "patch_20260404.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "bf40fe6256e4f9c1c3370174defd9aacf1b21b57674ae7a1d02b06c2771a8892"
+  },
+  "patch_20260407.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "17ca914bad870caa3d630eaa701725a52ff71a2530e9c808a4053c979e8387f0"
+  },
+  "patch_20260410.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "4f8232878e1c83f8c36c7e180a8f2d2a7d4e63e64f091dce6743c1f338ee6149"
+  },
+  "patch_20260418.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "ac9913384090de10eaecec3c00bbf3fd1691ca768b4f500fb95b20e483513f50"
+  },
+  "patch_20260420.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "cb59a8d6469e0076989906e644064d329ff89406b0ec91ddd5a58207ec8c088b"
+  },
+  "patch_20260425.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "5befaffc158fb7738e57b0ce58d327745a559c454faf8309397e269d57152339"
+  },
+  "patch_20260426.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "749c1fcc9cb41c9be001d7c1a762c5407421df42380f789ee1f2fe45d2dec683"
+  },
+  "patch_20260427.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "246c56f0baccc934d5e04cda9e1650561103a27bdcf4f73160f0a8ad712ebd44"
+  },
+  "patch_20260428.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "fda6783a17805073407985338fcfee0e2f4552c460da5ecab8a44b0fef07eb8f"
+  },
+  "patch_20260430.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "168f3ae4d48a78022e511a277c43a553c36e56b979a0cb679dca2cd932a7a09b"
+  },
+  "patch_20260502.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "fb6c7602dd890573bfbbf16770c25a4467ec2f9dbc699e2245be8bff9e998a5c"
+  },
+  "patch_20260507.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "3ba589d951bac0b3fd015bc9985bc2b2cac580a257b57bf074240fdc40d8a5e7"
+  },
+  "patch_20260508.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "73c510571872c5d1a8d5b9c029b482a9bef3e46dbbe401ba951f4e8efb959edc"
+  },
+  "patch_20260509.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-config-snapshot-empty-collection-gate.sh"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260510.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "6bd2ebe71a6e606a70e2743ae642d1038b7d78e94a98ffd769a49d8c8b150335"
+  },
+  "patch_20260513.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "2dd84325e730f0e849a94ce90f43309ba9314992a378c62ecb833b11de07f026"
+  },
+  "patch_20260514.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "7e8c30c36ffdc0613e749ad6f04b95dfefb9c96dea8552859d3079c9c8c0053a"
+  },
+  "patch_20260515.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "334b847265ea2fab28e7c5c3b66aff0eda826c8460b7d596df1772d87e7d8ea0"
+  },
+  "patch_20260518.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "0b9e278eecd1981a2bdb0fe580c03d4bb3a63bd32313c014b011677e6f5d064f"
+  },
+  "patch_20260519.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "8eac5560d97fa5d25309a88ff6861646462e90d74c2384c8e772d29579f9e816"
+  },
+  "patch_20260522.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "9e66c5b1bf2a5233f28ce317cb96d47951d4a1d50cf543196ec568abfd5f6ace"
+  },
+  "patch_20260524.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "37fa02836d045feed9c6596d8bff85ccb3d5c8ec518d84b4cd05b4070e1a10c0"
+  },
+  "patch_20260525.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "13609e04100233a13e92df39ad7521f5aa0f6fc546cbd3c0dfead9978827a5de"
+  },
+  "patch_20260528.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "7d915883f9b27b968c17724a77a56de99f7b39479f72cd4b746f53380c8c495d"
+  },
+  "patch_20260529.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "6273a1c1f1a209e2c6e6a523708b2fb5667bfc26f2f8a5e9a178f2b827b2c5ae"
+  },
+  "patch_20260603.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "25a72aa072f5915787bc65bb52e28166848c815cdf32c1ddc15b2312d36a6863"
+  },
+  "patch_20260606.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "b80b055754b7f0d4a8824d4c849e02cb512a10f71435bf96f471fef74174aaf5"
+  },
+  "patch_20260607_config_profile.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "2c4f126cfef4ec0c3e8f4dc4de10ba2c8bfa06e6687c40f7d2e5710c3077d96b"
+  },
+  "patch_20260611_master_oauth_host.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "bd4c3fb46d8dfcf59da91b4d12b2d842d3a19cdf8e3d99f49006be1294fb2be8"
+  },
+  "patch_20260620_endpoint_desc.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "45cf3e6950123724082f150b10e0bf20c8f094a717de7ff9f17c34126c69532f"
+  },
+  "patch_20260621_rule_condition_language_cel.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "c241b4954bf13280674a6be14a3617350a5d3e6e1f5a4ac35930d9314fd04ff2"
+  },
+  "patch_20260623_owner_scope_indexes.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "a8c152f24d6033d0b8d8d153bc7c652aa465638e65e9fbea034696520a7e6a5b"
+  },
+  "patch_20260709_mcp_tool_metadata_phase1.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "No exact-path gate dependency establishes coverage for this retained artifact; similarly named copies do not qualify it. Add a baseline-specific gate before reuse or modification.",
+    "sha256": "796de0a47ee4523daefd1a101d806f85389c55ec3cd236930b05d4260d8d77fa"
+  },
+  "patch_20260710_workflow_runner.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260711_01_light_agent_runtime.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260711_02_workflow_execution_foundations.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260711_03_light_agent_profiles.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260711_04_light_agent_later_profiles.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260711_05_git_object_format.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260711_06_workflow_approval_execution.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260711_07_workflow_agent_job_bridge.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260711_08_agent_channel_service.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260711_09_agent_pooling_quotas.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260711_10_agent_delegation_replay.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260712_01_fixed_action_providers.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260712_02_personal_runtime.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260712_03_connector_grant_auth.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260712_04_edge_action_policy.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260712_05_attachment_scan_claims.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260712_06_fixed_action_unknown.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260712_07_trigger_budget_misfire.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260712_08_trusted_quota_accounting.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260712_09_instance_clone.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/instance_clone_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260713_01_event_replay.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/event_replay_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260713_02_event_replay_phase3.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/event_replay_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260713_03_event_replay_phase4.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/event_replay_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260713_04_event_replay_phase5.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/event_replay_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260713_05_event_replay_phase6.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/event_replay_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260713_06_event_replay_phase7.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/event_replay_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260713_07_event_replay_phase8.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/event_replay_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260713_08_event_replay_phase10.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/event_replay_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260713_09_event_replay_phase11.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/event_replay_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260713_10_event_replay_hardening.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "b691b663506883cc8a459ca360ab4331dba5575bb617ac3c30aa68de723a23cf"
+  },
+  "patch_20260714.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-config-snapshot-current-integrity-gate.sh",
+      "tests/config_snapshot_current_integrity_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260714_02_config_snapshot_compare_endpoints.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "a19310a781c7b764da6a2a0bccac840270ce0dd34320a912665271baeeae13b7"
+  },
+  "patch_20260719_01_llm_control_plane.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260719_02_llm_control_plane_endpoints.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260719_03_llm_production_integration.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260721_01_llm_model_rename.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260721_02_llm_model_endpoint_rename.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260723_01_event_replay_redesign_r1.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/event_replay_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260723_02_event_replay_redesign_r4.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/event_replay_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260723_03_event_replay_redesign_r6.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/event_replay_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260724_01_event_replay_redesign_r8.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/event_replay_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260724_02_event_replay_final_review.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/event_replay_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260726_01_entity_creation_phase2.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/entity_creation_phase4_schema_gate.sql",
+      "tests/entity_creation_phase2_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260726_02_entity_creation_phase3.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/entity_creation_phase3_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260726_03_entity_creation_phase4.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/entity_creation_phase4_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260726_04_entity_creation_phase5.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "b7d54251d103cbc2f021d89b137a1a2320e708fee6fd8b0994ee0a2dcf85c0d0"
+  },
+  "patch_20260727_01_mcp_endpoint_response_schema.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "6e1b376412d445434c6ca3d5bc978be275f75ac8c2bab1f360753b52862e56ef"
+  },
+  "patch_20260801_01_llm_deployment_account_quota.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260801_02_llm_global_model_catalog.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260802_01_llm_conformance_scope.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "c401e6ef406c3f1f2183246b78e0a3b45cfddf228bf18ca59a5c34a21a86e8d5"
+  },
+  "patch_20260802_02_llm_instance_publication.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260802_03_llm_instance_publication_endpoints.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260804_01_llm_provider_protocol.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260807_01_llm_wave1_contract.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260808_01_llm_embedding_space_contract.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260808_02_knowledge_embedding_profile.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260808_03_llm_local_provider_transport.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260808_03_llm_local_provider_transport_rollback.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "4b7ecc32c6eb55e2660a2f1aea437962ecdcaabc7097bd898317f8ff47aa754b"
+  },
+  "patch_20260809_01_light_knowledge_phase0_contract.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-light-knowledge-phase0-schema-gate.sh"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260809_02_light_knowledge_phase1a.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "f731e98961d892e1af486103d106a7d1d545dc07553ed166b6463fa103fb6eec"
+  },
+  "patch_20260809_03_light_knowledge_phase1b.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "d366a87de4c88ab6fac7648a61e5b025ee9e566a02a14cd68f7c38d84db7a49f"
+  },
+  "patch_20260809_04_light_knowledge_phase2.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "ff98198c02fcb5e88ad0ef33dc598c1b6a7d50acdcbb38d5c28cc8f5fb468c90"
+  },
+  "patch_20260809_05_light_knowledge_phase2_operational.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "58163c44a9ef1a4a1b70b3f7d76d215b03dc20d14eb59921d5614b8d35f4c48a"
+  },
+  "patch_20260809_06_light_knowledge_phase3.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "No exact-path gate dependency establishes coverage for this retained artifact; similarly named copies do not qualify it. Add a baseline-specific gate before reuse or modification.",
+    "sha256": "f8bef557f036b93ec489c7cdc9c4ad4a3886d54b74e4e2db234610a74104c245"
+  },
+  "patch_20260809_07_light_knowledge_phase4.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "No exact-path gate dependency establishes coverage for this retained artifact; similarly named copies do not qualify it. Add a baseline-specific gate before reuse or modification.",
+    "sha256": "dfb7020a31e0332e84daf3bb47aee88eeb126eddb929380b7456ef9ea1dd34d7"
+  },
+  "patch_20260810_01_light_knowledge_metrics_index.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-light-knowledge-metrics-index-schema-gate.sh"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260810_01_llm_remove_conformance_lifecycle.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260810_02_llm_remove_conformance_endpoints.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260811_01_light_knowledge_sync_lifecycle.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-light-knowledge-sync-lifecycle-schema-gate.sh"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260812_01_workflow_mcp_phase0.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "f32ecac8a4cd364108a1d076586b8d7dd999afb5d1f0b843908c713a962c7e86"
+  },
+  "patch_20260812_02_workflow_mcp_phase1.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260812_03_workflow_mcp_phase2.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260812_04_knowledge_retrieval_profile_control_plane.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "7d08df1037f84359e1ddf77858da3ed2552f83c6b694666a4e0240f88f906bd6"
+  },
+  "patch_20260812_05_workflow_mcp_phase4.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "6d8720cb3ad3392c2e876a1409ee6cb9c4328ed44b88f96ee93c13c6b8fd23c7"
+  },
+  "patch_20260813_01_workflow_definition_versions.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "c51cd39644a92b6c470d4be7b3be2d865018d58ccae06a94ef627c64f1c9fe14"
+  },
+  "patch_20260813_02_gateway_tool_publication.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-gateway-tool-publication-schema-gate.sh"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260813_03_gateway_tool_publication_endpoints.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-gateway-tool-publication-endpoints-gate.sh"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260814_01_workflow_tool_access.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/workflow_tool_grant_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260816_01_workflow_event_fork.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "9be9e099a931ac0d3980d3b8c42561d491f09c374995f93ec217c8e486c1703e"
+  },
+  "patch_20260817_01_endpoint_tool_orphan_cleanup.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "8dea66ba06bdfde7d436a4c28da92c8f74cdef8ba863d4d28c596132f6fb3cfa"
+  },
+  "patch_20260817_02_workflow_user_authorization.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "10e047700d58740f0fe803f343e5c73ad339a262651482d9901004436b91aa5b"
+  },
+  "patch_20260817_03_cascade_delete_policy.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Superseded for the current schema by patch_20260909_03_cascade_install.sql. The historical installer assumes retired foreign keys and must not be replayed on the current baseline.",
+    "sha256": "09b6ea83404eb2361247dd2172693c9d029598da82cbf9f5c80470731ee7fe03"
+  },
+  "patch_20260817_04_workflow_tool_access_approval.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/workflow_tool_grant_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260818_01_light_knowledge_single_container.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "0c29a37f0165a2cd15b4e372bff4fa0f31d41d93f11002cd92f95c507cb467d9"
+  },
+  "patch_20260819_01_light_agent_policy_snapshot_pointer.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "257768a18138309c46b0cd39827541e4557668ac50a9b97d75ac5ec96c5434ea"
+  },
+  "patch_20260819_02_light_agent_policy_snapshot_pointer_rollback.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "c21afda57531f92018e330e4c94e526c7a072c37928c3a70ce71dd70f363539e"
+  },
+  "patch_20260821_04_configserver_knowledge_control_only.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-light-knowledge-phase2-boundary-gate.sh"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260823_01_portal_managed_tool_access.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-multi-schema-environment-gate.sh"
+    ],
+    "reason": "Exact direct input of the listed standalone gate; this entry does not imply main CI execution."
+  },
+  "patch_20260824_01_runtime_instance_operational_metadata.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/runtime_instance_operational_metadata_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260825_01_config_snapshot_logical_identity.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/config_snapshot_current_integrity_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260825_02_instance_environment_identity.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/instance_environment_identity_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260825_03_config_snapshot_env_tag_writer.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-config-snapshot-current-integrity-gate.sh"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260828_01_product_version_promotion.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/product_version_promotion_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260828_02_promotion_lifecycle.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/product_version_promotion_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260829_01_operational_constraint_decoupling.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260829_02_execution_source_retirement.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260829_03_agent_directive_publication.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260829_04_agent_a2a_publication.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/agent_a2a_publication_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260829_05_operational_store_provisioning.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "65ceb92fc2272f4c4a9ed1f4186c8f4aad9ed33c2e09d81b322c76e8bc891a27"
+  },
+  "patch_20260830_01_a2a_phase2_authoring.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/a2a_phase2_authoring_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260830_02_a2a_phase3_backend_transport.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/a2a_phase2_authoring_schema_gate.sql",
+      "tests/a2a_phase3_backend_transport_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260830_03_a2a_phase6_profiles.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/a2a_phase2_authoring_schema_gate.sql",
+      "tests/a2a_phase6_profiles_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260831_01_composable_bundle_import.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "9bf581589a25eb32399e0e6248229be355f50b76f0fc5c784dffa2ec4f774be0"
+  },
+  "patch_20260902_01_operational_store_registration.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/operational_store_provisioning_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260902_02_operational_store_p7_closure.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/operational_store_provisioning_schema_gate.sql"
+    ],
+    "reason": "Referenced by the listed standalone qualification; not claimed to run in the main CI path."
+  },
+  "patch_20260908_llm_configuration_ownership.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
+    "sha256": "69645d95afe651dd802725e38c214545f00a6335f278fa2fba5219900e54da1c"
+  },
+  "patch_20260909_01_llm_endpoint_ownership.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20260909_02_schema_documentation.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-ddl-documentation-gate.sh"
+    ],
+    "reason": "Main CI documentation gate verifies fresh comments, removal/restoration, and repeated application. This pre-retirement documentation patch refers to broker tables; do not replay it after patch_20260928_04_retire_workflow_broker.sql."
+  },
+  "patch_20260909_03_cascade_install.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-cascade-delete-policy-schema-gate.sh"
+    ],
+    "reason": "Pre-retirement cascade installer includes broker relationships and cannot be replayed after patch_20260928_04_retire_workflow_broker.sql. Use the current generated runtime script after the retirement patch; historical qualification remains in the listed standalone gate."
+  },
+  "patch_20260912_01_a2a_runtime_relationship.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-cascade-delete-policy-schema-gate.sh",
+      "tests/a2a_runtime_relationship.sql"
+    ],
+    "reason": "Main CI cascade gate verifies upgrade from the September 9 relationship, repeated application, and cascade policy validation; the standalone relational fixture checks independent runtime identity and rejects absent runtime, mismatched agent, and cross-host bindings."
+  },
+  "patch_20260913_01_workflow_broker.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-workflow-broker-retirement-schema-gate.sh"
+    ],
+    "reason": "Reconstructs the pre-retirement schema from this historical patch, populates broker and shared refresh rows, then qualifies retirement, replay, preservation, and fresh catalog parity."
+  },
+  "patch_20260921_device_authorization.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-device-authorization-schema-gate.sh"
+    ],
+    "reason": "Qualifies fresh schema, upgrade from an absent table and from the retired certificate-bound draft (draft tables removed, redeemable request retained), repeated application, cascade deletion with the client, and cascade-policy validation."
+  },
+  "patch_20260923_01_gateway_tool_unpublish.sql": {
+    "disposition": "standalone-gate",
+    "references": ["tests/run-gateway-tool-publication-schema-gate.sh"],
+    "reason": "Gateway Tool unpublish schema change is referenced by the existing Gateway publication schema gate; this inventory repair does not assert a new qualification run.",
+    "sha256": "cc6af2f3baff38923a6ab649793e2d67e0ce5c59327fdc7dd17c5215086892f0"
+  },
+  "patch_20260923_02_gateway_workflow_tool_unpublish.sql": {
+    "disposition": "standalone-gate",
+    "references": ["tests/run-gateway-tool-publication-schema-gate.sh"],
+    "reason": "Workflow Tool unpublish publication-mode change is referenced by the existing Gateway publication schema gate; this inventory repair does not assert a new qualification run.",
+    "sha256": "3e4d796ce047d0237867f3870ed85c80575943f2fed1f2ecc1c8ea8ab27e8889"
+  },
+  "patch_20260924_01_workflow_long_binding.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Issuer-owned LONG Workflow binding patch is retained; no standalone schema qualification gate was found for this patch.",
+    "sha256": "5284f62bf3aa1df125e87163ca88a459a4c78facad7d2636423b90999174c1c8"
+  },
+  "patch_20260925_01_workflow_tool_access_pending.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Step 07 request-only upgrade patch; fresh and upgrade database qualification remains open.",
+    "sha256": "7491ab7cf2fde0a6cad0243935cd71ef0f489bfe42ebf4c3fbffe8b0ebf1b885"
+  },
+  "migrations/patch_20260926_01_workflow_tool_binding_publication.sql": {
+    "disposition": "standalone-gate",
+    "references": ["tests/run-workflow-publication-schema-gate.sh"],
+    "reason": "CI qualifies previous DDL plus this upgrade, repeated application, operational table constraints, and expiry immutability in a separate disposable database.",
+    "sha256": "7d87e7f15c33e85b48f426b64e9b5afc8040a4fcc588485103ec28881b9ff1ff"
+  },
+  "migrations/patch_20260928_01_workflow_publication_schema_parity.sql": {
+    "disposition": "standalone-gate",
+    "references": ["tests/run-workflow-publication-schema-gate.sh"],
+    "reason": "CI applies this parity patch twice after the publication upgrade and compares Workflow check constraints with a fresh database.",
+    "sha256": "7884887999270f2150689a860975a5cc50bd77531c9bf53ac5a301714151d652"
+  },
+  "migrations/patch_20260928_02_workflow_long_binding_tombstone.sql": {
+    "disposition": "standalone-gate",
+    "references": ["tests/run-workflow-long-binding-tombstone-schema-gate.sh"],
+    "reason": "CI applies the original tombstone patch before the host-retention upgrade and checks that both late-close identities and issuer versions survive replay and host deactivation.",
+    "sha256": "6c64efc4a07eace8db9351e6e94f3a87593f8968633da4a3839186f212b8147c"
+  },
+  "migrations/patch_20260928_03_workflow_long_binding_tombstone_host_retention.sql": {
+    "disposition": "standalone-gate",
+    "references": ["tests/run-workflow-long-binding-tombstone-schema-gate.sh"],
+    "reason": "CI verifies repeated upgrade, fresh-schema parity, documentation, and retention through host deactivation on a disposable database.",
+    "sha256": "eba32b8ffef314b02bf71cddce2bc51bd42dddd8d156c7eac0c07d0bed62498b"
+  },
+  "migrations/patch_20260928_04_retire_workflow_broker.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-workflow-broker-retirement-schema-gate.sh"
+    ],
+    "reason": "Qualifies populated retirement and replay, shared refresh schema/data/policy preservation, cascade validation, and fresh catalog parity.",
+    "sha256": "315fca6ae52b7e5c3ffd2cdc577c23ee8bd3ffe0354bf5e0463c7140ec5a5828"
+  },
+  "patch_20261002_01_workflow_expression_profile.sql": {
+      "disposition": "retained-unqualified",
+      "reason": "E04 W2 schema gate prepared; database qualification pending owner-run scratch databases. Not executed in CI or by the agent.",
+      "sha256": "96e2cbce858800e137f8718ce907abe0350a482452d0016e3c4cf9883edc009f"
+  },
+  "patch_20261002_02_workflow_delivery_ledger.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "E04 W3b Portal ledger; component/static checks only. Database atomicity, locking and upgrade qualification pending explicit disposable database authorization.",
+    "sha256": "726eb3549e85be0f31deb21163a6d2addb0dd4fe34d5dfc85be9c5060540f4a3"
+}
+}

@@ -138,6 +138,13 @@ pub enum BindingLifecycle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
+    EvaluatorProfileUnsupported,
+    ExpressionInvalid,
+    ExpressionUnsupported,
+    ExpressionLimit,
+    ExpressionJsonProfile,
+    ExpressionEvaluation,
+    ExpressionResultType,
     VersionConflict,
     WorkflowInputInvalid,
     WorkflowStartRejected,

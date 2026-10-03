@@ -2,7 +2,7 @@
 use crate::invocation::AcceptOutcome;
 use crate::rule_api::{
     AdmissionProfile, ApiError, InvocationIdentity, RuleApiState, authenticate_invoke, load_status,
-    read_admissible_pinned_binding, start_invocation_with_stage, wait_for_terminal_until,
+    read_admissible_pinned_binding, start_invocation_with_operation, wait_for_terminal_until,
 };
 use crate::run_credential::SealedRunCredential;
 use axum::{
@@ -97,6 +97,63 @@ fn selected_key<'a>(
     supplied
         .filter(|key| !key.is_empty() && key.len() <= 256 && !key.chars().any(char::is_control))
         .ok_or_else(|| ApiError::input_invalid("idempotencyKey is required for this binding"))
+}
+
+struct InvokeRecovery {
+    candidates: Vec<crate::operational_admission::Operation>,
+    selected: Option<crate::operational_admission::Operation>,
+}
+impl InvokeRecovery {
+    #[allow(clippy::result_large_err)] // Preserve the established ApiError contract.
+    fn new(
+        identity: &InvocationIdentity,
+        kind: &str,
+        supplied: Option<&str>,
+        input_digest: &str,
+        arguments: &Value,
+    ) -> Result<Self, ApiError> {
+        let mut candidates = Vec::new();
+        if let Some(key) = supplied {
+            candidates.push(crate::operational_admission::Operation::new(
+                identity, kind, key, arguments,
+            )?);
+        }
+        if supplied != Some(input_digest) {
+            candidates.push(crate::operational_admission::Operation::new(
+                identity,
+                kind,
+                input_digest,
+                arguments,
+            )?);
+        }
+        Ok(Self {
+            candidates,
+            selected: None,
+        })
+    }
+    fn lookups(&self) -> Vec<(&crate::operational_admission::Operation, bool)> {
+        match &self.selected {
+            Some(operation) => vec![(operation, true)],
+            None => self
+                .candidates
+                .iter()
+                .map(|operation| (operation, false))
+                .collect(),
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)] // Preserve the established ApiError contract.
+async fn recover_operation(
+    operation: &crate::operational_admission::Operation,
+    authoritative: bool,
+    pool: &sqlx::PgPool,
+) -> Result<Option<crate::operational_admission::Committed>, ApiError> {
+    if authoritative {
+        operation.recover(pool).await
+    } else {
+        operation.discover(pool).await
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -228,7 +285,7 @@ async fn invoke_with_interlude<I: std::future::Future<Output = ()>>(
     arguments: Value,
     interlude: I,
 ) -> Result<Value, ApiError> {
-    let input: InvokeInput = serde_json::from_value(arguments)
+    let input: InvokeInput = serde_json::from_value(arguments.clone())
         .map_err(|_| ApiError::input_invalid("invalid workflow_invoke arguments"))?;
     let (identity, generation) = authenticate_invoke(&state, &headers).await?;
     reject_parent_action(input.parent_action_id)?;
@@ -241,6 +298,28 @@ async fn invoke_with_interlude<I: std::future::Future<Output = ()>>(
             "workflow invoke identity, pins or input is invalid",
         ));
     }
+    let input_digest = canonical_sha256(&input.input)
+        .map_err(|_| ApiError::input_invalid("workflow input is invalid"))?;
+    let operation_kind = format!("workflow_invoke:{}", input.stable_tool_ref);
+    let mut recovery = InvokeRecovery::new(
+        &identity,
+        &operation_kind,
+        input.idempotency_key.as_deref(),
+        &input_digest,
+        &arguments,
+    )?;
+    for (operation, authoritative) in recovery.lookups() {
+        if let Some(committed) = recover_operation(operation, authoritative, &state.pool).await? {
+            let accepted = committed
+                .status
+                .ok_or_else(crate::operational_admission::unavailable)?;
+            let current =
+                load_status(&state.pool, &identity, accepted.workflow_instance_id).await?;
+            return finish_invoke_recovered(&state, &identity, &generation, current).await;
+        }
+    }
+    let mut recovered_acceptance = false;
+    let result = async {
     let row = read_admissible_pinned_binding(&state.pool, identity.host_id, input.stable_tool_ref)
         .await?;
     let binding_digest: String = row.try_get("binding_digest").map_err(ApiError::database)?;
@@ -284,6 +363,14 @@ async fn invoke_with_interlude<I: std::future::Future<Output = ()>>(
         .map_err(|_| ApiError::input_invalid("workflow input is invalid"))?;
     let key = selected_key(kind, &input_digest, input.idempotency_key.as_deref())?;
     let scoped_key_digest = scope_digest(kind_name, &identity, input.stable_tool_ref, key)?;
+    let operation = crate::operational_admission::Operation::new(&identity, &operation_kind, key, &arguments)?;
+    // From this point the binding has selected the actual operation identity.
+    // Failure-race recovery must not inspect another policy's candidate key.
+    recovery.selected = Some(operation.clone());
+    if let Some(committed) = operation.recover(&state.pool).await? {
+        recovered_acceptance = true;
+        return committed.status.ok_or_else(crate::operational_admission::unavailable);
+    }
     let bounds: Value = row.try_get("runtime_bounds").map_err(ApiError::database)?;
     let delegation: Value = row
         .try_get("delegation_policy")
@@ -291,7 +378,15 @@ async fn invoke_with_interlude<I: std::future::Future<Output = ()>>(
     let budget = budget_from_revision(&bounds, &delegation)?;
     let run = Uuid::now_v7();
     let vault = require_vault(state.run_credential_vault.clone())?;
-    if let Some(replayed) = precheck(
+    let authored: Value = serde_yaml::from_str(&row.try_get::<String, _>("definition").map_err(ApiError::database)?)
+        .map_err(|_| ApiError::definition_mismatch("invalid authored definition"))?;
+    let v2 = crate::operational_admission::profile(&authored)? == workflow_expression::Profile::CelWorkflowV2;
+    if v2 {
+        let historical: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_invocation_idempotency_t WHERE host_id=$1 AND scope_digest=$2)")
+            .bind(identity.host_id).bind(&scoped_key_digest).fetch_one(&state.pool).await.map_err(ApiError::database)?;
+        if historical { return Err(crate::operational_admission::unavailable()); }
+    }
+    if !v2 && let Some(replayed) = precheck(
         &state,
         &identity,
         &scoped_key_digest,
@@ -302,7 +397,7 @@ async fn invoke_with_interlude<I: std::future::Future<Output = ()>>(
     )
     .await?
     {
-        return finish_invoke(&state, &headers, &identity, &generation, replayed).await;
+        return Ok(replayed);
     }
     let token = original_user_token(&identity.user_authorization)?;
     let sealed = vault
@@ -376,7 +471,7 @@ async fn invoke_with_interlude<I: std::future::Future<Output = ()>>(
         .try_get("admission_limits")
         .map_err(ApiError::database)?;
     interlude.await;
-    let (_, Json(status)) = start_invocation_with_stage(
+    let (_, Json(status)) = start_invocation_with_operation(
         State(state.clone()),
         None,
         None,
@@ -395,9 +490,64 @@ async fn invoke_with_interlude<I: std::future::Future<Output = ()>>(
             token,
             identity.user_authorization_exp,
         )?),
+        Some(operation),
     )
     .await?;
+    Ok(status)
+    }.await;
+    if result.is_err() {
+        for (operation, authoritative) in recovery.lookups() {
+            if let Some(committed) =
+                recover_operation(operation, authoritative, &state.pool).await?
+            {
+                let accepted = committed
+                    .status
+                    .ok_or_else(crate::operational_admission::unavailable)?;
+                let current =
+                    load_status(&state.pool, &identity, accepted.workflow_instance_id).await?;
+                return finish_invoke_recovered(&state, &identity, &generation, current).await;
+            }
+        }
+    }
+    let status = result?;
+    if recovered_acceptance {
+        let current = load_status(&state.pool, &identity, status.workflow_instance_id).await?;
+        return finish_invoke_recovered(&state, &identity, &generation, current).await;
+    }
     finish_invoke(&state, &headers, &identity, &generation, status).await
+}
+
+// Immutable acceptance recovery above is independent of this read-only result
+// observation. Preserve Invoke result/error envelopes, never cancel or refresh
+// credentials as a consequence of receipt recovery.
+#[allow(clippy::result_large_err)] // Preserve the established ApiError contract.
+async fn finish_invoke_recovered(
+    state: &RuleApiState,
+    identity: &InvocationIdentity,
+    generation: &Arc<crate::configuration::WorkflowConfigGeneration>,
+    mut status: InvocationStatus,
+) -> Result<Value, ApiError> {
+    if !status.state.is_terminal() && status.deadline_ts > Utc::now() {
+        let wait: i32 = sqlx::query_scalar("SELECT b.sync_wait_ms FROM workflow_invocation_t i JOIN workflow_tool_binding_t b ON b.host_id=i.host_id AND b.binding_id=i.binding_id WHERE i.host_id=$1 AND i.workflow_instance_id=$2")
+            .bind(identity.host_id).bind(status.workflow_instance_id).fetch_one(&state.pool).await.map_err(ApiError::database)?;
+        let bounded = i64::from(wait)
+            .min((status.deadline_ts - Utc::now()).num_milliseconds())
+            .max(0) as u64;
+        status = wait_for_terminal_until(state, identity, generation, status, bounded).await?;
+    }
+    if status.state == InvocationState::Completed {
+        return Ok(
+            json!({"status":"completed","workflowInstanceId":status.workflow_instance_id,
+            "definitionDigest":status.definition_digest,"output":status.public_result.unwrap_or_else(|| json!({}))}),
+        );
+    }
+    if status.state.is_terminal() {
+        return Err(ApiError::run_failure(status));
+    }
+    Err(ApiError::run_timeout(
+        &status,
+        status.deadline_ts > Utc::now(),
+    ))
 }
 
 async fn finish_invoke(
@@ -742,6 +892,184 @@ impl InvokeAdmission {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn recovery_identity() -> InvocationIdentity {
+        InvocationIdentity {
+            host_id: Uuid::from_u128(1),
+            principal_subject: "principal".into(),
+            end_user_subject: "user".into(),
+            caller_claims_digest: "unused".into(),
+            caller_claims: json!({}),
+            user_authorization: "unused".into(),
+            user_authorization_exp: 0,
+        }
+    }
+    fn recovery_request(key: &str, value: i32) -> Value {
+        json!({"idempotencyKey":key,"input":{"x":value},"expectedBindingDigest":"pinned"})
+    }
+    // Mock only receipt storage, retaining the production lookup plan and exact
+    // request matcher. This is ordinary component evidence, not a SQL race gate.
+    #[allow(clippy::result_large_err)]
+    fn recover_rows(
+        recovery: &InvokeRecovery,
+        rows: &[(&crate::operational_admission::Operation, &Value)],
+    ) -> Result<Option<Value>, ApiError> {
+        for (candidate, authoritative) in recovery.lookups() {
+            for (stored, request) in rows {
+                if candidate.scope() == stored.scope() {
+                    let receipt = json!({"original":stored.request_digest});
+                    if let Some(committed) = candidate.match_recovery(
+                        &crate::operational_admission::canonical(request)?,
+                        &stored.request_digest,
+                        receipt,
+                        None,
+                        authoritative,
+                    )? {
+                        return Ok(Some(committed.receipt));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+    fn operation(key: &str, request: &Value) -> crate::operational_admission::Operation {
+        crate::operational_admission::Operation::new(
+            &recovery_identity(),
+            "workflow_invoke:tool",
+            key,
+            request,
+        )
+        .unwrap()
+    }
+    #[test]
+    fn invoke_distinct_explicit_keys_do_not_conflict_with_digest_candidate() {
+        let digest = canonical_sha256(&json!({"x":1})).unwrap();
+        let original = recovery_request(&digest, 1);
+        let stored = operation(&digest, &original);
+        let request = recovery_request("another-explicit-key", 1);
+        let mut recovery = InvokeRecovery::new(
+            &recovery_identity(),
+            "workflow_invoke:tool",
+            Some("another-explicit-key"),
+            &digest,
+            &request,
+        )
+        .unwrap();
+        assert!(
+            recover_rows(&recovery, &[(&stored, &original)])
+                .unwrap()
+                .is_none()
+        );
+        recovery.selected = Some(operation("another-explicit-key", &request));
+        assert!(
+            recover_rows(&recovery, &[(&stored, &original)])
+                .unwrap()
+                .is_none()
+        );
+    }
+    #[test]
+    fn invoke_exact_explicit_and_derived_recovery_precedes_policy_selection() {
+        let digest = canonical_sha256(&json!({"x":1})).unwrap();
+        for kind in [IdempotencyKind::Explicit, IdempotencyKind::Derived] {
+            let request = recovery_request("supplied", 1);
+            let key = selected_key(kind, &digest, Some("supplied")).unwrap();
+            let stored = operation(key, &request);
+            let mut recovery = InvokeRecovery::new(
+                &recovery_identity(),
+                "workflow_invoke:tool",
+                Some("supplied"),
+                &digest,
+                &request,
+            )
+            .unwrap();
+            assert_eq!(
+                recover_rows(&recovery, &[(&stored, &request)]).unwrap(),
+                Some(json!({"original":stored.request_digest}))
+            );
+            recovery.selected = Some(operation(key, &request));
+            assert!(
+                recover_rows(&recovery, &[(&stored, &request)])
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    }
+    #[test]
+    fn invoke_changed_content_conflicts_only_with_actual_selected_identity() {
+        let request = recovery_request("actual-key", 2);
+        let original = recovery_request("actual-key", 1);
+        let stored = operation("actual-key", &original);
+        let digest = canonical_sha256(&request["input"]).unwrap();
+        let mut recovery = InvokeRecovery::new(
+            &recovery_identity(),
+            "workflow_invoke:tool",
+            Some("actual-key"),
+            &digest,
+            &request,
+        )
+        .unwrap();
+        // A candidate mismatch cannot identify the policy. Once selected, it conflicts.
+        assert!(
+            recover_rows(&recovery, &[(&stored, &original)])
+                .unwrap()
+                .is_none()
+        );
+        recovery.selected = Some(operation("actual-key", &request));
+        assert!(recover_rows(&recovery, &[(&stored, &original)]).is_err());
+        let mut derived_original = request.clone();
+        derived_original["expectedBindingDigest"] = json!("changed-pin");
+        let derived = operation(&digest, &derived_original);
+        recovery.selected = Some(operation(&digest, &request));
+        assert!(recover_rows(&recovery, &[(&derived, &derived_original)]).is_err());
+    }
+    #[test]
+    fn invoke_failure_race_uses_discovery_until_selected_then_only_authority() {
+        let digest = canonical_sha256(&json!({"x":1})).unwrap();
+        let unrelated_request = recovery_request(&digest, 1);
+        let unrelated = operation(&digest, &unrelated_request);
+        let request = recovery_request("actual-key", 1);
+        let committed = operation("actual-key", &request);
+        let mut recovery = InvokeRecovery::new(
+            &recovery_identity(),
+            "workflow_invoke:tool",
+            Some("actual-key"),
+            &digest,
+            &request,
+        )
+        .unwrap();
+        assert!(recover_rows(&recovery, &[]).unwrap().is_none());
+        // Pre-selection prerequisite failure: unrelated candidate is ignored;
+        // concurrent exact receipt still wins before mutable prerequisites.
+        assert!(
+            recover_rows(&recovery, &[(&unrelated, &unrelated_request)])
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            recover_rows(
+                &recovery,
+                &[(&unrelated, &unrelated_request), (&committed, &request)]
+            )
+            .unwrap()
+            .is_some()
+        );
+        recovery.selected = Some(operation("actual-key", &request));
+        assert_eq!(recovery.lookups().len(), 1);
+        assert!(recovery.lookups()[0].1);
+        assert!(
+            recover_rows(&recovery, &[(&unrelated, &unrelated_request)])
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            recover_rows(&recovery, &[(&committed, &request)])
+                .unwrap()
+                .is_some()
+        );
+        let changed = recovery_request("actual-key", 2);
+        let different = operation("actual-key", &changed);
+        assert!(recover_rows(&recovery, &[(&different, &changed)]).is_err());
+    }
     #[test]
     fn cancellation_strings_are_explicit() {
         assert_eq!(

@@ -15,6 +15,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 #[derive(Clone)]
 pub struct JobApi {
+    pub supported_profiles: crate::profile_support::SupportedProfiles,
     pub pool: PgPool,
     pub authority: Arc<dyn crate::run_authority::RunAuthority>,
     pub security: Arc<SecurityRuntime>,
@@ -165,7 +166,15 @@ async fn report_long(
     Json(request): Json<light_client::workflow_job_transport::Report>,
 ) -> Result<StatusCode, StatusCode> {
     let (sid, def, _) = token_agent(&s, &target, &h, request.host_id).await?;
-    persist_verified_report(&s.pool, s.artifacts.as_ref(), &sid, def, request).await
+    persist_verified_report_with_profiles(
+        &s.pool,
+        s.artifacts.as_ref(),
+        &sid,
+        def,
+        request,
+        &s.supported_profiles,
+    )
+    .await
 }
 
 async fn poll(
@@ -183,17 +192,60 @@ async fn pending_jobs(
     host: Uuid,
     def: Uuid,
 ) -> Result<Vec<light_client::workflow_job_transport::Job>, StatusCode> {
+    pending_jobs_guarded(&s.pool, &s.supported_profiles, host, def, |id| async move {
+        authorized_job(s, host, id, def).await.map(|_| ())
+    })
+    .await
+}
+
+pub(crate) async fn pending_jobs_guarded<F, T>(
+    pool: &PgPool,
+    support: &crate::profile_support::SupportedProfiles,
+    host: Uuid,
+    def: Uuid,
+    mut authorize: F,
+) -> Result<Vec<light_client::workflow_job_transport::Job>, StatusCode>
+where
+    F: FnMut(Uuid) -> T,
+    T: std::future::Future<Output = Result<(), StatusCode>>,
+{
     // An offline Agent must still receive cancelled/expired jobs so it can
     // durably fence admission and acknowledge cleanup. PENDING in Workflow
     // alone is not proof that the Agent never received a previous poll.
-    let rows = sqlx::query("SELECT j.*,i.end_user_subject,(j.cancellation_requested_ts IS NOT NULL OR j.deadline_ts<=now() OR i.cancel_requested_ts IS NOT NULL OR i.state NOT IN('ACCEPTED','RUNNING','WAITING') OR p.deadline_ts<=now() OR (i.deadline_ts<=now() AND i.response_policy_snapshot->'privateExecutionProfile'->>'version' IS DISTINCT FROM '1')) AS cleanup_only FROM workflow_agent_job_t j JOIN workflow_invocation_t i ON i.host_id=j.host_id AND i.process_id=j.workflow_process_id JOIN process_info_t p ON p.host_id=i.host_id AND p.process_id=i.process_id WHERE j.host_id=$1 AND j.agent_def_id=$2 AND j.state='PENDING' ORDER BY j.created_ts,j.job_id LIMIT 4")
-        .bind(host).bind(def).fetch_all(&s.pool).await.map_err(|_|StatusCode::SERVICE_UNAVAILABLE)?;
+    let rows = sqlx::query(&format!("SELECT j.*,p.expression_profile,p.definition_snapshot,p.definition_digest,i.end_user_subject,COALESCE((j.cancellation_requested_ts IS NOT NULL OR j.deadline_ts<=now() OR i.cancel_requested_ts IS NOT NULL OR i.state NOT IN('ACCEPTED','RUNNING','WAITING') OR p.deadline_ts<=now() OR (i.deadline_ts<=now() AND i.response_policy_snapshot->'privateExecutionProfile'->>'version' IS DISTINCT FROM '1')),false) AS cleanup_only FROM workflow_agent_job_t j JOIN workflow_invocation_t i ON i.host_id=j.host_id AND i.process_id=j.workflow_process_id JOIN process_info_t p ON p.host_id=i.host_id AND p.process_id=i.process_id WHERE j.host_id=$1 AND j.agent_def_id=$2 AND j.state='PENDING' AND ({} OR j.cancellation_requested_ts IS NOT NULL OR j.deadline_ts<=now() OR i.cancel_requested_ts IS NOT NULL OR i.state NOT IN('ACCEPTED','RUNNING','WAITING') OR p.deadline_ts<=now() OR (i.deadline_ts<=now() AND i.response_policy_snapshot->'privateExecutionProfile'->>'version' IS DISTINCT FROM '1')) ORDER BY j.created_ts,j.job_id LIMIT 4", crate::profile_support::eligible("p","$3")))
+        .bind(host).bind(def).bind(support.profiles()).fetch_all(pool).await.map_err(|_|StatusCode::SERVICE_UNAVAILABLE)?;
     let mut jobs = Vec::new();
     for row in rows {
         let id: Uuid = row.get("job_id");
         let cancellation_requested: bool = row.get("cleanup_only");
         if !cancellation_requested {
-            match authorized_job(s, host, id, def).await {
+            let profile: String = row.get("expression_profile");
+            let snapshot: Option<serde_json::Value> = row.get("definition_snapshot");
+            let digest: Option<String> = row.get("definition_digest");
+            match support.check(&profile, snapshot.as_ref(), digest.as_deref()) {
+                crate::executor::expression_completion::ProfileDisposition::Deferred => continue,
+                crate::executor::expression_completion::ProfileDisposition::Corrupt => {
+                    let mut tx = pool
+                        .begin()
+                        .await
+                        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+                    crate::executor::expression_completion::reject_step(
+                        &mut tx,
+                        host,
+                        row.get("workflow_process_id"),
+                        row.get("workflow_task_id"),
+                        "/definition_snapshot/expression_profile",
+                    )
+                    .await
+                    .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+                    tx.commit()
+                        .await
+                        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+                    continue;
+                }
+                _ => {}
+            }
+            match authorize(id).await {
                 Ok(_) => {}
                 Err(StatusCode::FORBIDDEN) => continue,
                 Err(error) => return Err(error),
@@ -229,7 +281,15 @@ async fn report(
     Json(request): Json<light_client::workflow_job_transport::Report>,
 ) -> Result<StatusCode, StatusCode> {
     let (sid, def) = peer_agent(&s, &peer, &h, request.host_id).await?;
-    persist_verified_report(&s.pool, s.artifacts.as_ref(), &sid, def, request).await
+    persist_verified_report_with_profiles(
+        &s.pool,
+        s.artifacts.as_ref(),
+        &sid,
+        def,
+        request,
+        &s.supported_profiles,
+    )
+    .await
 }
 
 /// Internal persistence seam. The HTTP handler must authenticate the mTLS Agent
@@ -242,6 +302,152 @@ pub async fn persist_verified_report(
     def: Uuid,
     request: light_client::workflow_job_transport::Report,
 ) -> Result<StatusCode, StatusCode> {
+    persist_verified_report_with_profiles(
+        pool,
+        artifacts,
+        sid,
+        def,
+        request,
+        &crate::profile_support::SupportedProfiles::from_evaluator(false),
+    )
+    .await
+}
+
+fn report_recovery(
+    committed: Option<&Option<serde_json::Value>>,
+    value: &serde_json::Value,
+) -> Option<Result<StatusCode, StatusCode>> {
+    match committed {
+        None => Some(Err(StatusCode::FORBIDDEN)),
+        Some(Some(old)) => Some(if old == value {
+            Ok(StatusCode::NO_CONTENT)
+        } else {
+            Err(StatusCode::CONFLICT)
+        }),
+        Some(None) => None,
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct LockedSuccessJob {
+    report: Option<serde_json::Value>,
+    state: String,
+    deadline_ts: chrono::DateTime<chrono::Utc>,
+    cancellation_requested_ts: Option<chrono::DateTime<chrono::Utc>>,
+    workflow_process_id: Uuid,
+    workflow_task_id: Uuid,
+}
+
+fn fresh_success_gate(
+    job: &LockedSuccessJob,
+    value: &serde_json::Value,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<bool, StatusCode> {
+    // An exact already-committed report is recovery, even after expiry/cancellation.
+    if let Some(recovered) = report_recovery(Some(&job.report), value) {
+        return recovered.map(|_| false);
+    }
+    if !matches!(job.state.as_str(), "PENDING" | "TURN_CREATED" | "RUNNING")
+        || job.cancellation_requested_ts.is_some()
+        || job.deadline_ts <= now
+    {
+        return Err(StatusCode::CONFLICT);
+    }
+    Ok(true)
+}
+
+pub async fn persist_verified_report_with_profiles(
+    pool: &PgPool,
+    artifacts: Option<&crate::artifact_store::DurableArtifactStore>,
+    sid: &str,
+    def: Uuid,
+    request: light_client::workflow_job_transport::Report,
+    support: &crate::profile_support::SupportedProfiles,
+) -> Result<StatusCode, StatusCode> {
+    let value = serde_json::to_value(&request).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let committed:Option<Option<serde_json::Value>>=sqlx::query_scalar("SELECT report FROM workflow_agent_job_t WHERE host_id=$1 AND job_id=$2 AND agent_def_id=$3")
+        .bind(request.host_id).bind(request.job_id).bind(def).fetch_optional(pool).await.map_err(|_|StatusCode::SERVICE_UNAVAILABLE)?;
+    if let Some(status) = report_recovery(committed.as_ref(), &value) {
+        return status;
+    }
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let mut success_job = None;
+    if request.state == "SUCCEEDED" {
+        // Lock the execution-state parents before the first acceptance mutation.
+        let (process,task):(Uuid,Uuid)=sqlx::query_as("SELECT workflow_process_id,workflow_task_id FROM workflow_agent_job_t WHERE host_id=$1 AND job_id=$2 AND agent_def_id=$3")
+            .bind(request.host_id).bind(request.job_id).bind(def).fetch_one(&mut *tx).await.map_err(|_|StatusCode::SERVICE_UNAVAILABLE)?;
+        let parent = crate::durable_timer::try_lock_parent(&mut tx, request.host_id, process)
+            .await
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        sqlx::query(
+            "SELECT task_id FROM task_info_t WHERE host_id=$1 AND task_id=$2 FOR UPDATE NOWAIT",
+        )
+        .bind(request.host_id)
+        .bind(task)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        // Exact concurrent committed recovery must also precede fresh validation.
+        let previous:Option<LockedSuccessJob>=sqlx::query_as("SELECT report,state,deadline_ts,cancellation_requested_ts,workflow_process_id,workflow_task_id FROM workflow_agent_job_t WHERE host_id=$1 AND job_id=$2 AND agent_def_id=$3 FOR UPDATE")
+        .bind(request.host_id).bind(request.job_id).bind(def).fetch_optional(&mut *tx).await.map_err(|_|StatusCode::SERVICE_UNAVAILABLE)?;
+        let previous = previous.ok_or(StatusCode::FORBIDDEN)?;
+        let now = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        if !fresh_success_gate(&previous, &value, now)? {
+            return Ok(StatusCode::NO_CONTENT);
+        }
+        if previous.workflow_process_id != process || previous.workflow_task_id != task {
+            return Err(StatusCode::CONFLICT);
+        }
+        success_job = Some(previous);
+
+        match crate::profile_support::read(&mut tx, request.host_id, process, support)
+            .await
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+        {
+            crate::executor::expression_completion::ProfileDisposition::Deferred => {
+                return Err(StatusCode::SERVICE_UNAVAILABLE);
+            }
+            crate::executor::expression_completion::ProfileDisposition::Corrupt => {
+                crate::executor::expression_completion::reject_step(
+                    &mut tx,
+                    request.host_id,
+                    process,
+                    task,
+                    "/definition_snapshot/expression_profile",
+                )
+                .await
+                .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+                tx.commit()
+                    .await
+                    .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+                return Err(StatusCode::UNPROCESSABLE_ENTITY);
+            }
+            _ => {}
+        }
+        let live:bool=sqlx::query_scalar("SELECT active AND status_code IN ('A','W') AND (deadline_ts IS NULL OR deadline_ts>clock_timestamp()) FROM task_info_t WHERE host_id=$1 AND task_id=$2")
+            .bind(request.host_id).bind(task).fetch_one(&mut *tx).await.map_err(|_|StatusCode::SERVICE_UNAVAILABLE)?;
+        if !live
+            || parent.blocked.is_some()
+            || parent.deadline.is_some_and(|d| d <= chrono::Utc::now())
+        {
+            return Err(StatusCode::CONFLICT);
+        }
+    } else {
+        let previous:Option<Option<serde_json::Value>>=sqlx::query_scalar("SELECT report FROM workflow_agent_job_t WHERE host_id=$1 AND job_id=$2 AND agent_def_id=$3 FOR UPDATE")
+        .bind(request.host_id).bind(request.job_id).bind(def).fetch_optional(&mut *tx).await.map_err(|_|StatusCode::SERVICE_UNAVAILABLE)?;
+        match previous {
+            None => return Err(StatusCode::FORBIDDEN),
+            Some(Some(old)) if old != value => return Err(StatusCode::CONFLICT),
+            Some(Some(_)) => return Ok(StatusCode::NO_CONTENT),
+            Some(None) => {}
+        }
+    }
     if !matches!(
         request.state.as_str(),
         "SUCCEEDED" | "FAILED" | "CANCELLED" | "UNKNOWN"
@@ -293,29 +499,17 @@ pub async fn persist_verified_report(
             return Err(StatusCode::CONFLICT);
         }
     }
-    let value = serde_json::to_value(&request).map_err(|_| StatusCode::BAD_REQUEST)?;
-    // A lost response must remain replayable even after the stage advances.
-    // Reports are immutable after commit; do this before current-claim checks.
-    let committed:Option<Option<serde_json::Value>>=sqlx::query_scalar("SELECT report FROM workflow_agent_job_t WHERE host_id=$1 AND job_id=$2 AND agent_def_id=$3")
-        .bind(request.host_id).bind(request.job_id).bind(def).fetch_optional(pool).await.map_err(|_|StatusCode::SERVICE_UNAVAILABLE)?;
-    match committed {
-        None => return Err(StatusCode::FORBIDDEN),
-        Some(Some(old)) => {
-            return if old == value {
-                Ok(StatusCode::NO_CONTENT)
-            } else {
-                Err(StatusCode::CONFLICT)
-            };
-        }
-        Some(None) => {}
-    }
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let mut state = request.state.clone();
     let mut error = request.error.clone();
     if request.state == "SUCCEEDED" {
+        // Deadline can expire while structural validation runs. The job is still
+        // locked, and no acceptance/turn/finding mutation has happened yet.
+        let now = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        let job = success_job.as_ref().ok_or(StatusCode::CONFLICT)?;
+        fresh_success_gate(job, &value, now)?;
         let outcome = crate::native_result::record(
             &mut tx,
             request.host_id,
@@ -337,14 +531,6 @@ pub async fn persist_verified_report(
                 "retryable":false
             }));
         }
-    }
-    let previous:Option<Option<serde_json::Value>>=sqlx::query_scalar("SELECT report FROM workflow_agent_job_t WHERE host_id=$1 AND job_id=$2 AND agent_def_id=$3 FOR UPDATE")
-        .bind(request.host_id).bind(request.job_id).bind(def).fetch_optional(&mut *tx).await.map_err(|_|StatusCode::SERVICE_UNAVAILABLE)?;
-    match previous {
-        None => return Err(StatusCode::FORBIDDEN),
-        Some(Some(old)) if old != value => return Err(StatusCode::CONFLICT),
-        Some(Some(_)) => return Ok(StatusCode::NO_CONTENT),
-        Some(None) => {}
     }
     if state == "SUCCEEDED" {
         output = Some(
@@ -420,4 +606,101 @@ async fn authorized_job(
         .await
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     Ok((run, owner))
+}
+
+#[cfg(test)]
+mod w6_recovery_tests {
+    use super::*;
+    #[test]
+    fn w6_review_job_fences_precede_fresh_success_and_preserve_exact_recovery() {
+        let now = chrono::Utc::now();
+        let value = serde_json::json!({"state":"SUCCEEDED","output":{"fixture":true}});
+        let mut job = LockedSuccessJob {
+            report: None,
+            state: "RUNNING".into(),
+            deadline_ts: now + chrono::Duration::minutes(1),
+            cancellation_requested_ts: None,
+            workflow_process_id: Uuid::new_v4(),
+            workflow_task_id: Uuid::new_v4(),
+        };
+        // Positive control: with a live parent/task, the job's own fence is eligible.
+        assert_eq!(fresh_success_gate(&job, &value, now), Ok(true));
+        for fence in [
+            "expired",
+            "cancel-requested",
+            "cancelled",
+            "failed",
+            "succeeded",
+            "unknown",
+        ] {
+            job.report = None;
+            job.state = "RUNNING".into();
+            job.deadline_ts = now + chrono::Duration::minutes(1);
+            job.cancellation_requested_ts = None;
+            match fence {
+                "expired" => job.deadline_ts = now,
+                "cancel-requested" => job.cancellation_requested_ts = Some(now),
+                "cancelled" => job.state = "CANCELLED".into(),
+                "failed" => job.state = "FAILED".into(),
+                "succeeded" => job.state = "SUCCEEDED".into(),
+                _ => job.state = "UNKNOWN".into(),
+            }
+            let mut accepted_attempt = None;
+            let mut turn_consumed = false;
+            let mut findings_consumed = false;
+            let admission = fresh_success_gate(&job, &value, now);
+            if matches!(admission, Ok(true)) {
+                // Mock native_result acceptance mutation boundary.
+                accepted_attempt = Some(1);
+                turn_consumed = true;
+                findings_consumed = true;
+                job.report = Some(value.clone());
+            }
+            assert_eq!(admission, Err(StatusCode::CONFLICT), "{fence}");
+            assert!(job.report.is_none());
+            assert_eq!(accepted_attempt, None);
+            assert!(!turn_consumed && !findings_consumed);
+            job.report = Some(value.clone());
+            assert_eq!(
+                fresh_success_gate(&job, &value, now),
+                Ok(false),
+                "exact recovery: {fence}"
+            );
+            assert_eq!(
+                fresh_success_gate(&job, &serde_json::json!({"different":true}), now),
+                Err(StatusCode::CONFLICT)
+            );
+        }
+        job.report = None;
+        job.state = "PENDING".into();
+        job.cancellation_requested_ts = None;
+        job.deadline_ts = now + chrono::Duration::seconds(1);
+        assert_eq!(fresh_success_gate(&job, &value, now), Ok(true));
+        assert_eq!(
+            fresh_success_gate(&job, &value, job.deadline_ts),
+            Err(StatusCode::CONFLICT)
+        );
+    }
+    #[test]
+    fn exact_committed_report_recovers_without_fresh_success_validation() {
+        // Recovery must accept an exact historical payload even when current
+        // fresh-success validation would reject its structure or profile.
+        let historical = serde_json::json!({"state":"SUCCEEDED","output":{"historical":true}});
+        assert_eq!(
+            report_recovery(Some(&Some(historical.clone())), &historical),
+            Some(Ok(StatusCode::NO_CONTENT))
+        );
+        assert_eq!(
+            report_recovery(
+                Some(&Some(historical.clone())),
+                &serde_json::json!({"state":"SUCCEEDED"})
+            ),
+            Some(Err(StatusCode::CONFLICT))
+        );
+        assert_eq!(report_recovery(Some(&None), &historical), None);
+        assert_eq!(
+            report_recovery(None, &historical),
+            Some(Err(StatusCode::FORBIDDEN))
+        );
+    }
 }

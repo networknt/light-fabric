@@ -37,7 +37,7 @@ pub async fn enqueue_with_artifacts(
     task: Uuid,
     name: &str,
     agent: Uuid,
-    mut input: Value,
+    input: Value,
     schema: Value,
     deadline: chrono::DateTime<chrono::Utc>,
     tokens: u64,
@@ -46,9 +46,96 @@ pub async fn enqueue_with_artifacts(
     max_depth: i32,
     artifacts: Option<&crate::artifact_store::DurableArtifactStore>,
 ) -> Result<Uuid, Box<dyn std::error::Error + Send + Sync>> {
+    enqueue_with_artifacts_fenced(
+        pool, host, process, task, name, agent, input, schema, deadline, tokens, cost, depth,
+        max_depth, artifacts, None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn enqueue_with_artifacts_fenced(
+    pool: &PgPool,
+    host: Uuid,
+    process: Uuid,
+    task: Uuid,
+    name: &str,
+    agent: Uuid,
+    input: Value,
+    schema: Value,
+    deadline: chrono::DateTime<chrono::Utc>,
+    tokens: u64,
+    cost: u64,
+    depth: i32,
+    max_depth: i32,
+    artifacts: Option<&crate::artifact_store::DurableArtifactStore>,
+    fence: Option<(Option<(Uuid, i64)>, &str)>,
+) -> Result<Uuid, Box<dyn std::error::Error + Send + Sync>> {
+    enqueue_with_artifacts_supported(
+        pool,
+        host,
+        process,
+        task,
+        name,
+        agent,
+        input,
+        schema,
+        deadline,
+        tokens,
+        cost,
+        depth,
+        max_depth,
+        artifacts,
+        &crate::profile_support::SupportedProfiles::from_evaluator(false),
+        fence,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn enqueue_with_artifacts_supported(
+    pool: &PgPool,
+    host: Uuid,
+    process: Uuid,
+    task: Uuid,
+    name: &str,
+    agent: Uuid,
+    mut input: Value,
+    schema: Value,
+    deadline: chrono::DateTime<chrono::Utc>,
+    tokens: u64,
+    cost: u64,
+    depth: i32,
+    max_depth: i32,
+    artifacts: Option<&crate::artifact_store::DurableArtifactStore>,
+    support: &crate::profile_support::SupportedProfiles,
+    fence: Option<(Option<(Uuid, i64)>, &str)>,
+) -> Result<Uuid, Box<dyn std::error::Error + Send + Sync>> {
     let mut tx = pool.begin().await?;
     let row=sqlx::query("SELECT i.principal_subject,i.end_user_subject,p.definition_snapshot FROM workflow_invocation_t i JOIN process_info_t p ON p.host_id=i.host_id AND p.process_id=i.process_id WHERE i.host_id=$1 AND i.process_id=$2 AND i.state IN('ACCEPTED','RUNNING','WAITING') AND i.cancel_requested_ts IS NULL AND ((i.deadline_ts>now() AND i.deadline_ts>=$3) OR (i.response_policy_snapshot->'privateExecutionProfile'->>'version'='1' AND (p.deadline_ts IS NULL OR p.deadline_ts>=$3))) FOR SHARE OF i")
         .bind(host).bind(process).bind(deadline).fetch_one(&mut *tx).await?;
+    if let Some((lease, profile)) = fence {
+        let Some((owner, token)) = lease else {
+            return Err(sqlx::Error::Protocol("WORKFLOW_STALE_COMPLETION".into()).into());
+        };
+        sqlx::query("SELECT process_id FROM process_info_t WHERE host_id=$1 AND process_id=$2 FOR SHARE NOWAIT").bind(host).bind(process).execute(&mut *tx).await?;
+        sqlx::query(
+            "SELECT task_id FROM task_info_t WHERE host_id=$1 AND task_id=$2 FOR SHARE NOWAIT",
+        )
+        .bind(host)
+        .bind(task)
+        .execute(&mut *tx)
+        .await?;
+        let live:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM task_info_t t JOIN process_info_t p ON p.host_id=t.host_id AND p.process_id=t.process_id WHERE t.host_id=$1 AND t.task_id=$2 AND t.process_id=$3 AND p.expression_profile=$4 AND p.active AND p.status_code IN ('A','W') AND t.active AND t.status_code='A' AND t.lease_owner=$5 AND t.lease_fencing_token=$6 AND t.lease_expires_ts>clock_timestamp() AND (t.deadline_ts IS NULL OR t.deadline_ts>clock_timestamp()) AND (p.deadline_ts IS NULL OR p.deadline_ts>clock_timestamp()))")
+            .bind(host).bind(task).bind(process).bind(profile).bind(owner).bind(token).fetch_one(&mut *tx).await?;
+        if !live {
+            return Err(sqlx::Error::Protocol("WORKFLOW_STALE_COMPLETION".into()).into());
+        }
+    }
+    if !crate::profile_support::success(&mut tx, host, process, task, support).await? {
+        tx.commit().await?;
+        return Err(sqlx::Error::Protocol("EVALUATOR_PROFILE_UNSUPPORTED".into()).into());
+    }
     let definition: Value = row.get("definition_snapshot");
     if input.get("managerSnapshot").is_some() {
         check(
@@ -208,6 +295,13 @@ pub async fn enqueue_with_artifacts(
         .bind(host).bind(task).bind(process).bind(agent).bind(input).bind(schema).bind(deadline)
         .bind(job.token_budget).bind(job.cost_budget_micros).bind(depth).bind(max_depth).fetch_one(&mut *tx).await?;
     check(same, "native job replay changed immutable request")?;
+    if let Some((Some((owner, token)), _)) = fence {
+        let live:bool=sqlx::query_scalar("SELECT lease_owner=$3 AND lease_fencing_token=$4 AND lease_expires_ts>clock_timestamp() AND (deadline_ts IS NULL OR deadline_ts>clock_timestamp()) FROM task_info_t WHERE host_id=$1 AND task_id=$2")
+            .bind(host).bind(task).bind(owner).bind(token).fetch_one(&mut *tx).await?;
+        if !live {
+            return Err(sqlx::Error::Protocol("WORKFLOW_STALE_COMPLETION".into()).into());
+        }
+    }
     tx.commit().await?;
     Ok(task)
 }
