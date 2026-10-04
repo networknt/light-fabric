@@ -1680,3 +1680,55 @@ async fn legacy_unrepresentable_delay_uses_terminal_failure_machinery() {
     );
     f.close().await;
 }
+
+#[tokio::test]
+async fn fork_retry_raw_lookup_does_not_change_shared_export_lookup() {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy("postgres://fixture:fixture@127.0.0.1:1/unreachable")
+        .unwrap();
+    let executor = TaskExecutor::new(pool);
+    let mut raw = simple(
+        json!({"fork":{"branches":[{"branch":{"call":"http","with":{"method":"GET","endpoint":"http://127.0.0.1:1/fixture"},"retry":"fixed"}},{"unrelated":{"call":"http","with":{"method":"GET","endpoint":"http://127.0.0.1:1/fixture"},"retry":{"when":"${ false }"}}}]}}),
+        false,
+    );
+    raw["do"][0]["fetch"]["fork"]["compete"] = json!(false);
+    raw["use"] = json!({"retries":{"fixed":policy(),"unused":{"backoff":{}}}});
+    let mut claimed = ClaimedTask {
+        expression_profile: "cel-workflow-v2".into(),
+        input_data: json!({}),
+        context_data: json!({}),
+        task: ActiveTask {
+            host_id: Uuid::new_v4(),
+            task_id: Uuid::new_v4(),
+            task_type: "call".into(),
+            process_id: Uuid::new_v4(),
+            wf_instance_id: Uuid::new_v4().to_string(),
+            wf_task_id: "fetch::branch".into(),
+            status_code: "A".into(),
+            result_code: None,
+        },
+        wf_def_id: Uuid::new_v4(),
+        definition: serde_json::from_value(raw.clone()).unwrap(),
+        raw_definition: serde_yaml::to_value(&raw).unwrap(),
+        host_lease: None,
+        completion_guard: None,
+    };
+    assert_eq!(
+        executor.retry_parameters(&claimed).unwrap(),
+        Some(workflow_expression::FixedRetry {
+            attempts: 3,
+            delay_ms: 2000
+        })
+    );
+    assert!(
+        executor
+            .find_raw_task_definition(&claimed.raw_definition, "fetch::branch")
+            .is_none(),
+        "shared legacy export lookup is unchanged"
+    );
+    raw["use"]["retries"]["fixed"]["when"] = json!("${ false }");
+    claimed.raw_definition = serde_yaml::to_value(&raw).unwrap();
+    assert!(
+        matches!(executor.retry_parameters(&claimed),Err(sqlx::Error::Protocol(code)) if code=="WORKFLOW_RETRY_POLICY_UNSUPPORTED")
+    );
+}

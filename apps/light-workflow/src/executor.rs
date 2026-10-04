@@ -5736,9 +5736,16 @@ impl TaskExecutor {
         if claimed.expression_profile == "cel-workflow-v2" {
             // Inspect this task's raw policy: typed serde has discarded unknown keys.
             // Only its referenced component is resolved; unrelated policies are untouched.
-            let raw_task = self
-                .find_raw_task_definition(&claimed.raw_definition, &claimed.task.wf_task_id)
-                .ok_or_else(|| sqlx::Error::Protocol("WORKFLOW_RETRY_POLICY_UNSUPPORTED".into()))?;
+            let raw_task = if let Some((fork, branch)) = claimed.task.wf_task_id.split_once("::") {
+                self.find_raw_task_definition(&claimed.raw_definition, fork)
+                    .and_then(|t| t.get("fork"))
+                    .and_then(|t| t.get("branches"))
+                    .and_then(YamlValue::as_sequence)
+                    .and_then(|branches| branches.iter().find_map(|entry| entry.get(branch)))
+            } else {
+                self.find_raw_task_definition(&claimed.raw_definition, &claimed.task.wf_task_id)
+            }
+            .ok_or_else(|| sqlx::Error::Protocol("WORKFLOW_RETRY_POLICY_UNSUPPORTED".into()))?;
             let Some(retry) = raw_task.get("retry") else {
                 return Ok(None);
             };
@@ -6966,11 +6973,6 @@ impl TaskExecutor {
         raw_definition: &'a YamlValue,
         task_name: &str,
     ) -> Option<&'a YamlValue> {
-        if let Some((fork_name, branch_name)) = task_name.split_once("::") {
-            let fork = self.find_raw_task_definition(raw_definition, fork_name)?;
-            let branches = fork.get("fork")?.get("branches")?.as_sequence()?;
-            return branches.iter().find_map(|entry| entry.get(branch_name));
-        }
         let tasks = raw_definition.get("do")?.as_sequence()?;
         for task_entry in tasks {
             let mapping = task_entry.as_mapping()?;
