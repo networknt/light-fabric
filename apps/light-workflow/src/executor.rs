@@ -226,6 +226,26 @@ struct TaskExecutionResult {
     context_data: Option<Value>,
 }
 
+impl TaskExecutionResult {
+    fn is_http_response_failure(&self) -> bool {
+        // The HTTP adapter constructs this envelope for non-success responses;
+        // upstream bytes stay in `body`. Never use an upstream retryable/code field
+        // or a generic F completion as retry authority.
+        self.status_code == "F"
+            && self.task_output.as_object().is_some_and(|output| {
+                output.len() == 3
+                    && output
+                        .get("error")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|status| {
+                            (100..600).contains(&status) && !(200..300).contains(&status)
+                        })
+                    && output.get("message").and_then(Value::as_str) == Some("HTTP call failed")
+                    && output.get("body").is_some_and(Value::is_string)
+            })
+    }
+}
+
 struct EffectClaim {
     idempotency_key: String,
     request_digest: String,
@@ -5442,6 +5462,22 @@ impl TaskExecutor {
             .await?
         {
             expression_completion::ProfileDisposition::V2 => {
+                if result.is_http_response_failure()
+                    && matches!(
+                        self.find_task_definition(&claimed.definition, &claimed.task.wf_task_id),
+                        Some(TaskDefinition::Call(CallTaskDefinition::Http(_)))
+                    )
+                {
+                    expression_completion::require_authority(
+                        self.w4_authority(tx, claimed).await?,
+                    )?;
+                    if self
+                        .schedule_retry_if_allowed(tx, claimed, &result.task_output)
+                        .await?
+                    {
+                        return Ok(());
+                    }
+                }
                 return self.finish_task_v2(tx, claimed, result).await;
             }
             expression_completion::ProfileDisposition::Deferred if result.status_code == "F" => {
@@ -9188,3 +9224,11 @@ do:
 #[cfg(test)]
 #[path = "expression_completion_tests.rs"]
 mod w4_tests;
+
+#[cfg(test)]
+#[path = "http_retry_tests.rs"]
+mod http_retry_tests;
+
+#[cfg(test)]
+#[path = "http_failure_tests.rs"]
+mod http_failure_tests;
