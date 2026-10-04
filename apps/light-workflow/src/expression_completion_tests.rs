@@ -592,7 +592,9 @@ async fn w4_postgres_runner_authority_loss_no_acceptance_or_acknowledgement() {
     let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
         certificate_pem.as_bytes().to_vec(),
         certificate.signing_key.serialize_pem().into_bytes(),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     drop(certificate);
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -601,7 +603,9 @@ async fn w4_postgres_runner_authority_loss_no_acceptance_or_acknowledgement() {
     // written to disk and the TLS configuration is owned by this server only.
     let server = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         axum_server::from_tcp_rustls(listener, tls)
-            .serve(router.into_make_service()).await.unwrap()
+            .serve(router.into_make_service())
+            .await
+            .unwrap()
     }));
     let client = execution_client::ExecutionClient::new_with_bearer_token(
         &format!("https://{addr}/"),
@@ -1085,19 +1089,28 @@ async fn w4_postgres_cancellation_lease_loss_deferral_and_corruption() {
         'tasks',(SELECT jsonb_agg(to_jsonb(t)) FROM task_info_t t),
         'invocations',(SELECT jsonb_agg(to_jsonb(i)) FROM workflow_invocation_t i))";
     let cancelled_state: Value = sqlx::query_scalar(persisted_sql)
-        .fetch_one(&gate.pool).await.unwrap();
+        .fetch_one(&gate.pool)
+        .await
+        .unwrap();
     let mut tx = gate.pool.begin().await.unwrap();
     // Prove an earlier write in the accepting transaction is also rolled back.
     sqlx::query("UPDATE task_info_t SET update_ts=clock_timestamp()")
-        .execute(&mut *tx).await.unwrap();
-    let error = gate.executor
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let error = gate
+        .executor
         .finish_task(&mut tx, &gate.claimed, result)
         .await
         .unwrap_err();
-    assert!(matches!(error, sqlx::Error::Protocol(ref code) if code == "WORKFLOW_STALE_COMPLETION"));
+    assert!(
+        matches!(error, sqlx::Error::Protocol(ref code) if code == "WORKFLOW_STALE_COMPLETION")
+    );
     tx.rollback().await.unwrap();
     let after_cancel: Value = sqlx::query_scalar(persisted_sql)
-        .fetch_one(&gate.pool).await.unwrap();
+        .fetch_one(&gate.pool)
+        .await
+        .unwrap();
     assert_eq!(after_cancel, cancelled_state);
     assert_eq!(gate.context().await, old);
     sqlx::query("UPDATE workflow_invocation_t SET cancel_requested_ts=NULL,state='RUNNING'")
@@ -1105,21 +1118,28 @@ async fn w4_postgres_cancellation_lease_loss_deferral_and_corruption() {
         .await
         .unwrap();
     let live_state: Value = sqlx::query_scalar(persisted_sql)
-        .fetch_one(&gate.pool).await.unwrap();
+        .fetch_one(&gate.pool)
+        .await
+        .unwrap();
     let mut tx = gate.pool.begin().await.unwrap();
     sqlx::query("UPDATE task_info_t SET lease_expires_ts=clock_timestamp()")
         .execute(&mut *tx)
         .await
         .unwrap();
     let result = gate.executor.execute_task(&gate.claimed).await.unwrap();
-    let error = gate.executor
+    let error = gate
+        .executor
         .finish_task(&mut tx, &gate.claimed, result)
         .await
         .unwrap_err();
-    assert!(matches!(error, sqlx::Error::Protocol(ref code) if code == "WORKFLOW_STALE_COMPLETION"));
+    assert!(
+        matches!(error, sqlx::Error::Protocol(ref code) if code == "WORKFLOW_STALE_COMPLETION")
+    );
     tx.rollback().await.unwrap();
     let after_expiry: Value = sqlx::query_scalar(persisted_sql)
-        .fetch_one(&gate.pool).await.unwrap();
+        .fetch_one(&gate.pool)
+        .await
+        .unwrap();
     assert_eq!(after_expiry, live_state);
     assert_eq!(gate.context().await, old);
     gate.claimed.host_lease = None;

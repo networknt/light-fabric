@@ -1066,7 +1066,9 @@ async fn w6_postgres_native_delivery_deferral_mismatch_cleanup_and_pickup() {
             .execute(&g.pool).await.unwrap();
         assert_eq!(updated.rows_affected(), 1);
         sqlx::query("ALTER TABLE workflow_invocation_t ALTER COLUMN end_user_subject SET NOT NULL")
-            .execute(&g.pool).await.unwrap();
+            .execute(&g.pool)
+            .await
+            .unwrap();
         sqlx::query("CREATE TABLE workflow_agent_job_t(host_id uuid,job_id uuid,agent_def_id uuid,workflow_process_id uuid,workflow_task_id uuid,state text,created_ts timestamptz DEFAULT clock_timestamp(),cancellation_requested_ts timestamptz,deadline_ts timestamptz DEFAULT clock_timestamp()+interval '1 hour',input jsonb DEFAULT '{}',input_schema_digest text DEFAULT 'digest',output_schema jsonb DEFAULT '{}',token_budget bigint DEFAULT 100,cost_budget_micros bigint DEFAULT 0,delegation_depth int DEFAULT 0,maximum_delegation_depth int DEFAULT 1)").execute(&g.pool).await.unwrap();
         let agent = Uuid::new_v4();
         sqlx::query("INSERT INTO workflow_agent_job_t(host_id,job_id,agent_def_id,workflow_process_id,workflow_task_id,state) VALUES($1,$2,$3,$4,$2,'PENDING')").bind(g.claimed.task.host_id).bind(g.claimed.task.task_id).bind(agent).bind(g.claimed.task.process_id).execute(&g.pool).await.unwrap();
