@@ -9,6 +9,8 @@ signed-microsecond interval range (`i64::MAX / 1000` milliseconds), and adding i
 to the admission clock must fit Chrono's finite UTC timestamp range. At scheduling,
 the absolute timestamp is checked again against the database clock and bound
 as a timestamp parameter; SQL performs no floating conversion or interval addition.
+`update_ts` uses the same database-clock reading as `next_attempt_ts`, so their
+difference records exactly the configured fixed delay even in a long transaction.
 These are storage/runtime representation limits, not business timeouts.
 No retry window is implied.
 

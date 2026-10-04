@@ -5889,7 +5889,7 @@ impl TaskExecutor {
             "UPDATE task_info_t SET status_code='A',locked='N',completed_ts=NULL,
                     task_output=$1,result_code='RETRY_SCHEDULED',attempt_no=attempt_no+1,
                     maximum_attempts=$2,next_attempt_ts=$3,
-                    lease_owner=NULL,lease_expires_ts=NULL,update_ts=CURRENT_TIMESTAMP
+                    lease_owner=NULL,lease_expires_ts=NULL,update_ts=$8
               WHERE host_id=$4 AND task_id=$5 AND lease_owner=$6
                 AND lease_fencing_token=$7 AND lease_expires_ts>CURRENT_TIMESTAMP",
         )
@@ -5900,6 +5900,8 @@ impl TaskExecutor {
         .bind(claimed.task.task_id)
         .bind(lease.owner)
         .bind(lease.fencing_token)
+        // Persist the same database-clock anchor as the checked next attempt.
+        .bind(now)
         .execute(&mut **tx)
         .await?;
         if updated.rows_affected() == 1 {

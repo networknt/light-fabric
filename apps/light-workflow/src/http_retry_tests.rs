@@ -1732,3 +1732,50 @@ async fn fork_retry_raw_lookup_does_not_change_shared_export_lookup() {
         matches!(executor.retry_parameters(&claimed),Err(sqlx::Error::Protocol(code)) if code=="WORKFLOW_RETRY_POLICY_UNSUPPORTED")
     );
 }
+
+#[tokio::test]
+#[ignore = "requires explicitly owned HTTP_RETRY_TEST_ADMIN_URL"]
+async fn retry_delay_and_update_timestamp_share_database_clock() {
+    let _permit = crate::expression_test_support::acquire().await;
+    let f = Fixture::new("fetch", json!({"unchanged":true})).await;
+    let mut tx = f.pool.begin().await.unwrap();
+    // Transaction-start time precedes this observable database-clock boundary.
+    // No fixed sleep or load-dependent elapsed-time threshold is necessary.
+    let observed: chrono::DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    f.executor
+        .finish_task(
+            &mut tx,
+            &f.claimed,
+            TaskExecutionResult {
+                retry_eligibility: RetryEligibility::HttpResponse,
+                status_code: "F",
+                task_output: http_failure(503),
+                next_task: None,
+                context_data: None,
+            },
+        )
+        .await
+        .unwrap();
+    let (updated, next): (chrono::DateTime<Utc>, chrono::DateTime<Utc>) =
+        sqlx::query_as("SELECT update_ts,next_attempt_ts FROM task_info_t WHERE task_id=$1")
+            .bind(f.claimed.task.task_id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert!(
+        updated >= observed,
+        "retry decision must not use transaction-start time"
+    );
+    assert_eq!(
+        next.signed_duration_since(updated),
+        chrono::Duration::milliseconds(2000)
+    );
+    tx.commit().await.unwrap();
+    assert_eq!(f.state().await, ("A".into(), 2, "RUNNING".into()));
+    assert_eq!(f.context().await, json!({"unchanged":true}));
+    assert_eq!(f.count("next").await, 0);
+    f.close().await;
+}
