@@ -332,7 +332,9 @@ fn cache_retention_boundaries() {
             .compile(Profile::CelWorkflowV2, "1", Position::Set)
             .unwrap();
         assert!(disabled.is_empty().unwrap());
-        disabled.shutdown(std::time::Duration::from_secs(2)).unwrap();
+        disabled
+            .shutdown(std::time::Duration::from_secs(2))
+            .unwrap();
     }
     cache.shutdown(std::time::Duration::from_secs(2)).unwrap();
     at.shutdown(std::time::Duration::from_secs(2)).unwrap();
