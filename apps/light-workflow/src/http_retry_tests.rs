@@ -2,9 +2,17 @@
 //! migrations, and actual executor completion/claim/reconciliation paths.
 //! Requires an explicitly owned scratch database; all child databases are UUID named.
 use super::*;
-use sqlx::postgres::PgPoolOptions;
 use workflow_expression::WorkerConfig;
 
+fn engine() -> workflow_expression::Engine {
+    crate::expression_test_support::engine(WorkerConfig {
+        workers: 1,
+        cache_entries: 128,
+        cache_bytes: 4 * 1024 * 1024,
+        ..WorkerConfig::default()
+    })
+    .unwrap()
+}
 fn policy() -> Value {
     json!({"limit":{"attempt":{"count":3}},"delay":{"seconds":2}})
 }
@@ -31,8 +39,7 @@ fn definition(name: &str) -> Value {
 
 struct Fixture {
     pool: PgPool,
-    admin: PgPool,
-    database: String,
+    database: scratch_database::ScratchDatabase,
     executor: TaskExecutor,
     claimed: ClaimedTask,
     deadline: chrono::DateTime<Utc>,
@@ -40,66 +47,21 @@ struct Fixture {
 impl Fixture {
     async fn new(name: &str, context: Value) -> Self {
         // Explicit scratch URL only: never fall back to ambient application URLs.
-        let url = env::var("W4_TEST_DATABASE_URL")
-            .expect("explicit owned workflow_retry_* W4_TEST_DATABASE_URL required");
+        let url = env::var("HTTP_RETRY_TEST_ADMIN_URL")
+            .expect("explicit owned workflow_retry_* HTTP_RETRY_TEST_ADMIN_URL required");
         let parsed = url::Url::parse(&url).unwrap();
         assert_eq!(parsed.scheme(), "postgres");
         assert_eq!(parsed.host_str(), Some("127.0.0.1"));
         assert!(parsed.path().starts_with("/workflow_retry_"));
         assert!(parsed.query().is_none());
-        let admin = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&url)
-            .await
-            .unwrap();
-        let database = format!("workflow_retry_case_{}", Uuid::new_v4().simple());
-        sqlx::query(&format!("CREATE DATABASE {database}"))
-            .execute(&admin)
-            .await
-            .unwrap();
-        let mut child = parsed;
-        child.set_path(&format!("/{database}"));
-        let pool = PgPoolOptions::new()
-            .max_connections(4)
-            .after_connect(|c, _| {
-                Box::pin(async move {
-                    sqlx::query("SET search_path TO workflow_ops,pg_catalog")
-                        .execute(c)
-                        .await?;
-                    Ok(())
-                })
-            })
-            .connect(child.as_str())
-            .await
-            .unwrap();
+        let database =
+            scratch_database::ScratchDatabase::create(&parsed, "workflow_retry_case", 4).await;
+        let pool = database.pool.clone();
         sqlx::raw_sql("CREATE SCHEMA workflow_ops AUTHORIZATION operations_workflow_migrator")
             .execute(&pool)
             .await
             .unwrap();
-        let migrations = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../crates/workflow-store/migrations/workflow-postgres");
-        let mut files: Vec<_> = std::fs::read_dir(migrations)
-            .unwrap()
-            .map(|x| x.unwrap().path())
-            .filter(|x| x.extension().is_some_and(|x| x == "sql"))
-            .collect();
-        files.sort();
-        let mut conn = pool.acquire().await.unwrap();
-        sqlx::raw_sql("SET ROLE operations_workflow_migrator")
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-        for file in files {
-            sqlx::raw_sql(&std::fs::read_to_string(&file).unwrap())
-                .execute(&mut *conn)
-                .await
-                .unwrap_or_else(|e| panic!("{}: {e}", file.display()));
-        }
-        sqlx::raw_sql("RESET ROLE")
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-        drop(conn);
+        database.migrate(Some("operations_workflow_migrator")).await;
         let snapshot = definition(name);
         let serialized = serde_json::to_string(&snapshot).unwrap();
         let definition: WorkflowDefinition = serde_json::from_value(snapshot.clone()).unwrap();
@@ -132,13 +94,7 @@ impl Fixture {
             .bind(host).bind(task).bind(process).bind(kind).bind(instance.to_string()).bind(name).bind(&context).bind(owner).bind(deadline).execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO workflow_invocation_t(host_id,workflow_instance_id,binding_id,process_id,stable_tool_ref,wf_def_id,workflow_version,definition_digest,schema_digest,policy_digest,response_policy_digest,principal_subject,end_user_subject,input,input_digest,canonical_input_profile,invocation_mode,execution_class,state,correlation_id,deadline_ts) VALUES($1,$2,$3,$4,$3,$5,'0.1.0',$6,$6,$6,$6,'retry-fixture','retry-fixture',$7,$8,'rfc8785-safe-json-v1','async','standard','RUNNING','retry-fixture',$9)")
             .bind(host).bind(instance).bind(binding).bind(process).bind(def).bind(&wire_digest).bind(&input).bind(format!("sha256:{}",canonical_sha256(&input).unwrap())).bind(deadline).execute(&pool).await.unwrap();
-        let engine = crate::expression_test_support::engine(WorkerConfig {
-            workers: 1,
-            cache_entries: 128,
-            cache_bytes: 4 * 1024 * 1024,
-            ..WorkerConfig::default()
-        })
-        .unwrap();
+        let engine = engine();
         let executor = TaskExecutor::new(pool.clone()).with_expression_engine(engine);
         let mut claimed = ClaimedTask {
             expression_profile: "cel-workflow-v2".into(),
@@ -173,7 +129,6 @@ impl Fixture {
         tx.commit().await.unwrap();
         Self {
             pool,
-            admin,
             database,
             executor,
             claimed,
@@ -193,6 +148,14 @@ impl Fixture {
                 &mut tx,
                 &self.claimed,
                 TaskExecutionResult {
+                    retry_eligibility: if status == "F"
+                        && output.get("error").is_some()
+                        && output.get("message").and_then(Value::as_str) == Some("HTTP call failed")
+                    {
+                        RetryEligibility::HttpResponse
+                    } else {
+                        RetryEligibility::None
+                    },
                     status_code: status,
                     task_output: output,
                     next_task: None,
@@ -220,6 +183,12 @@ impl Fixture {
             .await
             .unwrap()
     }
+    async fn make_future(&self) {
+        sqlx::query("UPDATE task_info_t SET next_attempt_ts=clock_timestamp()+interval '1 hour' WHERE task_id=$1").bind(self.claimed.task.task_id).execute(&self.pool).await.unwrap();
+    }
+    async fn make_due(&self) {
+        sqlx::query("UPDATE task_info_t SET next_attempt_ts=clock_timestamp()-interval '1 second' WHERE task_id=$1").bind(self.claimed.task.task_id).execute(&self.pool).await.unwrap();
+    }
     async fn reacquire(&mut self) {
         self.claimed = self
             .executor
@@ -235,12 +204,7 @@ impl Fixture {
             .unwrap()
             .shutdown(Duration::from_secs(2))
             .unwrap();
-        self.pool.close().await;
-        sqlx::query(&format!("DROP DATABASE {} WITH (FORCE)", self.database))
-            .execute(&self.admin)
-            .await
-            .unwrap();
-        self.admin.close().await;
+        self.database.close().await;
     }
 }
 async fn retry(exhaustion: bool) {
@@ -290,6 +254,7 @@ async fn retry(exhaustion: bool) {
             assert_eq!(row.get::<i32, _>("attempt_no"), attempt + 1);
             assert_eq!(row.get::<i32, _>("maximum_attempts"), 3);
             assert!((row.get::<f64, _>("delay") - 2.0).abs() < 0.01);
+            f.make_future().await;
             assert!(
                 f.executor
                     .claim_next_task(Uuid::new_v4())
@@ -305,16 +270,8 @@ async fn retry(exhaustion: bool) {
                 .unwrap()
                 .shutdown(Duration::from_secs(2))
                 .unwrap();
-            f.executor = TaskExecutor::new(f.pool.clone()).with_expression_engine(
-                crate::expression_test_support::engine(WorkerConfig {
-                    workers: 1,
-                    cache_entries: 128,
-                    cache_bytes: 4 * 1024 * 1024,
-                    ..WorkerConfig::default()
-                })
-                .unwrap(),
-            );
-            tokio::time::sleep(Duration::from_millis(2100)).await;
+            f.executor = TaskExecutor::new(f.pool.clone()).with_expression_engine(engine());
+            f.make_due().await;
             f.reacquire().await;
         } else {
             assert_eq!(row.get::<String, _>("status_code"), "F");
@@ -348,12 +305,12 @@ async fn retry(exhaustion: bool) {
     f.close().await;
 }
 #[tokio::test]
-#[ignore = "requires explicitly owned workflow_retry_* W4_TEST_DATABASE_URL"]
+#[ignore = "requires explicitly owned workflow_retry_* HTTP_RETRY_TEST_ADMIN_URL"]
 async fn v2_success_after_durable_retry() {
     retry(false).await;
 }
 #[tokio::test]
-#[ignore = "requires explicitly owned workflow_retry_* W4_TEST_DATABASE_URL"]
+#[ignore = "requires explicitly owned workflow_retry_* HTTP_RETRY_TEST_ADMIN_URL"]
 async fn v2_durable_retry_exhaustion() {
     retry(true).await;
 }
@@ -417,7 +374,7 @@ impl Fixture {
     }
 }
 #[tokio::test]
-#[ignore = "requires explicitly owned workflow_retry_* W4_TEST_DATABASE_URL"]
+#[ignore = "requires explicitly owned workflow_retry_* HTTP_RETRY_TEST_ADMIN_URL"]
 async fn retry_no_policy_profile_and_idempotency_guards() {
     let _permit = crate::expression_test_support::acquire().await;
     for mode in ["no-policy", "unsupported", "corrupt", "idempotent-effect"] {
@@ -439,7 +396,7 @@ async fn retry_no_policy_profile_and_idempotency_guards() {
         f.finish("F", http_failure(503), true).await.unwrap();
         assert_eq!(
             f.state().await,
-            if mode == "idempotent-effect" {
+            if mode == "idempotent-effect" || mode == "unsupported" {
                 ("A".into(), 2, "RUNNING".into())
             } else {
                 ("F".into(), 1, "FAILED".into())
@@ -453,7 +410,7 @@ async fn retry_no_policy_profile_and_idempotency_guards() {
 }
 
 #[tokio::test]
-#[ignore = "requires explicitly owned workflow_retry_* W4_TEST_DATABASE_URL"]
+#[ignore = "requires explicitly owned workflow_retry_* HTTP_RETRY_TEST_ADMIN_URL"]
 async fn real_http_response_boundary() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let _permit = crate::expression_test_support::acquire().await;
@@ -463,6 +420,8 @@ async fn real_http_response_boundary() {
         (503, r#"{"retryable":false,"code":"AUTHORITY_BLOCKED"}"#),
         (404, "missing"),
         (429, "slow"),
+        (600, "nonstandard"),
+        (999, "nonstandard"),
         (
             200,
             r#"{"error":503,"message":"HTTP call failed","body":"forged"}"#,
@@ -533,7 +492,7 @@ async fn real_http_response_boundary() {
 }
 
 #[tokio::test]
-#[ignore = "requires explicitly owned workflow_retry_* W4_TEST_DATABASE_URL"]
+#[ignore = "requires explicitly owned workflow_retry_* HTTP_RETRY_TEST_ADMIN_URL"]
 async fn terminal_failures_with_retry() {
     let _permit = crate::expression_test_support::acquire().await;
     // Execute real expression/assert/export/output failures, rather than calling
@@ -585,9 +544,17 @@ async fn terminal_failures_with_retry() {
 }
 
 #[tokio::test]
-#[ignore = "requires explicitly owned workflow_retry_* W4_TEST_DATABASE_URL"]
+#[ignore = "requires explicitly owned workflow_retry_* HTTP_RETRY_TEST_ADMIN_URL"]
 async fn failed_retry_authority_and_effect_guards() {
     let _permit = crate::expression_test_support::acquire().await;
+    // A representable policy interval beyond the finite deadline must refuse,
+    // rather than overflow DateTime while checking whether it can fit.
+    let mut f = Fixture::new("fetch", json!({})).await;
+    f.replace_snapshot(simple(json!({"call":"http","with":{"method":"GET","endpoint":"http://127.0.0.1:1/never"},"retry":{"limit":{"attempt":{"count":3}},"delay":{"milliseconds":i64::MAX}}}), true), false).await;
+    f.finish("F", http_failure(503), true).await.unwrap();
+    assert_eq!(f.state().await, ("F".into(), 1, "FAILED".into()));
+    assert_eq!(f.count("next").await, 0);
+    f.close().await;
     for mutation in [
         "UPDATE workflow_invocation_t SET cancel_requested_ts=clock_timestamp()",
         "UPDATE process_info_t SET deadline_ts=clock_timestamp()-interval '1 second'",
@@ -621,7 +588,7 @@ async fn failed_retry_authority_and_effect_guards() {
 }
 
 #[tokio::test]
-#[ignore = "requires explicitly owned workflow_retry_* W4_TEST_DATABASE_URL"]
+#[ignore = "requires explicitly owned workflow_retry_* HTTP_RETRY_TEST_ADMIN_URL"]
 async fn legacy_http_retry_success_and_exhaustion() {
     let _permit = crate::expression_test_support::acquire().await;
     for exhaustion in [false, true] {
@@ -648,6 +615,9 @@ async fn legacy_http_retry_success_and_exhaustion() {
             assert_eq!(f.state().await.1, if attempt < 3 { attempt + 1 } else { 3 });
             if attempt < 3 {
                 assert_eq!(f.state().await.0, "A");
+                let delay:f64=sqlx::query_scalar("SELECT extract(epoch FROM next_attempt_ts-update_ts)::double precision FROM task_info_t WHERE task_id=$1").bind(f.claimed.task.task_id).fetch_one(&f.pool).await.unwrap();
+                assert!((delay - 2.0).abs() < 0.01);
+                f.make_future().await;
                 assert!(
                     f.executor
                         .claim_next_task(Uuid::new_v4())
@@ -655,9 +625,7 @@ async fn legacy_http_retry_success_and_exhaustion() {
                         .unwrap()
                         .is_none()
                 );
-                let delay:f64=sqlx::query_scalar("SELECT extract(epoch FROM next_attempt_ts-update_ts)::double precision FROM task_info_t WHERE task_id=$1").bind(f.claimed.task.task_id).fetch_one(&f.pool).await.unwrap();
-                assert!((delay - 2.0).abs() < 0.01);
-                tokio::time::sleep(Duration::from_millis(2100)).await;
+                f.make_due().await;
                 f.reacquire().await;
             }
         }
@@ -668,7 +636,7 @@ async fn legacy_http_retry_success_and_exhaustion() {
 }
 
 #[tokio::test]
-#[ignore = "requires explicitly owned workflow_retry_* W4_TEST_DATABASE_URL"]
+#[ignore = "requires explicitly owned workflow_retry_* HTTP_RETRY_TEST_ADMIN_URL"]
 async fn retry_exhaustion_replay_and_failure_routing() {
     let _permit = crate::expression_test_support::acquire().await;
     for mode in ["process", "branch", "compensation"] {
@@ -821,13 +789,13 @@ async fn native(invalid: bool) {
     f.close().await;
 }
 #[tokio::test]
-#[ignore = "requires explicitly owned workflow_retry_* W4_TEST_DATABASE_URL"]
+#[ignore = "requires explicitly owned workflow_retry_* HTTP_RETRY_TEST_ADMIN_URL"]
 async fn native_pending_completion_replay() {
     native(false).await
 }
 
 #[tokio::test]
-#[ignore = "requires explicitly owned workflow_retry_* W4_TEST_DATABASE_URL"]
+#[ignore = "requires explicitly owned workflow_retry_* HTTP_RETRY_TEST_ADMIN_URL"]
 async fn native_failed_completion_cannot_use_http_retry_authority() {
     let _permit = crate::expression_test_support::acquire().await;
     let f = Fixture::new("author", json!({"unchanged":true})).await;
@@ -839,7 +807,614 @@ async fn native_failed_completion_cannot_use_http_retry_authority() {
     f.close().await;
 }
 #[tokio::test]
-#[ignore = "requires explicitly owned workflow_retry_* W4_TEST_DATABASE_URL"]
+#[ignore = "requires explicitly owned workflow_retry_* HTTP_RETRY_TEST_ADMIN_URL"]
 async fn native_invalid_output_assertion() {
     native(true).await
+}
+
+async fn server(
+    replies: Vec<(u16, String)>,
+) -> (
+    String,
+    tokio::task::JoinHandle<Vec<String>>,
+    tokio::sync::oneshot::Sender<()>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let uri = format!("http://{}/fixture", listener.local_addr().unwrap());
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let worker = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for (status, body) in replies {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(10), listener.accept())
+                .await
+                .expect("missing actual retry request")
+                .unwrap();
+            let mut bytes = Vec::new();
+            loop {
+                let mut buffer = [0u8; 4096];
+                let n = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buffer))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&buffer[..n]);
+                if let Some(end) = bytes.windows(4).position(|x| x == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
+                    let length = headers
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .map(|l| l.trim().parse::<usize>().unwrap())
+                        .unwrap_or(0);
+                    if bytes.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+                assert!(bytes.len() < 65536);
+            }
+            requests.push(String::from_utf8(bytes).unwrap());
+            let response = format!(
+                "HTTP/1.1 {status} Fixture\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+        // Keep the listener alive until the test ends. An unintended request
+        // cannot masquerade as a refused connection and a safe terminal failure.
+        tokio::select! {
+            _=stopped=>{},
+            extra=listener.accept()=>panic!("unexpected outbound request: {:?}",extra.map(|(_,peer)|peer)),
+        }
+        requests
+    });
+    (uri, worker, stop)
+}
+
+// Existing injectable private-dispatch authority boundary, pinned to this
+// synthetic fixture. Database authority and send fences still execute normally.
+struct PrivateAuthority {
+    host: Uuid,
+    process: Uuid,
+    checks: std::sync::atomic::AtomicUsize,
+    denied: std::sync::atomic::AtomicBool,
+}
+#[async_trait::async_trait]
+impl crate::bound_mcp::Dispatch for PrivateAuthority {
+    async fn authorize_private_run(&self, host: Uuid, process: Uuid) -> Result<(), DynError> {
+        assert_eq!((host, process), (self.host, self.process));
+        self.checks
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.denied.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "fixture authority denied",
+            )
+            .into());
+        }
+        Ok(())
+    }
+    async fn authorize_agent(
+        &self,
+        _host: Uuid,
+        _process: Uuid,
+        _agent: Uuid,
+    ) -> Result<(chrono::DateTime<Utc>, i32, i32), DynError> {
+        panic!("HTTP-only fixture must not authorize native agents")
+    }
+    async fn call(
+        &self,
+        _host: Uuid,
+        _process: Uuid,
+        _attempt: Uuid,
+        _alias: &str,
+        _params: Value,
+    ) -> Result<Value, DynError> {
+        panic!("HTTP-only fixture must not call Gateway")
+    }
+}
+async fn private_authority(f: &Fixture) -> Arc<PrivateAuthority> {
+    sqlx::query("UPDATE workflow_invocation_t SET response_policy_snapshot='{\"acceptedAdmissionProfile\":\"portal_execution\"}'::jsonb").execute(&f.pool).await.unwrap();
+    // Same synthetic authority-row convention as durable_timer_tests::authority.
+    sqlx::query("INSERT INTO workflow_action_authority_t(host_id,run_id,grant_id,user_id,grant_generation,run_generation,budget_generation,active,deadline,action_limit,credential_kind) SELECT host_id,workflow_instance_id,$3,$4,1,1,1,true,deadline_ts,10,'invoke' FROM workflow_invocation_t WHERE host_id=$1 AND process_id=$2")
+        .bind(f.claimed.task.host_id).bind(f.claimed.task.process_id).bind(Uuid::new_v4()).bind(Uuid::new_v4()).execute(&f.pool).await.unwrap();
+    let authority = Arc::new(PrivateAuthority {
+        host: f.claimed.task.host_id,
+        process: f.claimed.task.process_id,
+        checks: std::sync::atomic::AtomicUsize::new(0),
+        denied: std::sync::atomic::AtomicBool::new(false),
+    });
+    assert!(f.executor.bound_mcp.set(authority.clone()).is_ok());
+    authority
+}
+async fn real_reclaimed(exhaustion: bool, method: &str, reference: bool) {
+    let responses = if exhaustion {
+        vec![(503, "temporary".into()); 3]
+    } else {
+        vec![(503, "temporary".into()), (200, r#"{"id":1}"#.into())]
+    };
+    let expected = responses.len();
+    let (uri, worker, stop) = server(responses).await;
+    let mut f = Fixture::new("fetch", json!({"identity":"retained"})).await;
+    let mut raw = simple(
+        json!({"call":"http","with":{"method":method,"endpoint":uri,"headers":{"X-Fixture":"${ context.identity }"},"body":{"value":"${ context.identity }"}},"idempotencyKey":"${ context.identity }","retry":if reference {json!("fixed")} else {policy()},"export":{"as":{"received":"${ output }"}}}),
+        true,
+    );
+    if reference {
+        raw["use"] = json!({"retries":{"fixed":policy()}});
+    }
+    f.replace_snapshot(raw, false).await;
+    let authority = private_authority(&f).await;
+    let initial = f.context().await;
+    let snapshot: Value = sqlx::query_scalar("SELECT task_input FROM task_info_t WHERE task_id=$1")
+        .bind(f.claimed.task.task_id)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    let mut previous_fence = f.claimed.host_lease.unwrap().fencing_token;
+    let mut digest: Option<String> = None;
+    for attempt in 1..=expected {
+        assert_eq!(
+            sqlx::query_scalar::<_, i32>("SELECT attempt_no FROM task_info_t WHERE task_id=$1")
+                .bind(f.claimed.task.task_id)
+                .fetch_one(&f.pool)
+                .await
+                .unwrap(),
+            attempt as i32
+        );
+        let stored: Value =
+            sqlx::query_scalar("SELECT task_input FROM task_info_t WHERE task_id=$1")
+                .bind(f.claimed.task.task_id)
+                .fetch_one(&f.pool)
+                .await
+                .unwrap();
+        assert_eq!(stored, snapshot, "retain original step snapshot");
+        let result = f.executor.execute_task(&f.claimed).await.unwrap();
+        assert_eq!(
+            result.status_code,
+            if !exhaustion && attempt == expected {
+                "C"
+            } else {
+                "F"
+            },
+            "{}",
+            result.task_output
+        );
+        assert_eq!(
+            result.is_http_response_failure(),
+            result.status_code == "F",
+            "{}",
+            result.task_output
+        );
+        let mut tx = f.pool.begin().await.unwrap();
+        f.executor
+            .finish_task(&mut tx, &f.claimed, result.clone())
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        if method == "POST" {
+            let row = sqlx::query(
+                "SELECT idempotency_key,request_digest,effect_state FROM workflow_task_effect_t",
+            )
+            .fetch_one(&f.pool)
+            .await
+            .unwrap();
+            assert_eq!(row.get::<String, _>("idempotency_key"), "retained");
+            let actual: String = row.get("request_digest");
+            if let Some(before) = &digest {
+                assert_eq!(&actual, before);
+            } else {
+                digest = Some(actual);
+            }
+            assert_eq!(
+                row.get::<String, _>("effect_state"),
+                if result.status_code == "C" {
+                    "confirmed"
+                } else {
+                    "possible"
+                }
+            );
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>("SELECT count(*) FROM workflow_task_effect_t")
+                    .fetch_one(&f.pool)
+                    .await
+                    .unwrap(),
+                1
+            );
+        }
+        if attempt < expected {
+            assert_eq!(f.context().await, initial);
+            assert_eq!(f.count("next").await, 0);
+            let (state,count,max,interval):(String,i32,i32,f64)=sqlx::query_as("SELECT status_code::text,attempt_no,maximum_attempts,extract(epoch FROM next_attempt_ts-update_ts)::double precision FROM task_info_t WHERE task_id=$1").bind(f.claimed.task.task_id).fetch_one(&f.pool).await.unwrap();
+            assert_eq!((state.as_str(), count, max), ("A", attempt as i32 + 1, 3));
+            assert!((interval - 2.0).abs() < 0.01);
+            let mut replay = f.pool.begin().await.unwrap();
+            assert!(
+                f.executor
+                    .finish_task(&mut replay, &f.claimed, result)
+                    .await
+                    .is_err()
+            );
+            replay.rollback().await.unwrap();
+            f.make_future().await;
+            assert!(
+                f.executor
+                    .claim_next_task(Uuid::new_v4())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            f.executor
+                .expression_engine
+                .as_ref()
+                .unwrap()
+                .shutdown(Duration::from_secs(2))
+                .unwrap();
+            f.executor = TaskExecutor::new(f.pool.clone()).with_expression_engine(engine());
+            assert!(f.executor.bound_mcp.set(authority.clone()).is_ok());
+            f.make_due().await;
+            f.reacquire().await;
+            let fence = f.claimed.host_lease.unwrap().fencing_token;
+            assert!(fence > previous_fence);
+            previous_fence = fence;
+        } else {
+            assert_eq!(f.count("next").await, if exhaustion { 0 } else { 1 });
+            if exhaustion {
+                assert_eq!(f.context().await, initial);
+            } else {
+                assert_eq!(f.context().await["received"], json!({"id":1}));
+            }
+            let mut replay = f.pool.begin().await.unwrap();
+            assert!(
+                f.executor
+                    .finish_task(&mut replay, &f.claimed, result)
+                    .await
+                    .is_err()
+            );
+            replay.rollback().await.unwrap();
+            assert_eq!(f.count("next").await, if exhaustion { 0 } else { 1 });
+        }
+    }
+    stop.send(()).unwrap();
+    let requests = worker.await.unwrap();
+    assert_eq!(requests.len(), expected);
+    assert_eq!(
+        authority.checks.load(std::sync::atomic::Ordering::SeqCst),
+        expected
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|r| !r.to_ascii_lowercase().contains("authorization:")
+                && !r.to_ascii_lowercase().contains("x-scope-token:"))
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|r| r.starts_with(&format!("{method} /fixture "))
+                && r.to_ascii_lowercase().contains("x-fixture: retained"))
+    );
+    if method == "POST" {
+        assert!(
+            requests
+                .iter()
+                .all(|r| r.to_ascii_lowercase().contains("idempotency-key: retained"))
+        );
+    }
+    assert!(
+        requests.windows(2).all(|w| w[0] == w[1]),
+        "stable outbound identity across actual attempts"
+    );
+    f.close().await;
+}
+#[tokio::test]
+#[ignore = "requires explicitly owned HTTP_RETRY_TEST_ADMIN_URL"]
+async fn real_reclaimed_attempts_success() {
+    let _permit = crate::expression_test_support::acquire().await;
+    for (method, reference) in [("GET", false), ("POST", false), ("POST", true)] {
+        real_reclaimed(false, method, reference).await;
+    }
+}
+#[tokio::test]
+#[ignore = "requires explicitly owned HTTP_RETRY_TEST_ADMIN_URL"]
+async fn real_reclaimed_attempts_exhaustion() {
+    let _permit = crate::expression_test_support::acquire().await;
+    for (method, reference) in [("POST", false), ("GET", true)] {
+        real_reclaimed(true, method, reference).await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly owned HTTP_RETRY_TEST_ADMIN_URL"]
+async fn real_reclaimed_authority_and_lease_refusal_prevents_second_send() {
+    let _permit = crate::expression_test_support::acquire().await;
+    for mode in ["private-authority", "lease", "database-authority"] {
+        let (uri, worker, stop) = server(vec![(503, "fixture".into())]).await;
+        let mut f = Fixture::new("fetch", json!({"unchanged":true})).await;
+        f.replace_snapshot(simple(json!({"call":"http","with":{"method":"POST","endpoint":uri,"body":{"fixture":true}},"idempotencyKey":"fixture-key","retry":policy(),"export":{"as":{"received":"${ output }"}}}),true),false).await;
+        let authority = private_authority(&f).await;
+        let first = f.executor.execute_task(&f.claimed).await.unwrap();
+        assert!(first.is_http_response_failure());
+        let mut tx = f.pool.begin().await.unwrap();
+        f.executor
+            .finish_task(&mut tx, &f.claimed, first.clone())
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        f.make_due().await;
+        f.reacquire().await;
+        if mode == "private-authority" {
+            authority
+                .denied
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        } else if mode == "lease" {
+            sqlx::query("UPDATE task_info_t SET lease_owner=$1 WHERE task_id=$2")
+                .bind(Uuid::new_v4())
+                .bind(f.claimed.task.task_id)
+                .execute(&f.pool)
+                .await
+                .unwrap();
+        } else {
+            sqlx::query("UPDATE workflow_action_authority_t SET active=false")
+                .execute(&f.pool)
+                .await
+                .unwrap();
+        }
+        let execution = f.executor.execute_task(&f.claimed).await;
+        if mode == "private-authority" {
+            let result = execution.unwrap();
+            assert_eq!(result.status_code, "F");
+            assert!(!result.is_http_response_failure());
+            let mut tx = f.pool.begin().await.unwrap();
+            f.executor
+                .finish_task(&mut tx, &f.claimed, result)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            assert_eq!(f.state().await, ("F".into(), 2, "FAILED".into()));
+        } else {
+            assert!(
+                execution.is_err(),
+                "lost authority must roll back before dispatch"
+            );
+            let mut tx = f.pool.begin().await.unwrap();
+            assert!(
+                f.executor
+                    .finish_task(&mut tx, &f.claimed, first)
+                    .await
+                    .is_err()
+            );
+            tx.rollback().await.unwrap();
+            assert_eq!(f.state().await, ("A".into(), 2, "RUNNING".into()));
+        }
+        assert_eq!(f.count("next").await, 0);
+        assert_eq!(f.context().await, json!({"unchanged":true}));
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT effect_state FROM workflow_task_effect_t")
+                .fetch_one(&f.pool)
+                .await
+                .unwrap(),
+            "possible"
+        );
+        stop.send(()).unwrap();
+        assert_eq!(worker.await.unwrap().len(), 1);
+        assert_eq!(
+            authority.checks.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        f.close().await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly owned HTTP_RETRY_TEST_ADMIN_URL"]
+async fn compensation_retry_preserves_state_before_exhaustion() {
+    let _permit = crate::expression_test_support::acquire().await;
+    for legacy in [true, false] {
+        let mut f = Fixture::new("fetch", json!({"unchanged":true})).await;
+        if legacy {
+            f.replace_snapshot(definition("fetch"), true).await;
+        }
+        sqlx::raw_sql("UPDATE task_info_t SET is_compensation=true; UPDATE workflow_invocation_t SET state='COMPENSATING'").execute(&f.pool).await.unwrap();
+        f.finish("F", http_failure(503), true).await.unwrap();
+        assert_eq!(f.state().await, ("A".into(), 2, "COMPENSATING".into()));
+        assert_eq!(f.count("next").await, 0);
+        f.make_due().await;
+        if !legacy {
+            assert!(
+                f.executor
+                    .claim_next_task(Uuid::new_v4())
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "do not widen host compensation claims"
+            );
+        }
+        f.close().await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly owned HTTP_RETRY_TEST_ADMIN_URL"]
+async fn persisted_policy_refusal_precedes_dispatch_and_retry() {
+    let _permit = crate::expression_test_support::acquire().await;
+    for unsupported in [
+        json!({"when":"${ false }"}),
+        json!({"limit":{"duration":{"seconds":1}}}),
+        json!({"use":"fixed"}),
+        json!({"delay":{"unknown":1}}),
+    ] {
+        for reference in [false, true] {
+            let mut f = Fixture::new("fetch", json!({"unchanged":true})).await;
+            let mut raw = simple(
+                json!({"call":"http","with":{"method":"GET","endpoint":"http://127.0.0.1:1/never-dispatched"},"retry":if reference {json!("fixed")} else {unsupported.clone()}}),
+                true,
+            );
+            if reference {
+                raw["use"] = json!({"retries":{"fixed":unsupported.clone()}});
+            }
+            f.replace_snapshot(raw, false).await;
+            let result = f.executor.execute_task(&f.claimed).await.unwrap();
+            assert_eq!(
+                result.task_output["code"],
+                "WORKFLOW_RETRY_POLICY_UNSUPPORTED"
+            );
+            assert!(!result.is_http_response_failure());
+            // Even an already-reported adapter response must not requeue this snapshot.
+            f.finish("F", http_failure(503), true).await.unwrap();
+            assert_eq!(f.state().await, ("F".into(), 1, "FAILED".into()));
+            assert_eq!(f.context().await, json!({"unchanged":true}));
+            assert_eq!(f.count("next").await, 0);
+            let output: Value =
+                sqlx::query_scalar("SELECT task_output FROM task_info_t WHERE task_id=$1")
+                    .bind(f.claimed.task.task_id)
+                    .fetch_one(&f.pool)
+                    .await
+                    .unwrap();
+            assert_eq!(output["code"], "WORKFLOW_RETRY_POLICY_UNSUPPORTED");
+            f.close().await;
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly owned HTTP_RETRY_TEST_ADMIN_URL"]
+async fn known_v2_unavailable_requeues_then_defers_without_consuming_attempt() {
+    let _permit = crate::expression_test_support::acquire().await;
+    let mut f = Fixture::new("fetch", json!({"unchanged":true})).await;
+    f.executor.supported_profiles =
+        crate::profile_support::SupportedProfiles::from_evaluator(false);
+    assert!(f.executor.execute_task(&f.claimed).await.is_err());
+    assert_eq!(f.state().await.1, 1);
+    f.finish("F", http_failure(503), true).await.unwrap();
+    assert_eq!(f.state().await, ("A".into(), 2, "RUNNING".into()));
+    f.make_due().await;
+    let version: i64 = sqlx::query_scalar("SELECT state_version FROM workflow_invocation_t")
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    assert!(
+        f.executor
+            .claim_next_task(Uuid::new_v4())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(f.state().await.1, 2);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT state_version FROM workflow_invocation_t")
+            .fetch_one(&f.pool)
+            .await
+            .unwrap(),
+        version
+    );
+    f.executor.supported_profiles = crate::profile_support::SupportedProfiles::from_evaluator(true);
+    f.reacquire().await;
+    assert_eq!(f.state().await.1, 2);
+    f.close().await;
+}
+
+#[tokio::test]
+async fn future_profile_is_never_interpreted_as_current_v2() {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy("postgres://fixture:fixture@127.0.0.1:1/unreachable")
+        .unwrap();
+    let executor = TaskExecutor::new(pool);
+    let raw = json!({"document":{"metadata":{"lightExpressionProfile":"cel-workflow-v99"}},"do":"future grammar","retry":{"when":"future expression"}});
+    let mut claimed = ClaimedTask {
+        expression_profile: "cel-workflow-v99".into(),
+        input_data: json!({}),
+        context_data: json!({}),
+        task: ActiveTask {
+            host_id: Uuid::new_v4(),
+            task_id: Uuid::new_v4(),
+            task_type: "call".into(),
+            process_id: Uuid::new_v4(),
+            wf_instance_id: Uuid::new_v4().to_string(),
+            wf_task_id: "fetch".into(),
+            status_code: "A".into(),
+            result_code: None,
+        },
+        wf_def_id: Uuid::new_v4(),
+        definition: serde_json::from_value(definition("fetch")).unwrap(),
+        raw_definition: serde_yaml::to_value(raw).unwrap(),
+        host_lease: None,
+        completion_guard: None,
+    };
+    assert!(
+        executor.execute_task(&claimed).await.is_err(),
+        "defer without parsing future grammar or reaching unreachable pool"
+    );
+    claimed.expression_profile = "cel-workflow-v2".into();
+    let result = executor.execute_task(&claimed).await.unwrap();
+    assert_eq!(result.task_output["code"], "EVALUATOR_PROFILE_UNSUPPORTED");
+    assert!(!result.is_http_response_failure());
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly owned HTTP_RETRY_TEST_ADMIN_URL"]
+async fn transport_and_body_failures_remain_terminal() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let _permit = crate::expression_test_support::acquire().await;
+    for mode in ["refused", "truncated", "oversized", "tls", "reset"] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let uri = format!(
+            "{}://{}/fixture",
+            if mode == "tls" { "https" } else { "http" },
+            listener.local_addr().unwrap()
+        );
+        let worker = if mode == "refused" {
+            drop(listener);
+            None
+        } else {
+            Some(tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buffer = [0u8; 4096];
+                assert!(stream.read(&mut buffer).await.unwrap() > 0);
+                if mode == "reset" {
+                    return;
+                }
+                let length = if mode == "oversized" {
+                    MAX_HTTP_RESPONSE_BYTES + 1
+                } else {
+                    10
+                };
+                stream.write_all(format!("HTTP/1.1 503 Fixture\r\ncontent-length: {length}\r\nconnection: close\r\n\r\nx").as_bytes()).await.unwrap();
+            }))
+        };
+        let mut f = Fixture::new("fetch", json!({"unchanged":true})).await;
+        f.replace_snapshot(
+            simple(
+                json!({"call":"http","with":{"method":"GET","endpoint":uri},"retry":policy()}),
+                true,
+            ),
+            false,
+        )
+        .await;
+        sqlx::query("DELETE FROM workflow_invocation_t")
+            .execute(&f.pool)
+            .await
+            .unwrap();
+        let result = f.executor.execute_task(&f.claimed).await.unwrap();
+        if let Some(w) = worker {
+            w.await.unwrap();
+        }
+        assert_eq!(result.task_output["code"], "WORKFLOW_REQUEST_FAILED");
+        assert!(!result.is_http_response_failure());
+        let mut tx = f.pool.begin().await.unwrap();
+        f.executor
+            .finish_task(&mut tx, &f.claimed, result)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let (state, attempt): (String, i32) =
+            sqlx::query_as("SELECT status_code::text,attempt_no FROM task_info_t WHERE task_id=$1")
+                .bind(f.claimed.task.task_id)
+                .fetch_one(&f.pool)
+                .await
+                .unwrap();
+        assert_eq!((state.as_str(), attempt), ("F", 1));
+        assert_eq!(f.count("next").await, 0);
+        assert_eq!(f.context().await, json!({"unchanged":true}));
+        f.close().await;
+    }
 }

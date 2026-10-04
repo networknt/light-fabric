@@ -125,8 +125,10 @@ jobs:
         run: psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d operations -c 'CREATE DATABASE workflow_retry_ci'
       - name: Workflow durable HTTP retry regressions
         env:
-          W4_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/workflow_retry_ci
-        run: cargo test --locked -p light-workflow --lib executor::http_retry_tests:: -- --ignored --test-threads=1
+          HTTP_RETRY_TEST_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/workflow_retry_ci
+        run: >-
+          cargo test --locked -p light-workflow --lib executor::http_retry_tests::
+          -- --ignored --test-threads=1
       - name: Hindsight vector binding and recall
         env:
           HINDSIGHT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/operations

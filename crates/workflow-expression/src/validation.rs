@@ -53,6 +53,13 @@ impl DefinitionValidation {
         if profile == Profile::LegacyV1 {
             return Ok(plan);
         }
+        if let Err(diagnostic) = crate::validate_retry_policies(raw) {
+            plan.error(
+                &diagnostic.field,
+                diagnostic.task.as_deref(),
+                diagnostic.error.category,
+            );
+        }
         // Assign preorder ranks with sorted object keys and authored array order.
         // This avoids lexical JSON-pointer sorting incorrectly ordering /10 before /2.
         let mut ranks = HashMap::new();

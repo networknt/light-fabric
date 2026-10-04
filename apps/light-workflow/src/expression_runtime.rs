@@ -27,6 +27,7 @@ impl Failure {
             }
         };
         TaskExecutionResult {
+            retry_eligibility: RetryEligibility::None,
             status_code: "F",
             task_output: json!({"code":match &self.error {
             WorkerError::Expression(_) if self.field.starts_with("/output/as")=>"WORKFLOW_OUTPUT_INVALID",
@@ -167,6 +168,7 @@ impl TaskExecutor {
                     .or(default)
                     .ok_or_else(|| failure(Category::ResultType, "/switch"))?;
                 return Ok(TaskExecutionResult {
+                    retry_eligibility: RetryEligibility::None,
                     status_code: "C",
                     task_output: json!({"nextTask":next}),
                     next_task: Some(next),
@@ -179,6 +181,7 @@ impl TaskExecutor {
             _ => return Err(failure(Category::Unsupported, "/task")),
         };
         Ok(TaskExecutionResult {
+            retry_eligibility: RetryEligibility::None,
             status_code: "C",
             task_output: output,
             next_task: None,
@@ -364,6 +367,7 @@ impl TaskExecutor {
             }
         }
         Ok(TaskExecutionResult {
+            retry_eligibility: RetryEligibility::None,
             status_code: if passed { "C" } else { "F" },
             task_output: if passed {
                 json!({"passed":true})

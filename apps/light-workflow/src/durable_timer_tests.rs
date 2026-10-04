@@ -2,13 +2,11 @@
 //! production provider. Each test owns a fresh database on the loopback gate.
 use super::*;
 use crate::{durable_timer, invocation::*};
-use sqlx::postgres::PgPoolOptions;
 use workflow_invocation_contract::{StartInvocationRequest, canonical_sha256};
 
 struct Db {
     pool: PgPool,
-    admin: PgPool,
-    name: String,
+    database: super::scratch_database::ScratchDatabase,
 }
 impl Db {
     async fn new() -> Self {
@@ -18,64 +16,22 @@ impl Db {
         assert_eq!(parsed.host_str(), Some("127.0.0.1"));
         assert_eq!(parsed.port(), Some(55431));
         assert_eq!(parsed.path(), "/p01_timer_gate");
-        let admin = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&url)
-            .await
-            .unwrap();
-        sqlx::raw_sql("DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='operations_workflow_runtime') THEN CREATE ROLE operations_workflow_runtime; END IF; END $$")
-            .execute(&admin).await.unwrap();
-        sqlx::raw_sql("DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='operations_workflow_migrator') THEN CREATE ROLE operations_workflow_migrator; END IF; END $$")
-            .execute(&admin).await.unwrap();
-        let name = format!("p01_timer_{}", Uuid::new_v4().simple());
-        sqlx::query(&format!("CREATE DATABASE {name}"))
-            .execute(&admin)
-            .await
-            .unwrap();
-        let mut child = parsed;
-        child.set_path(&format!("/{name}"));
-        let pool = PgPoolOptions::new()
-            .max_connections(12)
-            .after_connect(|c, _| {
-                Box::pin(async move {
-                    sqlx::query("SET search_path TO workflow_ops,pg_catalog")
-                        .execute(c)
-                        .await?;
-                    Ok(())
-                })
-            })
-            .connect(child.as_str())
-            .await
-            .unwrap();
+        let database =
+            super::scratch_database::ScratchDatabase::create(&parsed, "p01_timer", 12).await;
+        let pool = database.pool.clone();
+        sqlx::raw_sql("DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='operations_workflow_runtime') THEN CREATE ROLE operations_workflow_runtime; END IF; END $$").execute(&database.admin).await.unwrap();
+        sqlx::raw_sql("DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='operations_workflow_migrator') THEN CREATE ROLE operations_workflow_migrator; END IF; END $$").execute(&database.admin).await.unwrap();
         sqlx::raw_sql("CREATE SCHEMA workflow_ops")
             .execute(&pool)
             .await
             .unwrap();
-        let migrations = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../crates/workflow-store/migrations/workflow-postgres");
-        let mut files: Vec<_> = std::fs::read_dir(migrations)
-            .unwrap()
-            .map(|p| p.unwrap().path())
-            .collect();
-        files.sort();
-        for file in files {
-            let sql = std::fs::read_to_string(&file).unwrap();
-            sqlx::raw_sql(&sql)
-                .execute(&pool)
-                .await
-                .unwrap_or_else(|e| panic!("{}: {e}", file.display()));
-        }
+        database.migrate(None).await;
         sqlx::raw_sql("CREATE TABLE p01_mock_operation(process uuid PRIMARY KEY,operation uuid NOT NULL,starts integer NOT NULL DEFAULT 1,calls integer NOT NULL DEFAULT 1); CREATE TABLE p01_mock_poll(process uuid NOT NULL,attempt uuid PRIMARY KEY)")
             .execute(&pool).await.unwrap();
-        Self { pool, admin, name }
+        Self { pool, database }
     }
     async fn close(self) {
-        self.pool.close().await;
-        sqlx::query(&format!("DROP DATABASE {}", self.name))
-            .execute(&self.admin)
-            .await
-            .unwrap();
-        self.admin.close().await;
+        self.database.close().await;
     }
 }
 

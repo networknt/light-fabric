@@ -219,7 +219,15 @@ struct ClaimedHostTask {
     lease_fencing_token: i64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RetryEligibility {
+    None,
+    HttpResponse,
+}
+
+#[derive(Clone)]
 struct TaskExecutionResult {
+    retry_eligibility: RetryEligibility,
     status_code: &'static str,
     task_output: Value,
     next_task: Option<String>,
@@ -228,21 +236,16 @@ struct TaskExecutionResult {
 
 impl TaskExecutionResult {
     fn is_http_response_failure(&self) -> bool {
-        // The HTTP adapter constructs this envelope for non-success responses;
-        // upstream bytes stay in `body`. Never use an upstream retryable/code field
-        // or a generic F completion as retry authority.
-        self.status_code == "F"
-            && self.task_output.as_object().is_some_and(|output| {
-                output.len() == 3
-                    && output
-                        .get("error")
-                        .and_then(Value::as_u64)
-                        .is_some_and(|status| {
-                            (100..600).contains(&status) && !(200..300).contains(&status)
-                        })
-                    && output.get("message").and_then(Value::as_str) == Some("HTTP call failed")
-                    && output.get("body").is_some_and(Value::is_string)
-            })
+        self.status_code == "F" && self.retry_eligibility == RetryEligibility::HttpResponse
+    }
+    fn retry_policy_failure(field: &str) -> Self {
+        Self {
+            retry_eligibility: RetryEligibility::None,
+            status_code: "F",
+            task_output: json!({"code":"WORKFLOW_RETRY_POLICY_UNSUPPORTED","retryable":false,"details":{"field":field}}),
+            next_task: None,
+            context_data: None,
+        }
     }
 }
 
@@ -460,12 +463,14 @@ impl TaskExecutor {
             let schema: Value = row.try_get("output_schema")?;
             match crate::agent_job::validate_public_output(&schema, &output) {
                 Ok(()) => TaskExecutionResult {
+                    retry_eligibility: RetryEligibility::None,
                     status_code: "C",
                     task_output: output,
                     next_task: None,
                     context_data: None,
                 },
                 Err(e) => TaskExecutionResult {
+                    retry_eligibility: RetryEligibility::None,
                     status_code: "F",
                     task_output: json!({"agentJobId":job_id,"class":"INVALID_PUBLIC_OUTPUT","message":e.to_string()}),
                     next_task: None,
@@ -474,6 +479,7 @@ impl TaskExecutor {
             }
         } else {
             TaskExecutionResult {
+                retry_eligibility: RetryEligibility::None,
                 status_code: "F",
                 task_output: json!({"agentJobId":job_id,"state":state,"error":row.try_get::<Option<Value>,_>("error")?}),
                 next_task: None,
@@ -1143,6 +1149,7 @@ impl TaskExecutor {
                 &mut tx,
                 &claimed,
                 TaskExecutionResult {
+                    retry_eligibility: RetryEligibility::None,
                     status_code: "C",
                     task_output: json!({"status":"timer_fired"}),
                     next_task: None,
@@ -1251,6 +1258,7 @@ impl TaskExecutor {
                     match tokio::time::timeout(limit, self.execute_task(&claimed)).await {
                         Ok(result) => result,
                         Err(_) => Ok(TaskExecutionResult {
+                            retry_eligibility: RetryEligibility::None,
                             status_code: "F",
                             task_output: json!({
                                 "code":"WORKFLOW_TASK_TIMEOUT",
@@ -1339,6 +1347,7 @@ impl TaskExecutor {
                     ) =>
                 {
                     TaskExecutionResult {
+                        retry_eligibility: RetryEligibility::None,
                         status_code: "F",
                         task_output: json!({
                             "code":"AUTHORITY_BLOCKED",
@@ -1350,6 +1359,7 @@ impl TaskExecutor {
                     }
                 }
                 Err(e) => TaskExecutionResult {
+                    retry_eligibility: RetryEligibility::None,
                     status_code: "F",
                     task_output: json!({ "error": e.to_string() }),
                     next_task: None,
@@ -1403,6 +1413,7 @@ impl TaskExecutor {
                     "WORKFLOW_BUDGET_EXHAUSTED"
                 };
                 result = TaskExecutionResult {
+                    retry_eligibility: RetryEligibility::None,
                     status_code: "F",
                     task_output: json!({
                         "code":code,
@@ -1724,6 +1735,7 @@ impl TaskExecutor {
             tx,
             &claimed,
             TaskExecutionResult {
+                retry_eligibility: RetryEligibility::None,
                 status_code: if succeeded { "C" } else { "F" },
                 task_output,
                 next_task: None,
@@ -2274,6 +2286,7 @@ impl TaskExecutor {
             }
             expression_completion::ProfileDisposition::Corrupt => {
                 return Ok(TaskExecutionResult {
+                    retry_eligibility: RetryEligibility::None,
                     status_code: "F",
                     task_output: json!({"code":"EVALUATOR_PROFILE_UNSUPPORTED","retryable":false,"details":{"reason":"snapshot/profile mismatch","field":"/definition_snapshot/expression_profile"}}),
                     next_task: None,
@@ -2283,6 +2296,9 @@ impl TaskExecutor {
             _ => {}
         }
         if claimed.expression_profile == "cel-workflow-v2" {
+            if let Err(diagnostic) = workflow_expression::validate_retry_policies(&snapshot) {
+                return Ok(TaskExecutionResult::retry_policy_failure(&diagnostic.field));
+            }
             let task = self
                 .find_task_definition(&claimed.definition, &claimed.task.wf_task_id)
                 .ok_or_else(|| io::Error::other("EXPRESSION_INVALID"))?;
@@ -2336,6 +2352,7 @@ impl TaskExecutor {
                         Err(e)
                     }
                     Err(_) => Ok(TaskExecutionResult {
+                        retry_eligibility: RetryEligibility::None,
                         status_code: "F",
                         task_output: json!({"code":"WORKFLOW_REQUEST_FAILED","retryable":false,"details":{"definitionId":claimed.wf_def_id,"taskId":claimed.task.task_id,"field":"/with"}}),
                         next_task: None,
@@ -2425,6 +2442,7 @@ impl TaskExecutor {
                     }
                 }
                 Ok(TaskExecutionResult {
+                    retry_eligibility: RetryEligibility::None,
                     status_code: "W",
                     task_output: json!({
                         "status": "waiting_for_input",
@@ -2439,6 +2457,7 @@ impl TaskExecutor {
                 self.execute_assert_task(&assert_task.assert, &claimed.context_data)
             }
             TaskDefinition::Fork(_) => Ok(TaskExecutionResult {
+                retry_eligibility: RetryEligibility::None,
                 status_code: "C",
                 task_output: json!({"status":"branches_scheduled"}),
                 next_task: None,
@@ -2845,6 +2864,7 @@ impl TaskExecutor {
                         .await?;
                     if let Some(result) = claim.replayed_result.clone() {
                         return Ok(TaskExecutionResult {
+                            retry_eligibility: RetryEligibility::None,
                             status_code: "C",
                             task_output: result,
                             next_task: None,
@@ -2957,6 +2977,11 @@ impl TaskExecutor {
                         .await?;
                 }
                 Ok(TaskExecutionResult {
+                    retry_eligibility: if status.is_success() {
+                        RetryEligibility::None
+                    } else {
+                        RetryEligibility::HttpResponse
+                    },
                     status_code: if status.is_success() { "C" } else { "F" },
                     task_output,
                     next_task: None,
@@ -2998,12 +3023,14 @@ impl TaskExecutor {
                 let mut context = claimed.context_data.clone();
                 match self.rule_executor.execute_rule(rule_id, &mut context).await {
                     Ok(passed) => Ok(TaskExecutionResult {
+                        retry_eligibility: RetryEligibility::None,
                         status_code: "C",
                         task_output: json!({ "passed": passed, "mutated_context": context }),
                         next_task: None,
                         context_data: Some(context),
                     }),
                     Err(e) => Ok(TaskExecutionResult {
+                        retry_eligibility: RetryEligibility::None,
                         status_code: "F",
                         task_output: json!({ "error": 500, "message": format!("Rule engine failed: {}", e) }),
                         next_task: None,
@@ -3015,6 +3042,7 @@ impl TaskExecutor {
                 crate::durable_timer::duration_seconds(&wait.wait)
                     .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
                 Ok(TaskExecutionResult {
+                    retry_eligibility: RetryEligibility::None,
                     status_code: "W",
                     task_output: json!({"status":"waiting_for_timer"}),
                     next_task: None,
@@ -3040,6 +3068,7 @@ impl TaskExecutor {
                 };
 
                 Ok(TaskExecutionResult {
+                    retry_eligibility: RetryEligibility::None,
                     status_code: "C",
                     task_output: output,
                     next_task: None,
@@ -3076,6 +3105,7 @@ impl TaskExecutor {
                 }
 
                 Ok(TaskExecutionResult {
+                    retry_eligibility: RetryEligibility::None,
                     status_code: "C",
                     task_output: json!({
                         "matched": next_task.is_some(),
@@ -3108,6 +3138,7 @@ impl TaskExecutor {
             .unwrap_or_else(|| Value::String("completed".to_string()));
 
         TaskExecutionResult {
+            retry_eligibility: RetryEligibility::None,
             status_code: "C",
             task_output,
             next_task: None,
@@ -3330,6 +3361,7 @@ impl TaskExecutor {
                 )
                 .await?;
             return Ok(TaskExecutionResult {
+                retry_eligibility: RetryEligibility::None,
                 status_code: "C",
                 task_output: result,
                 next_task: None,
@@ -3568,6 +3600,7 @@ impl TaskExecutor {
                             .await?;
                 }
                 return Ok(TaskExecutionResult {
+                    retry_eligibility: RetryEligibility::None,
                     status_code: "C",
                     task_output: result,
                     next_task: None,
@@ -3675,6 +3708,7 @@ impl TaskExecutor {
                 }
                 mock.jobs.lock().unwrap().push(task_input.clone());
                 return Ok(TaskExecutionResult {
+                    retry_eligibility: RetryEligibility::None,
                     status_code: "W",
                     task_output: json!({"agentJobId":task_id,"state":"PENDING"}),
                     next_task: None,
@@ -3744,6 +3778,7 @@ impl TaskExecutor {
             )
             .await?;
             return Ok(TaskExecutionResult {
+                retry_eligibility: RetryEligibility::None,
                 status_code: "W",
                 task_output: json!({"agentJobId":inserted,"state":"PENDING"}),
                 next_task: None,
@@ -3812,6 +3847,7 @@ impl TaskExecutor {
                     let audit = Self::agent_audit_output(&catalog, attempt, &output, None);
                     Self::attach_agent_audit(&mut output, audit);
                     return Ok(TaskExecutionResult {
+                        retry_eligibility: RetryEligibility::None,
                         status_code: "C",
                         task_output: output,
                         next_task: None,
@@ -3842,6 +3878,7 @@ impl TaskExecutor {
             .and_then(|policy| policy.then.clone())
         {
             Ok(TaskExecutionResult {
+                retry_eligibility: RetryEligibility::None,
                 status_code: "C",
                 task_output: error_output,
                 next_task: Some(next_task),
@@ -3849,6 +3886,7 @@ impl TaskExecutor {
             })
         } else {
             Ok(TaskExecutionResult {
+                retry_eligibility: RetryEligibility::None,
                 status_code: "F",
                 task_output: error_output,
                 next_task: None,
@@ -4050,6 +4088,7 @@ impl TaskExecutor {
         let error = rpc.get("error").cloned();
         let succeeded = status.is_success() && error.is_none();
         Ok(TaskExecutionResult {
+            retry_eligibility: RetryEligibility::None,
             status_code: if succeeded { "C" } else { "F" },
             task_output: if succeeded {
                 rpc.get("result").cloned().unwrap_or(Value::Null)
@@ -4802,6 +4841,7 @@ impl TaskExecutor {
 
         if notification {
             return Ok(TaskExecutionResult {
+                retry_eligibility: RetryEligibility::None,
                 status_code: if status.is_success() { "C" } else { "F" },
                 task_output: json!({ "status": status.as_u16() }),
                 next_task: None,
@@ -4838,6 +4878,7 @@ impl TaskExecutor {
                 output["response"] = response;
             }
             return Ok(TaskExecutionResult {
+                retry_eligibility: RetryEligibility::None,
                 status_code: "F",
                 task_output: output,
                 next_task: None,
@@ -4855,6 +4896,7 @@ impl TaskExecutor {
         };
 
         Ok(TaskExecutionResult {
+            retry_eligibility: RetryEligibility::None,
             status_code: if status.is_success() { "C" } else { "F" },
             task_output,
             next_task: None,
@@ -5274,6 +5316,7 @@ impl TaskExecutor {
 
         if failures.is_empty() {
             Ok(TaskExecutionResult {
+                retry_eligibility: RetryEligibility::None,
                 status_code: "C",
                 task_output: json!({ "passed": true, "value": value }),
                 next_task: None,
@@ -5281,6 +5324,7 @@ impl TaskExecutor {
             })
         } else {
             Ok(TaskExecutionResult {
+                retry_eligibility: RetryEligibility::None,
                 status_code: "F",
                 task_output: json!({
                     "type": "https://agentic-workflow.org/errors/assertion-failed",
@@ -5457,19 +5501,52 @@ impl TaskExecutor {
         claimed: &ClaimedTask,
         result: TaskExecutionResult,
     ) -> Result<(), sqlx::Error> {
-        match self
+        let disposition = self
             .w4_guard(tx, claimed.task.host_id, claimed.task.process_id)
-            .await?
-        {
-            expression_completion::ProfileDisposition::V2 => {
+            .await?;
+        match disposition {
+            expression_completion::ProfileDisposition::V2
+            | expression_completion::ProfileDisposition::Deferred => {
+                // Deferred may mean a known v2 worker lacks its evaluator, or a
+                // future profile. Never parse future definitions as current v2.
+                if disposition == expression_completion::ProfileDisposition::Deferred {
+                    let profile: String = sqlx::query_scalar("SELECT expression_profile FROM process_info_t WHERE host_id=$1 AND process_id=$2")
+                    .bind(claimed.task.host_id).bind(claimed.task.process_id).fetch_one(&mut **tx).await?;
+                    if profile != "cel-workflow-v2" {
+                        return Err(sqlx::Error::Protocol(
+                            "WORKFLOW_EXPRESSION_UNAVAILABLE".into(),
+                        ));
+                    }
+                }
+                let raw = serde_json::to_value(&claimed.raw_definition).map_err(|_| {
+                    sqlx::Error::Protocol("WORKFLOW_RETRY_POLICY_UNSUPPORTED".into())
+                })?;
+                if let Err(diagnostic) = workflow_expression::validate_retry_policies(&raw) {
+                    return self
+                        .finish_task_v2(
+                            tx,
+                            claimed,
+                            TaskExecutionResult::retry_policy_failure(&diagnostic.field),
+                        )
+                        .await;
+                }
                 if result.is_http_response_failure()
                     && matches!(
                         self.find_task_definition(&claimed.definition, &claimed.task.wf_task_id),
                         Some(TaskDefinition::Call(CallTaskDefinition::Http(_)))
                     )
+                    && self
+                        .retry_parameters(claimed)?
+                        .is_some_and(|p| p.attempts > 1)
                 {
+                    // Requeue bookkeeping needs current authority, but no evaluator.
                     expression_completion::require_authority(
-                        self.w4_authority(tx, claimed).await?,
+                        self.w6_state_authority(
+                            tx,
+                            &expression_completion::CompletionState::from(claimed),
+                            false,
+                        )
+                        .await?,
                     )?;
                     if self
                         .schedule_retry_if_allowed(tx, claimed, &result.task_output)
@@ -5479,14 +5556,6 @@ impl TaskExecutor {
                     }
                 }
                 return self.finish_task_v2(tx, claimed, result).await;
-            }
-            expression_completion::ProfileDisposition::Deferred if result.status_code == "F" => {
-                return self.finish_task_v2(tx, claimed, result).await;
-            }
-            expression_completion::ProfileDisposition::Deferred => {
-                return Err(sqlx::Error::Protocol(
-                    "WORKFLOW_EXPRESSION_UNAVAILABLE".into(),
-                ));
             }
             expression_completion::ProfileDisposition::Corrupt => {
                 return self
@@ -5632,14 +5701,71 @@ impl TaskExecutor {
         Ok(())
     }
 
+    fn retry_parameters(
+        &self,
+        claimed: &ClaimedTask,
+    ) -> Result<Option<workflow_expression::FixedRetry>, sqlx::Error> {
+        use workflow_core::models::retry::OneOfRetryPolicyDefinitionOrReference;
+        let Some(task) = self.find_task_definition(&claimed.definition, &claimed.task.wf_task_id)
+        else {
+            return Ok(None);
+        };
+        let Some(retry) = self.common_fields(task).retry.as_ref() else {
+            return Ok(None);
+        };
+        if claimed.expression_profile == "cel-workflow-v2" {
+            let raw = serde_json::to_value(&claimed.raw_definition)
+                .map_err(|_| sqlx::Error::Protocol("WORKFLOW_RETRY_POLICY_UNSUPPORTED".into()))?;
+            let value = serde_json::to_value(retry)
+                .map_err(|_| sqlx::Error::Protocol("WORKFLOW_RETRY_POLICY_UNSUPPORTED".into()))?;
+            return workflow_expression::resolve_retry_policy(
+                &raw,
+                &value,
+                "/retry",
+                Some(&claimed.task.wf_task_id),
+            )
+            .map(Some)
+            .map_err(|_| sqlx::Error::Protocol("WORKFLOW_RETRY_POLICY_UNSUPPORTED".into()));
+        }
+        // Preserve the legacy scheduler, including its pre-existing duration-as-delay fallback.
+        let policy = match retry {
+            OneOfRetryPolicyDefinitionOrReference::Retry(policy) => Some(policy),
+            OneOfRetryPolicyDefinitionOrReference::Reference(name) => claimed
+                .definition
+                .use_
+                .as_ref()
+                .and_then(|c| c.retries.as_ref())
+                .and_then(|p| p.get(name)),
+        };
+        Ok(policy.map(|policy| workflow_expression::FixedRetry {
+            attempts: policy
+                .limit
+                .as_ref()
+                .and_then(|l| l.attempt.as_ref())
+                .and_then(|a| a.count)
+                .unwrap_or(1)
+                .max(1),
+            delay_ms: policy
+                .delay
+                .as_ref()
+                .map(|d| d.total_milliseconds())
+                .or_else(|| {
+                    policy
+                        .limit
+                        .as_ref()
+                        .and_then(|l| l.duration.as_ref())
+                        .map(|d| d.total_milliseconds())
+                })
+                .unwrap_or(0),
+        }))
+    }
+
     async fn schedule_retry_if_allowed(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         claimed: &ClaimedTask,
         failure: &Value,
     ) -> Result<bool, sqlx::Error> {
-        use workflow_core::models::retry::OneOfRetryPolicyDefinitionOrReference;
-
         if failure
             .get("code")
             .and_then(Value::as_str)
@@ -5653,45 +5779,11 @@ impl TaskExecutor {
             return Ok(false);
         }
 
-        let Some(task_def) =
-            self.find_task_definition(&claimed.definition, &claimed.task.wf_task_id)
-        else {
+        let Some(parameters) = self.retry_parameters(claimed)? else {
             return Ok(false);
         };
-        let Some(retry) = self.common_fields(task_def).retry.as_ref() else {
-            return Ok(false);
-        };
-        let policy = match retry {
-            OneOfRetryPolicyDefinitionOrReference::Retry(policy) => Some(policy),
-            OneOfRetryPolicyDefinitionOrReference::Reference(reference) => claimed
-                .definition
-                .use_
-                .as_ref()
-                .and_then(|components| components.retries.as_ref())
-                .and_then(|policies| policies.get(reference)),
-        };
-        let Some(policy) = policy else {
-            return Ok(false);
-        };
-        let maximum_attempts = policy
-            .limit
-            .as_ref()
-            .and_then(|limit| limit.attempt.as_ref())
-            .and_then(|attempt| attempt.count)
-            .unwrap_or(1)
-            .max(1);
-        let delay_ms = policy
-            .delay
-            .as_ref()
-            .map(|duration| duration.total_milliseconds())
-            .or_else(|| {
-                policy
-                    .limit
-                    .as_ref()
-                    .and_then(|limit| limit.duration.as_ref())
-                    .map(|duration| duration.total_milliseconds())
-            })
-            .unwrap_or(0);
+        let maximum_attempts = parameters.attempts;
+        let delay_ms = parameters.delay_ms;
         let current: Option<RetryTaskState> = sqlx::query_as(
             "SELECT attempt_no,effect_state,downstream_idempotency_key,deadline_ts
                    FROM task_info_t WHERE host_id=$1 AND task_id=$2 FOR UPDATE",
@@ -5706,11 +5798,8 @@ impl TaskExecutor {
         if current.attempt_no >= i32::from(maximum_attempts)
             || (current.effect_state != "none" && current.downstream_idempotency_key.is_none())
             || current.deadline_ts.is_some_and(|deadline| {
-                deadline
-                    <= Utc::now()
-                        + chrono::Duration::milliseconds(
-                            i64::try_from(delay_ms).unwrap_or(i64::MAX),
-                        )
+                deadline.signed_duration_since(Utc::now())
+                    <= chrono::Duration::milliseconds(i64::try_from(delay_ms).unwrap_or(i64::MAX))
             })
         {
             return Ok(false);
@@ -5738,13 +5827,14 @@ impl TaskExecutor {
         .await?;
         if updated.rows_affected() == 1 {
             sqlx::query(
-                "UPDATE workflow_invocation_t SET state='RUNNING',updated_ts=CURRENT_TIMESTAMP,
+                "UPDATE workflow_invocation_t SET state=CASE WHEN state='COMPENSATING' AND $3 THEN 'COMPENSATING' ELSE 'RUNNING' END,updated_ts=CURRENT_TIMESTAMP,
                         state_version=state_version+1
                   WHERE host_id=$1 AND process_id=$2
                     AND state NOT IN ('CANCELLED','COMPLETED','FAILED')",
             )
             .bind(claimed.task.host_id)
             .bind(claimed.task.process_id)
+            .bind(self.is_compensation_task(tx, claimed).await?)
             .execute(&mut **tx)
             .await?;
             return Ok(true);
@@ -9232,3 +9322,7 @@ mod http_retry_tests;
 #[cfg(test)]
 #[path = "http_failure_tests.rs"]
 mod http_failure_tests;
+
+#[cfg(test)]
+#[path = "scratch_database.rs"]
+mod scratch_database;
