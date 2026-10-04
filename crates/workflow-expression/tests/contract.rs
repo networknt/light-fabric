@@ -3,6 +3,11 @@ use workflow_expression::*;
 mod support;
 use support::{diagnostic, owner};
 
+// These two tests each reserve the entire process-wide cache budget. Their
+// cache contracts are independent; run them one at a time and drain before
+// releasing the guard so the next reservation cannot race worker teardown.
+static FULL_CACHE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn bindings(context: Value) -> Bindings {
     Bindings::new(
         &context,
@@ -417,6 +422,7 @@ fn extensions_and_admitted_language() {
 
 #[test]
 fn binding_roots_lexical_locals_and_program_only_cache() {
+    let _cache_guard = FULL_CACHE_TEST.lock().unwrap();
     let engine = owner();
     for position in [
         Position::Set,
@@ -486,10 +492,12 @@ fn binding_roots_lexical_locals_and_program_only_cache() {
     }
     assert_eq!(cache.len().unwrap(), 128);
     assert!(cache.retained_bytes().unwrap() <= CompileCache::MAX_BYTES);
+    cache.shutdown(std::time::Duration::from_secs(2)).unwrap();
 }
 
 #[test]
 fn template_kinds_and_sanitized_coordinates() {
+    let _cache_guard = FULL_CACHE_TEST.lock().unwrap();
     let engine = owner();
     let mut cache = CompileCache::new().unwrap();
     let b = bindings(json!({"s":"sentinel-private-data", "n":3}));
@@ -544,6 +552,7 @@ fn template_kinds_and_sanitized_coordinates() {
         .err()
         .unwrap();
     assert!(!format!("{err} {err:?}").contains("private_authored_unknown"));
+    cache.shutdown(std::time::Duration::from_secs(2)).unwrap();
 }
 
 #[test]

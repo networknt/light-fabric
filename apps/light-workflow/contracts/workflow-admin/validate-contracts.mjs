@@ -20,6 +20,7 @@ const failures = [];
 const fail = (message) => failures.push(message);
 
 const expected = [
+  'workflow_start','workflow_rule_test','workflow_wait_result','workflow_definition_validate','workflow_start_receipt',
   'workflow_decide_tool_access',
   'workflow_delete_process','workflow_get_task','workflow_add_process_note','workflow_list_process_notes',
   'workflow_list_processes','workflow_get_process','workflow_list_features','workflow_get_feature',
@@ -32,8 +33,8 @@ const expected = [
 ];
 const names = manifest.tools.map((tool) => tool.name);
 if (new Set(names).size !== names.length) fail('tool names must be unique');
-if (catalog.tools.length !== 33 || catalog.tools.find(tool => tool.name === 'workflow_invoke')?.gatewayPublication !== false) {
-  fail('the Workflow MCP catalog must include all 33 Tools and exclude workflow_invoke from Gateway publication');
+if (catalog.tools.length !== expected.length || catalog.tools.find(tool => tool.name === 'workflow_invoke')?.gatewayPublication !== false) {
+  fail(`the Workflow MCP catalog must include all ${expected.length} Tools and exclude workflow_invoke from Gateway publication`);
 }
 for (const name of expected) if (!names.includes(name)) fail(`missing tool ${name}`);
 for (const name of names) if (!examples[name]) fail(`missing examples for ${name}`);
@@ -68,6 +69,7 @@ for (const spelling of ['hostId','host_id','owner','ownerSubject','owner_subject
   if (!forbiddenIdentity.test(spelling)) fail(`identity guard does not cover ${spelling}`);
 }
 const hostTools = new Set(['workflow_definition_save','workflow_definition_publish','workflow_definition_retire',
+  'workflow_definition_validate',
   'workflow_definition_grants_sync','workflow_binding_publish','workflow_binding_retire','workflow_binding_get',
   'workflow_binding_list','workflow_binding_decide','workflow_binding_revoke']);
 const allowedIdentityPath = (tool, path) =>
@@ -117,8 +119,12 @@ for (const state of ['failed', 'cancelled']) {
 }
 for (const toolName of hostTools) {
   const tool = manifest.tools.find(item => item.name === toolName);
-  const input = tool && resolve(tool.inputSchema.$ref);
-  if (!input?.required?.includes('hostId') || input?.properties?.hostId?.$ref !== '#/$defs/Uuid') fail(`${toolName}:/hostId must be a required UUID assertion`);
+  const input = tool && (tool.inputSchema.$ref ? resolve(tool.inputSchema.$ref) : tool.inputSchema);
+  const hostSchema = input?.properties?.hostId;
+  const validHostSchema = toolName === 'workflow_definition_validate'
+    ? hostSchema?.type === 'string' && hostSchema?.format === 'uuid'
+    : hostSchema?.$ref === '#/$defs/Uuid';
+  if (!input?.required?.includes('hostId') || !validHostSchema) fail(`${toolName}:/hostId must be a required UUID assertion`);
 }
 for (const toolName of ['workflow_definition_save','workflow_definition_publish']) {
   const input = resolve(manifest.tools.find(item => item.name === toolName).inputSchema.$ref);
@@ -134,11 +140,27 @@ if (!bindingListInput.required?.includes('role') || JSON.stringify(bindingListIn
 const expectRejected = (tool, schema, description) => { if (!scanResolvedInput(schema, tool).length) fail(`validator negative test accepted ${description}`); };
 expectRejected('workflow_invoke', {type:'object',properties:{hostId:{type:'string'}}}, 'hostId on workflow_invoke');
 expectRejected('workflow_start', {type:'object',properties:{hostId:{type:'string'}}}, 'hostId on existing workflow_start');
+expectRejected('workflow_definition_validate', {type:'object',properties:{host_id:{type:'string'}}}, 'host_id alias on definition validation');
+expectRejected('workflow_definition_validate', {type:'object',properties:{nested:{type:'object',properties:{hostId:{type:'string'}}}}}, 'nested hostId on definition validation');
+expectRejected('workflow_definition_validate', {type:'object',properties:{owner:{type:'string'}}}, 'owner identity on definition validation');
 expectRejected('workflow_definition_save', {type:'object',properties:{host_id:{type:'string'}}}, 'host_id alias');
 expectRejected('workflow_definition_save', {type:'object',properties:{nested:{type:'object',properties:{hostId:{type:'string'}}}}}, 'nested hostId');
 expectRejected('workflow_definition_save', {type:'object',properties:{owner:{type:'object',properties:{roles:{type:'array'}}}}}, 'nested owner identity');
 schemas.$defs.ValidatorIdentityProbe = {type:'object',properties:{nested:{type:'object',properties:{hostId:{type:'string'}}}}};
 expectRejected('workflow_binding_get', {$ref:'#/$defs/ValidatorIdentityProbe'}, 'nested hostId through a referenced schema');
+const validateReceiptOutput = ajv.compile(manifest.tools.find(tool => tool.name === 'workflow_start_receipt').outputSchema);
+const receiptNotFound = examples.workflow_start_receipt.output;
+const receiptCommitted = {...receiptNotFound, status:'committed', receipt:examples.workflow_start.output};
+for (const [value, accepted, description] of [
+  [receiptNotFound, true, 'notFound without receipt'],
+  [receiptCommitted, true, 'committed with receipt'],
+  [{...receiptNotFound, status:'committed'}, false, 'committed without receipt'],
+  [{...receiptCommitted, status:'notFound'}, false, 'notFound with receipt'],
+  [{...receiptCommitted, receipt:{...receiptCommitted.receipt, accepted:false}}, false, 'rejected start receipt'],
+  [{...receiptNotFound, status:'unknown'}, false, 'unknown lookup status'],
+]) {
+  if (validateReceiptOutput(value) !== accepted) fail(`receipt output boundary test failed: ${description}`);
+}
 const operationIdTools = ['workflow_definition_publish','workflow_definition_retire','workflow_binding_publish',
   'workflow_binding_retire','workflow_binding_decide','workflow_binding_revoke'];
 for (const toolName of operationIdTools) {

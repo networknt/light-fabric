@@ -6270,7 +6270,8 @@
             "properties": {
               "status": {
                 "const": "committed"
-              }
+              },
+              "receipt": {}
             },
             "required": [
               "receipt"
@@ -6285,7 +6286,10 @@
             "not": {
               "required": [
                 "receipt"
-              ]
+              ],
+              "properties": {
+                "receipt": {}
+              }
             }
           }
         ]

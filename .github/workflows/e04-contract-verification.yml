@@ -1,0 +1,33 @@
+name: E04 Workflow contract verification
+
+on:
+  push:
+    branches: [fix/e04-contract-validator-20261004]
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Checkout public Workflow admin fixtures
+        uses: actions/checkout@v7
+        with:
+          repository: lightapi/light-portal-test
+          path: light-portal-test
+      - name: Place Workflow admin fixtures beside Light-Fabric
+        run: mv light-portal-test ../light-portal-test
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/light-workflow/contracts/workflow-admin/package-lock.json
+      - name: Validate Workflow admin contracts
+        working-directory: apps/light-workflow/contracts/workflow-admin
+        run: npm ci --ignore-scripts && npm test
+      - name: Validate publication head contracts
+        working-directory: apps/light-workflow/contracts/workflow-admin
+        run: node validate-publication-head.mjs
