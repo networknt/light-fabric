@@ -4479,908 +4479,998 @@
           "toolId": {
             "type": "string",
             "format": "uuid"
-          }
-        }
-      },
-      "outputSchema": {
-        "type": "object",
-        "required": [
-          "revision",
-          "aggregateVersion",
-          "decisions"
-        ],
-        "properties": {
-          "revision": {
-            "type": "object",
-            "required": [
-              "bindingId",
-              "toolId",
-              "toolName",
-              "wfDefId",
-              "workflowVersion",
-              "revisionStatus",
-              "definitionDigest",
-              "bindingDigest",
-              "approvalDigest",
-              "requestedBy",
-              "requestedTs",
-              "owner",
-              "binding",
-              "dependencies",
-              "endpointTargets",
-              "writeTasks"
-            ],
-            "properties": {
-              "bindingId": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "toolId": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "toolName": {
-                "type": "string"
-              },
-              "wfDefId": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "workflowVersion": {
-                "type": "string"
-              },
-              "revisionStatus": {
-                "type": "string"
-              },
-              "definitionDigest": {
-                "type": "string",
-                "pattern": "^sha256:[0-9a-f]{64}$"
-              },
-              "bindingDigest": {
-                "type": "string",
-                "pattern": "^sha256:[0-9a-f]{64}$"
-              },
-              "approvalDigest": {
-                "type": "string",
-                "pattern": "^sha256:[0-9a-f]{64}$"
-              },
-              "requestedBy": {
-                "type": "string"
-              },
-              "requestedTs": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "approvedBy": {
-                "type": "string"
-              },
-              "approvedTs": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "owner": {
-                "type": "object",
-                "required": [],
-                "properties": {
-                  "userId": {
-                    "type": "string",
-                    "format": "uuid"
-                  },
-                  "positionId": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 128
-                  }
-                },
-                "additionalProperties": false
-              },
-              "binding": {
-                "type": "object",
-                "required": [
-                  "sourceBindingId",
-                  "toolId",
-                  "toolName",
-                  "wfDefId",
-                  "workflowVersion",
-                  "definitionDigest",
-                  "schemaDigest",
-                  "invocationMode",
-                  "syncWaitMs",
-                  "totalDeadlineMs",
-                  "executionClass",
-                  "resultTextMode",
-                  "cancellationPolicy",
-                  "idempotencyPolicy",
-                  "delegationPolicy",
-                  "runtimeBounds",
-                  "admissionLimits",
-                  "callerPolicy",
-                  "toolAnnotations",
-                  "policyDigest",
-                  "responsePolicyDigest"
-                ],
-                "properties": {
-                  "sourceBindingId": {
-                    "type": "string",
-                    "format": "uuid"
-                  },
-                  "toolId": {
-                    "type": "string",
-                    "format": "uuid"
-                  },
-                  "toolName": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 128
-                  },
-                  "workflowVersion": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 64
-                  },
-                  "invocationMode": {
-                    "const": "sync"
-                  },
-                  "syncWaitMs": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 20000
-                  },
-                  "cancellationPolicy": {
-                    "enum": [
-                      "before-effects-only",
-                      "cooperative",
-                      "disabled"
-                    ],
-                    "default": "before-effects-only"
-                  },
-                  "admissionLimits": {
-                    "type": "object",
-                    "required": [
-                      "maximumConcurrentRuns",
-                      "maximumConcurrentRunsPerUser",
-                      "startsPerMinute",
-                      "startsPerMinutePerUser"
-                    ],
-                    "properties": {
-                      "maximumConcurrentRuns": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "maximumConcurrentRunsPerUser": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "startsPerMinute": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "startsPerMinutePerUser": {
-                        "type": "integer",
-                        "minimum": 1
-                      }
-                    },
-                    "additionalProperties": false
-                  },
-                  "callerPolicy": {
-                    "type": "object",
-                    "properties": {
-                      "anyRole": {
-                        "type": "array",
-                        "minItems": 1,
-                        "maxItems": 32,
-                        "items": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 128
-                        }
-                      }
-                    },
-                    "additionalProperties": false
-                  },
-                  "toolAnnotations": {
-                    "type": "object",
-                    "required": [
-                      "readOnly",
-                      "destructive"
-                    ],
-                    "properties": {
-                      "readOnly": {
-                        "type": "boolean"
-                      },
-                      "destructive": {
-                        "type": "boolean"
-                      }
-                    },
-                    "additionalProperties": false
-                  },
-                  "inputSchema": {
-                    "type": "object"
-                  },
-                  "outputSchema": {
-                    "type": "object"
-                  },
-                  "wfDefId": {
-                    "type": "string",
-                    "format": "uuid"
-                  },
-                  "definitionDigest": {
-                    "type": "string",
-                    "pattern": "^sha256:[0-9a-f]{64}$"
-                  },
-                  "schemaDigest": {
-                    "type": "string",
-                    "pattern": "^sha256:[0-9a-f]{64}$"
-                  },
-                  "totalDeadlineMs": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 30000
-                  },
-                  "executionClass": {
-                    "const": "interactive"
-                  },
-                  "resultTextMode": {
-                    "const": "compact-json"
-                  },
-                  "idempotencyPolicy": {
-                    "type": "object",
-                    "required": [
-                      "kind",
-                      "resultReplayMs"
-                    ],
-                    "properties": {
-                      "kind": {
-                        "enum": [
-                          "derived",
-                          "explicit",
-                          "business"
-                        ]
-                      },
-                      "resultReplayMs": {
-                        "type": "integer",
-                        "minimum": 0
-                      }
-                    },
-                    "additionalProperties": false
-                  },
-                  "delegationPolicy": {
-                    "type": "object",
-                    "required": [
-                      "maximumDelegationDepth"
-                    ],
-                    "properties": {
-                      "maximumDelegationDepth": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 8
-                      }
-                    },
-                    "additionalProperties": false
-                  },
-                  "runtimeBounds": {
-                    "type": "object",
-                    "required": [
-                      "maximumTaskAttempts",
-                      "maximumNestedCalls",
-                      "maximumParallelism",
-                      "maximumRequestBytes",
-                      "maximumIntermediateBytes",
-                      "maximumResultBytes",
-                      "maximumCostUnits"
-                    ],
-                    "properties": {
-                      "maximumTaskAttempts": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "maximumNestedCalls": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "maximumParallelism": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "maximumRequestBytes": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "maximumIntermediateBytes": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "maximumResultBytes": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "maximumCostUnits": {
-                        "type": "integer",
-                        "minimum": 1
-                      }
-                    },
-                    "additionalProperties": false
-                  },
-                  "policyDigest": {
-                    "type": "string",
-                    "pattern": "^sha256:[0-9a-f]{64}$"
-                  },
-                  "responsePolicyDigest": {
-                    "type": "string",
-                    "pattern": "^sha256:[0-9a-f]{64}$"
-                  }
-                },
-                "additionalProperties": false
-              },
-              "dependencies": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "required": [
-                    "nestedToolId",
-                    "nestedToolVersion",
-                    "contractDigest",
-                    "compatibilityPolicy",
-                    "authorizationToolName",
-                    "authorizationEndpointKey",
-                    "authorizationPolicyDigest",
-                    "lifecycleStatus",
-                    "dispatchTarget"
-                  ],
-                  "properties": {
-                    "nestedToolId": {
-                      "type": "string",
-                      "format": "uuid"
-                    },
-                    "nestedToolVersion": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "contractDigest": {
-                      "type": "string",
-                      "pattern": "^sha256:[0-9a-f]{64}$"
-                    },
-                    "compatibilityPolicy": {
-                      "enum": [
-                        "exact",
-                        "follow-compatible"
-                      ]
-                    },
-                    "authorizationToolName": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "authorizationEndpointKey": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "authorizationPolicyDigest": {
-                      "type": "string",
-                      "pattern": "^sha256:[0-9a-f]{64}$"
-                    },
-                    "lifecycleStatus": {
-                      "enum": [
-                        "active",
-                        "superseded",
-                        "retirement-candidate",
-                        "revoked"
-                      ]
-                    },
-                    "dispatchTarget": {
-                      "type": "object",
-                      "additionalProperties": true
-                    }
-                  },
-                  "additionalProperties": false
-                }
-              },
-              "endpointTargets": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "required": [
-                    "endpointRef",
-                    "endpointUri",
-                    "allowedMethods",
-                    "authorizationPolicyDigest"
-                  ],
-                  "properties": {
-                    "endpointRef": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "endpointUri": {
-                      "type": "string",
-                      "format": "uri"
-                    },
-                    "allowedMethods": {
-                      "type": "array",
-                      "items": {
-                        "enum": [
-                          "GET",
-                          "HEAD",
-                          "POST",
-                          "PUT",
-                          "PATCH",
-                          "DELETE"
-                        ]
-                      },
-                      "minItems": 1,
-                      "uniqueItems": true
-                    },
-                    "authorizationPolicyDigest": {
-                      "type": "string",
-                      "pattern": "^sha256:[0-9a-f]{64}$"
-                    },
-                    "resolutionDocument": {
-                      "type": "object"
-                    }
-                  },
-                  "additionalProperties": false
-                }
-              },
-              "writeTasks": {
-                "type": "array",
-                "items": {
-                  "type": "object"
-                }
-              }
-            },
-            "additionalProperties": false
           },
-          "activeRevision": {
-            "type": "object",
-            "required": [
-              "bindingId",
-              "toolId",
-              "toolName",
-              "wfDefId",
-              "workflowVersion",
-              "revisionStatus",
-              "definitionDigest",
-              "bindingDigest",
-              "approvalDigest",
-              "requestedBy",
-              "requestedTs",
-              "owner",
-              "binding",
-              "dependencies",
-              "endpointTargets",
-              "writeTasks"
-            ],
-            "properties": {
-              "bindingId": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "toolId": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "toolName": {
-                "type": "string"
-              },
-              "wfDefId": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "workflowVersion": {
-                "type": "string"
-              },
-              "revisionStatus": {
-                "type": "string"
-              },
-              "definitionDigest": {
-                "type": "string",
-                "pattern": "^sha256:[0-9a-f]{64}$"
-              },
-              "bindingDigest": {
-                "type": "string",
-                "pattern": "^sha256:[0-9a-f]{64}$"
-              },
-              "approvalDigest": {
-                "type": "string",
-                "pattern": "^sha256:[0-9a-f]{64}$"
-              },
-              "requestedBy": {
-                "type": "string"
-              },
-              "requestedTs": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "approvedBy": {
-                "type": "string"
-              },
-              "approvedTs": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "owner": {
-                "type": "object",
-                "required": [],
-                "properties": {
-                  "userId": {
-                    "type": "string",
-                    "format": "uuid"
-                  },
-                  "positionId": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 128
-                  }
-                },
-                "additionalProperties": false
-              },
-              "binding": {
-                "type": "object",
-                "required": [
-                  "sourceBindingId",
-                  "toolId",
-                  "toolName",
-                  "wfDefId",
-                  "workflowVersion",
-                  "definitionDigest",
-                  "schemaDigest",
-                  "invocationMode",
-                  "syncWaitMs",
-                  "totalDeadlineMs",
-                  "executionClass",
-                  "resultTextMode",
-                  "cancellationPolicy",
-                  "idempotencyPolicy",
-                  "delegationPolicy",
-                  "runtimeBounds",
-                  "admissionLimits",
-                  "callerPolicy",
-                  "toolAnnotations",
-                  "policyDigest",
-                  "responsePolicyDigest"
-                ],
-                "properties": {
-                  "sourceBindingId": {
-                    "type": "string",
-                    "format": "uuid"
-                  },
-                  "toolId": {
-                    "type": "string",
-                    "format": "uuid"
-                  },
-                  "toolName": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 128
-                  },
-                  "workflowVersion": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 64
-                  },
-                  "invocationMode": {
-                    "const": "sync"
-                  },
-                  "syncWaitMs": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 20000
-                  },
-                  "cancellationPolicy": {
-                    "enum": [
-                      "before-effects-only",
-                      "cooperative",
-                      "disabled"
-                    ],
-                    "default": "before-effects-only"
-                  },
-                  "admissionLimits": {
-                    "type": "object",
-                    "required": [
-                      "maximumConcurrentRuns",
-                      "maximumConcurrentRunsPerUser",
-                      "startsPerMinute",
-                      "startsPerMinutePerUser"
-                    ],
-                    "properties": {
-                      "maximumConcurrentRuns": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "maximumConcurrentRunsPerUser": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "startsPerMinute": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "startsPerMinutePerUser": {
-                        "type": "integer",
-                        "minimum": 1
-                      }
-                    },
-                    "additionalProperties": false
-                  },
-                  "callerPolicy": {
-                    "type": "object",
-                    "properties": {
-                      "anyRole": {
-                        "type": "array",
-                        "minItems": 1,
-                        "maxItems": 32,
-                        "items": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 128
-                        }
-                      }
-                    },
-                    "additionalProperties": false
-                  },
-                  "toolAnnotations": {
-                    "type": "object",
-                    "required": [
-                      "readOnly",
-                      "destructive"
-                    ],
-                    "properties": {
-                      "readOnly": {
-                        "type": "boolean"
-                      },
-                      "destructive": {
-                        "type": "boolean"
-                      }
-                    },
-                    "additionalProperties": false
-                  },
-                  "inputSchema": {
-                    "type": "object"
-                  },
-                  "outputSchema": {
-                    "type": "object"
-                  },
-                  "wfDefId": {
-                    "type": "string",
-                    "format": "uuid"
-                  },
-                  "definitionDigest": {
-                    "type": "string",
-                    "pattern": "^sha256:[0-9a-f]{64}$"
-                  },
-                  "schemaDigest": {
-                    "type": "string",
-                    "pattern": "^sha256:[0-9a-f]{64}$"
-                  },
-                  "totalDeadlineMs": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 30000
-                  },
-                  "executionClass": {
-                    "const": "interactive"
-                  },
-                  "resultTextMode": {
-                    "const": "compact-json"
-                  },
-                  "idempotencyPolicy": {
-                    "type": "object",
-                    "required": [
-                      "kind",
-                      "resultReplayMs"
-                    ],
-                    "properties": {
-                      "kind": {
-                        "enum": [
-                          "derived",
-                          "explicit",
-                          "business"
-                        ]
-                      },
-                      "resultReplayMs": {
-                        "type": "integer",
-                        "minimum": 0
-                      }
-                    },
-                    "additionalProperties": false
-                  },
-                  "delegationPolicy": {
-                    "type": "object",
-                    "required": [
-                      "maximumDelegationDepth"
-                    ],
-                    "properties": {
-                      "maximumDelegationDepth": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 8
-                      }
-                    },
-                    "additionalProperties": false
-                  },
-                  "runtimeBounds": {
-                    "type": "object",
-                    "required": [
-                      "maximumTaskAttempts",
-                      "maximumNestedCalls",
-                      "maximumParallelism",
-                      "maximumRequestBytes",
-                      "maximumIntermediateBytes",
-                      "maximumResultBytes",
-                      "maximumCostUnits"
-                    ],
-                    "properties": {
-                      "maximumTaskAttempts": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "maximumNestedCalls": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "maximumParallelism": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "maximumRequestBytes": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "maximumIntermediateBytes": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "maximumResultBytes": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "maximumCostUnits": {
-                        "type": "integer",
-                        "minimum": 1
-                      }
-                    },
-                    "additionalProperties": false
-                  },
-                  "policyDigest": {
-                    "type": "string",
-                    "pattern": "^sha256:[0-9a-f]{64}$"
-                  },
-                  "responsePolicyDigest": {
-                    "type": "string",
-                    "pattern": "^sha256:[0-9a-f]{64}$"
-                  }
-                },
-                "additionalProperties": false
-              },
-              "dependencies": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "required": [
-                    "nestedToolId",
-                    "nestedToolVersion",
-                    "contractDigest",
-                    "compatibilityPolicy",
-                    "authorizationToolName",
-                    "authorizationEndpointKey",
-                    "authorizationPolicyDigest",
-                    "lifecycleStatus",
-                    "dispatchTarget"
-                  ],
-                  "properties": {
-                    "nestedToolId": {
-                      "type": "string",
-                      "format": "uuid"
-                    },
-                    "nestedToolVersion": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "contractDigest": {
-                      "type": "string",
-                      "pattern": "^sha256:[0-9a-f]{64}$"
-                    },
-                    "compatibilityPolicy": {
-                      "enum": [
-                        "exact",
-                        "follow-compatible"
-                      ]
-                    },
-                    "authorizationToolName": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "authorizationEndpointKey": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "authorizationPolicyDigest": {
-                      "type": "string",
-                      "pattern": "^sha256:[0-9a-f]{64}$"
-                    },
-                    "lifecycleStatus": {
-                      "enum": [
-                        "active",
-                        "superseded",
-                        "retirement-candidate",
-                        "revoked"
-                      ]
-                    },
-                    "dispatchTarget": {
-                      "type": "object",
-                      "additionalProperties": true
-                    }
-                  },
-                  "additionalProperties": false
-                }
-              },
-              "endpointTargets": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "required": [
-                    "endpointRef",
-                    "endpointUri",
-                    "allowedMethods",
-                    "authorizationPolicyDigest"
-                  ],
-                  "properties": {
-                    "endpointRef": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "endpointUri": {
-                      "type": "string",
-                      "format": "uri"
-                    },
-                    "allowedMethods": {
-                      "type": "array",
-                      "items": {
-                        "enum": [
-                          "GET",
-                          "HEAD",
-                          "POST",
-                          "PUT",
-                          "PATCH",
-                          "DELETE"
-                        ]
-                      },
-                      "minItems": 1,
-                      "uniqueItems": true
-                    },
-                    "authorizationPolicyDigest": {
-                      "type": "string",
-                      "pattern": "^sha256:[0-9a-f]{64}$"
-                    },
-                    "resolutionDocument": {
-                      "type": "object"
-                    }
-                  },
-                  "additionalProperties": false
-                }
-              },
-              "writeTasks": {
-                "type": "array",
-                "items": {
-                  "type": "object"
-                }
-              }
-            },
-            "additionalProperties": false
+          "headOnly": {
+            "type": "boolean"
           },
-          "carryOverDeniedReason": {
-            "type": "string"
-          },
-          "aggregateVersion": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "decisions": {
-            "type": "array",
-            "items": {
-              "type": "object"
-            }
+          "wfDefId": {
+            "type": "string",
+            "format": "uuid"
           }
         },
-        "additionalProperties": false
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "headOnly"
+              ],
+              "properties": {
+                "headOnly": {
+                  "const": true
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "toolId",
+                "wfDefId"
+              ],
+              "properties": {
+                "toolId": {},
+                "wfDefId": {},
+                "bindingId": {}
+              },
+              "not": {
+                "required": [
+                  "bindingId"
+                ],
+                "properties": {
+                  "bindingId": {}
+                }
+              }
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "wfDefId"
+                ],
+                "properties": {
+                  "wfDefId": {}
+                }
+              }
+            }
+          }
+        ]
+      },
+      "outputSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "revision",
+              "aggregateVersion",
+              "decisions"
+            ],
+            "properties": {
+              "revision": {
+                "type": "object",
+                "required": [
+                  "bindingId",
+                  "toolId",
+                  "toolName",
+                  "wfDefId",
+                  "workflowVersion",
+                  "revisionStatus",
+                  "definitionDigest",
+                  "bindingDigest",
+                  "approvalDigest",
+                  "requestedBy",
+                  "requestedTs",
+                  "owner",
+                  "binding",
+                  "dependencies",
+                  "endpointTargets",
+                  "writeTasks"
+                ],
+                "properties": {
+                  "bindingId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "toolId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "toolName": {
+                    "type": "string"
+                  },
+                  "wfDefId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "workflowVersion": {
+                    "type": "string"
+                  },
+                  "revisionStatus": {
+                    "type": "string"
+                  },
+                  "definitionDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "bindingDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "approvalDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "requestedBy": {
+                    "type": "string"
+                  },
+                  "requestedTs": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "approvedBy": {
+                    "type": "string"
+                  },
+                  "approvedTs": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "owner": {
+                    "type": "object",
+                    "required": [],
+                    "properties": {
+                      "userId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "positionId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "binding": {
+                    "type": "object",
+                    "required": [
+                      "sourceBindingId",
+                      "toolId",
+                      "toolName",
+                      "wfDefId",
+                      "workflowVersion",
+                      "definitionDigest",
+                      "schemaDigest",
+                      "invocationMode",
+                      "syncWaitMs",
+                      "totalDeadlineMs",
+                      "executionClass",
+                      "resultTextMode",
+                      "cancellationPolicy",
+                      "idempotencyPolicy",
+                      "delegationPolicy",
+                      "runtimeBounds",
+                      "admissionLimits",
+                      "callerPolicy",
+                      "toolAnnotations",
+                      "policyDigest",
+                      "responsePolicyDigest"
+                    ],
+                    "properties": {
+                      "sourceBindingId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "toolId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "toolName": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "workflowVersion": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                      },
+                      "invocationMode": {
+                        "const": "sync"
+                      },
+                      "syncWaitMs": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20000
+                      },
+                      "cancellationPolicy": {
+                        "enum": [
+                          "before-effects-only",
+                          "cooperative",
+                          "disabled"
+                        ],
+                        "default": "before-effects-only"
+                      },
+                      "admissionLimits": {
+                        "type": "object",
+                        "required": [
+                          "maximumConcurrentRuns",
+                          "maximumConcurrentRunsPerUser",
+                          "startsPerMinute",
+                          "startsPerMinutePerUser"
+                        ],
+                        "properties": {
+                          "maximumConcurrentRuns": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "maximumConcurrentRunsPerUser": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "startsPerMinute": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "startsPerMinutePerUser": {
+                            "type": "integer",
+                            "minimum": 1
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "callerPolicy": {
+                        "type": "object",
+                        "properties": {
+                          "anyRole": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 32,
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "toolAnnotations": {
+                        "type": "object",
+                        "required": [
+                          "readOnly",
+                          "destructive"
+                        ],
+                        "properties": {
+                          "readOnly": {
+                            "type": "boolean"
+                          },
+                          "destructive": {
+                            "type": "boolean"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "inputSchema": {
+                        "type": "object"
+                      },
+                      "outputSchema": {
+                        "type": "object"
+                      },
+                      "wfDefId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "definitionDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[0-9a-f]{64}$"
+                      },
+                      "schemaDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[0-9a-f]{64}$"
+                      },
+                      "totalDeadlineMs": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 30000
+                      },
+                      "executionClass": {
+                        "const": "interactive"
+                      },
+                      "resultTextMode": {
+                        "const": "compact-json"
+                      },
+                      "idempotencyPolicy": {
+                        "type": "object",
+                        "required": [
+                          "kind",
+                          "resultReplayMs"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "enum": [
+                              "derived",
+                              "explicit",
+                              "business"
+                            ]
+                          },
+                          "resultReplayMs": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "delegationPolicy": {
+                        "type": "object",
+                        "required": [
+                          "maximumDelegationDepth"
+                        ],
+                        "properties": {
+                          "maximumDelegationDepth": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 8
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "runtimeBounds": {
+                        "type": "object",
+                        "required": [
+                          "maximumTaskAttempts",
+                          "maximumNestedCalls",
+                          "maximumParallelism",
+                          "maximumRequestBytes",
+                          "maximumIntermediateBytes",
+                          "maximumResultBytes",
+                          "maximumCostUnits"
+                        ],
+                        "properties": {
+                          "maximumTaskAttempts": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "maximumNestedCalls": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "maximumParallelism": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "maximumRequestBytes": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "maximumIntermediateBytes": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "maximumResultBytes": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "maximumCostUnits": {
+                            "type": "integer",
+                            "minimum": 1
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "policyDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[0-9a-f]{64}$"
+                      },
+                      "responsePolicyDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[0-9a-f]{64}$"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "dependencies": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "nestedToolId",
+                        "nestedToolVersion",
+                        "contractDigest",
+                        "compatibilityPolicy",
+                        "authorizationToolName",
+                        "authorizationEndpointKey",
+                        "authorizationPolicyDigest",
+                        "lifecycleStatus",
+                        "dispatchTarget"
+                      ],
+                      "properties": {
+                        "nestedToolId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "nestedToolVersion": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "contractDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[0-9a-f]{64}$"
+                        },
+                        "compatibilityPolicy": {
+                          "enum": [
+                            "exact",
+                            "follow-compatible"
+                          ]
+                        },
+                        "authorizationToolName": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "authorizationEndpointKey": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "authorizationPolicyDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[0-9a-f]{64}$"
+                        },
+                        "lifecycleStatus": {
+                          "enum": [
+                            "active",
+                            "superseded",
+                            "retirement-candidate",
+                            "revoked"
+                          ]
+                        },
+                        "dispatchTarget": {
+                          "type": "object",
+                          "additionalProperties": true
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "endpointTargets": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "endpointRef",
+                        "endpointUri",
+                        "allowedMethods",
+                        "authorizationPolicyDigest"
+                      ],
+                      "properties": {
+                        "endpointRef": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "endpointUri": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "allowedMethods": {
+                          "type": "array",
+                          "items": {
+                            "enum": [
+                              "GET",
+                              "HEAD",
+                              "POST",
+                              "PUT",
+                              "PATCH",
+                              "DELETE"
+                            ]
+                          },
+                          "minItems": 1,
+                          "uniqueItems": true
+                        },
+                        "authorizationPolicyDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[0-9a-f]{64}$"
+                        },
+                        "resolutionDocument": {
+                          "type": "object"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "writeTasks": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "activeRevision": {
+                "type": "object",
+                "required": [
+                  "bindingId",
+                  "toolId",
+                  "toolName",
+                  "wfDefId",
+                  "workflowVersion",
+                  "revisionStatus",
+                  "definitionDigest",
+                  "bindingDigest",
+                  "approvalDigest",
+                  "requestedBy",
+                  "requestedTs",
+                  "owner",
+                  "binding",
+                  "dependencies",
+                  "endpointTargets",
+                  "writeTasks"
+                ],
+                "properties": {
+                  "bindingId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "toolId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "toolName": {
+                    "type": "string"
+                  },
+                  "wfDefId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "workflowVersion": {
+                    "type": "string"
+                  },
+                  "revisionStatus": {
+                    "type": "string"
+                  },
+                  "definitionDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "bindingDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "approvalDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "requestedBy": {
+                    "type": "string"
+                  },
+                  "requestedTs": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "approvedBy": {
+                    "type": "string"
+                  },
+                  "approvedTs": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "owner": {
+                    "type": "object",
+                    "required": [],
+                    "properties": {
+                      "userId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "positionId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "binding": {
+                    "type": "object",
+                    "required": [
+                      "sourceBindingId",
+                      "toolId",
+                      "toolName",
+                      "wfDefId",
+                      "workflowVersion",
+                      "definitionDigest",
+                      "schemaDigest",
+                      "invocationMode",
+                      "syncWaitMs",
+                      "totalDeadlineMs",
+                      "executionClass",
+                      "resultTextMode",
+                      "cancellationPolicy",
+                      "idempotencyPolicy",
+                      "delegationPolicy",
+                      "runtimeBounds",
+                      "admissionLimits",
+                      "callerPolicy",
+                      "toolAnnotations",
+                      "policyDigest",
+                      "responsePolicyDigest"
+                    ],
+                    "properties": {
+                      "sourceBindingId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "toolId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "toolName": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "workflowVersion": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                      },
+                      "invocationMode": {
+                        "const": "sync"
+                      },
+                      "syncWaitMs": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20000
+                      },
+                      "cancellationPolicy": {
+                        "enum": [
+                          "before-effects-only",
+                          "cooperative",
+                          "disabled"
+                        ],
+                        "default": "before-effects-only"
+                      },
+                      "admissionLimits": {
+                        "type": "object",
+                        "required": [
+                          "maximumConcurrentRuns",
+                          "maximumConcurrentRunsPerUser",
+                          "startsPerMinute",
+                          "startsPerMinutePerUser"
+                        ],
+                        "properties": {
+                          "maximumConcurrentRuns": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "maximumConcurrentRunsPerUser": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "startsPerMinute": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "startsPerMinutePerUser": {
+                            "type": "integer",
+                            "minimum": 1
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "callerPolicy": {
+                        "type": "object",
+                        "properties": {
+                          "anyRole": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 32,
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "toolAnnotations": {
+                        "type": "object",
+                        "required": [
+                          "readOnly",
+                          "destructive"
+                        ],
+                        "properties": {
+                          "readOnly": {
+                            "type": "boolean"
+                          },
+                          "destructive": {
+                            "type": "boolean"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "inputSchema": {
+                        "type": "object"
+                      },
+                      "outputSchema": {
+                        "type": "object"
+                      },
+                      "wfDefId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "definitionDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[0-9a-f]{64}$"
+                      },
+                      "schemaDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[0-9a-f]{64}$"
+                      },
+                      "totalDeadlineMs": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 30000
+                      },
+                      "executionClass": {
+                        "const": "interactive"
+                      },
+                      "resultTextMode": {
+                        "const": "compact-json"
+                      },
+                      "idempotencyPolicy": {
+                        "type": "object",
+                        "required": [
+                          "kind",
+                          "resultReplayMs"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "enum": [
+                              "derived",
+                              "explicit",
+                              "business"
+                            ]
+                          },
+                          "resultReplayMs": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "delegationPolicy": {
+                        "type": "object",
+                        "required": [
+                          "maximumDelegationDepth"
+                        ],
+                        "properties": {
+                          "maximumDelegationDepth": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 8
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "runtimeBounds": {
+                        "type": "object",
+                        "required": [
+                          "maximumTaskAttempts",
+                          "maximumNestedCalls",
+                          "maximumParallelism",
+                          "maximumRequestBytes",
+                          "maximumIntermediateBytes",
+                          "maximumResultBytes",
+                          "maximumCostUnits"
+                        ],
+                        "properties": {
+                          "maximumTaskAttempts": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "maximumNestedCalls": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "maximumParallelism": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "maximumRequestBytes": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "maximumIntermediateBytes": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "maximumResultBytes": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "maximumCostUnits": {
+                            "type": "integer",
+                            "minimum": 1
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "policyDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[0-9a-f]{64}$"
+                      },
+                      "responsePolicyDigest": {
+                        "type": "string",
+                        "pattern": "^sha256:[0-9a-f]{64}$"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "dependencies": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "nestedToolId",
+                        "nestedToolVersion",
+                        "contractDigest",
+                        "compatibilityPolicy",
+                        "authorizationToolName",
+                        "authorizationEndpointKey",
+                        "authorizationPolicyDigest",
+                        "lifecycleStatus",
+                        "dispatchTarget"
+                      ],
+                      "properties": {
+                        "nestedToolId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "nestedToolVersion": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "contractDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[0-9a-f]{64}$"
+                        },
+                        "compatibilityPolicy": {
+                          "enum": [
+                            "exact",
+                            "follow-compatible"
+                          ]
+                        },
+                        "authorizationToolName": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "authorizationEndpointKey": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "authorizationPolicyDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[0-9a-f]{64}$"
+                        },
+                        "lifecycleStatus": {
+                          "enum": [
+                            "active",
+                            "superseded",
+                            "retirement-candidate",
+                            "revoked"
+                          ]
+                        },
+                        "dispatchTarget": {
+                          "type": "object",
+                          "additionalProperties": true
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "endpointTargets": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "endpointRef",
+                        "endpointUri",
+                        "allowedMethods",
+                        "authorizationPolicyDigest"
+                      ],
+                      "properties": {
+                        "endpointRef": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "endpointUri": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "allowedMethods": {
+                          "type": "array",
+                          "items": {
+                            "enum": [
+                              "GET",
+                              "HEAD",
+                              "POST",
+                              "PUT",
+                              "PATCH",
+                              "DELETE"
+                            ]
+                          },
+                          "minItems": 1,
+                          "uniqueItems": true
+                        },
+                        "authorizationPolicyDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[0-9a-f]{64}$"
+                        },
+                        "resolutionDocument": {
+                          "type": "object"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "writeTasks": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "carryOverDeniedReason": {
+                "type": "string"
+              },
+              "aggregateVersion": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "decisions": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "interfaceVersion",
+              "hostId",
+              "toolId",
+              "wfDefId",
+              "exists",
+              "aggregateVersion"
+            ],
+            "properties": {
+              "interfaceVersion": {
+                "const": "workflow-publication-head-v1"
+              },
+              "hostId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "toolId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "wfDefId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "exists": {
+                "type": "boolean"
+              },
+              "aggregateVersion": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        ]
       },
       "annotations": {
         "readOnlyHint": true,

@@ -322,7 +322,7 @@ the other workflow-admin tools.
 | `workflow_definition_grants_sync` | Replace the Tool grants of one definition |
 | `workflow_binding_publish` | Publish a binding revision with its dependencies and endpoint targets |
 | `workflow_binding_retire` | Retire a Tool's binding, called by the Tool owner |
-| `workflow_binding_get` | Read one revision with its status and decision history |
+| `workflow_binding_get` | Read one revision with its status and decision history; `headOnly:true` with `toolId` and `wfDefId` reads its publication head |
 | `workflow_binding_list` | List revisions for definitions the caller owns, filterable by status |
 | `workflow_binding_decide` | Approve or reject a pending revision, called by the definition owner |
 | `workflow_binding_revoke` | Withdraw approval of an active revision, called by the definition owner |

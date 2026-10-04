@@ -258,6 +258,68 @@ async fn w5_postgres_ask_assignments_wait_and_resumed_completion_once() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicitly authorized disposable W4_TEST_DATABASE_URL; answered ask authority and rollback matrix"]
+async fn w5_postgres_answered_ask_authority_refusals() {
+    let _expression_fixture = crate::expression_test_support::acquire().await;
+    for case in ["kind", "claimed-kind", "process", "instance", "task-name", "placement",
+        "answer-changed", "missing-lease", "owner", "fence", "lease-expired", "cancelled",
+        "task-deadline", "process-deadline", "invocation-deadline", "done", "failed",
+        "fork-marker", "approval-marker"] {
+        let mut g = PgGate::new(json!({"ask":{"prompt":"answer"},"export":{"as":{"answer":"${output.answer}"}}})).await;
+        let owner = Uuid::new_v4();
+        g.claimed.task.task_type = "ask".into();
+        g.claimed.task.status_code = "C".into();
+        g.claimed.task.result_code = Some("{\"answer\":9}".into());
+        g.claimed.host_lease = Some(HostTaskLease { owner, fencing_token: 2 });
+        sqlx::query("UPDATE task_info_t SET task_type='ask',status_code='C',result_code=$1,execution_placement='host',lease_owner=$2,lease_fencing_token=2,lease_expires_ts=clock_timestamp()+interval '1 hour'")
+            .bind(&g.claimed.task.result_code).bind(owner).execute(&g.pool).await.unwrap();
+        let mut tx = g.pool.begin().await.unwrap();
+        assert!(g.executor.w4_authority(&mut tx, &g.claimed).await.unwrap(), "positive control: {case}");
+        tx.rollback().await.unwrap();
+        let mutation = match case {
+            "kind" => "UPDATE task_info_t SET task_type='run'",
+            "claimed-kind" => { g.claimed.task.task_type = "run".into(); "SELECT 1" },
+            "process" => "UPDATE task_info_t SET process_id='00000000-0000-0000-0000-000000000001'",
+            "instance" => "UPDATE task_info_t SET wf_instance_id='different'",
+            "task-name" => "UPDATE task_info_t SET wf_task_id='different'",
+            "placement" => "UPDATE task_info_t SET execution_placement='runner'",
+            "answer-changed" => "UPDATE task_info_t SET result_code='{\"answer\":10}'",
+            "missing-lease" => { g.claimed.host_lease = None; "SELECT 1" },
+            "owner" => "UPDATE task_info_t SET lease_owner='00000000-0000-0000-0000-000000000001'",
+            "fence" => "UPDATE task_info_t SET lease_fencing_token=3",
+            "lease-expired" => "UPDATE task_info_t SET lease_expires_ts=clock_timestamp()",
+            "cancelled" => "UPDATE workflow_invocation_t SET cancel_requested_ts=clock_timestamp(),state='CANCELLED'",
+            "task-deadline" => "UPDATE task_info_t SET deadline_ts=clock_timestamp()",
+            "process-deadline" => "UPDATE process_info_t SET deadline_ts=clock_timestamp()",
+            "invocation-deadline" => "UPDATE workflow_invocation_t SET deadline_ts=clock_timestamp()",
+            "done" => "UPDATE task_info_t SET result_code='W4_STEP_DONE'",
+            "failed" => "UPDATE task_info_t SET result_code='W4_STEP_FAILED'",
+            "fork-marker" => "UPDATE task_info_t SET result_code='W4_FORK_PENDING'",
+            "approval-marker" => "UPDATE task_info_t SET result_code='W4_APPROVAL_PENDING'",
+            _ => unreachable!(),
+        };
+        sqlx::query(mutation).execute(&g.pool).await.unwrap();
+        if matches!(case, "done" | "failed" | "fork-marker" | "approval-marker") {
+            // Even a matching claimed marker cannot impersonate an answer.
+            g.claimed.task.result_code = sqlx::query_scalar("SELECT result_code FROM task_info_t")
+                .fetch_one(&g.pool).await.unwrap();
+        }
+        let snapshot_sql = "SELECT jsonb_build_object('p',(SELECT jsonb_agg(to_jsonb(p)) FROM process_info_t p),'t',(SELECT jsonb_agg(to_jsonb(t)) FROM task_info_t t),'i',(SELECT jsonb_agg(to_jsonb(i)) FROM workflow_invocation_t i))";
+        let before: Value = sqlx::query_scalar(snapshot_sql).fetch_one(&g.pool).await.unwrap();
+        let mut tx = g.pool.begin().await.unwrap();
+        assert!(!g.executor.w4_authority(&mut tx, &g.claimed).await.unwrap(), "refusal: {case}");
+        sqlx::query("UPDATE task_info_t SET update_ts=clock_timestamp()")
+            .execute(&mut *tx).await.unwrap();
+        let error = g.executor.finish_task(&mut tx, &g.claimed, g.executor.completed_ask_result(&g.claimed)).await.unwrap_err();
+        assert!(matches!(error, sqlx::Error::Protocol(ref code) if code == "WORKFLOW_STALE_COMPLETION"), "exact stale error: {case}");
+        tx.rollback().await.unwrap();
+        let after: Value = sqlx::query_scalar(snapshot_sql).fetch_one(&g.pool).await.unwrap();
+        assert_eq!(after, before, "rollback: {case}");
+        g.close().await;
+    }
+}
+
+#[tokio::test]
 #[ignore = "requires explicitly authorized disposable W4_TEST_DATABASE_URL; W5 post-evaluation lease loss forbids assignment writes and rolls back waiting"]
 async fn w5_postgres_ask_stale_after_preparation_zero_assignments() {
     let _expression_fixture = crate::expression_test_support::acquire().await;

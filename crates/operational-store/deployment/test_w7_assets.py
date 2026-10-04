@@ -17,8 +17,8 @@ from test_w7_rollout import ASSETS, HERE, fixture
 from w7_rollout import Refusal, docker_instance, migration_needed, validate_plan
 
 WORKSPACE = HERE.parents[3]
-CONFIG = WORKSPACE / 'portal-config-loc-e04-w7'
-INSTALL = WORKSPACE / 'light-portal-install-e04-w7'
+CONFIG = WORKSPACE / 'portal-config-loc'
+INSTALL = WORKSPACE / 'light-portal-install'
 
 
 def executable(path, text):
@@ -160,7 +160,7 @@ class DeploymentTests(unittest.TestCase):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder) / 'operations'
                 shutil.copytree(ASSETS, root)
-                (root / 'bin').mkdir()
+                (root / 'bin').mkdir(exist_ok=True)
                 shutil.copyfile(HERE / 'w7-startup-guard.sh', root / 'bin/w7-startup-guard.sh')
                 marker(root)
                 manifest = root / 'databases.tsv'
@@ -216,7 +216,7 @@ else:
             with self.subTest(status=status, body=body), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder) / 'operations'
                 shutil.copytree(ASSETS, root)
-                (root / 'bin').mkdir()
+                (root / 'bin').mkdir(exist_ok=True)
                 shutil.copyfile(HERE / 'w7-startup-guard.sh', root / 'bin/w7-startup-guard.sh')
                 marker(root)
                 fake = Path(folder) / 'fake'

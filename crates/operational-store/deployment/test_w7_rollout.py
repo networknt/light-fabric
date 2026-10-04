@@ -88,6 +88,9 @@ class MockBackend:
         self.calls.append('install:'+g['id'])
         if self.failure == ('install',g['id']): raise Refusal('INSTALL_INTERRUPTED')
         self.values[g['id']]='OFF'
+    def preinstall(self,g,transition=False):
+        self.calls.append('preinstall:'+g['id'])
+        if self.failure == ('preinstall',g['id']): raise Refusal('PREINSTALL_REFUSED')
     def schema(self,g,claim_required):
         self.calls.append('schema:'+g['id'])
         if claim_required and not self.claims[g['id']]: raise Refusal('REACTIVATION_REQUIRES_REVIEWED_RESTORATION')
@@ -123,6 +126,18 @@ class CoordinatorTests(unittest.TestCase):
     def prepared(self):
         self.c.prepare()
         self.backend.calls.clear()
+    def test_all_gate_preinstall_refusal(self):
+        # A valid earlier gate must not be installed before a later gate's
+        # qualification/authority/ledger inputs have been checked.
+        for gate in self.plan['gates']:
+            with self.subTest(gate=gate['id']):
+                self.backend.calls.clear()
+                self.backend.failure = ('preinstall', gate['id'])
+                with self.assertRaisesRegex(Refusal, 'PREINSTALL_REFUSED'):
+                    self.c.prepare()
+                self.assertFalse(any(c.startswith('install:') for c in self.backend.calls))
+                self.assertFalse((self.state / 'prepared.json').exists())
+                self.assertFalse((self.state / 'startup-ready.sha256').exists())
     def test_prepare_then_upgrade_boundary_then_activate_order(self):
         self.c.prepare()
         self.assertEqual(self.backend.calls[:3],['coverage','preflight:portal','preflight:ops'])

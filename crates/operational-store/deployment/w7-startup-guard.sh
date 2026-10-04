@@ -12,8 +12,8 @@ fi
 [[ -s "$state_dir/prepared.json" && -f "$operations_root/w7-assets.json" ]] || fail
 (
   cd -- "$operations_root"
-  sha256sum --check "$state_dir/startup-ready.sha256" >/dev/null 2>&1 || exit 2
+  sha256sum -c "$state_dir/startup-ready.sha256" >/dev/null 2>&1 || exit 2
   cd bundle
-  sha256sum --check bundle.sha256 >/dev/null 2>&1 || exit 2
+  sha256sum -c bundle.sha256 >/dev/null 2>&1 || exit 2
 ) || fail
 echo 'W7_STARTUP_PREPARATION_VERIFIED'

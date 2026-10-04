@@ -394,11 +394,26 @@ impl TaskExecutor {
                 claimed.task.process_id,
             )
             .await?;
-        let row=sqlx::query("SELECT status_code::text,result_code,active,lease_owner,lease_fencing_token,lease_expires_ts,accepted_attempt,scheduling_request_id,deadline_ts,clock_timestamp() AS now FROM task_info_t WHERE host_id=$1 AND task_id=$2 FOR UPDATE NOWAIT")
+        let row=sqlx::query("SELECT process_id,task_type,wf_instance_id,wf_task_id,execution_placement,status_code::text,result_code,active,lease_owner,lease_fencing_token,lease_expires_ts,accepted_attempt,scheduling_request_id,deadline_ts,clock_timestamp() AS now FROM task_info_t WHERE host_id=$1 AND task_id=$2 FOR UPDATE NOWAIT")
             .bind(claimed.task.host_id).bind(claimed.task.task_id).fetch_one(&mut **tx).await?;
         let now: chrono::DateTime<Utc> = row.try_get("now")?;
         let status: String = row.try_get("status_code")?;
         let marker: Option<String> = row.try_get("result_code")?;
+        // Answer submission persists C plus the answer in result_code. Only
+        // its current host claim may finish that ask; answer text itself never
+        // grants authority and W4 terminal/control markers cannot be answers.
+        let answered_ask = status == "C"
+            && claimed.task.status_code == "C"
+            && claimed.task.task_type == "ask"
+            && row.try_get::<String, _>("task_type")? == "ask"
+            && row.try_get::<Uuid, _>("process_id")? == claimed.task.process_id
+            && row.try_get::<String, _>("wf_instance_id")? == claimed.task.wf_instance_id
+            && row.try_get::<String, _>("wf_task_id")? == claimed.task.wf_task_id
+            && row.try_get::<String, _>("execution_placement")? == "host"
+            && claimed.host_lease.is_some()
+            && claimed.completion_guard.is_none()
+            && marker == claimed.task.result_code
+            && marker.as_deref().is_none_or(|m| !m.starts_with("W4_"));
         if !parent_live(
             parent.blocked,
             parent.deadline,
@@ -408,7 +423,9 @@ impl TaskExecutor {
             || row
                 .try_get::<Option<chrono::DateTime<Utc>>, _>("deadline_ts")?
                 .is_some_and(|d| d <= now)
-            || !completion_status_live(&status, marker.as_deref(), &claimed.task.status_code)
+            || !((completion_status_live(&status, marker.as_deref(), &claimed.task.status_code)
+                && !(status == "C" && claimed.task.task_type == "ask"))
+                || answered_ask)
         {
             return Ok(false);
         }

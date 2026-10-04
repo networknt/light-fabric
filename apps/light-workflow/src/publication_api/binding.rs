@@ -1975,6 +1975,10 @@ struct GetInput {
     binding_id: Option<Uuid>,
     #[serde(default)]
     tool_id: Option<Uuid>,
+    #[serde(default)]
+    head_only: bool,
+    #[serde(default)]
+    wf_def_id: Option<Uuid>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -2073,6 +2077,46 @@ pub async fn get_verified(
 ) -> Result<Value, ApiError> {
     let input: GetInput =
         serde_json::from_value(args.clone()).map_err(|e| invalid(e.to_string()))?;
+    if input.head_only {
+        let tool = input
+            .tool_id
+            .ok_or_else(|| invalid("headOnly requires toolId"))?;
+        let wf = input
+            .wf_def_id
+            .ok_or_else(|| invalid("headOnly requires wfDefId"))?;
+        if input.binding_id.is_some() {
+            return Err(invalid("headOnly does not accept bindingId"));
+        }
+        let mut tx = pool.begin().await.map_err(database_error)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        let owner: Option<(Option<Uuid>,Option<String>)> = sqlx::query_as(
+            "SELECT owner_user_id,owner_position_id FROM wf_definition_t WHERE host_id=$1 AND wf_def_id=$2")
+            .bind(input.host_id).bind(wf).fetch_optional(&mut *tx).await.map_err(database_error)?;
+        let (owner_user, owner_position) = owner
+            .ok_or_else(|| ApiError::definition_mismatch("saved definition is unavailable"))?;
+        let requester: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_tool_binding_t WHERE host_id=$1 AND tool_id=$2 AND wf_def_id=$3 AND requested_by=$4)")
+            .bind(input.host_id).bind(tool).bind(wf).bind(actor).fetch_one(&mut *tx).await.map_err(database_error)?;
+        if !is_definition_owner(actor, positions, owner_user, owner_position.as_deref())
+            && !requester
+        {
+            return Err(ApiError::policy_denied(
+                "publication head is visible only to its definition owner or binding requester",
+            ));
+        }
+        let head: Option<i64> = sqlx::query_scalar("SELECT aggregate_version FROM workflow_tool_publication_t WHERE host_id=$1 AND tool_id=$2")
+            .bind(input.host_id).bind(tool).fetch_optional(&mut *tx).await.map_err(database_error)?;
+        tx.commit().await.map_err(database_error)?;
+        return Ok(
+            json!({"interfaceVersion":"workflow-publication-head-v1","hostId":input.host_id,
+            "toolId":tool,"wfDefId":wf,"exists":head.is_some(),"aggregateVersion":head.unwrap_or(0)}),
+        );
+    }
+    if input.wf_def_id.is_some() {
+        return Err(invalid("wfDefId requires headOnly"));
+    }
     if input.binding_id.is_some() == input.tool_id.is_some() {
         return Err(invalid("exactly one of bindingId or toolId is required"));
     }

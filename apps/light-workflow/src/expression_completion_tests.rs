@@ -586,14 +586,28 @@ async fn w4_postgres_runner_authority_loss_no_acceptance_or_acknowledgement() {
                 }
             }),
         );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+    let certificate_pem = certificate.cert.pem();
+    let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
+        certificate_pem.as_bytes().to_vec(),
+        certificate.signing_key.serialize_pem().into_bytes(),
+    ).await.unwrap();
+    drop(certificate);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
     let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    // Abort on scope exit (including failed assertions); no key material is
+    // written to disk and the TLS configuration is owned by this server only.
+    let server = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+        axum_server::from_tcp_rustls(listener, tls)
+            .serve(router.into_make_service()).await.unwrap()
+    }));
     let client = execution_client::ExecutionClient::new_with_bearer_token(
-        &format!("http://{addr}/"),
-        "fixture",
+        &format!("https://{addr}/"),
+        "w4-synthetic-fixture-token",
         Duration::from_secs(2),
-        None,
+        Some(certificate_pem.as_bytes()),
     )
     .unwrap();
     let pool = gate.pool.clone();
@@ -1066,28 +1080,47 @@ async fn w4_postgres_cancellation_lease_loss_deferral_and_corruption() {
     .execute(&gate.pool)
     .await
     .unwrap();
+    let persisted_sql = "SELECT jsonb_build_object(
+        'processes',(SELECT jsonb_agg(to_jsonb(p)) FROM process_info_t p),
+        'tasks',(SELECT jsonb_agg(to_jsonb(t)) FROM task_info_t t),
+        'invocations',(SELECT jsonb_agg(to_jsonb(i)) FROM workflow_invocation_t i))";
+    let cancelled_state: Value = sqlx::query_scalar(persisted_sql)
+        .fetch_one(&gate.pool).await.unwrap();
     let mut tx = gate.pool.begin().await.unwrap();
-    gate.executor
+    // Prove an earlier write in the accepting transaction is also rolled back.
+    sqlx::query("UPDATE task_info_t SET update_ts=clock_timestamp()")
+        .execute(&mut *tx).await.unwrap();
+    let error = gate.executor
         .finish_task(&mut tx, &gate.claimed, result)
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .unwrap_err();
+    assert!(matches!(error, sqlx::Error::Protocol(ref code) if code == "WORKFLOW_STALE_COMPLETION"));
+    tx.rollback().await.unwrap();
+    let after_cancel: Value = sqlx::query_scalar(persisted_sql)
+        .fetch_one(&gate.pool).await.unwrap();
+    assert_eq!(after_cancel, cancelled_state);
     assert_eq!(gate.context().await, old);
     sqlx::query("UPDATE workflow_invocation_t SET cancel_requested_ts=NULL,state='RUNNING'")
         .execute(&gate.pool)
         .await
         .unwrap();
+    let live_state: Value = sqlx::query_scalar(persisted_sql)
+        .fetch_one(&gate.pool).await.unwrap();
     let mut tx = gate.pool.begin().await.unwrap();
     sqlx::query("UPDATE task_info_t SET lease_expires_ts=clock_timestamp()")
         .execute(&mut *tx)
         .await
         .unwrap();
     let result = gate.executor.execute_task(&gate.claimed).await.unwrap();
-    gate.executor
+    let error = gate.executor
         .finish_task(&mut tx, &gate.claimed, result)
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .unwrap_err();
+    assert!(matches!(error, sqlx::Error::Protocol(ref code) if code == "WORKFLOW_STALE_COMPLETION"));
+    tx.rollback().await.unwrap();
+    let after_expiry: Value = sqlx::query_scalar(persisted_sql)
+        .fetch_one(&gate.pool).await.unwrap();
+    assert_eq!(after_expiry, live_state);
     assert_eq!(gate.context().await, old);
     gate.claimed.host_lease = None;
     gate.claimed.completion_guard = Some(expression_completion::CompletionGuard::Timer {

@@ -13,6 +13,63 @@ const WRITE: &str = "document: {dsl: '1.0.3', namespace: step04, name: write, ve
 fn pools() -> (PgPool, PgPool) {
     (ops_db::runtime_pool(), ops_db::admin_pool())
 }
+
+#[tokio::test]
+#[ignore = "requires the isolated workflow-invoke scratch database"]
+async fn publication_head_read_is_scoped_read_only_and_owner_authorized() {
+    let (pool, admin) = pools();
+    let host = Uuid::new_v4();
+    let wf = Uuid::new_v4();
+    let owner = Uuid::new_v4();
+    let tool = Uuid::new_v4();
+    definition(&pool, host, wf, owner, READ).await;
+    let args = json!({"hostId":host,"toolId":tool,"wfDefId":wf,"headOnly":true});
+    let absent = publication_api::get_verified(&pool, &args, &owner.to_string(), &[])
+        .await
+        .unwrap();
+    assert_eq!(absent["interfaceVersion"], "workflow-publication-head-v1");
+    assert_eq!(absent["exists"], false);
+    assert_eq!(absent["aggregateVersion"], 0);
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workflow_tool_publication_t WHERE host_id=$1 AND tool_id=$2",
+    )
+    .bind(host)
+    .bind(tool)
+    .fetch_one(&admin)
+    .await
+    .unwrap();
+    assert_eq!(count, 0);
+    assert!(
+        publication_api::get_verified(&pool, &args, &Uuid::new_v4().to_string(), &[])
+            .await
+            .is_err()
+    );
+    let foreign = json!({"hostId":Uuid::new_v4(),"toolId":tool,"wfDefId":wf,"headOnly":true});
+    assert!(
+        publication_api::get_verified(&pool, &foreign, &owner.to_string(), &[])
+            .await
+            .is_err()
+    );
+    let invalid = json!({"hostId":host,"toolId":tool,"bindingId":Uuid::new_v4(),"wfDefId":wf,"headOnly":true});
+    assert!(
+        publication_api::get_verified(&pool, &invalid, &owner.to_string(), &[])
+            .await
+            .is_err()
+    );
+    sqlx::query("INSERT INTO workflow_tool_publication_t(host_id,tool_id,aggregate_version) VALUES($1,$2,7)")
+        .bind(host).bind(tool).execute(&admin).await.unwrap();
+    let existing = publication_api::get_verified(&pool, &args, &owner.to_string(), &[])
+        .await
+        .unwrap();
+    assert_eq!(existing["exists"], true);
+    assert_eq!(existing["aggregateVersion"], 7);
+    let normal = json!({"hostId":host,"toolId":tool});
+    assert!(
+        publication_api::get_verified(&pool, &normal, &owner.to_string(), &[])
+            .await
+            .is_err()
+    );
+}
 async fn api_error(error: rule_api::ApiError) -> Value {
     serde_json::from_slice(
         &to_bytes(error.into_response().into_body(), usize::MAX)

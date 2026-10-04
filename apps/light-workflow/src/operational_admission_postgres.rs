@@ -242,7 +242,7 @@ async fn acceptance_rollback_snapshot_profile_and_off_recovery() {
         stable_tool_ref: Uuid::now_v7(),
         workflow_definition_id: Uuid::now_v7(),
         workflow_version: "1.0.0".into(),
-        definition_digest: digest.clone(),
+        definition_digest: canonical_sha256(&validated.raw).unwrap(),
         schema_digest: digest.clone(),
         policy_digest: digest.clone(),
         response_policy_digest: digest.clone(),
@@ -274,6 +274,22 @@ async fn acceptance_rollback_snapshot_profile_and_off_recovery() {
         },
         correlation_id: "w3c-gate".into(),
     };
+    // The real process FK requires its referenced definition to exist before
+    // acceptance. Keep this prerequisite outside the transactions whose full
+    // rollback is asserted below, and use the actual validated document.
+    sqlx::query(
+        "INSERT INTO workflow_ops.wf_definition_t
+         (host_id,wf_def_id,namespace,name,version,definition)
+         VALUES($1,$2,'w3c-gate',$3,$4,$5)",
+    )
+    .bind(id.host_id)
+    .bind(request.workflow_definition_id)
+    .bind(validated.raw["document"]["name"].as_str().unwrap())
+    .bind(&request.workflow_version)
+    .bind(validated.raw.to_string())
+    .execute(&admin)
+    .await
+    .unwrap();
     let prepared = PreparedInvocationStart {
         binding_id: None,
         process_id: Uuid::now_v7(),
@@ -286,7 +302,7 @@ async fn acceptance_rollback_snapshot_profile_and_off_recovery() {
         execution_profile_id: "host",
         admission_profile: "portal_execution",
         policy_snapshot_id: None,
-        task_policy_digest: &digest,
+        task_policy_digest: digest.trim_start_matches("sha256:"),
         public_output_schema: None,
         expression_admission: Some(&validated),
     };

@@ -1056,10 +1056,17 @@ async fn w6_postgres_native_delivery_deferral_mismatch_cleanup_and_pickup() {
     for mode in ["defer", "mismatch", "cancel", "expiry"] {
         let g =
             PgGate::new(json!({"call":"agent","with":{"agent":"fixture","mode":"service"}})).await;
-        sqlx::query("ALTER TABLE workflow_invocation_t ADD COLUMN end_user_subject text")
+        sqlx::query("ALTER TABLE workflow_invocation_t ADD COLUMN end_user_subject varchar(255)")
             .execute(&g.pool)
             .await
             .unwrap();
+        let subject = format!("w6-fixture-user-{}", Uuid::new_v4());
+        let updated = sqlx::query("UPDATE workflow_invocation_t SET end_user_subject=$1 WHERE host_id=$2 AND process_id=$3")
+            .bind(&subject).bind(g.claimed.task.host_id).bind(g.claimed.task.process_id)
+            .execute(&g.pool).await.unwrap();
+        assert_eq!(updated.rows_affected(), 1);
+        sqlx::query("ALTER TABLE workflow_invocation_t ALTER COLUMN end_user_subject SET NOT NULL")
+            .execute(&g.pool).await.unwrap();
         sqlx::query("CREATE TABLE workflow_agent_job_t(host_id uuid,job_id uuid,agent_def_id uuid,workflow_process_id uuid,workflow_task_id uuid,state text,created_ts timestamptz DEFAULT clock_timestamp(),cancellation_requested_ts timestamptz,deadline_ts timestamptz DEFAULT clock_timestamp()+interval '1 hour',input jsonb DEFAULT '{}',input_schema_digest text DEFAULT 'digest',output_schema jsonb DEFAULT '{}',token_budget bigint DEFAULT 100,cost_budget_micros bigint DEFAULT 0,delegation_depth int DEFAULT 0,maximum_delegation_depth int DEFAULT 1)").execute(&g.pool).await.unwrap();
         let agent = Uuid::new_v4();
         sqlx::query("INSERT INTO workflow_agent_job_t(host_id,job_id,agent_def_id,workflow_process_id,workflow_task_id,state) VALUES($1,$2,$3,$4,$2,'PENDING')").bind(g.claimed.task.host_id).bind(g.claimed.task.task_id).bind(agent).bind(g.claimed.task.process_id).execute(&g.pool).await.unwrap();
@@ -1107,6 +1114,7 @@ async fn w6_postgres_native_delivery_deferral_mismatch_cleanup_and_pickup() {
         );
         for job in jobs {
             assert!(job.cancellation_requested);
+            assert_eq!(job.end_user_subject, subject);
         }
         let after: Value = sqlx::query_scalar("SELECT to_jsonb(j) FROM workflow_agent_job_t j")
             .fetch_one(&g.pool)
@@ -1136,6 +1144,7 @@ async fn w6_postgres_native_delivery_deferral_mismatch_cleanup_and_pickup() {
             assert_eq!(calls, 1);
             assert_eq!(jobs.len(), 1);
             assert!(!jobs[0].cancellation_requested);
+            assert_eq!(jobs[0].end_user_subject, subject);
         }
         g.close().await;
     }

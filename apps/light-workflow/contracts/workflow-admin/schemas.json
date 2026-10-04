@@ -1538,11 +1538,101 @@
         },
         "toolId": {
           "$ref": "#/$defs/Uuid"
+        },
+        "headOnly": {
+          "type": "boolean"
+        },
+        "wfDefId": {
+          "type": "string",
+          "format": "uuid"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "headOnly"
+            ],
+            "properties": {
+              "headOnly": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "toolId",
+              "wfDefId"
+            ],
+            "properties": {
+              "toolId": {},
+              "wfDefId": {},
+              "bindingId": {}
+            },
+            "not": {
+              "required": [
+                "bindingId"
+              ],
+              "properties": {
+                "bindingId": {}
+              }
+            }
+          },
+          "else": {
+            "not": {
+              "required": [
+                "wfDefId"
+              ],
+              "properties": {
+                "wfDefId": {}
+              }
+            }
+          }
+        }
+      ]
     },
     "BindingGetOutput": {
-      "$ref": "#/$defs/BindingView"
+      "oneOf": [
+        {
+          "$ref": "#/$defs/BindingView"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "interfaceVersion",
+            "hostId",
+            "toolId",
+            "wfDefId",
+            "exists",
+            "aggregateVersion"
+          ],
+          "properties": {
+            "interfaceVersion": {
+              "const": "workflow-publication-head-v1"
+            },
+            "hostId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "toolId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "wfDefId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "exists": {
+              "type": "boolean"
+            },
+            "aggregateVersion": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
     },
     "BindingListInput": {
       "type": "object",
@@ -1810,20 +1900,114 @@
     },
     "RequestValidationEvidence": {
       "type": "object",
-      "required": ["version", "discriminator", "operationId", "toolName"],
+      "required": [
+        "version",
+        "discriminator",
+        "operationId",
+        "toolName"
+      ],
       "properties": {
-        "version": {"enum": [1, 2]},
-        "discriminator": {"enum": ["negativeExpectedAggregateVersion", "bindingFields", "bindingReach"]},
-        "operationId": {"$ref": "#/$defs/Uuid"},
-        "toolName": {"enum": ["workflow_binding_publish", "workflow_binding_retire"]},
-        "requestSection": {"enum": ["binding", "reach"]}
+        "version": {
+          "enum": [
+            1,
+            2
+          ]
+        },
+        "discriminator": {
+          "enum": [
+            "negativeExpectedAggregateVersion",
+            "bindingFields",
+            "bindingReach"
+          ]
+        },
+        "operationId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "toolName": {
+          "enum": [
+            "workflow_binding_publish",
+            "workflow_binding_retire"
+          ]
+        },
+        "requestSection": {
+          "enum": [
+            "binding",
+            "reach"
+          ]
+        }
       },
       "allOf": [
-        {"if": {"properties": {"version": {"const": 1}}}, "then": {"properties": {"discriminator": {"const": "negativeExpectedAggregateVersion"}}, "not": {"properties": {"requestSection": {}}, "required": ["requestSection"]}}},
-        {"if": {"properties": {"version": {"const": 2}}}, "then": {"required": ["requestSection"], "properties": {"toolName": {"const": "workflow_binding_publish"}, "requestSection": {"enum": ["binding", "reach"]}}, "oneOf": [
-          {"properties": {"discriminator": {"const": "bindingFields"}, "requestSection": {"const": "binding"}}},
-          {"properties": {"discriminator": {"const": "bindingReach"}, "requestSection": {"const": "reach"}}}
-        ]}}
+        {
+          "if": {
+            "properties": {
+              "version": {
+                "const": 1
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "discriminator": {
+                "const": "negativeExpectedAggregateVersion"
+              }
+            },
+            "not": {
+              "properties": {
+                "requestSection": {}
+              },
+              "required": [
+                "requestSection"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "version": {
+                "const": 2
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "requestSection"
+            ],
+            "properties": {
+              "toolName": {
+                "const": "workflow_binding_publish"
+              },
+              "requestSection": {
+                "enum": [
+                  "binding",
+                  "reach"
+                ]
+              }
+            },
+            "oneOf": [
+              {
+                "properties": {
+                  "discriminator": {
+                    "const": "bindingFields"
+                  },
+                  "requestSection": {
+                    "const": "binding"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "discriminator": {
+                    "const": "bindingReach"
+                  },
+                  "requestSection": {
+                    "const": "reach"
+                  }
+                }
+              }
+            ]
+          }
+        }
       ],
       "additionalProperties": false
     },
@@ -1875,7 +2059,9 @@
             "details": {
               "type": "object",
               "properties": {
-                "requestValidation": {"$ref": "#/$defs/RequestValidationEvidence"}
+                "requestValidation": {
+                  "$ref": "#/$defs/RequestValidationEvidence"
+                }
               },
               "additionalProperties": true
             }
@@ -1925,7 +2111,10 @@
           "$ref": "#/$defs/Digest"
         },
         "compatibilityPolicy": {
-          "enum": ["exact", "follow-compatible"]
+          "enum": [
+            "exact",
+            "follow-compatible"
+          ]
         },
         "authorizationToolName": {
           "type": "string",
@@ -1939,7 +2128,12 @@
           "$ref": "#/$defs/Digest"
         },
         "lifecycleStatus": {
-          "enum": ["active", "superseded", "retirement-candidate", "revoked"]
+          "enum": [
+            "active",
+            "superseded",
+            "retirement-candidate",
+            "revoked"
+          ]
         },
         "dispatchTarget": {
           "type": "object",

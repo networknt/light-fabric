@@ -9740,6 +9740,44 @@ fn normalize_native_workflow_lifecycle_tool(tool: &mut McpToolConfig, name: &str
     if !canonical {
         return false;
     }
+    if name == "workflow_binding_get" {
+        // Existing configured revision reads retain their schema. Only the
+        // authenticated native route receives the explicit new head contract.
+        let head_input = json!({"allOf":[workflow_lifecycle_schema(name),
+            {"required":["headOnly"],"properties":{"headOnly":{"const":true}}}]});
+        let mut original_input = tool.input_schema.clone();
+        let dialect = original_input.as_object_mut().and_then(|schema| schema.remove("$schema"));
+        let closed = original_input.get("additionalProperties") == Some(&json!(false))
+            || original_input.get("unevaluatedProperties") == Some(&json!(false));
+        tool.input_schema = json!({"type":"object","anyOf":[original_input,head_input]});
+        if closed { tool.input_schema["unevaluatedProperties"] = json!(false); }
+        if let Some(dialect) = dialect { tool.input_schema["$schema"] = dialect; }
+        tool.input_schema_configured = true;
+        // Strict configured routes must map the newly exposed head fields too.
+        // Preserve existing mappings and policies; the native MCP request carries
+        // these two fields in its arguments body.
+        if let Some(routing) = tool.tool_metadata.get_mut("routing").and_then(JsonValue::as_object_mut) {
+            let key = ["parameters", "parameterMapping", "parameter_mapping"].into_iter()
+                .find(|key| routing.contains_key(*key));
+            if let Some(mapping) = key.and_then(|key| routing.get_mut(key)).and_then(JsonValue::as_object_mut) {
+                for field in ["headOnly", "wfDefId"] {
+                    mapping.entry(field.to_owned()).or_insert_with(|| json!("body"));
+                }
+            }
+        }
+        if let Some(mut existing) = tool.output_schema.take() {
+            let manifest: JsonValue = serde_json::from_str(include_str!(
+                "../../../apps/light-workflow/contracts/workflow-admin/workflow-tools-list-full.json"
+            )).expect("frozen Workflow admin manifest is valid JSON");
+            let head_output = manifest["tools"].as_array().expect("tools").iter()
+                .find(|entry| entry["name"] == name).expect("binding get contract")
+                ["outputSchema"]["oneOf"][1].clone();
+            let dialect = existing.as_object_mut().and_then(|schema| schema.remove("$schema"));
+            let mut combined = json!({"type":"object","anyOf":[existing,head_output]});
+            if let Some(dialect) = dialect { combined["$schema"] = dialect; }
+            tool.output_schema = Some(combined);
+        }
+    }
     tool.backend_mcp_protocol = Some(McpBackendProtocol::Stateless);
     tool.backend_credential_mode = Some(McpBackendCredentialMode::Workflow);
     tool.session_independent = true;
@@ -18345,6 +18383,73 @@ tools:
                 "manifest tool {name} reached Gateway with an unresolved $ref"
             );
         }
+    }
+
+    #[test]
+    fn publication_head_mode_uses_compiled_workflow_contract() {
+        let validator = jsonschema::validator_for(&workflow_lifecycle_schema("workflow_binding_get")).unwrap();
+        let input = json!({"hostId":"01964b05-552a-7c4b-9184-6857e7f3dc5f",
+            "toolId":"019ffba3-fcee-7dc6-bac1-d50dba320517","wfDefId":"01a01b8b-3e17-775c-935e-95b4f3cb17a3","headOnly":true});
+        assert!(validator.is_valid(&input));
+        let mut missing = input.clone(); missing.as_object_mut().unwrap().remove("wfDefId");
+        assert!(!validator.is_valid(&missing));
+        let mut bad = input.clone();bad["bindingId"] = input["toolId"].clone();
+        assert!(!validator.is_valid(&bad));
+        assert!(validator.is_valid(&json!({"hostId":input["hostId"],"toolId":input["toolId"]})));
+    }
+
+    #[test]
+    fn configured_native_binding_read_adds_only_explicit_head_mode() {
+        let yaml = r#"
+name: workflow_binding_get
+endpointName: workflow_binding_get
+endpoint: workflow_binding_get@call
+serviceId: com.networknt.workflow-1.0.0
+path: /mcp
+method: call
+apiType: mcp
+inputSchema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  required: [hostId, bindingId]
+  additionalProperties: false
+  properties:
+    hostId: {type: string}
+    bindingId: {type: string}
+    toolId: {type: string}
+toolMetadata:
+  routing:
+    parameters: {hostId: body, bindingId: body, toolId: body}
+    requireCompleteParameterMappings: true
+    unmappedArguments: reject
+    bodyMappingMode: fields
+outputSchema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  required: [revision]
+"#;
+        let mut tool: McpToolConfig = serde_yaml::from_str(yaml).unwrap();
+        let original_input = tool.input_schema.clone();
+        assert!(normalize_native_workflow_lifecycle_tool(&mut tool,"workflow_binding_get"));
+        prepare_tools(std::slice::from_ref(&tool), &McpSchemaConfig::default(), true).expect("Gateway schema preparation preserves the root dialect");
+        McpRouterRuntime::new(McpRouterConfig {tools: vec![tool.clone()], ..McpRouterConfig::default()})
+            .expect("strict configured routing maps the explicit head fields");
+        assert_eq!(tool.tool_metadata["routing"]["parameters"]["headOnly"], "body");
+        assert_eq!(tool.tool_metadata["routing"]["parameters"]["wfDefId"], "body");
+        let input = json!({"hostId":"01964b05-552a-7c4b-9184-6857e7f3dc5f",
+            "toolId":"019ffba3-fcee-7dc6-bac1-d50dba320517","wfDefId":"01a01b8b-3e17-775c-935e-95b4f3cb17a3","headOnly":true});
+        let validator = jsonschema::validator_for(&tool.input_schema).unwrap();
+        assert!(validator.is_valid(&input));
+        assert!(validator.is_valid(&json!({"hostId":"old","bindingId":"old"})));
+        assert!(!validator.is_valid(&json!({"hostId":"old","toolId":"old"})));
+        let mut missing=input.clone();missing.as_object_mut().unwrap().remove("wfDefId");
+        assert!(!validator.is_valid(&missing));
+        let mut spoof: McpToolConfig=serde_yaml::from_str(yaml).unwrap();spoof.service_id=Some("other-service".into());
+        assert!(!normalize_native_workflow_lifecycle_tool(&mut spoof,"workflow_binding_get"));
+        assert_eq!(spoof.input_schema,original_input);
+        let output=jsonschema::validator_for(tool.output_schema.as_ref().unwrap()).unwrap();
+        assert!(output.is_valid(&json!({"revision":{}})));
+        assert!(output.is_valid(&json!({"interfaceVersion":"workflow-publication-head-v1","hostId":input["hostId"],"toolId":input["toolId"],"wfDefId":input["wfDefId"],"exists":false,"aggregateVersion":0})));
     }
 
     #[test]
