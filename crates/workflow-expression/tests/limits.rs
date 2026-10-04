@@ -3,6 +3,9 @@ use workflow_expression::*;
 mod support;
 use support::{diagnostic, owner};
 
+// Independent fixtures share the production process-wide reservation ceiling.
+static CACHE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn fails<T, E: Into<WorkerError>>(result: Result<T, E>) {
     match result {
         Err(e) => assert_eq!(diagnostic(e).category, Category::Limit),
@@ -24,6 +27,7 @@ fn nested(depth: usize) -> Value {
 
 #[test]
 fn ordinary_small_compile_limits_at_and_one_over() {
+    let _cache_guard = CACHE_TEST.lock().unwrap();
     let engine = owner();
     let limits = Limits {
         source_bytes: 3,
@@ -77,6 +81,7 @@ fn ordinary_small_compile_limits_at_and_one_over() {
             ..Limits::default()
         },
     ));
+    cache.shutdown(std::time::Duration::from_secs(2)).unwrap();
 }
 
 #[test]
@@ -256,6 +261,7 @@ fn production_output_boundaries() {
 
 #[test]
 fn conservative_cache_retention_eviction() {
+    let _cache_guard = CACHE_TEST.lock().unwrap();
     ordinary_boundary_stack("w1-cache-budget", cache_retention_boundaries);
 }
 
@@ -273,12 +279,14 @@ fn cache_retention_boundaries() {
     assert_eq!(cache.len().unwrap(), 128);
     // Establish the charge for a one-node program, then exercise the byte boundary
     // with a lowered budget. Production AST boundary coverage belongs only above.
+    cache.shutdown(std::time::Duration::from_secs(2)).unwrap();
     drop(cache); // return the process-wide reservation before a separate fixture
     let mut probe = CompileCache::new().unwrap();
     probe
         .compile(Profile::CelWorkflowV2, "1", Position::Set)
         .unwrap();
     let charge = probe.retained_bytes().unwrap();
+    probe.shutdown(std::time::Duration::from_secs(2)).unwrap();
     drop(probe);
     let budget = charge * 2;
     let mut cache = CompileCache::with_budget(8, budget).unwrap();
@@ -324,11 +332,16 @@ fn cache_retention_boundaries() {
             .compile(Profile::CelWorkflowV2, "1", Position::Set)
             .unwrap();
         assert!(disabled.is_empty().unwrap());
+        disabled.shutdown(std::time::Duration::from_secs(2)).unwrap();
     }
+    cache.shutdown(std::time::Duration::from_secs(2)).unwrap();
+    at.shutdown(std::time::Duration::from_secs(2)).unwrap();
+    over.shutdown(std::time::Duration::from_secs(2)).unwrap();
 }
 
 #[test]
 fn deterministic_sorted_json_errors_and_recursive_kinds() {
+    let _cache_guard = CACHE_TEST.lock().unwrap();
     let engine = owner();
     let mut cache = CompileCache::new().unwrap();
     let b = Bindings::new(
@@ -371,4 +384,5 @@ fn deterministic_sorted_json_errors_and_recursive_kinds() {
             Category::JsonProfile
         );
     }
+    cache.shutdown(std::time::Duration::from_secs(2)).unwrap();
 }
