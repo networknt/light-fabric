@@ -2,6 +2,53 @@ use super::*;
 use crate::profile_support::SupportedProfiles;
 
 #[tokio::test]
+#[ignore = "requires explicitly authorized disposable W4_TEST_DATABASE_URL; future-profile HTTP completion defers without policy interpretation"]
+async fn w6_future_http_completion_does_not_parse_or_retry_future_policy() {
+    let _permit = crate::expression_test_support::acquire().await;
+    let mut g=PgGate::new(json!({"call":"http","with":{"method":"GET","endpoint":"http://127.0.0.1:1/unreachable"},"retry":{"limit":{"attempt":{"count":3}}}})).await;
+    let owner = Uuid::new_v4();
+    sqlx::query("UPDATE task_info_t SET task_type='call',execution_placement='host',lease_owner=$1,lease_fencing_token=1,lease_expires_ts=clock_timestamp()+interval '1 hour'").bind(owner).execute(&g.pool).await.unwrap();
+    g.claimed.task.task_type = "call".into();
+    g.claimed.host_lease = Some(HostTaskLease {
+        owner,
+        fencing_token: 1,
+    });
+    g.claimed.completion_guard = None;
+    let raw = json!({"document":{"metadata":{"lightExpressionProfile":"future-profile"}},"do":42,"futureExecutable":{"shape":"unsupported"}});
+    sqlx::query("UPDATE process_info_t SET expression_profile='future-profile',definition_snapshot=$1,definition_digest=$2").bind(&raw).bind(canonical_sha256(&raw).unwrap()).execute(&g.pool).await.unwrap();
+    g.claimed.expression_profile = "future-profile".into();
+    g.claimed.raw_definition = serde_yaml::to_value(raw).unwrap();
+    let before = g.context().await;
+    let mut tx = g.pool.begin().await.unwrap();
+    let result = TaskExecutionResult {
+        retry_eligibility: RetryEligibility::HttpResponse,
+        status_code: "F",
+        task_output: json!({"error":503,"message":"HTTP call failed","body":"fixture"}),
+        next_task: None,
+        context_data: None,
+    };
+    let error = g
+        .executor
+        .finish_task(&mut tx, &g.claimed, result)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, sqlx::Error::Protocol(ref code) if code == "WORKFLOW_EXPRESSION_UNAVAILABLE"),
+        "{error:?}"
+    );
+    tx.rollback().await.unwrap();
+    assert_eq!(g.context().await, before);
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status_code FROM task_info_t")
+            .fetch_one(&g.pool)
+            .await
+            .unwrap(),
+        "A"
+    );
+    g.close().await;
+}
+
+#[tokio::test]
 async fn w6_direct_execution_defers_before_expression_or_dispatch_and_mismatch_wins() {
     let _expression_fixture = crate::expression_test_support::acquire().await;
     let (mut executor, engine) = executor();
@@ -146,6 +193,7 @@ async fn w6_postgres_success_seams_defer_unchanged_and_reject_mismatch() {
                         &mut tx,
                         &g.claimed,
                         TaskExecutionResult {
+                            retry_eligibility: RetryEligibility::None,
                             status_code: "C",
                             task_output: json!({}),
                             next_task: None,

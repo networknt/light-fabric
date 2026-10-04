@@ -117,10 +117,56 @@ jobs:
         env:
           LIGHT_AGENT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/operations
         run: cargo test --locked -p light-agent --lib reconciliation_expires_sessions_when_execution_is_unavailable -- --ignored
+      # Completion regressions create UUID-named child databases and apply the
+      # repository Workflow migrations there. The base is fixture-only.
       - name: Hindsight vector binding and recall
         env:
           HINDSIGHT_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/operations
         run: cargo test --locked -p hindsight-client --test postgres -- --ignored
+
+  workflow-retry-and-timer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+        env:
+          POSTGRES_USER: retry_fixture_admin
+          POSTGRES_PASSWORD: fixture_only
+          POSTGRES_DB: p01_timer_gate
+        ports:
+          - 55431:5432
+        options: >-
+          --tmpfs /var/lib/postgresql/data:rw,size=1073741824
+          --health-cmd "pg_isready -U retry_fixture_admin -d p01_timer_gate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Create isolated Workflow scratch prerequisites
+        env:
+          PGPASSWORD: fixture_only
+        run: |
+          psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 55431 -U retry_fixture_admin -d p01_timer_gate <<'SQL'
+          CREATE ROLE operations_workflow_migrator NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
+          CREATE ROLE operations_workflow_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
+          CREATE DATABASE workflow_retry_ci;
+          SQL
+      - name: Workflow durable HTTP retry regressions
+        env:
+          HTTP_RETRY_TEST_ADMIN_URL: postgres://retry_fixture_admin:fixture_only@127.0.0.1:55431/workflow_retry_ci
+        run: >-
+          cargo test --locked -p light-workflow --lib executor::http_retry_tests::
+          -- --ignored --test-threads=1
+      - name: P01 durable timer regressions
+        env:
+          P01_TIMER_TEST_DATABASE_URL: postgres://retry_fixture_admin:fixture_only@127.0.0.1:55431/p01_timer_gate
+        run: >-
+          cargo test --locked -p light-workflow --lib executor::durable_timer_tests::
+          -- --ignored --test-threads=1
 
   runner-image-and-manifests:
     runs-on: ubuntu-latest

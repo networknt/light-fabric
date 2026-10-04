@@ -14,6 +14,7 @@ pub use worker::{Compilation, Engine, Handle, WorkerConfig, WorkerError};
 mod error;
 mod functions;
 mod json;
+mod retry_policy;
 mod scanner;
 mod uri;
 mod validation;
@@ -21,6 +22,9 @@ pub use error::{Category, ExpressionError, Phase, ProfileError, ScanError};
 pub use facade::{Bindings, evaluate, evaluate_json, evaluate_template};
 pub use facade::{
     CompileCache, Compiled, CompiledJson, CompiledTemplate, compile, compile_with_limits,
+};
+pub use retry_policy::{
+    FixedRetry, MAX_RETRY_DELAY_MS, resolve_retry_policy, validate_retry_policies,
 };
 pub use scanner::{Segment, scan};
 use serde_json::Value;
