@@ -10089,6 +10089,7 @@ name = "workflow-expression"
 version = "0.2.1"
 dependencies = [
  "cel",
+ "chrono",
  "serde_json",
  "sha2 0.10.9",
  "tokio",

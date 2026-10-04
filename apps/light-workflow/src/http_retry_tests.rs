@@ -547,8 +547,8 @@ async fn terminal_failures_with_retry() {
 #[ignore = "requires explicitly owned workflow_retry_* HTTP_RETRY_TEST_ADMIN_URL"]
 async fn failed_retry_authority_and_effect_guards() {
     let _permit = crate::expression_test_support::acquire().await;
-    // A representable policy interval beyond the finite deadline must refuse,
-    // rather than overflow DateTime while checking whether it can fit.
+    // A historical unrepresentable policy must terminalize durably, never
+    // overflow or roll back completion into a repeatedly dispatchable task.
     let mut f = Fixture::new("fetch", json!({})).await;
     f.replace_snapshot(simple(json!({"call":"http","with":{"method":"GET","endpoint":"http://127.0.0.1:1/never"},"retry":{"limit":{"attempt":{"count":3}},"delay":{"milliseconds":i64::MAX}}}), true), false).await;
     f.finish("F", http_failure(503), true).await.unwrap();
@@ -686,11 +686,15 @@ async fn retry_exhaustion_replay_and_failure_routing() {
 }
 async fn native(invalid: bool) {
     let _permit = crate::expression_test_support::acquire().await;
-    let f = Fixture::new(
+    let mut f = Fixture::new(
         "author",
         json!({"comments":[],"requests":1,"designInstruction":"fixture only"}),
     )
     .await;
+    let mut historical = definition("author");
+    historical["do"][0]["author"]["retry"] = json!({"when":"${ false }"});
+    historical["use"] = json!({"retries":{"unused":{"backoff":{}}}});
+    f.replace_snapshot(historical, false).await;
     let c = &f.claimed;
     let agent = Uuid::new_v4();
     let schema = definition("author")["do"][0]["author"]["with"]["outputSchema"].clone();
@@ -1235,7 +1239,7 @@ async fn compensation_retry_preserves_state_before_exhaustion() {
 
 #[tokio::test]
 #[ignore = "requires explicitly owned HTTP_RETRY_TEST_ADMIN_URL"]
-async fn persisted_policy_refusal_precedes_dispatch_and_retry() {
+async fn persisted_policy_refusal_is_task_local_after_failed_response() {
     let _permit = crate::expression_test_support::acquire().await;
     for unsupported in [
         json!({"when":"${ false }"}),
@@ -1253,13 +1257,8 @@ async fn persisted_policy_refusal_precedes_dispatch_and_retry() {
                 raw["use"] = json!({"retries":{"fixed":unsupported.clone()}});
             }
             f.replace_snapshot(raw, false).await;
-            let result = f.executor.execute_task(&f.claimed).await.unwrap();
-            assert_eq!(
-                result.task_output["code"],
-                "WORKFLOW_RETRY_POLICY_UNSUPPORTED"
-            );
-            assert!(!result.is_http_response_failure());
-            // Even an already-reported adapter response must not requeue this snapshot.
+            // Historical snapshots may dispatch; only a completed failed response
+            // requires the relevant policy. Do not re-admit the whole snapshot.
             f.finish("F", http_failure(503), true).await.unwrap();
             assert_eq!(f.state().await, ("F".into(), 1, "FAILED".into()));
             assert_eq!(f.context().await, json!({"unchanged":true}));
@@ -1417,4 +1416,267 @@ async fn transport_and_body_failures_remain_terminal() {
         assert_eq!(f.context().await, json!({"unchanged":true}));
         f.close().await;
     }
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly owned HTTP_RETRY_TEST_ADMIN_URL"]
+async fn historical_success_and_task_local_retry_ignore_unrelated_policies() {
+    let _permit = crate::expression_test_support::acquire().await;
+    for success in [true, false] {
+        let (uri, wire, stop) = server(vec![(if success { 200 } else { 503 }, "{}".into())]).await;
+        let mut f = Fixture::new("fetch", json!({"unchanged":true})).await;
+        let mut raw = simple(
+            json!({"call":"http","with":{"method":"GET","endpoint":uri},"retry":policy(),"export":{"as":{"received":"${ output }"}}}),
+            true,
+        );
+        raw["use"] = json!({"retries":{"unused":{"when":"${ false }"}}});
+        raw["do"][1]["next"]["retry"] = json!({"backoff":{}});
+        f.replace_snapshot(raw, false).await;
+        private_authority(&f).await;
+        let result = f.executor.execute_task(&f.claimed).await.unwrap();
+        assert_eq!(result.status_code, if success { "C" } else { "F" });
+        let mut tx = f.pool.begin().await.unwrap();
+        f.executor
+            .finish_task(&mut tx, &f.claimed, result)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(f.state().await.1, if success { 1 } else { 2 });
+        assert_eq!(f.count("next").await, if success { 1 } else { 0 });
+        if success {
+            let next = f
+                .executor
+                .claim_next_task(Uuid::new_v4())
+                .await
+                .unwrap()
+                .unwrap();
+            let result = f.executor.execute_task(&next).await.unwrap();
+            assert_eq!(result.status_code, "C");
+            let mut tx = f.pool.begin().await.unwrap();
+            f.executor
+                .finish_task(&mut tx, &next, result)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            assert_eq!(f.state().await.2, "COMPLETED");
+        } else {
+            assert_eq!(f.context().await, json!({"unchanged":true}));
+        }
+        stop.send(()).unwrap();
+        assert_eq!(wire.await.unwrap().len(), 1);
+        f.close().await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly owned HTTP_RETRY_TEST_ADMIN_URL"]
+async fn successor_null_deadline_uses_each_authoritative_parent() {
+    let _permit = crate::expression_test_support::acquire().await;
+    for source in ["process", "invocation", "authority", "task"] {
+        for milliseconds in [2000_i64, 1000] {
+            let (uri, wire, stop) = server(vec![(503, "temporary".into())]).await;
+            let mut f = Fixture::new("fetch", json!({"unchanged":true})).await;
+            let mut raw = simple(json!({"set":{"kick":true}}), true);
+            raw["do"][1]["next"] = json!({"call":"http","with":{"method":"GET","endpoint":uri},"retry":policy(),"export":{"as":{"never":"${ output }"}}});
+            raw["do"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"after":{"set":{"unexpected":true}}}));
+            f.replace_snapshot(raw, false).await;
+            private_authority(&f).await;
+            f.finish("C", json!({"kick":true}), true).await.unwrap();
+            f.claimed = f
+                .executor
+                .claim_next_task(Uuid::new_v4())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(f.claimed.task.wf_task_id, "next");
+            let task_deadline: Option<chrono::DateTime<Utc>> =
+                sqlx::query_scalar("SELECT deadline_ts FROM task_info_t WHERE task_id=$1")
+                    .bind(f.claimed.task.task_id)
+                    .fetch_one(&f.pool)
+                    .await
+                    .unwrap();
+            assert!(
+                task_deadline.is_none(),
+                "actual successor has no task deadline"
+            );
+            let deadline = Utc::now() + chrono::Duration::milliseconds(milliseconds);
+            let sql = match source {
+                "process" => "UPDATE process_info_t SET deadline_ts=$1",
+                "invocation" => "UPDATE workflow_invocation_t SET deadline_ts=$1",
+                "authority" => "UPDATE workflow_action_authority_t SET deadline=$1",
+                _ => "UPDATE task_info_t SET deadline_ts=$1 WHERE status_code='A'",
+            };
+            sqlx::query(sql)
+                .bind(deadline)
+                .execute(&f.pool)
+                .await
+                .unwrap();
+            let before = f.context().await;
+            let before_next: Option<chrono::DateTime<Utc>> =
+                sqlx::query_scalar("SELECT next_attempt_ts FROM task_info_t WHERE task_id=$1")
+                    .bind(f.claimed.task.task_id)
+                    .fetch_one(&f.pool)
+                    .await
+                    .unwrap();
+            let result = f.executor.execute_task(&f.claimed).await.unwrap();
+            assert!(result.is_http_response_failure());
+            let mut tx = f.pool.begin().await.unwrap();
+            f.executor
+                .finish_task(&mut tx, &f.claimed, result.clone())
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            assert_eq!(
+                f.state().await,
+                ("F".into(), 1, "FAILED".into()),
+                "{source} {milliseconds}"
+            );
+            let next: Option<chrono::DateTime<Utc>> =
+                sqlx::query_scalar("SELECT next_attempt_ts FROM task_info_t WHERE task_id=$1")
+                    .bind(f.claimed.task.task_id)
+                    .fetch_one(&f.pool)
+                    .await
+                    .unwrap();
+            assert_eq!(next, before_next);
+            assert_eq!(f.context().await, before);
+            assert_eq!(f.count("after").await, 0);
+            assert!(
+                f.executor
+                    .claim_next_task(Uuid::new_v4())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            let mut replay = f.pool.begin().await.unwrap();
+            assert!(
+                f.executor
+                    .finish_task(&mut replay, &f.claimed, result)
+                    .await
+                    .is_err()
+            );
+            replay.rollback().await.unwrap();
+            assert_eq!(f.state().await.1, 1);
+            stop.send(()).unwrap();
+            assert_eq!(wire.await.unwrap().len(), 1);
+            f.close().await;
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly owned HTTP_RETRY_TEST_ADMIN_URL"]
+async fn persisted_large_delay_terminalizes_after_actual_http_without_sql_overflow() {
+    let _permit = crate::expression_test_support::acquire().await;
+    for delay in [
+        i64::MAX as u64,
+        (i64::MAX / 1000) as u64 + 1,
+        (i64::MAX / 1000) as u64,
+        1_000_000_000_000,
+    ] {
+        for parents in [true, false] {
+            let (uri, wire, stop) = server(vec![(503, "temporary".into())]).await;
+            let mut f = Fixture::new("fetch", json!({"unchanged":true})).await;
+            f.replace_snapshot(simple(json!({"call":"http","with":{"method":"GET","endpoint":uri},"retry":{"limit":{"attempt":{"count":3}},"delay":{"milliseconds":delay}},"export":{"as":{"never":"${ output }"}}}),true),false).await;
+            private_authority(&f).await;
+            let before_next: Option<chrono::DateTime<Utc>> =
+                sqlx::query_scalar("SELECT next_attempt_ts FROM task_info_t WHERE task_id=$1")
+                    .bind(f.claimed.task.task_id)
+                    .fetch_one(&f.pool)
+                    .await
+                    .unwrap();
+            let result = f.executor.execute_task(&f.claimed).await.unwrap();
+            assert!(result.is_http_response_failure());
+            if !parents {
+                // Historical event-backed run: no invocation or inherited authority.
+                sqlx::query("DELETE FROM workflow_action_authority_t")
+                    .execute(&f.pool)
+                    .await
+                    .unwrap();
+                sqlx::query("DELETE FROM workflow_invocation_t")
+                    .execute(&f.pool)
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE process_info_t SET deadline_ts=NULL")
+                    .execute(&f.pool)
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE task_info_t SET deadline_ts=NULL")
+                    .execute(&f.pool)
+                    .await
+                    .unwrap();
+            }
+            let mut tx = f.pool.begin().await.unwrap();
+            f.executor
+                .finish_task(&mut tx, &f.claimed, result)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            let row: (String,i32,Option<chrono::DateTime<Utc>>,Value) = sqlx::query_as("SELECT status_code::text,attempt_no,next_attempt_ts,task_output FROM task_info_t WHERE task_id=$1")
+                .bind(f.claimed.task.task_id).fetch_one(&f.pool).await.unwrap();
+            if delay >= (i64::MAX / 1000) as u64 {
+                assert_eq!(row.0, "F");
+                assert_eq!(row.1, 1);
+                assert_eq!(row.2, before_next);
+                assert_eq!(row.3["code"], "WORKFLOW_RETRY_POLICY_UNSUPPORTED");
+                assert_eq!(
+                    sqlx::query_scalar::<_, String>("SELECT status_code::text FROM process_info_t")
+                        .fetch_one(&f.pool)
+                        .await
+                        .unwrap(),
+                    "F"
+                );
+                if parents {
+                    assert_eq!(f.state().await.2, "FAILED");
+                }
+                assert!(
+                    f.executor
+                        .claim_next_task(Uuid::new_v4())
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+            } else if parents {
+                assert_eq!(row.0, "F");
+                assert_eq!(row.1, 1);
+            } else {
+                assert_eq!(row.0, "A");
+                assert_eq!(row.1, 2);
+                assert!(row.2.is_some());
+            }
+            assert_eq!(f.context().await, json!({"unchanged":true}));
+            assert_eq!(f.count("next").await, 0);
+            stop.send(()).unwrap();
+            assert_eq!(wire.await.unwrap().len(), 1);
+            f.close().await;
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly owned HTTP_RETRY_TEST_ADMIN_URL"]
+async fn legacy_unrepresentable_delay_uses_terminal_failure_machinery() {
+    let _permit = crate::expression_test_support::acquire().await;
+    let mut f = Fixture::new("fetch", json!({"unchanged":true})).await;
+    f.replace_snapshot(simple(json!({"call":"http","with":{"method":"GET","endpoint":"http://127.0.0.1:1/fixture"},"retry":{"limit":{"attempt":{"count":3}},"delay":{"milliseconds":i64::MAX}}}),true), true).await;
+    f.finish("F", http_failure(503), true).await.unwrap();
+    assert_eq!(f.state().await, ("F".into(), 1, "FAILED".into()));
+    assert_eq!(f.context().await, json!({"unchanged":true}));
+    assert_eq!(f.count("next").await, 0);
+    let output: Value = sqlx::query_scalar("SELECT task_output FROM task_info_t WHERE task_id=$1")
+        .bind(f.claimed.task.task_id)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(output["code"], "WORKFLOW_RETRY_POLICY_UNSUPPORTED");
+    assert!(
+        f.executor
+            .claim_next_task(Uuid::new_v4())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    f.close().await;
 }

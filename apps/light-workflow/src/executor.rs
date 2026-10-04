@@ -2296,9 +2296,6 @@ impl TaskExecutor {
             _ => {}
         }
         if claimed.expression_profile == "cel-workflow-v2" {
-            if let Err(diagnostic) = workflow_expression::validate_retry_policies(&snapshot) {
-                return Ok(TaskExecutionResult::retry_policy_failure(&diagnostic.field));
-            }
             let task = self
                 .find_task_definition(&claimed.definition, &claimed.task.wf_task_id)
                 .ok_or_else(|| io::Error::other("EXPRESSION_INVALID"))?;
@@ -5499,7 +5496,7 @@ impl TaskExecutor {
         &self,
         tx: &mut Transaction<'_, Postgres>,
         claimed: &ClaimedTask,
-        result: TaskExecutionResult,
+        mut result: TaskExecutionResult,
     ) -> Result<(), sqlx::Error> {
         let disposition = self
             .w4_guard(tx, claimed.task.host_id, claimed.task.process_id)
@@ -5518,41 +5515,57 @@ impl TaskExecutor {
                         ));
                     }
                 }
-                let raw = serde_json::to_value(&claimed.raw_definition).map_err(|_| {
-                    sqlx::Error::Protocol("WORKFLOW_RETRY_POLICY_UNSUPPORTED".into())
-                })?;
-                if let Err(diagnostic) = workflow_expression::validate_retry_policies(&raw) {
-                    return self
-                        .finish_task_v2(
-                            tx,
-                            claimed,
-                            TaskExecutionResult::retry_policy_failure(&diagnostic.field),
-                        )
-                        .await;
-                }
                 if result.is_http_response_failure()
                     && matches!(
                         self.find_task_definition(&claimed.definition, &claimed.task.wf_task_id),
                         Some(TaskDefinition::Call(CallTaskDefinition::Http(_)))
                     )
-                    && self
-                        .retry_parameters(claimed)?
-                        .is_some_and(|p| p.attempts > 1)
                 {
-                    // Requeue bookkeeping needs current authority, but no evaluator.
-                    expression_completion::require_authority(
-                        self.w6_state_authority(
-                            tx,
-                            &expression_completion::CompletionState::from(claimed),
-                            false,
-                        )
-                        .await?,
-                    )?;
-                    if self
-                        .schedule_retry_if_allowed(tx, claimed, &result.task_output)
-                        .await?
-                    {
-                        return Ok(());
+                    let parameters = match self.retry_parameters(claimed) {
+                        Ok(parameters) => parameters,
+                        Err(sqlx::Error::Protocol(code))
+                            if code == "WORKFLOW_RETRY_POLICY_UNSUPPORTED" =>
+                        {
+                            return self
+                                .finish_task_v2(
+                                    tx,
+                                    claimed,
+                                    TaskExecutionResult::retry_policy_failure("/retry"),
+                                )
+                                .await;
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    if let Some(parameters) = parameters.filter(|p| p.attempts > 1) {
+                        // This defensive completion seam requeues without evaluation.
+                        // Host claims remain filtered by the production supported profiles.
+                        expression_completion::require_authority(
+                            self.w6_state_authority(
+                                tx,
+                                &expression_completion::CompletionState::from(claimed),
+                                false,
+                            )
+                            .await?,
+                        )?;
+                        match self
+                            .schedule_retry_if_allowed(tx, claimed, &result.task_output, parameters)
+                            .await
+                        {
+                            Ok(true) => return Ok(()),
+                            Ok(false) => {}
+                            Err(sqlx::Error::Protocol(code))
+                                if code == "WORKFLOW_RETRY_POLICY_UNSUPPORTED" =>
+                            {
+                                return self
+                                    .finish_task_v2(
+                                        tx,
+                                        claimed,
+                                        TaskExecutionResult::retry_policy_failure("/retry/delay"),
+                                    )
+                                    .await;
+                            }
+                            Err(error) => return Err(error),
+                        }
                     }
                 }
                 return self.finish_task_v2(tx, claimed, result).await;
@@ -5592,11 +5605,21 @@ impl TaskExecutor {
         }
 
         if result.status_code == "F"
-            && self
-                .schedule_retry_if_allowed(tx, claimed, &result.task_output)
-                .await?
+            && let Some(parameters) = self.retry_parameters(claimed)?
         {
-            return Ok(());
+            match self
+                .schedule_retry_if_allowed(tx, claimed, &result.task_output, parameters)
+                .await
+            {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                // Shared scheduling must not roll back a completed legacy effect
+                // into another dispatch merely because its delay cannot be stored.
+                Err(sqlx::Error::Protocol(code)) if code == "WORKFLOW_RETRY_POLICY_UNSUPPORTED" => {
+                    result = TaskExecutionResult::retry_policy_failure("/retry/delay");
+                }
+                Err(error) => return Err(error),
+            }
         }
         let updated = if let Some(lease) = claimed.host_lease {
             sqlx::query(
@@ -5710,14 +5733,29 @@ impl TaskExecutor {
         else {
             return Ok(None);
         };
-        let Some(retry) = self.common_fields(task).retry.as_ref() else {
-            return Ok(None);
-        };
         if claimed.expression_profile == "cel-workflow-v2" {
-            let raw = serde_json::to_value(&claimed.raw_definition)
-                .map_err(|_| sqlx::Error::Protocol("WORKFLOW_RETRY_POLICY_UNSUPPORTED".into()))?;
+            // Inspect this task's raw policy: typed serde has discarded unknown keys.
+            // Only its referenced component is resolved; unrelated policies are untouched.
+            let raw_task = self
+                .find_raw_task_definition(&claimed.raw_definition, &claimed.task.wf_task_id)
+                .ok_or_else(|| sqlx::Error::Protocol("WORKFLOW_RETRY_POLICY_UNSUPPORTED".into()))?;
+            let Some(retry) = raw_task.get("retry") else {
+                return Ok(None);
+            };
             let value = serde_json::to_value(retry)
                 .map_err(|_| sqlx::Error::Protocol("WORKFLOW_RETRY_POLICY_UNSUPPORTED".into()))?;
+            let mut raw = json!({});
+            // A direct lookup avoids converting/scanning all components.
+            if let Some(name) = value.as_str()
+                && let Some(component) = claimed
+                    .raw_definition
+                    .get("use")
+                    .and_then(|v| v.get("retries"))
+                    .and_then(|v| v.get(name))
+            {
+                raw["use"] = json!({"retries": {name: serde_json::to_value(component)
+                    .map_err(|_| sqlx::Error::Protocol("WORKFLOW_RETRY_POLICY_UNSUPPORTED".into()))?}});
+            }
             return workflow_expression::resolve_retry_policy(
                 &raw,
                 &value,
@@ -5727,6 +5765,9 @@ impl TaskExecutor {
             .map(Some)
             .map_err(|_| sqlx::Error::Protocol("WORKFLOW_RETRY_POLICY_UNSUPPORTED".into()));
         }
+        let Some(retry) = self.common_fields(task).retry.as_ref() else {
+            return Ok(None);
+        };
         // Preserve the legacy scheduler, including its pre-existing duration-as-delay fallback.
         let policy = match retry {
             OneOfRetryPolicyDefinitionOrReference::Retry(policy) => Some(policy),
@@ -5765,6 +5806,7 @@ impl TaskExecutor {
         tx: &mut Transaction<'_, Postgres>,
         claimed: &ClaimedTask,
         failure: &Value,
+        parameters: workflow_expression::FixedRetry,
     ) -> Result<bool, sqlx::Error> {
         if failure
             .get("code")
@@ -5779,9 +5821,6 @@ impl TaskExecutor {
             return Ok(false);
         }
 
-        let Some(parameters) = self.retry_parameters(claimed)? else {
-            return Ok(false);
-        };
         let maximum_attempts = parameters.attempts;
         let delay_ms = parameters.delay_ms;
         let current: Option<RetryTaskState> = sqlx::query_as(
@@ -5797,11 +5836,43 @@ impl TaskExecutor {
         };
         if current.attempt_no >= i32::from(maximum_attempts)
             || (current.effect_state != "none" && current.downstream_idempotency_key.is_none())
-            || current.deadline_ts.is_some_and(|deadline| {
-                deadline.signed_duration_since(Utc::now())
-                    <= chrono::Duration::milliseconds(i64::try_from(delay_ms).unwrap_or(i64::MAX))
-            })
         {
+            return Ok(false);
+        }
+        // w6_state_authority already owns the v2 parent/task/authority locks.
+        // Read the same authoritative deadline sources, including private v1's
+        // distinction between admission envelope and execution lifetime.
+        let (now, parent_deadline): (chrono::DateTime<Utc>, Option<chrono::DateTime<Utc>>) =
+            sqlx::query_as(
+                "SELECT clock_timestamp(), LEAST(p.deadline_ts,
+                CASE WHEN i.response_policy_snapshot->'privateExecutionProfile'->>'version'='1'
+                     THEN NULL ELSE i.deadline_ts END, a.deadline)
+             FROM process_info_t p LEFT JOIN workflow_invocation_t i
+               ON i.host_id=p.host_id AND i.process_id=p.process_id
+             LEFT JOIN workflow_action_authority_t a
+               ON a.host_id=i.host_id AND a.run_id=i.workflow_instance_id
+             WHERE p.host_id=$1 AND p.process_id=$2",
+            )
+            .bind(claimed.task.host_id)
+            .bind(claimed.task.process_id)
+            .fetch_one(&mut **tx)
+            .await?;
+        let effective_deadline = current.deadline_ts.into_iter().chain(parent_deadline).min();
+        let delay = i64::try_from(delay_ms)
+            .ok()
+            .and_then(chrono::Duration::try_milliseconds)
+            .ok_or_else(|| sqlx::Error::Protocol("WORKFLOW_RETRY_POLICY_UNSUPPORTED".into()))?;
+        // PostgreSQL interval precision is integer microseconds; never use floats
+        // or unchecked SQL timestamp addition after an HTTP effect.
+        if delay_ms > workflow_expression::MAX_RETRY_DELAY_MS {
+            return Err(sqlx::Error::Protocol(
+                "WORKFLOW_RETRY_POLICY_UNSUPPORTED".into(),
+            ));
+        }
+        let next_attempt = now
+            .checked_add_signed(delay)
+            .ok_or_else(|| sqlx::Error::Protocol("WORKFLOW_RETRY_POLICY_UNSUPPORTED".into()))?;
+        if effective_deadline.is_some_and(|d| next_attempt >= d) {
             return Ok(false);
         }
         let Some(lease) = claimed.host_lease else {
@@ -5810,15 +5881,14 @@ impl TaskExecutor {
         let updated = sqlx::query(
             "UPDATE task_info_t SET status_code='A',locked='N',completed_ts=NULL,
                     task_output=$1,result_code='RETRY_SCHEDULED',attempt_no=attempt_no+1,
-                    maximum_attempts=$2,next_attempt_ts=CURRENT_TIMESTAMP+
-                      make_interval(secs=>$3::double precision/1000.0),
+                    maximum_attempts=$2,next_attempt_ts=$3,
                     lease_owner=NULL,lease_expires_ts=NULL,update_ts=CURRENT_TIMESTAMP
               WHERE host_id=$4 AND task_id=$5 AND lease_owner=$6
                 AND lease_fencing_token=$7 AND lease_expires_ts>CURRENT_TIMESTAMP",
         )
         .bind(failure)
         .bind(i32::from(maximum_attempts))
-        .bind(i64::try_from(delay_ms).unwrap_or(i64::MAX))
+        .bind(next_attempt)
         .bind(claimed.task.host_id)
         .bind(claimed.task.task_id)
         .bind(lease.owner)
@@ -6896,6 +6966,11 @@ impl TaskExecutor {
         raw_definition: &'a YamlValue,
         task_name: &str,
     ) -> Option<&'a YamlValue> {
+        if let Some((fork_name, branch_name)) = task_name.split_once("::") {
+            let fork = self.find_raw_task_definition(raw_definition, fork_name)?;
+            let branches = fork.get("fork")?.get("branches")?.as_sequence()?;
+            return branches.iter().find_map(|entry| entry.get(branch_name));
+        }
         let tasks = raw_definition.get("do")?.as_sequence()?;
         for task_entry in tasks {
             let mapping = task_entry.as_mapping()?;

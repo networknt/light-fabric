@@ -134,3 +134,75 @@ fn admission_rejects_policy_without_compiling_conditions_and_preserves_legacy() 
     );
     engine.shutdown(std::time::Duration::from_secs(2)).unwrap();
 }
+
+#[test]
+fn admission_rejects_non_http_placement_in_all_task_containers() {
+    for task in [
+        json!({"call":"agent"}),
+        json!({"call":"mcp"}),
+        json!({"call":"jsonrpc"}),
+        json!({"call":"openrpc"}),
+        json!({"call":"a2a"}),
+        json!({"set":{}}),
+        json!({"assert":{}}),
+        json!({"wait":"PT1S"}),
+        json!({"run":{}}),
+    ] {
+        for retry in [supported(), json!("fixed")] {
+            let mut task = task.clone();
+            task["retry"] = retry;
+            for container in [
+                json!([{"leaf":task}]),
+                json!([{"outer":{"do":[{"leaf":task}]}}]),
+                json!([{"outer":{"for":{},"do":[{"leaf":task}]}}]),
+                json!([{"outer":{"try":[{"leaf":task}],"catch":{"do":[{"leaf":task}]}}}]),
+                json!([{"outer":{"fork":{"branches":[{"leaf":task}]}}}]),
+            ] {
+                let mut raw = definition(supported());
+                raw["use"] = json!({"retries":{"fixed":supported()}});
+                raw["do"] = container;
+                assert_eq!(
+                    validate_retry_policies(&raw).unwrap_err().error.category,
+                    Category::Unsupported
+                );
+            }
+        }
+    }
+    let mut raw = definition(supported());
+    raw["use"] = json!({"retries":{"unused":supported()}});
+    assert!(
+        validate_retry_policies(&raw).is_ok(),
+        "an unused component is not task placement"
+    );
+}
+
+#[test]
+fn interval_and_timestamp_representation_bounds_are_checked() {
+    let interval_max = (i64::MAX / 1000) as u64;
+    let timestamp_max = chrono::DateTime::<chrono::Utc>::MAX_UTC
+        .signed_duration_since(chrono::Utc::now())
+        .num_milliseconds() as u64;
+    // Leave a clock margin when accepting the representable timestamp boundary.
+    let representable = timestamp_max - 1000;
+    assert_eq!(
+        resolve_retry_policy(
+            &json!({}),
+            &json!({"delay":{"milliseconds":representable}}),
+            "/retry",
+            None
+        )
+        .unwrap()
+        .delay_ms,
+        representable
+    );
+    for delay in [
+        timestamp_max + 1000,
+        interval_max,
+        interval_max + 1,
+        i64::MAX as u64,
+    ] {
+        assert!(
+            validate_retry_policies(&definition(json!({"delay":{"milliseconds":delay}}))).is_err()
+        );
+    }
+}

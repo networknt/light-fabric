@@ -735,6 +735,14 @@ impl PgGate {
             sqlx::query(ddl).execute(&pool).await.unwrap();
         }
         let mut c = claimed(task, json!({"old":1,"double":1.25,"integer":u64::MAX}));
+        // Historically admitted snapshot: unused policy must not participate in
+        // runner/timer/fork/compensation completion or expression evaluation.
+        c.raw_definition.as_mapping_mut().unwrap().insert(
+            YamlValue::String("use".into()),
+            serde_yaml::to_value(json!({"retries":{"unused":{"when":"${ false }"}}})).unwrap(),
+        );
+        c.definition = serde_yaml::from_value(c.raw_definition.clone()).unwrap();
+
         if let Some(output) = output {
             c.definition.output = Some(serde_json::from_value(output.clone()).unwrap());
             c.raw_definition.as_mapping_mut().unwrap().insert(

@@ -1,5 +1,5 @@
 //! The bounded v2 response-retry policy. Pure validation shared by admission and
-//! execution of immutable snapshots; no evaluator or expression bindings.
+//! task-local retry decisions for immutable snapshots; no evaluator or expression bindings.
 use crate::{Category, Diagnostic, ExpressionError, Phase};
 use serde_json::Value;
 
@@ -10,6 +10,9 @@ pub struct FixedRetry {
     /// Fixed interval; omitted delay defaults to zero.
     pub delay_ms: u64,
 }
+// PostgreSQL stores interval microseconds in i64. This is a representation
+// limit, not a business timeout. The absolute timestamp is checked at runtime.
+pub const MAX_RETRY_DELAY_MS: u64 = (i64::MAX / 1000) as u64;
 fn error(field: &str, task: Option<&str>, category: Category) -> Diagnostic {
     Diagnostic {
         error: ExpressionError {
@@ -97,10 +100,21 @@ pub fn resolve_retry_policy(
                     .as_u64()
                     .and_then(|n| n.checked_mul(factor))
                     .and_then(|n| delay_ms.checked_add(n))
-                    .filter(|n| *n <= i64::MAX as u64)
+                    .filter(|n| *n <= MAX_RETRY_DELAY_MS)
                     .ok_or_else(|| error(&path(&delay_path, unit), task, Category::Invalid))?;
             }
         }
+    }
+    // Admission can reject a timestamp that is already unrepresentable now.
+    // Scheduling repeats this check using the authoritative database clock.
+    let duration = i64::try_from(delay_ms)
+        .ok()
+        .and_then(chrono::Duration::try_milliseconds);
+    if duration
+        .and_then(|d| chrono::Utc::now().checked_add_signed(d))
+        .is_none()
+    {
+        return Err(error(&path(&field, "delay"), task, Category::Invalid));
     }
     Ok(FixedRetry { attempts, delay_ms })
 }
@@ -133,7 +147,31 @@ pub fn validate_retry_policies(raw: &Value) -> Result<(), Diagnostic> {
                 for (name, task) in map {
                     let field = path(&path(field, &i.to_string()), name);
                     if let Some(retry) = task.get("retry") {
+                        if task.get("call").and_then(Value::as_str) != Some("http") {
+                            return Err(error(
+                                &path(&field, "retry"),
+                                Some(name),
+                                Category::Unsupported,
+                            ));
+                        }
                         resolve_retry_policy(raw, retry, &path(&field, "retry"), Some(name))?;
+                    }
+                    for key in ["do", "try"] {
+                        if let Some(children) = task.get(key) {
+                            tasks(raw, children, &path(&field, key))?;
+                        }
+                    }
+                    if let Some(catch) = task.get("catch") {
+                        if catch.get("retry").is_some() {
+                            return Err(error(
+                                &path(&path(&field, "catch"), "retry"),
+                                Some(name),
+                                Category::Unsupported,
+                            ));
+                        }
+                        if let Some(children) = catch.get("do") {
+                            tasks(raw, children, &path(&path(&field, "catch"), "do"))?;
+                        }
                     }
                     if let Some(branches) = task.pointer("/fork/branches") {
                         tasks(raw, branches, &path(&path(&field, "fork"), "branches"))?;
