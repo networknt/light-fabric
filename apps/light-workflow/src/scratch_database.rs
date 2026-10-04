@@ -8,9 +8,25 @@ pub(super) struct ScratchDatabase {
     pub admin: PgPool,
     name: String,
 }
+// Unquoted ASCII identifiers: [a-z_][a-z0-9_]*, at most 30 bytes.
+// PostgreSQL's 63-byte limit includes the underscore and 32 hex UUID bytes.
+fn valid_prefix(prefix: &str) -> bool {
+    !prefix.is_empty()
+        && prefix.len() <= 30
+        && prefix
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_lowercase() || b == b'_')
+        && prefix
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
 impl ScratchDatabase {
     pub async fn create(url: &url::Url, prefix: &str, connections: u32) -> Self {
-        assert!(prefix.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'));
+        assert!(
+            valid_prefix(prefix),
+            "unsafe or overlong scratch database prefix"
+        );
         let admin = PgPoolOptions::new()
             .max_connections(2)
             .connect(url.as_str())
@@ -75,5 +91,31 @@ impl ScratchDatabase {
             .await
             .unwrap();
         self.admin.close().await;
+    }
+}
+
+#[test]
+fn scratch_identifier_prefix_contract() {
+    for prefix in [
+        "p01_timer",
+        "workflow_retry_case",
+        "_fixture2",
+        &"a".repeat(30),
+    ] {
+        assert!(valid_prefix(prefix), "{prefix}");
+        assert!(format!("{prefix}_{}", Uuid::new_v4().simple()).len() <= 63);
+    }
+    for prefix in [
+        "",
+        "1timer",
+        "Upper",
+        "a-b",
+        "a;b",
+        "a\"",
+        "a b",
+        "é",
+        &"a".repeat(31),
+    ] {
+        assert!(!valid_prefix(prefix), "{prefix}");
     }
 }
