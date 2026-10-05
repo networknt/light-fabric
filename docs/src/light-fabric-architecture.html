@@ -1,0 +1,999 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>light-fabric 架构分析</title>
+<style>
+  :root {
+    --bg: #EEF0F2;
+    --surface: #FFFFFF;
+    --surface-2: #F6F7F9;
+    --ink: #22272D;
+    --ink-2: #566068;
+    --ink-3: #7E8791;
+    --line: #D8DCE1;
+    --line-soft: #E5E8EC;
+    --accent: #A34A28;
+    --accent-soft: #F3E6DF;
+    --steel: #2F546E;
+    --weave: rgba(47, 84, 110, .09);
+    --good: #1D6B45;      --good-bg: #E1F0E8;
+    --warn: #7A5600;      --warn-bg: #F7EED7;
+    --info: #24598F;      --info-bg: #E4EDF7;
+    --crit: #A03528;      --crit-bg: #F8E7E4;
+    --shadow: 0 1px 2px rgba(34, 39, 45, .05);
+    --serif: "Songti SC", "STSong", "Noto Serif CJK SC", "Source Han Serif SC", Georgia, serif;
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #13161A;
+      --surface: #1B2026;
+      --surface-2: #21262D;
+      --ink: #E7EAEE;
+      --ink-2: #A2ABB5;
+      --ink-3: #7C858F;
+      --line: #313944;
+      --line-soft: #2A313A;
+      --accent: #D68F62;
+      --accent-soft: #35281F;
+      --steel: #8FB3CE;
+      --weave: rgba(143, 179, 206, .07);
+      --good: #6CC496;      --good-bg: #1B2E24;
+      --warn: #D9A863;      --warn-bg: #322A1A;
+      --info: #7FAEDF;      --info-bg: #1C2938;
+      --crit: #E28B7D;      --crit-bg: #372019;
+      --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #13161A;
+    --surface: #1B2026;
+    --surface-2: #21262D;
+    --ink: #E7EAEE;
+    --ink-2: #A2ABB5;
+    --ink-3: #7C858F;
+    --line: #313944;
+    --line-soft: #2A313A;
+    --accent: #D68F62;
+    --accent-soft: #35281F;
+    --steel: #8FB3CE;
+    --weave: rgba(143, 179, 206, .07);
+    --good: #6CC496;      --good-bg: #1B2E24;
+    --warn: #D9A863;      --warn-bg: #322A1A;
+    --info: #7FAEDF;      --info-bg: #1C2938;
+    --crit: #E28B7D;      --crit-bg: #372019;
+    --shadow: none;
+  }
+  :root[data-theme="light"] {
+    --bg: #EEF0F2;
+    --surface: #FFFFFF;
+    --surface-2: #F6F7F9;
+    --ink: #22272D;
+    --ink-2: #566068;
+    --ink-3: #7E8791;
+    --line: #D8DCE1;
+    --line-soft: #E5E8EC;
+    --accent: #A34A28;
+    --accent-soft: #F3E6DF;
+    --steel: #2F546E;
+    --weave: rgba(47, 84, 110, .09);
+    --good: #1D6B45;      --good-bg: #E1F0E8;
+    --warn: #7A5600;      --warn-bg: #F7EED7;
+    --info: #24598F;      --info-bg: #E4EDF7;
+    --crit: #A03528;      --crit-bg: #F8E7E4;
+    --shadow: 0 1px 2px rgba(34, 39, 45, .05);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15.5px;
+    line-height: 1.85;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page { max-width: 1080px; margin: 0 auto; padding: 0 28px 96px; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent; }
+  a:hover { border-bottom-color: var(--accent); }
+  a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+  code {
+    font-family: var(--mono);
+    font-size: .88em;
+    background: var(--surface-2);
+    border: 1px solid var(--line-soft);
+    border-radius: 4px;
+    padding: 1px 5px;
+    overflow-wrap: anywhere;
+  }
+  strong { font-weight: 650; }
+
+  /* ── 标题块（工程图纸 title block）───────────────────────── */
+  header.titleblock {
+    margin: 40px 0 48px;
+    border: 1px solid var(--line);
+    background:
+      repeating-linear-gradient(45deg,  var(--weave) 0 1px, transparent 1px 8px),
+      repeating-linear-gradient(135deg, var(--weave) 0 1px, transparent 1px 8px),
+      var(--surface);
+    box-shadow: var(--shadow);
+  }
+  .tb-top { padding: 40px 40px 32px; border-bottom: 1px solid var(--line); }
+  .tb-kicker {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: .14em;
+    color: var(--accent);
+    margin-bottom: 14px;
+  }
+  h1 {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: clamp(30px, 5vw, 42px);
+    line-height: 1.25;
+    margin: 0 0 12px;
+    text-wrap: balance;
+  }
+  .tb-sub { color: var(--ink-2); max-width: 62ch; margin: 0; }
+  .tb-meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    border-top: 1px solid var(--line-soft);
+  }
+  .tb-meta > div { padding: 14px 40px; border-top: 1px solid var(--line-soft); }
+  .tb-meta dt {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin: 0 0 2px;
+  }
+  .tb-meta dd { margin: 0; font-family: var(--mono); font-size: 13px; color: var(--ink); overflow-wrap: anywhere; }
+
+  /* ── 章节骨架 ───────────────────────────────────────────── */
+  section.sec { margin-top: 72px; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    letter-spacing: .12em;
+    color: var(--accent);
+    margin-bottom: 8px;
+  }
+  h2 {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: 27px;
+    line-height: 1.3;
+    margin: 0 0 8px;
+    text-wrap: balance;
+  }
+  .lede { color: var(--ink-2); max-width: 68ch; margin: 0 0 26px; }
+  h3 { font-size: 17px; font-weight: 650; margin: 34px 0 10px; }
+  h4 { font-size: 15px; font-weight: 650; margin: 22px 0 8px; }
+  p { max-width: 74ch; margin: 0 0 14px; }
+  ul, ol { max-width: 74ch; padding-left: 1.4em; margin: 0 0 14px; }
+  li { margin-bottom: 6px; }
+  li::marker { color: var(--ink-3); }
+
+  /* ── 摘要 / 目录 ────────────────────────────────────────── */
+  .tldr {
+    border: 1px solid var(--line);
+    background: var(--surface);
+    padding: 24px 28px;
+    box-shadow: var(--shadow);
+  }
+  .tldr .eyebrow { margin-bottom: 12px; }
+  .tldr ul { margin: 0; max-width: none; }
+  .tldr li { margin-bottom: 8px; }
+  nav.toc { margin-top: 28px; }
+  nav.toc ol {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    max-width: none;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 2px 28px;
+  }
+  nav.toc a {
+    display: flex;
+    gap: 12px;
+    padding: 7px 4px;
+    border-bottom: 1px solid var(--line-soft);
+    color: var(--ink);
+  }
+  nav.toc a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+  nav.toc .n { font-family: var(--mono); font-size: 12.5px; color: var(--accent); padding-top: 2px; }
+
+  /* ── 统计卡片 ───────────────────────────────────────────── */
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 14px;
+    margin: 26px 0 8px;
+  }
+  .tile {
+    border: 1px solid var(--line);
+    background: var(--surface);
+    padding: 18px 20px 16px;
+    box-shadow: var(--shadow);
+  }
+  .tile .num {
+    font-family: var(--serif);
+    font-variant-numeric: tabular-nums;
+    font-size: 34px;
+    font-weight: 600;
+    line-height: 1.1;
+    letter-spacing: -.01em;
+  }
+  .tile .num small { font-size: 17px; font-weight: 600; color: var(--ink-2); }
+  .tile .lbl { font-size: 13.5px; font-weight: 600; margin-top: 6px; }
+  .tile .cap { font-size: 12.5px; color: var(--ink-3); line-height: 1.55; margin-top: 2px; }
+
+  /* ── 架构图 ─────────────────────────────────────────────── */
+  .arch { margin: 26px 0 10px; }
+  .band {
+    border: 1px solid var(--line);
+    background: var(--surface);
+    padding: 16px 20px 14px;
+    box-shadow: var(--shadow);
+  }
+  .band-label {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .12em;
+    color: var(--steel);
+    margin-bottom: 10px;
+  }
+  .band-label small { color: var(--ink-3); letter-spacing: .04em; margin-left: 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; }
+  .chip {
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.5;
+    padding: 4px 10px;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    border-radius: 4px;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  .chip.primary { border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+  .chip.ghost { border-style: dashed; color: var(--ink-3); background: transparent; }
+  .grp { margin-top: 12px; }
+  .grp:first-of-type { margin-top: 0; }
+  .grp .g-cap { font-size: 12px; color: var(--ink-3); margin-bottom: 6px; }
+  .flow {
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-3);
+    padding: 10px 0;
+  }
+  .flow b { color: var(--steel); font-weight: 600; }
+  .mid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; align-items: stretch; }
+  .band.control { border-style: dashed; background: var(--surface-2); }
+  .band.control .band-label { color: var(--accent); }
+  .band.control p { font-size: 12.5px; color: var(--ink-2); line-height: 1.7; margin: 10px 0 0; }
+  @media (max-width: 820px) {
+    .mid { grid-template-columns: 1fr; }
+    .page { padding: 0 16px 72px; }
+    .tb-top { padding: 28px 22px 24px; }
+    .tb-meta > div { padding: 12px 22px; }
+  }
+  .arch-note { font-size: 13px; color: var(--ink-3); max-width: none; }
+
+  /* ── 表格 ───────────────────────────────────────────────── */
+  .scroll { overflow-x: auto; margin: 16px 0 10px; border: 1px solid var(--line); background: var(--surface); box-shadow: var(--shadow); }
+  table.tbl {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 13.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .tbl th {
+    text-align: left;
+    font-size: 12px;
+    font-weight: 650;
+    letter-spacing: .05em;
+    color: var(--ink-2);
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--line);
+    padding: 9px 14px;
+    white-space: nowrap;
+  }
+  .tbl td { padding: 9px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  .tbl tr:last-child td { border-bottom: none; }
+  .tbl td.num { text-align: right; font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+  .tbl td .mono, .mono { font-family: var(--mono); font-size: 12.5px; }
+  .tbl .dim { color: var(--ink-3); }
+
+  /* ── 状态 pill / 优先级徽标 ─────────────────────────────── */
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    padding: 4px 9px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .pill.good { color: var(--good); background: var(--good-bg); }
+  .pill.info { color: var(--info); background: var(--info-bg); }
+  .pill.warn { color: var(--warn); background: var(--warn-bg); }
+  .pill.crit { color: var(--crit); background: var(--crit-bg); }
+
+  .prio {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 4px;
+    margin-right: 10px;
+    vertical-align: 2px;
+  }
+  .prio.p0 { color: var(--crit); background: var(--crit-bg); }
+  .prio.p1 { color: var(--warn); background: var(--warn-bg); }
+  .prio.p2 { color: var(--info); background: var(--info-bg); }
+
+  /* ── 卡片 ───────────────────────────────────────────────── */
+  .cards { display: grid; gap: 14px; margin: 18px 0 10px; }
+  .cards.two { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  .card {
+    border: 1px solid var(--line);
+    background: var(--surface);
+    padding: 20px 24px 16px;
+    box-shadow: var(--shadow);
+  }
+  .card h4 { margin: 0 0 8px; font-size: 15.5px; }
+  .card p { font-size: 14px; color: var(--ink-2); max-width: none; }
+  .card ul { font-size: 14px; color: var(--ink-2); max-width: none; }
+  .ev {
+    list-style: none;
+    padding: 10px 0 0;
+    margin: 10px 0 0;
+    border-top: 1px dashed var(--line);
+    max-width: none;
+  }
+  .ev li {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-3);
+    line-height: 1.7;
+    margin: 0 0 3px;
+    padding-left: 14px;
+    text-indent: -14px;
+    overflow-wrap: anywhere;
+  }
+  .ev li::before { content: "▸ "; color: var(--accent); }
+
+  /* ── crate 分组 ─────────────────────────────────────────── */
+  .crate-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; margin: 18px 0 10px; }
+  .cg { border: 1px solid var(--line); background: var(--surface); padding: 16px 20px; box-shadow: var(--shadow); }
+  .cg h4 { margin: 0 0 4px; font-size: 14.5px; }
+  .cg .cg-desc { font-size: 12.5px; color: var(--ink-3); margin: 0 0 10px; line-height: 1.6; }
+
+  /* ── 路线图 ─────────────────────────────────────────────── */
+  ol.roadmap { list-style: none; padding: 0; margin: 20px 0 0; max-width: none; }
+  ol.roadmap li {
+    display: grid;
+    grid-template-columns: 56px 1fr;
+    gap: 18px;
+    padding: 16px 0;
+    border-top: 1px solid var(--line-soft);
+    margin: 0;
+  }
+  ol.roadmap li:last-child { border-bottom: 1px solid var(--line-soft); }
+  ol.roadmap .step {
+    font-family: var(--serif);
+    font-size: 26px;
+    font-weight: 600;
+    color: var(--accent);
+    line-height: 1.15;
+    font-variant-numeric: tabular-nums;
+  }
+  ol.roadmap h4 { margin: 0 0 4px; }
+  ol.roadmap p { font-size: 14px; color: var(--ink-2); margin: 0; max-width: none; }
+
+  footer {
+    margin-top: 88px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+    font-size: 12.5px;
+    color: var(--ink-3);
+    font-family: var(--mono);
+    line-height: 2;
+  }
+</style>
+
+<div class="page">
+
+<!-- ═══════════════ 标题块 ═══════════════ -->
+<header class="titleblock">
+  <div class="tb-top">
+    <div class="tb-kicker">ARCHITECTURE&nbsp;REVIEW&nbsp;·&nbsp;架构分析与开发空间评估</div>
+    <h1>light-fabric 架构分析</h1>
+    <p class="tb-sub">networknt 的企业级 AI 平台（light-4j 生态的 Rust 继任者）：统一治理 agentic services、agents、tools、MCP servers、APIs、gateways 与 workflows 的全生命周期。本文梳理其分层架构、模块清单、关键子系统与成熟度，并给出按优先级分级的开发空间清单。</p>
+  </div>
+  <dl class="tb-meta">
+    <div><dt>Repository</dt><dd>networknt/light-fabric</dd></div>
+    <div><dt>Revision</dt><dd>master @ f9d8716</dd></div>
+    <div><dt>分析日期</dt><dd>2026-07-18</dd></div>
+    <div><dt>资料来源</dt><dd>仓库 docs/src + networknt.com 官方文档</dd></div>
+  </dl>
+</header>
+
+<!-- ═══════════════ 摘要 ═══════════════ -->
+<div class="tldr">
+  <div class="eyebrow">§00&nbsp;&nbsp;执行摘要</div>
+  <ul>
+    <li><strong>定位</strong>：基于 tokio / axum / Cloudflare Pingora 的企业 AI 治理平台，配套外部项目 light-portal 作为统一控制面；全仓库 114k 行 Rust、707 个测试函数、43 个 workspace 成员。</li>
+    <li><strong>成熟核心</strong>：<code>light-pingora</code> 网关框架（35.7k 行、304 测试）与 legacy MCP router 已达生产级；沙箱执行子系统（Cube microVM / rootless OCI）功能完整、仍在稳定中。</li>
+    <li><strong>最新动向</strong>：MCP <code>2026-07-28</code> stateless profile 处于 release-candidate，最新提交 <code>f9d8716</code> 已将其启用——但设计文档要求 final-spec reconciliation（规范 2026-07-28 发布，距本文 10 天）完成后才可放行，存在流程矛盾。</li>
+    <li><strong>最大功能缺口</strong>：Hindsight「仿生记忆」的语义召回运行在零向量上（无 embedding 服务），pgvector 排序实际无效；Gemini / Bedrock / GLM 三个 provider 的工具调用运行时直接报错。</li>
+    <li><strong>开发空间</strong>集中在四层：协议对齐（时效性）、AI 能力补全、安全缺口（SWT 返回 501、agent 执行引擎 13 项缺口）、工程化交付（无 clippy / 无自动 release / 零 benchmark）。</li>
+  </ul>
+  <nav class="toc" aria-label="目录">
+    <ol>
+      <li><a href="#sec-01"><span class="n">01</span><span>项目概览</span></a></li>
+      <li><a href="#sec-02"><span class="n">02</span><span>总体架构</span></a></li>
+      <li><a href="#sec-03"><span class="n">03</span><span>模块清单</span></a></li>
+      <li><a href="#sec-04"><span class="n">04</span><span>关键子系统</span></a></li>
+      <li><a href="#sec-05"><span class="n">05</span><span>成熟度矩阵</span></a></li>
+      <li><a href="#sec-06"><span class="n">06</span><span>开发空间分析</span></a></li>
+      <li><a href="#sec-07"><span class="n">07</span><span>推荐路线图</span></a></li>
+      <li><a href="#sec-08"><span class="n">08</span><span>验证方式</span></a></li>
+    </ol>
+  </nav>
+</div>
+
+<!-- ═══════════════ 01 项目概览 ═══════════════ -->
+<section class="sec" id="sec-01">
+  <div class="eyebrow">§01</div>
+  <h2>项目概览</h2>
+  <p class="lede">官方文档将 light-fabric 定义为「高性能的企业 AI 服务统一平台」，管理从 agent、tool、skill、memory 到 MCP server、API、gateway、workflow 的完整生命周期。</p>
+
+  <p>设计哲学围绕四条原则：<strong>统一控制面</strong>（light-portal 作为发现、治理、审计的单一事实源）、<strong>企业治理优先</strong>（安全与策略执行优于去中心化自治）、<strong>集成生态</strong>（分布式组件织成可观测的整体——「fabric」之名的由来）、<strong>持久身份</strong>（基础设施层面的长期身份体系）。技术栈为 Rust edition 2024，异步基座 tokio，服务框架 axum，网关数据面构建在 Cloudflare Pingora 之上，TLS 用 rustls，持久化用 sqlx / Postgres（含 pgvector）。</p>
+
+  <div class="tiles">
+    <div class="tile">
+      <div class="num">114,002</div>
+      <div class="lbl">Rust 代码行</div>
+      <div class="cap">crates + apps + frameworks 全部 .rs 文件实测</div>
+    </div>
+    <div class="tile">
+      <div class="num">43</div>
+      <div class="lbl">workspace 成员</div>
+      <div class="cap">31 crates · 10 apps · 2 frameworks</div>
+    </div>
+    <div class="tile">
+      <div class="num">707</div>
+      <div class="lbl">测试函数</div>
+      <div class="cap">#[test] / #[tokio::test]，另有每周执行的 live 后端矩阵</div>
+    </div>
+    <div class="tile">
+      <div class="num">344</div>
+      <div class="lbl">commits</div>
+      <div class="cap">按编号 Phase 推进，issue 引用至 #259</div>
+    </div>
+  </div>
+  <p class="arch-note">官方发布物为四个二进制：<code>light-gateway</code>、<code>light-agent</code>、<code>light-workflow</code>、<code>light-deployer</code>；文档以 mdBook 维护（<code>docs/src/</code>，35+ 篇设计文档）。值得注意：全部源码中<strong>没有一处</strong> TODO / FIXME / <code>unimplemented!()</code>——所有缺口都规范地记录在设计文档的 Status / Future Work / Phase 章节中，这让第 06 节的缺口清单具有很高的可信度。</p>
+</section>
+
+<!-- ═══════════════ 02 总体架构 ═══════════════ -->
+<section class="sec" id="sec-02">
+  <div class="eyebrow">§02</div>
+  <h2>总体架构</h2>
+  <p class="lede">南北向流量经 Pingora 数据面完成认证、授权、脱敏与协议路由；控制面负责注册发现与配置治理；应用层承载 agent 与工作流；有副作用的执行统一下沉到沙箱后端。</p>
+
+  <div class="arch">
+    <div class="band">
+      <div class="band-label">调用方<small>CLIENTS</small></div>
+      <div class="chips">
+        <span class="chip">MCP 客户端 / AI IDE</span>
+        <span class="chip">SPA / 浏览器</span>
+        <span class="chip">API 消费方</span>
+        <span class="chip">Slack（light-agent-channel 接入）</span>
+        <span class="chip">WebSocket 客户端</span>
+      </div>
+    </div>
+    <div class="flow">↓&nbsp;&nbsp;HTTP · WebSocket · SSE</div>
+
+    <div class="mid">
+      <div class="band">
+        <div class="band-label">数据面 · light-gateway（light-pingora 框架）<small>DATA&nbsp;PLANE</small></div>
+        <div class="grp">
+          <div class="g-cap">认证</div>
+          <div class="chips">
+            <span class="chip">security（JWT/JWK）</span>
+            <span class="chip">unified_security</span>
+            <span class="chip">msal_auth + exchange</span>
+            <span class="chip">spa_auth（BFF Cookie）</span>
+            <span class="chip">apikey / basic</span>
+            <span class="chip">stateless_auth</span>
+            <span class="chip">token（出站 OAuth）</span>
+          </div>
+        </div>
+        <div class="grp">
+          <div class="g-cap">授权与数据治理</div>
+          <div class="chips">
+            <span class="chip">access_control（FGA + CEL）</span>
+            <span class="chip">rate_limit</span>
+            <span class="chip">cors / header</span>
+            <span class="chip">pii_tokenization</span>
+          </div>
+        </div>
+        <div class="grp">
+          <div class="g-cap">协议路由</div>
+          <div class="chips">
+            <span class="chip primary">mcp-router（双 profile）</span>
+            <span class="chip">websocket 路由 + /ctrl 控制通道</span>
+            <span class="chip">router / proxy / service</span>
+            <span class="chip">resource（静态 / SPA）</span>
+          </div>
+        </div>
+        <div class="grp">
+          <div class="g-cap">观测与横切</div>
+          <div class="chips">
+            <span class="chip">correlation</span>
+            <span class="chip">metrics</span>
+            <span class="chip">handler 链注册（热重载）</span>
+          </div>
+        </div>
+      </div>
+      <div class="band control">
+        <div class="band-label">⇄ 控制面 · light-portal（外部项目）</div>
+        <div class="chips">
+          <span class="chip">portal-registry</span>
+          <span class="chip">controller-wire</span>
+          <span class="chip">config server</span>
+          <span class="chip">cache 控制面</span>
+        </div>
+        <p>注册 / 发现 / 配置下发 / 缓存失效，走 WebSocket 上的 JSON-RPC；rkyv 二进制编码为实验通道。模块级热重载由 module registry 驱动。</p>
+      </div>
+    </div>
+
+    <div class="flow">↓&nbsp;&nbsp;反向代理 · MCP 转发 · 服务调用</div>
+    <div class="band">
+      <div class="band-label">应用层<small>APPS</small></div>
+      <div class="chips">
+        <span class="chip primary">light-agent</span>
+        <span class="chip primary">light-workflow</span>
+        <span class="chip">light-workflow-runner</span>
+        <span class="chip primary">light-deployer</span>
+        <span class="chip">light-agent-channel</span>
+        <span class="chip">light-agent-worker</span>
+        <span class="chip ghost">pi-rpc-adapter</span>
+        <span class="chip ghost">github-action-provider</span>
+        <span class="chip ghost">coding-agent-fixture</span>
+      </div>
+    </div>
+
+    <div class="flow">↓&nbsp;&nbsp;共享库依赖</div>
+    <div class="band">
+      <div class="band-label">共享 crates（31 个，六组）<small>LIBRARIES</small></div>
+      <div class="chips">
+        <span class="chip">运行时与配置</span>
+        <span class="chip">控制面协议</span>
+        <span class="chip">AI 能力（model-provider · mcp-client · hindsight）</span>
+        <span class="chip">规则与工作流</span>
+        <span class="chip">Agent 领域模型</span>
+        <span class="chip">沙箱执行契约</span>
+      </div>
+    </div>
+
+    <div class="flow">↓&nbsp;&nbsp;<b>ExecutionBackend</b> trait（prepare / execute / inspect / cancel / artifacts / checkpoint / reconcile）</div>
+    <div class="band">
+      <div class="band-label">执行沙箱<small>SANDBOX</small></div>
+      <div class="chips">
+        <span class="chip primary">Cube microVM</span>
+        <span class="chip">rootless OCI / Docker</span>
+        <span class="chip">mock</span>
+        <span class="chip">conformance 套件（三后端共用）</span>
+        <span class="chip">GrantLedger / SSRF 目的地策略</span>
+        <span class="chip">immutable-package（摘要绑定）</span>
+      </div>
+    </div>
+
+    <div class="flow">↓&nbsp;&nbsp;外部依赖</div>
+    <div class="band">
+      <div class="band-label">外部系统<small>EXTERNAL</small></div>
+      <div class="chips">
+        <span class="chip">LLM providers（15 个实现）</span>
+        <span class="chip">后端 MCP servers</span>
+        <span class="chip">Postgres + pgvector</span>
+        <span class="chip">Kubernetes（kube-rs）</span>
+        <span class="chip">OAuth / Entra ID</span>
+        <span class="chip">Git / GitHub</span>
+      </div>
+    </div>
+  </div>
+  <p class="arch-note">加粗描边为官方发布的核心组件；虚线为辅助/测试用途。所有 handler 模块均带独立配置文件、模块 ID 与热重载入口，这是 light-4j「handler 链」理念在 Pingora 上的重构。</p>
+</section>
+
+<!-- ═══════════════ 03 模块清单 ═══════════════ -->
+<section class="sec" id="sec-03">
+  <div class="eyebrow">§03</div>
+  <h2>模块清单</h2>
+  <p class="lede">两个框架承担传输层职责，十个应用面向部署，三十一个 crate 提供可复用能力。</p>
+
+  <h3>Frameworks</h3>
+  <p><code>light-pingora</code>（35,675 行 / 304 测试）是整个平台的重心——通过 <code>PingoraTransport</code> 实现 <code>light-runtime</code> 的 <code>TransportRuntime</code>，把 light-4j 的 handler 链完整重构到 Pingora 之上。<code>light-axum</code>（263 行）是轻量 axum 传输层，供 agent / deployer / workflow 等非代理应用使用。</p>
+  <div class="scroll">
+    <table class="tbl">
+      <thead><tr><th>light-pingora 模块</th><th>职责</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">security / unified_security / stateless_auth</td><td>JWT 验签、JWK 缓存、路径前缀统一安全策略、无状态认证</td></tr>
+        <tr><td class="mono">msal_auth / msal_exchange</td><td>Entra ID（MSAL）登录与 BFF token 交换</td></tr>
+        <tr><td class="mono">spa_auth</td><td>SPA / BFF Cookie 会话（CSRF、access / refresh cookie）</td></tr>
+        <tr><td class="mono">apikey / basic_auth / token</td><td>API Key、Basic 认证；出站 OAuth（client-credentials、auth-code、refresh、token-exchange）</td></tr>
+        <tr><td class="mono">access_control</td><td>细粒度授权（FGA）、tools-list 可见性过滤、响应行/列过滤</td></tr>
+        <tr><td class="mono">pii_tokenization</td><td>PII 脱敏 / 令牌化（数据库 + 加密 + 缓存，约 700 行）</td></tr>
+        <tr><td class="mono">mcp + mcp_protocol / schema / stateless / resources</td><td>MCP 路由，主文件 13.6k 行，双 profile（详见 §04）</td></tr>
+        <tr><td class="mono">websocket</td><td>WebSocket 路由 + <span class="mono">/ctrl/mcp</span> 控制面通道（2.3k 行）</td></tr>
+        <tr><td class="mono">router / proxy / service / resource</td><td>URL / 方法 / query 重写、反向代理、路径前缀服务解析、静态资源与 SPA 托管</td></tr>
+        <tr><td class="mono">rate_limit / cors / header / correlation / metrics</td><td>横切中间件：限流、CORS、头处理、关联 ID、指标</td></tr>
+        <tr><td class="mono">handler</td><td>handler 链注册（<span class="mono">PingoraHandlerRegistry</span>）、通配路径匹配、热重载</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Applications（10 个）</h3>
+  <div class="scroll">
+    <table class="tbl">
+      <thead><tr><th>应用</th><th>行数≈</th><th>测试</th><th>职责</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">light-gateway</td><td class="num">6,243</td><td class="num">27</td><td>生产网关二进制，注册约 20 个热重载 handler，配套 33 份配置文件，最完整的应用</td></tr>
+        <tr><td class="mono">light-workflow</td><td class="num">7,866</td><td class="num">32</td><td>Agentic 工作流编排：执行器、事件消费、审批、artifact 发布/保留、provenance、租约回收、Postgres 持久化</td></tr>
+        <tr><td class="mono">light-agent</td><td class="num">7,514</td><td class="num">24</td><td>交互式 agent 服务（WebSocket 对话），集成 model-provider + mcp-client + hindsight 记忆，15 份 provider 配置</td></tr>
+        <tr><td class="mono">light-workflow-runner</td><td class="num">5,548</td><td class="num">27</td><td>租户侧执行代理：supervisor、broker、worker 进程、journal、staging、健康上报、WebSocket 传输</td></tr>
+        <tr><td class="mono">light-deployer</td><td class="num">2,995</td><td class="num">11</td><td>集群内 K8s 部署器（kube-rs + gix），自带 MCP JSON-RPC 端点与 SSE 事件流</td></tr>
+        <tr><td class="mono">light-agent-channel</td><td class="num">1,659</td><td class="num">9</td><td>个人助理消息接入（Slack connector、凭证存储）</td></tr>
+        <tr><td class="mono">light-github-action-provider</td><td class="num">977</td><td class="num">1</td><td>固定动作提供方：不可变补丁 → 分支 / PR 的 GitHub 高价值动作</td></tr>
+        <tr><td class="mono">light-pi-rpc-adapter</td><td class="num">418</td><td class="num">2</td><td>「Pi」coding-agent RPC 与 coding-agent-runtime 契约的桥接</td></tr>
+        <tr><td class="mono">light-agent-worker</td><td class="num">408</td><td class="num">2</td><td>沙箱内 coding-agent worker，stdio 帧协议</td></tr>
+        <tr><td class="mono">light-coding-agent-fixture</td><td class="num">249</td><td class="num">1</td><td>确定性 coding-agent 夹具，用于端到端验证 Cube / runner 链路</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Crates（31 个，按职责分六组）</h3>
+  <div class="crate-groups">
+    <div class="cg">
+      <h4>运行时与配置</h4>
+      <p class="cg-desc">服务引导、配置解析（<code>${key:default}</code>、values.yml、远程配置中心）、HTTP 客户端与共享安全类型、敏感配置解密。</p>
+      <div class="chips">
+        <span class="chip">light-runtime</span><span class="chip">config-loader</span><span class="chip">config-embed-build</span>
+        <span class="chip">light-client</span><span class="chip">light-security</span>
+        <span class="chip">asymmetric-decryptor</span><span class="chip">symmetric-decryptor</span>
+      </div>
+    </div>
+    <div class="cg">
+      <h4>控制面协议</h4>
+      <p class="cg-desc">Portal / Controller 的注册发现客户端（JSON-RPC over WS，含 rkyv 实验通道）；冻结的传输无关 wire 编解码，带 conformance 与安全模糊测试。</p>
+      <div class="chips">
+        <span class="chip">portal-registry</span><span class="chip">controller-wire</span>
+      </div>
+    </div>
+    <div class="cg">
+      <h4>AI 能力</h4>
+      <p class="cg-desc">统一 LLM Provider trait（15 个实现 + reliable / router 两个元 provider）；MCP 客户端；Hindsight 记忆客户端（pgvector）。</p>
+      <div class="chips">
+        <span class="chip">model-provider</span><span class="chip">mcp-client</span><span class="chip">hindsight-client</span>
+      </div>
+    </div>
+    <div class="cg">
+      <h4>规则与工作流</h4>
+      <p class="cg-desc">CEL 条件规则引擎（多线程执行器 + 动作插件）；Serverless Workflow DSL 模型、程序化 builder、放置 / 沙箱策略。</p>
+      <div class="chips">
+        <span class="chip">light-rule</span><span class="chip">workflow-core</span>
+        <span class="chip">workflow-builder</span><span class="chip">workflow-policy</span>
+      </div>
+    </div>
+    <div class="cg">
+      <h4>Agent 领域模型</h4>
+      <p class="cg-desc">会话 / 回合 / 审批状态机、worker↔runner 运行时契约、技能物料化、委托授权令牌、coding-agent 适配模型。<code>agent-session-policy</code> 目前未被任何 crate 依赖（孤儿脚手架）。</p>
+      <div class="chips">
+        <span class="chip">agent-core</span><span class="chip">agent-runtime-protocol</span>
+        <span class="chip">agent-materializer</span><span class="chip">agent-delegation</span>
+        <span class="chip ghost">agent-session-policy</span><span class="chip">coding-agent-runtime</span>
+      </div>
+    </div>
+    <div class="cg">
+      <h4>沙箱执行</h4>
+      <p class="cg-desc">执行后端 trait 与三个实现（Cube microVM 为真实后端）、共享 conformance 套件、固定高价值动作（发布 / 签名 / 分支 / PR）、runner wire 契约、授权台账与 SSRF 策略、摘要绑定的不可变包。</p>
+      <div class="chips">
+        <span class="chip">execution-backend</span><span class="chip">execution-backend-cube</span>
+        <span class="chip">execution-backend-oci</span><span class="chip">execution-backend-mock</span>
+        <span class="chip">execution-backend-conformance</span><span class="chip">execution-fixed-action</span>
+        <span class="chip">execution-runner-protocol</span><span class="chip">execution-security</span>
+        <span class="chip">immutable-package</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 04 关键子系统 ═══════════════ -->
+<section class="sec" id="sec-04">
+  <div class="eyebrow">§04</div>
+  <h2>关键子系统</h2>
+
+  <h3>MCP 路由：一个端点、两种 profile</h3>
+  <p>网关在同一个 <code>/mcp</code> 端点同时承载两种协议形态，按请求特征分流，并提供 reject-by-default 的 stateless↔legacy 桥接与条件化自动发现：</p>
+  <div class="scroll">
+    <table class="tbl">
+      <thead><tr><th></th><th>Legacy stateful（默认，生产级）</th><th>Stateless 2026-07-28（RC）</th></tr></thead>
+      <tbody>
+        <tr><td class="dim">会话</td><td><code>initialize</code> + <code>Mcp-Session-Id</code>，后端会话映射与清理</td><td>无会话、无 initialize，每请求自描述</td></tr>
+        <tr><td class="dim">协商</td><td>握手协商 2024-11-05 / 2025-03-26 / 2025-06-18 / 2025-11-25</td><td><code>MCP-Protocol-Version</code> / <code>Mcp-Method</code> / <code>Mcp-Param-*</code> 请求头</td></tr>
+        <tr><td class="dim">方法面</td><td>tools/list · tools/call（授权感知的 tools-list 缓存）</td><td>server/discover · tools/list · tools/call，<code>resultType</code> / <code>ttlMs</code> / <code>cacheScope</code></td></tr>
+        <tr><td class="dim">校验</td><td>—</td><td>JSON Schema 2020-12 出入参校验、<code>x-mcp-header</code> 注解、origin 白名单、主体指纹绑定</td></tr>
+        <tr><td class="dim">状态</td><td><span class="pill good">生产级</span></td><td><span class="pill warn">RC · f9d8716 刚启用</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>当前方法面是 <strong>tools-only</strong>：resources / prompts / sampling / elicitation / logging 均未实现（源码中仅出现在拒绝路径），<code>subscriptions/listen</code>（SSE 流式推送）已有响应体脚手架但被明确 gate。这是 §06 中 P1 级开发空间的主体。</p>
+
+  <h3>安全体系</h3>
+  <ul>
+    <li><strong>认证</strong>：JWT（JWK 缓存、audience / issuer / scope、过期模式）、出站 OAuth 四流程、MSAL / Entra ID + BFF token 交换、SPA Cookie 会话（CSRF）、API Key、Basic、无状态认证、按路径前缀的统一安全策略。</li>
+    <li><strong>授权与数据</strong>：FGA 细粒度授权、CEL 规则引擎、MCP tools-list 可见性过滤、响应行 / 列过滤、PII 令牌化、受保护路径策略、SSRF 目的地策略、委托授权令牌（<code>agent-delegation</code>）。</li>
+    <li><strong>已知缺口</strong>：SWT 不透明令牌 introspection 返回 501；出站 client 的 mTLS / <code>sign</code> / <code>deref</code> / 熔断重试在设计文档中标注「Not yet modeled」（详见 §06）。</li>
+  </ul>
+
+  <h3>model-provider：统一 LLM 抽象</h3>
+  <p>单一 <code>Provider</code> trait 覆盖一次性 / 多轮对话、原生工具调用、视觉、prompt 缓存与能力探测；<code>reliable</code> 元 provider 提供重试 / 退避 / 故障转移，<code>router</code> 元 provider 按复杂度路由。工具调用支持现状：</p>
+  <div class="scroll">
+    <table class="tbl">
+      <thead><tr><th>Provider</th><th>原生工具调用</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">openai · anthropic · azure_openai · ollama · openrouter · copilot · compatible（含 telnyx）</td><td><span class="pill good">支持</span></td><td>完整实现，作为补全其余 provider 的参照</td></tr>
+        <tr><td class="mono">gemini · bedrock · glm</td><td><span class="pill crit">运行时报错</span></td><td>声明 <code>native_tool_calling: false</code>，调用即 <code>bail!("... not yet implemented")</code></td></tr>
+        <tr><td class="mono">claude_code · codex 等 CLI 适配器</td><td><span class="pill info">未启用</span></td><td>CLI 桥接形态，能力声明为关闭</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>沙箱执行子系统</h3>
+  <p>平台最大的单项投入（约 80 个 commit）。<code>ExecutionBackend</code> trait 定义完整生命周期——prepare / execute / inspect / cancel / collect_artifacts / read_logs / checkpoint / restore / cleanup / reconcile_orphans——错误分类中显式包含 <code>Unknown</code> 以支持 at-least-once 对账。三个后端（Cube microVM 真实后端、rootless OCI、mock）共享同一 conformance 套件；每周 CI 在自托管 runner 上跑真实 Cube / Docker 矩阵。安全侧由 <code>GrantLedger</code>（尝试级授权台账）、SSRF 目的地策略、<code>TrustBundle</code> 与摘要绑定的 <code>immutable-package</code> 兜底；高价值动作（发布 / 签名 / 建分支 / PR）走独立的 fixed-action 通道，支持 sha1 + sha256 双 Git 对象格式。</p>
+
+  <h3>工作流与运行器</h3>
+  <p><code>workflow-core</code> 实现 Serverless Workflow DSL 模型（任务 / 事件 / 重试 / 超时 / schema / 目录）。<code>light-workflow</code> 编排器包含事务化审批、artifact 发布与保留策略、provenance 记录、runner 调度、结果 / 会话对账器与租约回收器，Postgres 持久化并有集成测试。<code>light-workflow-runner</code> 是租户侧代理：supervisor 管理 worker 进程、broker 中转、journal 落盘、staging 物料化，经 WebSocket 与编排器通信，提供 Cube / Docker / rootless-OCI / mock 四种示例配置。</p>
+
+  <h3>控制面接入</h3>
+  <p><code>portal-registry</code> 通过 WebSocket 上的 JSON-RPC 完成注册、发现与缓存控制，失败时回退直连注册表；rkyv 二进制编码作为实验通道（wire 格式硬性锁定 little-endian + 32 位指针宽度，由 <code>scripts/check-controller-wire-*.sh</code> 拒绝不支持的构建配置）。<code>controller-wire</code> 是冻结的传输无关编解码 crate——零传输 / 异步依赖，自带 conformance 与安全模糊测试。配置层支持远程配置中心引导 + 运行期 reload，每个网关 handler 注册独立的热重载器。</p>
+</section>
+
+<!-- ═══════════════ 05 成熟度矩阵 ═══════════════ -->
+<section class="sec" id="sec-05">
+  <div class="eyebrow">§05</div>
+  <h2>成熟度矩阵</h2>
+  <p class="lede">同一仓库内各层成熟度差异很大——从生产级的网关框架到实际不可用的记忆召回。状态判断依据为测试密度、设计文档 Status 标注与运行时行为。</p>
+  <div class="scroll">
+    <table class="tbl">
+      <thead><tr><th>层级 / 组件</th><th>状态</th><th>依据</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>light-pingora</code> 框架 + legacy MCP router</td>
+          <td><span class="pill good">生产级</span></td>
+          <td>35.7k 行 / 304 测试；handler 链、热重载、四版本协议协商齐备</td>
+        </tr>
+        <tr>
+          <td><code>light-runtime</code> / 配置 / 客户端 / 安全基础 crates</td>
+          <td><span class="pill good">生产级</span></td>
+          <td>测试充分（runtime 57、client 20、security 15），被全部应用复用</td>
+        </tr>
+        <tr>
+          <td><code>light-gateway</code> 应用</td>
+          <td><span class="pill good">生产级</span></td>
+          <td>约 20 个热重载 handler + 33 份配置；官方主推二进制</td>
+        </tr>
+        <tr>
+          <td>工作流 + runner + 沙箱执行后端</td>
+          <td><span class="pill info">功能完整 · 稳定中</span></td>
+          <td>真实 Cube / Docker 后端与 Postgres 集成测试齐备，但为最新子系统，live 矩阵仅每周执行</td>
+        </tr>
+        <tr>
+          <td><code>model-provider</code></td>
+          <td><span class="pill info">核心可用 · 有缺口</span></td>
+          <td>7 系 provider 工具调用完整；gemini / bedrock / glm 运行时报错（§06）</td>
+        </tr>
+        <tr>
+          <td>MCP <code>2026-07-28</code> stateless profile</td>
+          <td><span class="pill warn">Release Candidate</span></td>
+          <td>已实现并刚被启用；final-spec reconciliation 与生产 canary 按文档仍处阻塞状态</td>
+        </tr>
+        <tr>
+          <td><code>light-agent</code> 执行引擎</td>
+          <td><span class="pill warn">可用 · 重构设计中</span></td>
+          <td>服务可用，但设计文档列出 13 项持久性 / 隔离缺口，Status: Proposed</td>
+        </tr>
+        <tr>
+          <td><code>light-deployer</code></td>
+          <td><span class="pill warn">可用 · 带限制</span></td>
+          <td>直连 HTTP / MCP 模式可用；Helm / Kustomize、类型化占位符、回滚快照未实现</td>
+        </tr>
+        <tr>
+          <td>Hindsight 记忆（<code>hindsight-client</code>）</td>
+          <td><span class="pill crit">骨架</span></td>
+          <td>召回以零向量查询 pgvector，语义排序无效；0 个测试</td>
+        </tr>
+        <tr>
+          <td>SWT 不透明令牌 introspection</td>
+          <td><span class="pill crit">缺失</span></td>
+          <td>命中即返回 HTTP 501，文档记录为 Gap 1</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ═══════════════ 06 开发空间分析 ═══════════════ -->
+<section class="sec" id="sec-06">
+  <div class="eyebrow">§06</div>
+  <h2>开发空间分析</h2>
+  <p class="lede">代码中零 TODO——全部缺口来自设计文档的 Status / Future Work 章节与少量 <code>bail!</code> 运行时错误，按优先级分为三档。P0 为时效或功能层面必须先动的项。</p>
+
+  <h3><span class="prio p0">P0</span>MCP 2026-07-28 最终规范对齐（有硬日期）</h3>
+  <div class="cards two">
+    <div class="card">
+      <h4>Final-spec reconciliation + 生产 canary</h4>
+      <p>最终规范于 <strong>2026-07-28 发布（距本文 10 天）</strong>。设计文档明确「final-spec reconciliation and the production canary remain blocked until the final revision is published」，需对照最终 TypeScript schema、conformance 套件与 error-code registry 复核实现；已知 SEP-2575 与 consolidated draft 在 <code>clientInfo</code> 规范强度与错误码分配上存在差异。</p>
+      <ul class="ev">
+        <li>docs/src/design/mcp-2026-07-28.md:5-14, 59-60</li>
+        <li>frameworks/light-pingora/src/mcp_stateless.rs · mcp_schema.rs</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>复核「enable stateless」与 promotion gate 的矛盾</h4>
+      <p>最新提交 <code>f9d8716</code> 已在网关配置中打开 stateless profile，但文档的 Phase 7 promotion gate 要求 final provenance 与运营证据齐备后才 fail-open。需要么回退此启用、要么补齐 <code>phase7</code> 目录下的 promotion / canary / rollback 证据链。</p>
+      <ul class="ev">
+        <li>apps/light-gateway/config/mcp-router.yml（commit f9d8716）</li>
+        <li>implementation/light-gateway/mcp-2026-07-28/phase7</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3><span class="prio p0">P0</span>Hindsight 记忆：让头条功能名副其实</h3>
+  <div class="cards">
+    <div class="card">
+      <h4>Embedding 服务 + 真实语义召回</h4>
+      <p>README 头条能力「biomimetic memory banks」目前的召回路径是：以 384 维<strong>零向量</strong>调用 <code>recall()</code>，而 SQL 按 <code>embedding &lt;=&gt; $3</code>（pgvector 余弦距离）排序——查询向量为零时排序完全无意义。源码注释自述「we don't have an embedding service yet」。工作项：为 <code>model-provider</code> 增加 embedding 能力（trait 扩展或独立 provider），接入 recall / retain 双路径，并为 <code>hindsight-client</code>（当前 0 测试）补 Postgres + pgvector 集成测试。</p>
+      <ul class="ev">
+        <li>apps/light-agent/src/main.rs:3889-3894（zero-vector 注释与调用）</li>
+        <li>crates/hindsight-client/src/lib.rs:88（pgvector 余弦排序）</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3><span class="prio p1">P1</span>模型与协议能力补全</h3>
+  <div class="cards two">
+    <div class="card">
+      <h4>Gemini / Bedrock / GLM 原生工具调用</h4>
+      <p>三个 provider 接受 tool-calling 请求但运行时直接 <code>bail!</code>，而功能文档（<code>features/providers.md</code>）宣传其支持——文档与实现不一致。已有 7 个完整实现可作参照（openai / anthropic 等），补全后 agent 与工作流才能在这些模型上运行工具循环。</p>
+      <ul class="ev">
+        <li>crates/model-provider/src/gemini.rs:176, 298</li>
+        <li>crates/model-provider/src/bedrock.rs:301, 418</li>
+        <li>crates/model-provider/src/glm.rs:123, 227</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>MCP 能力面扩展（当前 tools-only）</h4>
+      <p>① <code>subscriptions/listen</code> SSE 流式推送——响应体脚手架（<code>McpResponseBody::Stream</code>）已就位但被 gate，是 <code>toolsListChanged</code> 通知的前提；② resources / prompts 代理——按官网「统一治理 MCP servers」定位是自然下一步；③ 多 pod 会话硬化——前端 session store 仅内存态，外部会话存储与多后端隔离测试待做；④ MCP 层脱敏——等待 light-tokenization 服务契约。</p>
+      <ul class="ev">
+        <li>docs/src/design/mcp-2026-07-28.md:915, 943（streaming 前置条件）</li>
+        <li>docs/src/design/mcp-router.md:6, 133（tokenization deferred）· Phase 5（多 pod）</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>SWT 不透明令牌 introspection</h4>
+      <p>统一安全策略命中 <code>swt</code> 规则时直接返回 HTTP 501。需按 <code>swtServiceIds</code> 调用 introspection 端点完成不透明令牌校验，这是 light-4j 用户迁移的常见依赖。</p>
+      <ul class="ev">
+        <li>frameworks/light-pingora/src/unified_security.rs:278-292</li>
+        <li>docs/src/design/unified-security.md:185（Gap 1）</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>出站 client 能力 + agent 执行引擎加固</h4>
+      <p>① <code>client.yml</code> 的 mTLS 客户端证书、TLS 版本、重试 / 熔断 / 连接池、OAuth <code>sign</code> / <code>deref</code> 标注「Not yet modeled」（注意：同文档 Phase 4 段落又声称部分已实现，需先核实 <code>light-client</code> 真实状态）；② light-agent 执行引擎设计（Status: Proposed）列出 13 项缺口：sessionId 未绑定认证用户、工具名未在调用前复验、无持久化 turn / attempt 记录、CLI 子进程凭证清理缺失、Authorization 原样转发未换取窄化令牌、helper 脚本含默认 bearer-token 字面量（需移除并轮换）等。</p>
+      <ul class="ev">
+        <li>docs/src/design/client-configuration.md:123-135 vs :660（文档自相矛盾）</li>
+        <li>docs/src/design/light-agent-execution.md:113-150（13 项缺口清单）</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3><span class="prio p2">P2</span>纵深功能与工程化</h3>
+  <div class="cards two">
+    <div class="card">
+      <h4>LLM Gateway 后续阶段</h4>
+      <p>设计文档的 Phase 3-5 未建：能力感知路由（按 tools / vision / 长上下文分流）、prompt 感知路由（分类器）、<strong>streaming</strong>、<code>/v1/responses</code>、prompt-caching 提示、配额感知路由。crate 归属（pingora handler vs 独立 crate）与策略存储位置仍是 Open Questions。</p>
+      <ul class="ev"><li>docs/src/design/llm-gateway.md:504, 513</li></ul>
+    </div>
+    <div class="card">
+      <h4>light-deployer 限制清单</h4>
+      <p>Helm / Kustomize 未实现；类型化占位符未实现（渲染器仅做字符串标量 <code>${a.b:default}</code> 替换）；config-server <code>valuesRef</code> 拉取未接；回滚需 portal 快照集成；controller 中介的 WebSocket 路由与 SSH git 认证均为后续项。</p>
+      <ul class="ev"><li>docs/src/design/light-deployer.md:253, 455-463</li></ul>
+    </div>
+    <div class="card">
+      <h4>服务发现与 runner 后续阶段</h4>
+      <p>发现订阅 + 本地缓存、加权 / 粘性 / zone 感知的目标选择、controller→注册→网关的端到端集成测试（文档明确缺失）；workflow-runner Phase 5-6：AI 失败分析与有界修复循环、签名 provenance、独立发布 / 签名服务、人工审批绑定 artifact + version + nonce。</p>
+      <ul class="ev">
+        <li>docs/src/design/service-discovery.md:374</li>
+        <li>docs/src/design/light-workflow-runner.md（Phase 5-6, Open Questions）</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>工程化与交付（低成本、高回报）</h4>
+      <p>① CI 无 clippy（仅 fmt + check + test）；② 无自动化 release——<code>release.sh</code> 手动执行且仅覆盖 x86_64-linux，无任何 aarch64 / Apple Silicon 目标，Dockerfile 齐全但 CI 不发布镜像；③ README 宣称「Extreme Performance」但全仓库<strong>零 benchmark</strong>（无 criterion）；④ <code>agent-session-policy</code> 孤儿 crate 待接线或移除；⑤ 文档状态头过期（pii-tokenization、workflow-runner 已实现却仍标 Proposed）；⑥ <code>workflow-builder</code> 4k 行仅 1 个测试。</p>
+      <ul class="ev">
+        <li>.github/workflows/ci.yml · release.sh（TARGETS 仅 2 个）</li>
+        <li>crates/agent-session-policy（无反向依赖）</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 07 推荐路线图 ═══════════════ -->
+<section class="sec" id="sec-07">
+  <div class="eyebrow">§07</div>
+  <h2>推荐路线图</h2>
+  <p class="lede">如果要在此仓库上投入开发，建议按以下顺序推进——先解决有硬日期与名不副实的项，再做能力补全，最后以工程化收尾。</p>
+  <ol class="roadmap">
+    <li>
+      <div class="step">1</div>
+      <div>
+        <h4>MCP 最终规范对齐<span class="prio p0" style="margin-left:10px">P0</span></h4>
+        <p>2026-07-28 规范发布后立即做 final-spec reconciliation（schema / 错误码 / conformance），同时复核 <code>enable stateless</code> 提交与 Phase 7 promotion gate 的矛盾——补齐证据或暂时回退。这是唯一有硬截止日期的工作项。</p>
+      </div>
+    </li>
+    <li>
+      <div class="step">2</div>
+      <div>
+        <h4>Embedding 服务与真实记忆召回<span class="prio p0" style="margin-left:10px">P0</span></h4>
+        <p>为 model-provider 增加 embedding 能力，替换 light-agent 中的零向量调用，让「仿生记忆」这一头条功能真正可用；同步为 hindsight-client 建立集成测试。</p>
+      </div>
+    </li>
+    <li>
+      <div class="step">3</div>
+      <div>
+        <h4>能力补全三连<span class="prio p1" style="margin-left:10px">P1</span></h4>
+        <p>Gemini / Bedrock 工具调用（参照 openai 实现）→ <code>subscriptions/listen</code> 流式推送 → SWT introspection。每项都有清晰的参照实现或设计文档，工作量可控、收益直接。</p>
+      </div>
+    </li>
+    <li>
+      <div class="step">4</div>
+      <div>
+        <h4>工程化基建<span class="prio p2" style="margin-left:10px">P2</span></h4>
+        <p>CI 加入 clippy；用 GitHub Actions 自动化 release（补 aarch64-linux / Apple Silicon 目标与容器镜像发布）；以 criterion 建立首批网关基准，为「高性能」宣称提供数据支撑。一次性投入，长期收益。</p>
+      </div>
+    </li>
+  </ol>
+</section>
+
+<!-- ═══════════════ 08 验证方式 ═══════════════ -->
+<section class="sec" id="sec-08">
+  <div class="eyebrow">§08</div>
+  <h2>验证方式</h2>
+  <ul>
+    <li><strong>MCP 对齐</strong>：运行 <code>mcp-2026-07-28.md</code> 引用的官方 conformance 套件与仓库自带的 phase7 canary 契约；<code>cargo test -p light-pingora</code> 回归 304 个既有测试。</li>
+    <li><strong>Embedding / 记忆</strong>：为 <code>hindsight-client</code> 编写 Postgres + pgvector 集成测试；通过 light-agent 端到端对话验证召回内容与语义相关性。</li>
+    <li><strong>Provider 工具调用</strong>：照抄 <code>openai.rs</code> 的既有测试模式覆盖 gemini / bedrock / glm，必要时补 live smoke 测试。</li>
+    <li><strong>工程化</strong>：CI 全绿即验证；基准以 criterion 建立基线后跟踪回归。</li>
+  </ul>
+
+  <footer>
+    light-fabric 架构分析 · 基于 master@f9d8716（344 commits）实测与 docs/src 设计文档交叉核对 ·
+    官方文档 networknt.com/light-fabric · 分析日期 2026-07-18 · 由 Claude Code 生成，行数与测试数为脚本实测，带「≈」者为近似值
+  </footer>
+</section>
+
+</div>
