@@ -1,5 +1,5 @@
 {
-  "bundleVersion": "2.7.0",
+  "bundleVersion": "2.6.0",
   "contractGeneration": 2,
   "postgresMinimumVersion": "17",
   "postgresMaximumTestedVersion": "17",
@@ -355,14 +355,6 @@
       "migrationId": "0025_workflow_operation_receipts",
       "path": "crates/workflow-store/migrations/workflow-postgres/0025_workflow_operation_receipts.sql",
       "sha256": "89e23c5f31e8d9a47dd92fba67d4c8118ca51cc743e773952bd0ce382e75cf4b"
-    },
-    {
-      "order": 45,
-      "owner": "workflow-store",
-      "schema": "workflow_ops",
-      "migrationId": "0026_host_tool_workflow_access",
-      "path": "crates/workflow-store/migrations/workflow-postgres/0026_host_tool_workflow_access.sql",
-      "sha256": "d7a0c9a82e698d5d2d09849fcc5ed40fe530aa4296d4d66cc0f97f6dacc6ae9b"
     }
   ],
   "roleProfileVersion": 1,

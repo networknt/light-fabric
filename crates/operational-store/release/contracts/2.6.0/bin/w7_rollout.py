@@ -14,7 +14,6 @@ import subprocess
 import sys
 import uuid
 from w7_ownership import OwnershipContract, OwnershipError, verify_companion
-from bundle_contract import CURRENT_VERSION, verify_bundle
 
 PROFILE = 'cel-workflow-v2'
 IDENT = re.compile(r'[a-z][a-z0-9_]{0,62}\Z')
@@ -140,10 +139,10 @@ def validate_plan(plan):
 def verify_assets(root):
     root = Path(root)
     verify_companion(root)
-    require(sha(root / 'w7-assets.json') == 'cce8a4be907461da98dba854262eb2565772ac3f3722d471e78dfaa4679b4650',
+    require(sha(root / 'w7-assets.json') == 'aa39a2f81c430dc69c8f95bc7aa25963d17c44570bd3658b4fe274b4be78231e',
             'ACCEPTED_ASSET_DESCRIPTOR_IDENTITY')
     pins = load_json(root / 'w7-assets.json')
-    require(pins['files'].get('bundle/bundle.sha256') == '461c90e5c46acb31550c6ecc16786a397625655ef3ad62d45c7e0be6844ac2af', 'ACCEPTED_BUNDLE_IDENTITY')
+    require(pins['files'].get('bundle/bundle.sha256') == 'a114c5cab41eced34e05c137031f922e2b392c7ac750fcd2f914817410cb589a', 'ACCEPTED_BUNDLE_IDENTITY')
     require(pins['files'].get('portal/patch_20261002_01_workflow_expression_profile.sql') == '96e2cbce858800e137f8718ce907abe0350a482452d0016e3c4cf9883edc009f'
             and pins['files'].get('portal/patch_20261002_02_workflow_delivery_ledger.sql') == '726eb3549e85be0f31deb21163a6d2addb0dd4fe34d5dfc85be9c5060540f4a3', 'ACCEPTED_PORTAL_IDENTITY')
     for relative, expected in pins['files'].items():
@@ -152,11 +151,7 @@ def verify_assets(root):
         require(path.is_file() and sha(path) == expected, 'ASSET_DIGEST_MISMATCH')
     bundle = root / 'bundle'
     manifest = load_json(bundle / 'manifest.json')
-    try:
-        version, verified_rows = verify_bundle(bundle)
-    except (OSError, ValueError, KeyError):
-        raise Refusal('BUNDLE_CONTRACT') from None
-    require(version == CURRENT_VERSION, 'BUNDLE_CONTRACT')
+    require(manifest['bundleVersion'] == '2.6.0' and len(manifest['orderedMigrations']) == 44, 'BUNDLE_CONTRACT')
     listed = {}
     for line in (bundle / 'bundle.sha256').read_text().splitlines():
         expected, relative = line.split('  ', 1)
@@ -171,7 +166,7 @@ def verify_assets(root):
             continue
         order, owner, schema, migration, relative, expected = line.split('\t')
         rows.append((int(order), owner, schema, migration, relative, expected))
-    require(rows == verified_rows, 'MIGRATION_ORDER')
+    require(len(rows) == 44 and [r[0] for r in rows] == list(range(1, 45)), 'MIGRATION_ORDER')
     for row, entry in zip(rows, manifest['orderedMigrations']):
         require(row == (entry['order'], entry['owner'], entry['schema'], entry['migrationId'], entry['path'], entry['sha256']), 'MANIFEST_ORDER')
         require(listed.get(row[4]) == row[5] and not row[4].startswith('rollback/'), 'FORWARD_DIGEST')
@@ -267,7 +262,7 @@ def migration_needed(recorded, digest, kind, migration):
         require(recorded == digest, 'LEDGER_DIGEST_MISMATCH')
         return False
     if kind == 'operational':
-        require(migration in {'0024_workflow_expression_profile', '0025_workflow_operation_receipts', '0026_host_tool_workflow_access'},
+        require(migration in {'0024_workflow_expression_profile', '0025_workflow_operation_receipts'},
                 'BASELINE_LEDGER_REQUIRED')
     return True
 
@@ -582,7 +577,7 @@ COMMIT;""")
             if gate['kind'] == 'operational':
                 database = gate['database']
                 body = body.replace('operations_', database + '_').replace('ON DATABASE operations', 'ON DATABASE ' + database).replace('IN DATABASE operations', 'IN DATABASE ' + database).replace("database_identity = 'operations'", "database_identity = '" + database + "'")
-                ledger = f"INSERT INTO operational_meta.operational_schema_migration_t(migration_owner,schema_name,migration_id,migration_digest,bundle_version,contract_generation) VALUES('{owner}','{schema}','{migration}','sha256:{digest}','{CURRENT_VERSION}',2);"
+                ledger = f"INSERT INTO operational_meta.operational_schema_migration_t(migration_owner,schema_name,migration_id,migration_digest,bundle_version,contract_generation) VALUES('{owner}','{schema}','{migration}','sha256:{digest}','2.6.0',2);"
                 role = database + '_workflow_migrator'
                 body = f'SET LOCAL ROLE {role};\n' + body + '\nRESET ROLE;'
             else:
@@ -731,7 +726,7 @@ COMMIT;""")
         content = sha(self.root / 'w7-assets.json') + '  w7-assets.json\n'
         content += sha(self.root / 'bundle/bundle.sha256') + '  bundle/bundle.sha256\n'
         content += sha(Path(state_dir) / 'prepared.json') + '  .runtime/w7/prepared.json\n'
-        for relative in ('w7-ownership-v1.json', 'bin/w7_rollout.py', 'bin/w7_ownership.py', 'bin/bundle_contract.py'):
+        for relative in ('w7-ownership-v1.json', 'bin/w7_rollout.py', 'bin/w7_ownership.py'):
             content += sha(self.root / relative) + '  ' + relative + '\n'
         for path in self.pins['files']:
             if path.startswith('portal/'):

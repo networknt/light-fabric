@@ -86,6 +86,11 @@
       "name": "workflow_binding_revoke",
       "permission": "workflow.binding.approve",
       "endpoint": "workflow_binding_revoke@call"
+    },
+    {
+      "name": "workflow_tool_access_publish",
+      "permission": "workflow.tool_access.publish",
+      "endpoint": "workflow_tool_access_publish@call"
     }
   ],
   "restrictedRoutes": [

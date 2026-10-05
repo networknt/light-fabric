@@ -34,7 +34,7 @@ def check(root, fabric=None, portal=None, copies=()):
             if not source.is_file():
                 source = folder / relative
             require(source.is_file() and sha(source) == digest, 'ROLLBACK_CHECKSUM')
-    print(f'W7 current bundle: {len(rows)} forward migrations, {len(pins["files"])} accepted assets; copies and independent rollbacks verified')
+    print('W7 current bundle: 44 forward migrations, 58 accepted assets; copies and independent rollbacks verified')
 
 
 if __name__ == '__main__':

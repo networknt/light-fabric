@@ -14,6 +14,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  host-tool-workflow-access:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Mandatory isolated Host Tool PostgreSQL qualification
+        run: python3 scripts/qualify-host-tool-workflow-access.py --output-dir /tmp/host-tool-qualification
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: host-tool-qualification
+          path: /tmp/host-tool-qualification
+
   rust:
     runs-on: ubuntu-latest
     timeout-minutes: 45

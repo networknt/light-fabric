@@ -34,6 +34,51 @@
     "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
     "sha256": "a1bbb5f8ca48059706025dc27e35db7ffe7c5b63ff63d5f9ab7a48f707a17268"
   },
+  "local-fresh/patch_20261003_01_local_parser_workflow_expression_profile.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Local fresh-install parser companion retained for E04 local startup; outside supported canonical upgrade and replay manifests. No general migration gate qualification is claimed for this copy. Do not add it to runtime migration replay without baseline-specific review and qualification.",
+    "sha256": "e03a782aacb33b0474348e88ef7a3cb9d95f6ebb56acff2796e054e4a4b1ae34"
+  },
+  "migrations/patch_20260926_01_workflow_tool_binding_publication.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-workflow-publication-schema-gate.sh"
+    ],
+    "reason": "CI qualifies previous DDL plus this upgrade, repeated application, operational table constraints, and expiry immutability in a separate disposable database.",
+    "sha256": "7d87e7f15c33e85b48f426b64e9b5afc8040a4fcc588485103ec28881b9ff1ff"
+  },
+  "migrations/patch_20260928_01_workflow_publication_schema_parity.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-workflow-publication-schema-gate.sh"
+    ],
+    "reason": "CI applies this parity patch twice after the publication upgrade and compares Workflow check constraints with a fresh database.",
+    "sha256": "7884887999270f2150689a860975a5cc50bd77531c9bf53ac5a301714151d652"
+  },
+  "migrations/patch_20260928_02_workflow_long_binding_tombstone.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-workflow-long-binding-tombstone-schema-gate.sh"
+    ],
+    "reason": "CI applies the original tombstone patch before the host-retention upgrade and checks that both late-close identities and issuer versions survive replay and host deactivation.",
+    "sha256": "6c64efc4a07eace8db9351e6e94f3a87593f8968633da4a3839186f212b8147c"
+  },
+  "migrations/patch_20260928_03_workflow_long_binding_tombstone_host_retention.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-workflow-long-binding-tombstone-schema-gate.sh"
+    ],
+    "reason": "CI verifies repeated upgrade, fresh-schema parity, documentation, and retention through host deactivation on a disposable database.",
+    "sha256": "eba32b8ffef314b02bf71cddce2bc51bd42dddd8d156c7eac0c07d0bed62498b"
+  },
+  "migrations/patch_20260928_04_retire_workflow_broker.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-workflow-broker-retirement-schema-gate.sh"
+    ],
+    "reason": "Qualifies populated retirement and replay, shared refresh schema/data/policy preservation, cascade validation, and fresh catalog parity.",
+    "sha256": "315fca6ae52b7e5c3ffd2cdc577c23ee8bd3ffe0354bf5e0463c7140ec5a5828"
+  },
   "patch_20260225.sql": {
     "disposition": "retained-unqualified",
     "reason": "Retained historical or component-specific artifact outside the supported execution/LLM CI paths; no automated qualification is claimed. Review and add a baseline-specific gate before reuse or modification.",
@@ -796,13 +841,17 @@
   },
   "patch_20260923_01_gateway_tool_unpublish.sql": {
     "disposition": "standalone-gate",
-    "references": ["tests/run-gateway-tool-publication-schema-gate.sh"],
+    "references": [
+      "tests/run-gateway-tool-publication-schema-gate.sh"
+    ],
     "reason": "Gateway Tool unpublish schema change is referenced by the existing Gateway publication schema gate; this inventory repair does not assert a new qualification run.",
     "sha256": "cc6af2f3baff38923a6ab649793e2d67e0ce5c59327fdc7dd17c5215086892f0"
   },
   "patch_20260923_02_gateway_workflow_tool_unpublish.sql": {
     "disposition": "standalone-gate",
-    "references": ["tests/run-gateway-tool-publication-schema-gate.sh"],
+    "references": [
+      "tests/run-gateway-tool-publication-schema-gate.sh"
+    ],
     "reason": "Workflow Tool unpublish publication-mode change is referenced by the existing Gateway publication schema gate; this inventory repair does not assert a new qualification run.",
     "sha256": "3e4d796ce047d0237867f3870ed85c80575943f2fed1f2ecc1c8ea8ab27e8889"
   },
@@ -816,46 +865,36 @@
     "reason": "Step 07 request-only upgrade patch; fresh and upgrade database qualification remains open.",
     "sha256": "7491ab7cf2fde0a6cad0243935cd71ef0f489bfe42ebf4c3fbffe8b0ebf1b885"
   },
-  "migrations/patch_20260926_01_workflow_tool_binding_publication.sql": {
-    "disposition": "standalone-gate",
-    "references": ["tests/run-workflow-publication-schema-gate.sh"],
-    "reason": "CI qualifies previous DDL plus this upgrade, repeated application, operational table constraints, and expiry immutability in a separate disposable database.",
-    "sha256": "7d87e7f15c33e85b48f426b64e9b5afc8040a4fcc588485103ec28881b9ff1ff"
-  },
-  "migrations/patch_20260928_01_workflow_publication_schema_parity.sql": {
-    "disposition": "standalone-gate",
-    "references": ["tests/run-workflow-publication-schema-gate.sh"],
-    "reason": "CI applies this parity patch twice after the publication upgrade and compares Workflow check constraints with a fresh database.",
-    "sha256": "7884887999270f2150689a860975a5cc50bd77531c9bf53ac5a301714151d652"
-  },
-  "migrations/patch_20260928_02_workflow_long_binding_tombstone.sql": {
-    "disposition": "standalone-gate",
-    "references": ["tests/run-workflow-long-binding-tombstone-schema-gate.sh"],
-    "reason": "CI applies the original tombstone patch before the host-retention upgrade and checks that both late-close identities and issuer versions survive replay and host deactivation.",
-    "sha256": "6c64efc4a07eace8db9351e6e94f3a87593f8968633da4a3839186f212b8147c"
-  },
-  "migrations/patch_20260928_03_workflow_long_binding_tombstone_host_retention.sql": {
-    "disposition": "standalone-gate",
-    "references": ["tests/run-workflow-long-binding-tombstone-schema-gate.sh"],
-    "reason": "CI verifies repeated upgrade, fresh-schema parity, documentation, and retention through host deactivation on a disposable database.",
-    "sha256": "eba32b8ffef314b02bf71cddce2bc51bd42dddd8d156c7eac0c07d0bed62498b"
-  },
-  "migrations/patch_20260928_04_retire_workflow_broker.sql": {
-    "disposition": "standalone-gate",
-    "references": [
-      "tests/run-workflow-broker-retirement-schema-gate.sh"
-    ],
-    "reason": "Qualifies populated retirement and replay, shared refresh schema/data/policy preservation, cascade validation, and fresh catalog parity.",
-    "sha256": "315fca6ae52b7e5c3ffd2cdc577c23ee8bd3ffe0354bf5e0463c7140ec5a5828"
-  },
   "patch_20261002_01_workflow_expression_profile.sql": {
-      "disposition": "retained-unqualified",
-      "reason": "E04 W2 schema gate prepared; database qualification pending owner-run scratch databases. Not executed in CI or by the agent.",
-      "sha256": "96e2cbce858800e137f8718ce907abe0350a482452d0016e3c4cf9883edc009f"
+    "disposition": "retained-unqualified",
+    "reason": "E04 W2 schema gate prepared; database qualification pending owner-run scratch databases. Not executed in CI or by the agent.",
+    "sha256": "96e2cbce858800e137f8718ce907abe0350a482452d0016e3c4cf9883edc009f"
   },
   "patch_20261002_02_workflow_delivery_ledger.sql": {
     "disposition": "retained-unqualified",
     "reason": "E04 W3b Portal ledger; component/static checks only. Database atomicity, locking and upgrade qualification pending explicit disposable database authorization.",
     "sha256": "726eb3549e85be0f31deb21163a6d2addb0dd4fe34d5dfc85be9c5060540f4a3"
-}
+  },
+  "patch_20261004_01_host_tool_workflow_access.sql": {
+    "disposition": "retained-unqualified",
+    "reason": "Host Tool schema/runtime was qualified in the isolated full-catalog feature lane. This inventory records the exact additive artifact; no maintained catalog migration CI gate is claimed for this patch. Apply only through the reviewed supported rollout with coordinated backups.",
+    "sha256": "8dfbd80df7e9b11a60fb96d92d365df65747394a73e5485efadda930377170e9"
+  },
+  "patch_20261004_01_workflow_expression_snapshot_constraint.sql": {
+    "disposition": "declared-path"
+  },
+  "patch_20261004_02_workflow_endpoint_resolution.sql": {
+    "disposition": "standalone-gate",
+    "reason": "Additive endpoint metadata upgrade qualified by the explicit disposable G03 migration gate; not main CI qualification.",
+    "references": [
+      "tests/run-g03-endpoint-resolution-gate.sh"
+    ]
+  },
+  "patch_20261005_01_host_tool_workflow_access_comments.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-ddl-documentation-gate.sh"
+    ],
+    "reason": "Maintained documentation gate checks fresh comments, negative-fixture restoration and repeated application without changing schema or frozen migration bytes."
+  }
 }
