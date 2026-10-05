@@ -29,7 +29,9 @@ try:
     created = True
     docker('start', name)
     for attempt in range(60):
-        ready = subprocess.run(['docker', 'exec', name, 'pg_isready', '-U', 'postgres', '-d', 'g03_fixture'], capture_output=True)
+        # The entrypoint's temporary initialization server has a Unix socket
+        # before it finishes creating the database. Require the final TCP server.
+        ready = subprocess.run(['docker', 'exec', name, 'pg_isready', '-h', '127.0.0.1', '-U', 'postgres', '-d', 'g03_fixture'], capture_output=True)
         if ready.returncode == 0:
             break
         time.sleep(1)
