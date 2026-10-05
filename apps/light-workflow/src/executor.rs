@@ -164,6 +164,21 @@ pub async fn resolve_granted_endpoint(
     capability_ref: &str,
     method: &str,
 ) -> Result<Option<(Uuid, Uuid, String, Option<Value>)>, sqlx::Error> {
+    let accepted = sqlx::query_as(
+        "SELECT authority_id,tool_id,endpoint_uri,resolution_document FROM workflow_accepted_tool_authority_t
+         WHERE host_id=$1 AND process_id=$2 AND tool_id=$3 AND tool_version=$4 AND lightapi_digest=$5
+         AND environment=$6 AND capability_ref=$7 AND upper($8)=ANY(allowed_methods)").bind(host_id).bind(process_id)
+        .bind(tool_id).bind(tool_version).bind(lightapi_digest).bind(environment).bind(capability_ref).bind(method)
+        .fetch_optional(pool).await?;
+    if accepted.is_some() {
+        return Ok(accepted);
+    }
+    // A newly accepted invocation may never fall back to mutable grant state.
+    let pinned: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_tool_authority_acceptance_t WHERE host_id=$1 AND process_id=$2)")
+        .bind(host_id).bind(process_id).fetch_one(pool).await?;
+    if pinned {
+        return Ok(None);
+    }
     sqlx::query_as(
         "SELECT g.grant_id,g.tool_id,target.endpoint_uri,target.resolution_document
            FROM workflow_tool_grant_t g
@@ -7975,6 +7990,170 @@ mod tests {
         executor.run_tokens.set(selector).ok().unwrap();
         assert!(executor.execute_task(&claimed).await.is_ok());
         assert_eq!(receiver.await.unwrap(), Sha256::digest(original.as_bytes()));
+        tokio::fs::remove_file(&f.keyring).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires explicit isolated database and synthetic loopback Gateway origin"]
+    async fn host_tool_broad_accepted_run_executes_two_gets_after_disable() {
+        use crate::{
+            invoke_api::{self, handler_postgres_tests as fixture},
+            run_token::RunTokenSelector,
+        };
+        use axum::response::IntoResponse;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let origin =
+            std::env::var("LIGHT_GATEWAY_MCP_URL").expect("isolated Gateway origin required");
+        let url = reqwest::Url::parse(&origin).unwrap();
+        assert_eq!(url.host_str(), Some("127.0.0.1"));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", url.port().unwrap()))
+            .await
+            .unwrap();
+        let origin = url.origin().ascii_serialization();
+        let f = fixture::fixture().await;
+        let wf: Uuid = sqlx::query_scalar(
+            "SELECT wf_def_id FROM workflow_tool_binding_t WHERE host_id=$1 AND binding_id=$2",
+        )
+        .bind(f.host)
+        .bind(f.binding)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+        let mut tasks = Vec::new();
+        let mut policies = Vec::new();
+        for (name, path) in [
+            ("getIssue", "/github/synthetic"),
+            ("listIssueComments", "/github/synthetic/comments"),
+        ] {
+            let tool = Uuid::new_v4();
+            let cap = format!("GITHUB/{name}");
+            let doc = json!({"operations":{name:{"endpointId":cap,"protocol":"http","method":"GET","endpoint":path,"authentication":{"type":"none"}}}});
+            let digest = format!(
+                "sha256:{}",
+                execution_runner_protocol::canonical_sha256(&doc).unwrap()
+            );
+            let policy = json!({"hostId":f.host,"toolId":tool,"policyId":tool,"capabilityRef":cap,"toolVersion":"1.0.0",
+                "lightapiDigest":digest,"allowedEnvironments":["dev"],"allowedMethods":["GET"],"enabled":true,"sourceRevision":1,"actor":"isolated-admin"});
+            crate::publication_api::tool_access::publish_verified(&f.pool, &policy)
+                .await
+                .unwrap();
+            policies.push(policy);
+            sqlx::query("INSERT INTO workflow_endpoint_target_t(host_id,binding_id,endpoint_ref,endpoint_uri,allowed_methods,authorization_policy_digest,resolution_document) VALUES($1,$2,$3,$4,ARRAY['GET'],$5,$6)")
+                .bind(f.host).bind(f.binding).bind(&cap).bind(&origin).bind(format!("sha256:{}","a".repeat(64))).bind(doc).execute(&f.pool).await.unwrap();
+            tasks.push(json!({name:{"call":"http","with":{"method":"GET","endpoint":{"uri":format!("lightapi://{cap}")}},
+                "metadata":{"workflowTool":{"toolId":tool,"capabilityRef":cap,"version":"1.0.0","lightapiDigest":digest,"allowedEnvironments":["dev"]}}}}));
+        }
+        let definition=serde_yaml::to_string(&json!({"document":{"dsl":"1.0.3","namespace":"step12","name":"invoke","version":"1.0.0"},"evaluate":{"language":"cel"},"do":tasks})).unwrap();
+        let digest = crate::publication_api::definition_digest(&definition).unwrap();
+        sqlx::query("UPDATE wf_definition_t SET definition=$3 WHERE host_id=$1 AND wf_def_id=$2")
+            .bind(f.host)
+            .bind(wf)
+            .bind(&definition)
+            .execute(&f.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE wf_definition_version_t SET definition=$3,definition_digest=$4 WHERE host_id=$1 AND wf_def_id=$2").bind(f.host).bind(wf).bind(&definition).bind(&digest).execute(&f.pool).await.unwrap();
+        sqlx::query("UPDATE workflow_tool_binding_t SET definition_digest=$3 WHERE host_id=$1 AND binding_id=$2").bind(f.host).bind(f.binding).bind(&digest).execute(&f.pool).await.unwrap();
+        let mut arguments = fixture::arguments(&f);
+        arguments["expectedDefinitionDigest"] = json!(digest);
+        let headers = fixture::headers(f.host, f.user, "user");
+        let expected = headers
+            .get("authorization")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let run = fixture::running_run(
+            invoke_api::invoke(f.state.clone(), headers, arguments.clone()).await,
+        )
+        .await;
+        let process:Uuid=sqlx::query_scalar("SELECT process_id FROM workflow_invocation_t WHERE host_id=$1 AND workflow_instance_id=$2").bind(f.host).bind(run).fetch_one(&f.pool).await.unwrap();
+        for mut policy in policies {
+            policy["enabled"] = json!(false);
+            policy["sourceRevision"] = json!(2);
+            crate::publication_api::tool_access::publish_verified(&f.pool, &policy)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            fixture::running_run(
+                invoke_api::invoke(
+                    f.state.clone(),
+                    fixture::headers(f.host, f.user, "user"),
+                    arguments.clone()
+                )
+                .await
+            )
+            .await,
+            run
+        );
+        arguments["input"] = json!({"freshStartAfterDisable":true});
+        let denied = invoke_api::invoke(
+            f.state.clone(),
+            fixture::headers(f.host, f.user, "user"),
+            arguments,
+        )
+        .await
+        .unwrap_err();
+        let body = axum::body::to_bytes(denied.into_response().into_body(), 65536)
+            .await
+            .unwrap();
+        let error: Value = serde_json::from_slice(&body).unwrap();
+        assert_ne!(error["code"], "WORKFLOW_TIMEOUT");
+        let receiver = tokio::spawn(async move {
+            let mut paths = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = [0u8; 8192];
+                let size = stream.read(&mut bytes).await.unwrap();
+                let request = String::from_utf8_lossy(&bytes[..size]);
+                assert!(
+                    request.lines().any(
+                        |line| line.eq_ignore_ascii_case(&format!("authorization: {expected}"))
+                    )
+                );
+                paths.push(request.lines().next().unwrap().to_owned());
+                stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 11\r\nconnection: close\r\n\r\n{\"ok\":true}").await.unwrap();
+            }
+            paths
+        });
+        let mut executor = TaskExecutor::new(f.pool.clone());
+        executor.environment = "dev".into();
+        executor.service_authorization = Some("synthetic-scope".into());
+        executor
+            .run_tokens
+            .set(Arc::new(
+                RunTokenSelector::new(
+                    f.pool.clone(),
+                    f.state.run_credential_vault.clone(),
+                    None,
+                    f.state.invocation_security.clone(),
+                    60,
+                )
+                .unwrap(),
+            ))
+            .ok()
+            .unwrap();
+        for name in ["getIssue", "listIssueComments"] {
+            let mut claimed = claimed_from_yaml(&definition, name, "call");
+            claimed.task.host_id = f.host;
+            claimed.task.process_id = process;
+            claimed.task.task_id = Uuid::new_v4();
+            assert_eq!(
+                executor.execute_task(&claimed).await.unwrap().task_output,
+                json!({"ok":true})
+            );
+        }
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), receiver)
+                .await
+                .unwrap()
+                .unwrap(),
+            vec![
+                "GET /github/synthetic HTTP/1.1",
+                "GET /github/synthetic/comments HTTP/1.1"
+            ]
+        );
         tokio::fs::remove_file(&f.keyring).await.unwrap();
     }
 

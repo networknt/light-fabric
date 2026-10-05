@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "objects": [
+    "workflow_ops.wf_definition_t",
+    "workflow_ops.wf_definition_version_t",
+    "workflow_ops.process_info_t",
+    "workflow_ops.workflow_claim_host_task_v1(uuid,integer)"
+  ],
+  "files": {
+    "bin/w7_rollout.py": "sha256:34080712e93271da3711b78641bff1faa3f4a75ef1fbee342c8185fb608bf028",
+    "bin/w7_ownership.py": "sha256:6b7391c5240717e3f136007d43d6712da3035ea2e8befb0265254adcb5a950b1"
+  }
+}

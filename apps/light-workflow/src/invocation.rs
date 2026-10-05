@@ -34,6 +34,7 @@ pub struct PreparedInvocationStart<'a> {
     pub execution_profile_id: &'a str,
     /// Selected by a trusted Workflow entry point; never taken from request JSON.
     pub admission_profile: &'a str,
+    pub tool_environment: &'a str,
     pub policy_snapshot_id: Option<Uuid>,
     pub task_policy_digest: &'a str,
     pub public_output_schema: Option<&'a Value>,
@@ -55,6 +56,8 @@ pub enum AcceptOutcome {
 pub enum InvocationAcceptError {
     #[error("EVALUATOR_PROFILE_UNSUPPORTED")]
     ExpressionProfileUnsupported,
+    #[error("WORKFLOW_TOOL_ACCESS_DENIED")]
+    ToolAccessDenied,
     #[error("workflow invocation contract is invalid: {0}")]
     Contract(#[from] ContractError),
     #[error("WORKFLOW_IDEMPOTENCY_CONFLICT")]
@@ -274,6 +277,16 @@ pub(crate) async fn accept_invocation_in(
     .execute(&mut **tx)
     .await?;
 
+    crate::tool_access::pin_accepted(
+        tx,
+        auth.host_id,
+        request.workflow_definition_id,
+        prepared.process_id,
+        prepared.binding_id,
+        prepared.definition_snapshot,
+        prepared.tool_environment,
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO workflow_invocation_budget_t(
            host_id,ledger_id,workflow_instance_id,task_attempt_limit,
@@ -523,6 +536,7 @@ mod private_profile_tests {
             execution_placement: "runner",
             execution_profile_id: "mock-ephemeral",
             admission_profile: "portal_execution",
+            tool_environment: "dev",
             policy_snapshot_id: Some(snapshot_id),
             task_policy_digest: "policy-component",
             public_output_schema: None,
@@ -756,6 +770,7 @@ mod private_profile_tests {
             execution_placement: "host",
             execution_profile_id: "host",
             admission_profile: "portal_execution",
+            tool_environment: "dev",
             policy_snapshot_id: None,
             task_policy_digest: digest.trim_start_matches("sha256:"),
             public_output_schema: None,

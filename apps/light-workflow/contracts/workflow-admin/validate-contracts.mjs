@@ -29,7 +29,7 @@ const expected = [
   'workflow_claim_human_task','workflow_release_human_task','workflow_complete_human_task',
   'workflow_definition_save','workflow_definition_publish','workflow_definition_retire',
   'workflow_definition_grants_sync','workflow_binding_publish','workflow_binding_retire',
-  'workflow_binding_get','workflow_binding_list','workflow_binding_decide','workflow_binding_revoke','workflow_invoke'
+  'workflow_binding_get','workflow_binding_list','workflow_binding_decide','workflow_binding_revoke','workflow_invoke','workflow_tool_access_publish'
 ];
 const names = manifest.tools.map((tool) => tool.name);
 if (new Set(names).size !== names.length) fail('tool names must be unique');
@@ -41,7 +41,7 @@ for (const name of names) if (!examples[name]) fail(`missing examples for ${name
 for (const name of Object.keys(examples)) if (!names.includes(name)) fail(`orphan examples for ${name}`);
 if (manifest.protocolTarget !== '2026-07-28') fail('protocolTarget must be 2026-07-28');
 if (manifest.identitySource !== 'trustedInvocationContext') fail('identity must come from trusted invocation context');
-for (const [name, value] of [['workflow_definition_save','authorization'],['workflow_definition_publish','header'],['workflow_definition_retire','header'],['workflow_definition_grants_sync','authorization'],['workflow_binding_publish','header'],['workflow_binding_retire','header']]) {
+for (const [name, value] of [['workflow_definition_save','authorization'],['workflow_definition_publish','header'],['workflow_definition_retire','header'],['workflow_definition_grants_sync','authorization'],['workflow_tool_access_publish','authorization'],['workflow_binding_publish','header'],['workflow_binding_retire','header']]) {
   if (manifest.tools.find(tool => tool.name === name)?.publisherToken !== value) fail(`${name}: publisherToken metadata must be ${value}`);
 }
 
@@ -71,7 +71,7 @@ for (const spelling of ['hostId','host_id','owner','ownerSubject','owner_subject
 const hostTools = new Set(['workflow_definition_save','workflow_definition_publish','workflow_definition_retire',
   'workflow_definition_validate',
   'workflow_definition_grants_sync','workflow_binding_publish','workflow_binding_retire','workflow_binding_get',
-  'workflow_binding_list','workflow_binding_decide','workflow_binding_revoke']);
+  'workflow_binding_list','workflow_binding_decide','workflow_binding_revoke','workflow_tool_access_publish']);
 const allowedIdentityPath = (tool, path) =>
   (path === '/hostId' && hostTools.has(tool))
   || (path === '/owner' && ['workflow_definition_save','workflow_definition_publish'].includes(tool))
@@ -204,7 +204,7 @@ const nativeNames = ['workflow_start', 'workflow_decide_tool_access', 'workflow_
   'workflow_get_task', 'workflow_add_process_note', 'workflow_list_process_notes',
   'workflow_definition_save','workflow_definition_publish','workflow_definition_retire','workflow_definition_grants_sync',
   'workflow_binding_publish','workflow_binding_retire','workflow_binding_get','workflow_binding_list',
-  'workflow_binding_decide','workflow_binding_revoke'];
+  'workflow_binding_decide','workflow_binding_revoke','workflow_tool_access_publish'];
 const internalPublicationViolation = (published, contracts) => published
   .filter(item => contracts.find(tool => tool.name === item.name)?.gatewayPublication === false)
   .map(item => item.name);

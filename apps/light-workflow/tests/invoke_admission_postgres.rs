@@ -168,6 +168,7 @@ async fn admit(
         execution_placement: "host",
         execution_profile_id: "host",
         admission_profile: "workflow_backed",
+        tool_environment: "dev",
         policy_snapshot_id: None,
         task_policy_digest: &bare_digest,
         public_output_schema: None,

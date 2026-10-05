@@ -43,6 +43,7 @@ pub mod service_runtime;
 pub mod session_reconciler;
 pub mod snapshot_transfer;
 mod snapshot_validation;
+pub mod tool_access;
 pub mod worker_capability;
 
 pub mod bound_mcp;

@@ -208,7 +208,7 @@ else:
                     self.assertFalse((root / 'private').exists())
                     self.assertNotIn('postgres://', result.stdout + result.stderr)
                 if mode == 'matching':
-                    self.assertEqual(len(trace.read_text().splitlines()), 2 * 3 * 45)
+                    self.assertEqual(len(trace.read_text().splitlines()), 2 * 3 * 46)
 
     def test_paged_probe_fake_curl_only(self):
         for status, body, passed in [('200', '{"items":[],"nextCursor":null}', True),

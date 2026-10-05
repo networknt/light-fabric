@@ -522,6 +522,7 @@ pub(crate) async fn dispatch_native_tool(
         "workflow_definition_save"
             | "workflow_definition_publish"
             | "workflow_definition_retire"
+            | "workflow_tool_access_publish"
             | "workflow_definition_grants_sync"
             | "workflow_binding_publish"
             | "workflow_binding_retire"
@@ -2051,6 +2052,7 @@ pub(crate) async fn start_invocation_new(
             .and_then(|policy| policy.profile.as_ref().map(|profile| profile.id.as_str()))
             .unwrap_or("host"),
         admission_profile: profile.stored_name(),
+        tool_environment: &state.invocation_environment,
         policy_snapshot_id: None,
         task_policy_digest: private_policy
             .as_ref()
@@ -3974,6 +3976,9 @@ impl ApiError {
     }
     fn accept(error: InvocationAcceptError) -> Self {
         match error {
+            InvocationAcceptError::ToolAccessDenied => {
+                Self::policy_denied("Workflow Tool permission or published target is unavailable")
+            }
             InvocationAcceptError::ExpressionProfileUnsupported => {
                 crate::operational_admission::unsupported()
             }

@@ -1033,5 +1033,29 @@
       "status": "notFound",
       "requestDigest": "sha256:6a2ef5300f03dc06d3b94d3777bd85c775ac858f3008078a2563687d3af89e57"
     }
+  },
+  "workflow_tool_access_publish": {
+    "input": {
+      "hostId": "10000000-0000-0000-0000-000000000001",
+      "toolId": "10000000-0000-0000-0000-000000000011",
+      "policyId": "10000000-0000-0000-0000-000000000012",
+      "capabilityRef": "GITHUB/getIssue",
+      "toolVersion": "1.0.0",
+      "lightapiDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "allowedEnvironments": [
+        "dev"
+      ],
+      "allowedMethods": [
+        "GET"
+      ],
+      "enabled": true,
+      "sourceRevision": 1,
+      "actor": "isolated-admin"
+    },
+    "output": {
+      "result": "published",
+      "appliedRevision": 1,
+      "publicationDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
   }
 }

@@ -55,7 +55,7 @@ class DistinctIdentityTests(unittest.TestCase):
         self.folder.chmod(0o755)
         self.root = self.folder / 'operations'
         shutil.copytree(ASSETS, self.root)
-        (self.root / 'bin').mkdir()
+        (self.root / 'bin').mkdir(exist_ok=True)
         for name in ['w7-startup-guard.sh', 'w7-controller-page-check.sh']:
             shutil.copyfile(HERE / name, self.root / 'bin' / name)
         self.state = self.root / '.runtime/w7'

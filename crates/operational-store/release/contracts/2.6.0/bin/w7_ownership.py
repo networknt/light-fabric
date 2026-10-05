@@ -57,7 +57,7 @@ def verify_companion(root):
     path = root / 'w7-ownership-v1.json'
     data = read_json(path)
     demand(data.get('version') == 1 and data.get('objects') == list(OBJECTS), 'OWNERSHIP_ALLOWLIST_CHANGED')
-    demand(set(data.get('files', {})) == {'bin/w7_rollout.py', 'bin/w7_ownership.py', 'bin/bundle_contract.py'}, 'OWNERSHIP_TOOL_SET')
+    demand(set(data.get('files', {})) == {'bin/w7_rollout.py', 'bin/w7_ownership.py'}, 'OWNERSHIP_TOOL_SET')
     for name, expected in data['files'].items():
         demand(file_digest(root / name) == expected, 'OWNERSHIP_TOOL_CHANGED')
     return file_digest(path)
@@ -133,7 +133,7 @@ class OwnershipContract:
         missing_seen = False
         for mid, _path, expected, owner, schema in rows:
             recorded = recorded_map.get((owner,schema,mid), '')
-            is_e04 = gate['kind'] == 'portal' or mid in ('0024_workflow_expression_profile', '0025_workflow_operation_receipts', '0026_host_tool_workflow_access')
+            is_e04 = gate['kind'] == 'portal' or mid in ('0024_workflow_expression_profile', '0025_workflow_operation_receipts')
             if not is_e04:
                 demand(recorded == expected, 'OWNERSHIP_BASELINE_LEDGER')
                 continue
@@ -172,7 +172,7 @@ class OwnershipContract:
         owner = 'portal' if gate['kind'] == 'portal' else 'migrator'
         prefixes = q.get('preinstall', {})
         demand(all(isinstance(prefixes.get(f'{i}:{owner}'), str) and
-                   DIGEST.fullmatch(prefixes[f'{i}:{owner}']) for i in range(3 if gate['kind'] == 'portal' else 4)),
+                   DIGEST.fullmatch(prefixes[f'{i}:{owner}']) for i in range(3)),
                'QUALIFICATION_PREFIXES_INCOMPLETE')
         if '0:historical' in prefixes:
             demand(DIGEST.fullmatch(prefixes['0:historical']) and

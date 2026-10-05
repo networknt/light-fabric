@@ -9577,7 +9577,7 @@ const WORKFLOW_LIFECYCLE_TOOLS: [(&str, &str, bool); 17] = [
     ),
 ];
 
-const WORKFLOW_NATIVE_BACKEND_TOOLS: [&str; 35] = [
+const WORKFLOW_NATIVE_BACKEND_TOOLS: [&str; 36] = [
     "workflow_definition_validate",
     "workflow_start_receipt",
     "workflow_start",
@@ -9605,6 +9605,7 @@ const WORKFLOW_NATIVE_BACKEND_TOOLS: [&str; 35] = [
     "workflow_definition_save",
     "workflow_definition_publish",
     "workflow_definition_retire",
+    "workflow_tool_access_publish",
     "workflow_definition_grants_sync",
     "workflow_binding_publish",
     "workflow_binding_retire",

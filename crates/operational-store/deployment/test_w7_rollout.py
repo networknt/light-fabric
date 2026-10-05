@@ -350,7 +350,7 @@ class StaticTests(unittest.TestCase):
             self.assertIn('"global_off": false',output.getvalue())
             self.assertIn('UNKNOWN',output.getvalue())
             self.assertNotIn('SENTINEL_SECRET',output.getvalue())
-    def test_current_assets(self):self.assertEqual(len(verify_assets(ASSETS)[1]),44)
+    def test_current_assets(self):self.assertEqual(len(verify_assets(ASSETS)[1]),45)
     def test_exact_both_preflight_prefixes(self):
         for kind in ['portal','operational']:
             sql=preflight_sql(ASSETS,{'kind':kind})

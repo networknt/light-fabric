@@ -301,6 +301,7 @@ async fn acceptance_rollback_snapshot_profile_and_off_recovery() {
         execution_placement: "host",
         execution_profile_id: "host",
         admission_profile: "portal_execution",
+        tool_environment: "dev",
         policy_snapshot_id: None,
         task_policy_digest: digest.trim_start_matches("sha256:"),
         public_output_schema: None,

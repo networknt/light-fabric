@@ -2,6 +2,7 @@
 use sha2::Digest;
 
 pub(crate) mod binding;
+pub mod tool_access;
 pub use binding::{
     decide_verified, get_verified, list_verified, pinned_dependencies, pinned_evidence,
     publish_binding_verified, retire_binding_verified, revoke_verified,
@@ -30,6 +31,9 @@ pub(crate) async fn dispatch(
     cel_validator: &(dyn Fn(&str) -> Result<(), ApiError> + Send + Sync),
 ) -> Result<Option<Value>, ApiError> {
     match name {
+        "workflow_tool_access_publish" => {
+            tool_access::publish(state, headers, args).await.map(Some)
+        }
         "workflow_definition_save" => save_definition(state, headers, args, settings)
             .await
             .map(Some),

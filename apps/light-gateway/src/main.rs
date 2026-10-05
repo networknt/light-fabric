@@ -7492,7 +7492,11 @@ fn is_workflow_sync_call(headers: &http::HeaderMap, body: &[u8]) -> bool {
             .get("params")
             .and_then(|params| params.get("name"))
             .and_then(JsonValue::as_str),
-        Some("workflow_definition_save" | "workflow_definition_grants_sync")
+        Some(
+            "workflow_definition_save"
+                | "workflow_definition_grants_sync"
+                | "workflow_tool_access_publish"
+        )
     )
 }
 

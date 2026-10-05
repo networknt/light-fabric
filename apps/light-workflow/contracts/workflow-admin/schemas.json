@@ -2497,6 +2497,109 @@
         }
       },
       "additionalProperties": false
+    },
+    "ToolWorkflowAccessInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hostId",
+        "toolId",
+        "policyId",
+        "capabilityRef",
+        "toolVersion",
+        "lightapiDigest",
+        "allowedEnvironments",
+        "allowedMethods",
+        "enabled",
+        "sourceRevision",
+        "actor"
+      ],
+      "properties": {
+        "hostId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "toolId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "policyId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "capabilityRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "toolVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actor": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lightapiDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "allowedEnvironments": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true
+        },
+        "allowedMethods": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "GET",
+              "HEAD",
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 6,
+          "uniqueItems": true
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "sourceRevision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "ToolWorkflowAccessOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "appliedRevision",
+        "publicationDigest"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "published",
+            "unchanged",
+            "stale"
+          ]
+        },
+        "appliedRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "publicationDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
     }
   }
 }

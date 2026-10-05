@@ -6294,6 +6294,130 @@
           }
         ]
       }
+    },
+    {
+      "name": "workflow_tool_access_publish",
+      "description": "Publish exact Host Tool Workflow Access revision or disable tombstone; authorized GenAI Admin only.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "hostId",
+          "toolId",
+          "policyId",
+          "capabilityRef",
+          "toolVersion",
+          "lightapiDigest",
+          "allowedEnvironments",
+          "allowedMethods",
+          "enabled",
+          "sourceRevision",
+          "actor"
+        ],
+        "properties": {
+          "hostId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "toolId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "policyId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "capabilityRef": {
+            "type": "string",
+            "minLength": 1
+          },
+          "toolVersion": {
+            "type": "string",
+            "minLength": 1
+          },
+          "actor": {
+            "type": "string",
+            "minLength": 1
+          },
+          "lightapiDigest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "allowedEnvironments": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "maxItems": 16,
+            "uniqueItems": true
+          },
+          "allowedMethods": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "GET",
+                "HEAD",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 6,
+            "uniqueItems": true
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "sourceRevision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "result",
+          "appliedRevision",
+          "publicationDigest"
+        ],
+        "properties": {
+          "result": {
+            "enum": [
+              "published",
+              "unchanged",
+              "stale"
+            ]
+          },
+          "appliedRevision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "publicationDigest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "permission": "workflow.tool_access.publish"
+      },
+      "permission": "workflow.tool_access.publish",
+      "sideEffect": true,
+      "publisherToken": "authorization",
+      "contractInputSchema": {
+        "$ref": "schemas.json#/$defs/ToolWorkflowAccessInput"
+      },
+      "contractOutputSchema": {
+        "$ref": "schemas.json#/$defs/ToolWorkflowAccessOutput"
+      }
     }
   ]
 }
