@@ -432,12 +432,13 @@ mod tests {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(names.len(), 35);
+        assert_eq!(names.len(), 36);
         assert_eq!(names.len(), tools.len());
         assert!(names.contains("workflow_wait_result"));
         assert!(names.contains("workflow_invoke"));
         assert!(names.contains("workflow_definition_validate"));
         assert!(names.contains("workflow_start_receipt"));
+        assert!(names.contains("workflow_tool_access_publish"));
     }
 
     #[test]
@@ -446,7 +447,7 @@ mod tests {
         let examples: Value =
             serde_json::from_str(include_str!("../contracts/workflow-admin/examples.json"))
                 .unwrap();
-        assert_eq!(tools.len(), 35);
+        assert_eq!(tools.len(), 36);
         assert!(
             tools
                 .iter()

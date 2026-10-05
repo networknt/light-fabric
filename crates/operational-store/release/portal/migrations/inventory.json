@@ -889,5 +889,12 @@
     "references": [
       "tests/run-g03-endpoint-resolution-gate.sh"
     ]
+  },
+  "patch_20261005_01_host_tool_workflow_access_comments.sql": {
+    "disposition": "standalone-gate",
+    "references": [
+      "tests/run-ddl-documentation-gate.sh"
+    ],
+    "reason": "Maintained documentation gate checks fresh comments, negative-fixture restoration and repeated application without changing schema or frozen migration bytes."
   }
 }

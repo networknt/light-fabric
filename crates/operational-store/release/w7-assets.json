@@ -52,7 +52,7 @@
     "bundle/rollback/0024_workflow_expression_profile.sql.sha256": "95e3494af4ef919c0ffd423c979a6ef5c2d3a05844d2ed55e9d3b7348f022f10",
     "bundle/rollback/0025_workflow_operation_receipts.sql": "f330cf604657a21cb03b1291f6f4e547efa54ddc99c228fa2053ad63a60d0a0f",
     "bundle/rollback/0025_workflow_operation_receipts.sql.sha256": "232a31f855ab45f33a8783c5ff0072a96f4013785cf7d0c391b94c4a52164d8c",
-    "portal/migrations/inventory.json": "1bdc54aff71cbdb3e4b89c87eac8ec36e5d1fafa3fb1c6b02c347bc15489bc75",
+    "portal/migrations/inventory.json": "8eb10d19913b9a3006305ae46505f76e2b2563ee0579c2e52cdfd2af592a7250",
     "portal/patch_20261002_01_workflow_expression_profile.sql": "96e2cbce858800e137f8718ce907abe0350a482452d0016e3c4cf9883edc009f",
     "portal/patch_20261002_02_workflow_delivery_ledger.sql": "726eb3549e85be0f31deb21163a6d2addb0dd4fe34d5dfc85be9c5060540f4a3",
     "portal/rollback/rollback_20261002_01_workflow_expression_profile.sql": "d6dc16f8dc872881964f7d12f9aecc989282da79e7e6b52f077c1407233cbd29",

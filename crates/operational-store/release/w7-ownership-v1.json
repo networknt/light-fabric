@@ -2,7 +2,7 @@
   "files": {
     "bin/bundle_contract.py": "sha256:8a56f1070cd4c3b952ca68d3beaff77357de52f0b1554655f540b9104515ffa8",
     "bin/w7_ownership.py": "sha256:6dbcba0e8bc3005b248c1db3cf966f35ea5316b5b1f79b8876b08687eaea7dc2",
-    "bin/w7_rollout.py": "sha256:2e58b6e3e8fe592a7b7a7efadfc80557596d676b294bcd3544d24babeea39e15"
+    "bin/w7_rollout.py": "sha256:15187118aba26fb2cb9a802174ad0138ba0836efe76808e44e04e8c4a1b3c09b"
   },
   "objects": [
     "workflow_ops.wf_definition_t",

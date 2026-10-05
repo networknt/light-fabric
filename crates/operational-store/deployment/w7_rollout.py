@@ -140,7 +140,7 @@ def validate_plan(plan):
 def verify_assets(root):
     root = Path(root)
     verify_companion(root)
-    require(sha(root / 'w7-assets.json') == 'a53eb647308edd161761133dada2dce910fe35028656fb8ee982201a419b0fad',
+    require(sha(root / 'w7-assets.json') == 'cce8a4be907461da98dba854262eb2565772ac3f3722d471e78dfaa4679b4650',
             'ACCEPTED_ASSET_DESCRIPTOR_IDENTITY')
     pins = load_json(root / 'w7-assets.json')
     require(pins['files'].get('bundle/bundle.sha256') == '461c90e5c46acb31550c6ecc16786a397625655ef3ad62d45c7e0be6844ac2af', 'ACCEPTED_BUNDLE_IDENTITY')
