@@ -899,6 +899,87 @@ impl AccessControlRuntime {
             .unwrap_or(false)
     }
 
+    /// Resolve an ordinary HTTP policy independently of handler routing.
+    /// Exact paths outrank full-path templates; multiple matching templates are
+    /// ambiguous (parameter names/length never establish specificity). Literal
+    /// prefix policies retain their legacy longest-prefix fallback. Missing
+    /// policies retain the concrete identity for configured default-deny handling.
+    /// Paths are not decoded or normalized: repeated/trailing slashes and dot
+    /// segments must not become aliases of a registered template.
+    pub fn resolve_http_policy(&self, path: &str, method: &str) -> Result<String, String> {
+        let path = path.split_once('?').map_or(path, |(path, _)| path);
+        let endpoint = format!("{path}@{}", method.to_ascii_lowercase());
+        if self.active_config_for_endpoint(&endpoint).is_none() {
+            return Ok(endpoint);
+        }
+        let candidates = self
+            .rules
+            .endpoint_rules
+            .keys()
+            .filter(|key| {
+                let (_, policy_method) = split_endpoint(key);
+                policy_method.eq_ignore_ascii_case(method)
+            })
+            .collect::<Vec<_>>();
+        let exact = candidates
+            .iter()
+            .copied()
+            .filter(|key| split_endpoint(key).0 == path)
+            .collect::<Vec<_>>();
+        if exact.len() == 1 {
+            return Ok(exact[0].clone());
+        }
+        let canonical_segments = path
+            .strip_prefix('/')
+            .unwrap_or(path)
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..");
+        if !canonical_segments
+            && candidates.iter().any(|key| {
+                let (pattern, _) = split_endpoint(key);
+                pattern.contains('{') && path_template_matches(pattern, path)
+            })
+        {
+            return Err(format!("Access denied: noncanonical path for {endpoint}"));
+        }
+        let templates = candidates
+            .iter()
+            .copied()
+            .filter(|key| {
+                let (pattern, _) = split_endpoint(key);
+                pattern.contains('{') && canonical_segments && path_template_matches(pattern, path)
+            })
+            .collect::<Vec<_>>();
+        if exact.len() > 1 || templates.len() > 1 {
+            return Err(format!(
+                "Access denied: ambiguous access control policies for {endpoint}"
+            ));
+        }
+        if let Some(template) = templates.first() {
+            return Ok((*template).clone());
+        }
+        let mut prefixes = candidates
+            .iter()
+            .copied()
+            .filter(|key| {
+                let (pattern, _) = split_endpoint(key);
+                !pattern.contains('{') && endpoint_pattern_matches(key, &endpoint)
+            })
+            .collect::<Vec<_>>();
+        prefixes.sort_by_key(|key| std::cmp::Reverse(split_endpoint(key).0.len()));
+        if let Some(prefix) = prefixes.first() {
+            if prefixes.get(1).is_some_and(|other| {
+                split_endpoint(other).0.len() == split_endpoint(prefix).0.len()
+            }) {
+                return Err(format!(
+                    "Access denied: ambiguous access control policies for {endpoint}"
+                ));
+            }
+            return Ok((*prefix).clone());
+        }
+        Ok(endpoint)
+    }
+
     fn find_service_entry<'a>(
         &'a self,
         endpoint: &str,
@@ -2248,6 +2329,195 @@ mod tests {
             claims: json!({ "role": role }),
             ..AuthPrincipal::default()
         }
+    }
+
+    fn http_resolution_fixture(keys: &[&str]) -> AccessControlRuntime {
+        let mut rules = RuleFileConfig::default();
+        for key in keys {
+            rules
+                .endpoint_rules
+                .insert((*key).into(), EndpointConfig::Map(HashMap::new()));
+        }
+        AccessControlRuntime::new(Some(AccessControlConfig::default()), rules)
+    }
+
+    #[test]
+    fn http_policy_exact_precedes_template_and_prefix() {
+        let runtime = http_resolution_fixture(&["/api@get", "/api/{id}@get", "/api/private@get"]);
+        assert_eq!(
+            runtime
+                .resolve_http_policy("/api/private?x=1", "GET")
+                .unwrap(),
+            "/api/private@get"
+        );
+        assert_eq!(
+            runtime.resolve_http_policy("/api/123", "GET").unwrap(),
+            "/api/{id}@get"
+        );
+        assert_eq!(
+            runtime
+                .resolve_http_policy("/api/123/child", "GET")
+                .unwrap(),
+            "/api@get"
+        );
+        assert_eq!(
+            runtime.resolve_http_policy("/api/123", "POST").unwrap(),
+            "/api/123@post"
+        );
+    }
+
+    #[test]
+    fn http_policy_overlapping_templates_fail_closed_independent_of_insertion_order() {
+        for (keys, path) in [
+            (
+                vec!["/api/{long_parameter}@get", "/api/{x}@get", "/api@get"],
+                "/api/1",
+            ),
+            (
+                vec!["/api@get", "/api/{x}@get", "/api/{long_parameter}@get"],
+                "/api/1",
+            ),
+            (
+                vec!["/api/{id}/fixed@get", "/api/fixed/{id}@get", "/api@get"],
+                "/api/fixed/fixed",
+            ),
+        ] {
+            let runtime = http_resolution_fixture(&keys);
+            assert!(runtime.resolve_http_policy(path, "GET").is_err());
+        }
+        let runtime = http_resolution_fixture(&["/api/{id}@get", "/api/{other}@get", "/api/1@get"]);
+        assert_eq!(
+            runtime.resolve_http_policy("/api/1", "GET").unwrap(),
+            "/api/1@get"
+        );
+    }
+
+    #[test]
+    fn http_policy_method_case_collisions_fail_closed() {
+        let runtime = http_resolution_fixture(&["/api/1@get", "/api/1@GET"]);
+        assert!(runtime.resolve_http_policy("/api/1", "GET").is_err());
+        let runtime = http_resolution_fixture(&["/api@get", "/api@GET"]);
+        assert!(runtime.resolve_http_policy("/api/1", "get").is_err());
+    }
+
+    #[test]
+    fn http_policy_preserves_literal_prefix_boundaries_and_legacy_identities() {
+        let runtime = http_resolution_fixture(&[
+            "/api@get",
+            "/api/issues@get",
+            "tool@call",
+            "host/service/action/1",
+        ]);
+        assert_eq!(
+            runtime.resolve_http_policy("/api/issues/1", "GET").unwrap(),
+            "/api/issues@get"
+        );
+        assert_eq!(
+            runtime.resolve_http_policy("/apix/1", "GET").unwrap(),
+            "/apix/1@get"
+        );
+        assert_eq!(
+            runtime.find_service_entry("tool@call").unwrap().0,
+            "tool@call"
+        );
+        assert_eq!(
+            runtime
+                .find_service_entry("host/service/action/1")
+                .unwrap()
+                .0,
+            "host/service/action/1"
+        );
+    }
+
+    #[test]
+    fn http_policy_does_not_normalize_template_paths() {
+        let runtime = http_resolution_fixture(&["/api/{id}@get"]);
+        for path in ["/api//1", "/api/1/", "/api/.", "/api/.."] {
+            assert!(runtime.resolve_http_policy(path, "GET").is_err(), "{path}");
+        }
+        assert_eq!(
+            runtime.resolve_http_policy("/api/a%2Fb", "GET").unwrap(),
+            "/api/{id}@get"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_policy_keeps_default_deny_and_skip_gates() {
+        let mut runtime = http_resolution_fixture(&["/api/{id}@get"]);
+        let endpoint = runtime.resolve_http_policy("/unknown?x=1", "GET").unwrap();
+        assert!(matches!(
+            runtime
+                .authorize_http_endpoint(&endpoint, &[], Some(&auth("admin")), &json!({}), None)
+                .await,
+            AccessDecision::Denied(_)
+        ));
+        runtime.access.as_mut().unwrap().default_deny = false;
+        assert_eq!(
+            runtime
+                .authorize_http_endpoint(&endpoint, &[], None, &json!({}), None)
+                .await,
+            AccessDecision::Allowed
+        );
+        runtime.access.as_mut().unwrap().skip_path_prefixes = vec!["/api/1".into()];
+        let skipped = runtime.resolve_http_policy("/api/1", "GET").unwrap();
+        assert_eq!(skipped, "/api/1@get");
+        assert_eq!(
+            runtime
+                .authorize_http_endpoint(&skipped, &[], None, &json!({}), None)
+                .await,
+            AccessDecision::Allowed
+        );
+        assert!(!runtime.has_response_filter(&skipped));
+        runtime.access.as_mut().unwrap().enabled = false;
+        assert_eq!(
+            runtime.resolve_http_policy("/api/2", "GET").unwrap(),
+            "/api/2@get"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_policy_denial_never_falls_back_to_a_broader_permission() {
+        let rules: RuleFileConfig = serde_yaml::from_str(
+            r#"
+ruleBodies:
+  role:
+    common: Y
+    ruleId: role
+    ruleName: Role
+    ruleType: req-acc
+    conditionLanguage: cel
+    conditionSecurityProfile: strict
+    expression: "auditInfo.subject_claims.ClaimsMap.role == permission.roles"
+endpointRules:
+  /api@get:
+    req-acc: [role]
+    permission: {roles: admin}
+  /api/{id}@get:
+    req-acc: [role]
+    permission: {roles: user}
+  /api/private@get:
+    req-acc: [role]
+    permission: {roles: owner}
+"#,
+        )
+        .unwrap();
+        let runtime = AccessControlRuntime::new(Some(AccessControlConfig::default()), rules);
+        for path in ["/api/private", "/api/123"] {
+            let key = runtime.resolve_http_policy(path, "GET").unwrap();
+            let decision = runtime
+                .authorize_http_endpoint(&key, &[], Some(&auth("admin")), &json!({}), None)
+                .await;
+            assert!(matches!(decision, AccessDecision::Denied(_)), "{path}");
+        }
+        let key = runtime
+            .resolve_http_policy("/api/123/child", "GET")
+            .unwrap();
+        assert_eq!(
+            runtime
+                .authorize_http_endpoint(&key, &[], Some(&auth("admin")), &json!({}), None)
+                .await,
+            AccessDecision::Allowed
+        );
     }
 
     #[test]

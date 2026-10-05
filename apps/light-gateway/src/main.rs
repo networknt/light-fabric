@@ -3723,8 +3723,9 @@ impl ProxyHttp for GatewayProxy {
     }
 
     fn prebuffered_request_body(&self, _session: &Session, ctx: &Self::CTX) -> Option<Bytes> {
-        ctx.hmac_verified_body
+        ctx.access_control_authorized_body
             .clone()
+            .or_else(|| ctx.hmac_verified_body.clone())
             .or_else(|| ctx.a2a_authorized_body.clone())
     }
 
@@ -4232,7 +4233,8 @@ impl ProxyHttp for GatewayProxy {
                     }
                 }
                 "access-control" => {
-                    let runtime = self.access_control.load();
+                    let runtime_snapshot = self.access_control.load();
+                    let runtime = &runtime_snapshot;
                     let Some(runtime) = runtime
                         .as_ref()
                         .as_ref()
@@ -4241,8 +4243,24 @@ impl ProxyHttp for GatewayProxy {
                         ctx.record_handler_duration(&handler_id, started.elapsed());
                         continue;
                     };
+                    let policy_endpoint =
+                        if ctx.a2a_decision.is_some() || is_portal_hybrid_path(&ctx.request_path) {
+                            ctx.endpoint.clone()
+                        } else {
+                            match runtime.resolve_http_policy(&ctx.request_path, &ctx.method) {
+                                Ok(endpoint) => endpoint,
+                                Err(message) => {
+                                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                                    return self
+                                        .write_string_response(session, ctx, 403, message)
+                                        .await;
+                                }
+                            }
+                        };
                     ctx.access_control_response_active =
-                        runtime.has_response_filter(ctx.endpoint.as_str());
+                        runtime.has_response_filter(&policy_endpoint);
+                    ctx.access_control_policy_endpoint = Some(policy_endpoint);
+                    ctx.access_control_runtime = Some(Arc::clone(&runtime_snapshot));
                     if request_header(session, "content-encoding").is_some()
                         && method_has_request_body(&method)
                     {
@@ -4259,14 +4277,96 @@ impl ProxyHttp for GatewayProxy {
                             )
                             .await;
                     }
-                    if method_has_request_body(&method) {
+                    let preauthorize_body = method_has_request_body(&method)
+                        && !is_portal_hybrid_path(&ctx.request_path)
+                        && ctx.a2a_decision.is_none()
+                        && !handler_ids
+                            .iter()
+                            .any(|id| matches!(id.as_str(), "llm" | "mcp"));
+                    let captured_body = if preauthorize_body {
+                        let mut body = if let Some(body) = ctx.hmac_verified_body.as_ref() {
+                            body.to_vec()
+                        } else {
+                            let Some(body) =
+                                read_bounded_request_body(session, ACCESS_CONTROL_MAX_BODY_SIZE)
+                                    .await?
+                            else {
+                                return self
+                                    .write_text_response(
+                                        session,
+                                        ctx,
+                                        413,
+                                        "access-control request body exceeds limit",
+                                    )
+                                    .await;
+                            };
+                            body
+                        };
+                        if body.len() > ACCESS_CONTROL_MAX_BODY_SIZE {
+                            return self
+                                .write_text_response(
+                                    session,
+                                    ctx,
+                                    413,
+                                    "access-control request body exceeds limit",
+                                )
+                                .await;
+                        }
+                        ctx.access_control_authorized_body = Some(Bytes::copy_from_slice(&body));
+                        if ctx.tokenize_active {
+                            let tokenizer = self.pii_tokenization.load();
+                            let tokenizer = tokenizer.as_ref().as_ref().ok_or_else(|| {
+                                Error::explain(
+                                    ErrorType::InternalError,
+                                    "pii tokenization is not configured",
+                                )
+                            })?;
+                            if body.len() > tokenizer.max_body_size() {
+                                return self
+                                    .write_text_response(
+                                        session,
+                                        ctx,
+                                        413,
+                                        "tokenize request body exceeds limit",
+                                    )
+                                    .await;
+                            }
+                            body = tokenizer
+                                .tokenize_request_body(
+                                    ctx.auth.as_ref(),
+                                    &ctx.request_path,
+                                    &ctx.method,
+                                    &body,
+                                )
+                                .await
+                                .map_err(handler_rejection_error)?;
+                            if body.len() > ACCESS_CONTROL_MAX_BODY_SIZE {
+                                return self
+                                    .write_text_response(
+                                        session,
+                                        ctx,
+                                        413,
+                                        "access-control request body exceeds limit",
+                                    )
+                                    .await;
+                            }
+                            ctx.access_control_tokenized_body = Some(Bytes::copy_from_slice(&body));
+                            ctx.tokenize_active = false;
+                        }
+                        Some(Bytes::from(body))
+                    } else {
+                        None
+                    };
+                    if method_has_request_body(&method) && !preauthorize_body {
                         ctx.access_control_active = true;
                     } else {
                         let exchange = access_control_exchange(
-                            ctx.endpoint.as_str(),
+                            ctx.access_control_policy_endpoint
+                                .as_deref()
+                                .unwrap_or(&ctx.endpoint),
                             ctx.request_path.as_str(),
                             session.req_header().uri.query(),
-                            None,
+                            captured_body.as_deref(),
                             ctx.auth.as_ref(),
                         )
                         .map_err(handler_rejection_error)?;
@@ -4285,6 +4385,8 @@ impl ProxyHttp for GatewayProxy {
                                     runtime.has_response_filter(exchange.endpoint.as_str());
                                 ctx.access_control_exchange = Some(exchange);
                                 ctx.access_control_response_active = has_response_filter;
+                                // Replay original bytes; a prior tokenization result is applied
+                                // after the exact-body guard in request_body_filter.
                             }
                             AccessDecision::Denied(message) => {
                                 warn!(
@@ -4684,14 +4786,19 @@ impl ProxyHttp for GatewayProxy {
                         };
                         if ctx.access_control_active {
                             let exchange = access_control_exchange(
-                                ctx.endpoint.as_str(),
+                                ctx.access_control_policy_endpoint
+                                    .as_deref()
+                                    .unwrap_or(&ctx.endpoint),
                                 ctx.request_path.as_str(),
                                 session.req_header().uri.query(),
                                 Some(body.as_slice()),
                                 ctx.auth.as_ref(),
                             )
                             .map_err(handler_rejection_error)?;
-                            let runtime = self.access_control.load();
+                            let runtime = ctx
+                                .access_control_runtime
+                                .clone()
+                                .unwrap_or_else(|| self.access_control.load());
                             let Some(runtime) = runtime
                                 .as_ref()
                                 .as_ref()
@@ -5655,8 +5762,9 @@ impl ProxyHttp for GatewayProxy {
         // only when terminal stream metrics are recorded.
         ctx.record_request_body_bytes(body.as_ref());
         if let Some(verified) = ctx
-            .hmac_verified_body
+            .access_control_authorized_body
             .as_ref()
+            .or(ctx.hmac_verified_body.as_ref())
             .or(ctx.a2a_authorized_body.as_ref())
         {
             if !end_of_stream || body.as_ref() != Some(verified) {
@@ -5665,6 +5773,9 @@ impl ProxyHttp for GatewayProxy {
                     "verified HMAC body was not re-injected as one exact final chunk",
                 ));
             }
+        }
+        if let Some(tokenized) = ctx.access_control_tokenized_body.as_ref() {
+            *body = Some(tokenized.clone());
         }
         if ctx.websocket_decision.is_some() && session.was_upgraded() {
             enforce_websocket_tunnel_limits(ctx, body)?;
@@ -5722,7 +5833,9 @@ impl ProxyHttp for GatewayProxy {
             if end_of_stream {
                 let input = std::mem::take(&mut ctx.access_control_request_body);
                 let exchange = access_control_exchange(
-                    ctx.endpoint.as_str(),
+                    ctx.access_control_policy_endpoint
+                        .as_deref()
+                        .unwrap_or(&ctx.endpoint),
                     ctx.request_path.as_str(),
                     session.req_header().uri.query(),
                     Some(input.as_slice()),
@@ -5748,7 +5861,10 @@ impl ProxyHttp for GatewayProxy {
                     *body = Some(Bytes::from(input));
                     return Ok(());
                 }
-                let runtime = self.access_control.load();
+                let runtime = ctx
+                    .access_control_runtime
+                    .clone()
+                    .unwrap_or_else(|| self.access_control.load());
                 let Some(runtime) = runtime
                     .as_ref()
                     .as_ref()
@@ -5874,7 +5990,10 @@ impl ProxyHttp for GatewayProxy {
                     );
                     return Err(access_control_response_filter_error());
                 };
-                let runtime = self.access_control.load();
+                let runtime = ctx
+                    .access_control_runtime
+                    .clone()
+                    .unwrap_or_else(|| self.access_control.load());
                 let Some(runtime) = runtime.as_ref().as_ref() else {
                     tracing::error!(
                         "access-control response filter runtime became unavailable while processing the request"
@@ -6313,6 +6432,10 @@ struct GatewayRequestContext {
     sidecar_request_bytes: usize,
     sidecar_response_bytes: usize,
     access_control_exchange: Option<AccessControlExchange>,
+    access_control_policy_endpoint: Option<String>,
+    access_control_authorized_body: Option<Bytes>,
+    access_control_tokenized_body: Option<Bytes>,
+    access_control_runtime: Option<Arc<Option<AccessControlRuntime>>>,
     upstream_status: Option<u16>,
     response_status: Option<u16>,
     rate_limit_headers: Option<RateLimitHeaders>,
@@ -6387,6 +6510,10 @@ impl Default for GatewayRequestContext {
             sidecar_request_bytes: 0,
             sidecar_response_bytes: 0,
             access_control_exchange: None,
+            access_control_policy_endpoint: None,
+            access_control_authorized_body: None,
+            access_control_tokenized_body: None,
+            access_control_runtime: None,
             upstream_status: None,
             response_status: None,
             rate_limit_headers: None,
@@ -6460,6 +6587,10 @@ impl GatewayRequestContext {
         self.sidecar_request_bytes = 0;
         self.sidecar_response_bytes = 0;
         self.access_control_exchange = None;
+        self.access_control_policy_endpoint = None;
+        self.access_control_authorized_body = None;
+        self.access_control_tokenized_body = None;
+        self.access_control_runtime = None;
         self.upstream_status = None;
         self.response_status = None;
         self.rate_limit_headers = None;
@@ -7976,6 +8107,7 @@ fn build_registered_gateway_handler(
 mod tests {
     include!("dual_token_tests.rs");
     include!("workflow_auth_tests.rs");
+    include!("http_acl_tests.rs");
     use super::*;
 
     #[test]

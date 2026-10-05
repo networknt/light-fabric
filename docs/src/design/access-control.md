@@ -39,6 +39,46 @@ access-control handler protects API endpoints in the normal handler chain.
   earlier security handler has already built the caller principal.
 - Do not push row or column filtering into business handlers.
 
+## HTTP routing and policy identity
+
+Handler selection and HTTP ACL resolution are independent. A handler route such
+as `/github/repos/*` selects a shared chain; it does not become an ACL grant.
+The Gateway retains its routing endpoint for router rewrites, metrics, LLM
+routing policy, and evidence. The access-control handler uses the original URI
+path without the query and the original HTTP method, captured before header,
+path, or upstream method rewriting. Verified caller claims remain the rule input.
+
+Ordinary HTTP policies resolve in this order:
+
+1. An exact path for that method wins, including over templates.
+2. A unique matching full-path `{parameter}` template wins over literal prefixes.
+   Multiple matching templates deny, even if one has longer parameter names or
+   more literals. Resolve overlap with an exact policy or disjoint templates.
+3. Existing literal parent-path policies retain longest-prefix semantics, with
+   a `/` boundary and the same method. They explicitly authorize descendants;
+   default-deny cannot make an endpoint unknown beneath such a configured grant.
+4. With no match, retain the concrete `path@method` identity and apply configured
+   `defaultDeny`. No wildcard handler fallback supplies permission.
+
+Methods compare case-insensitively; policies differing only in method case are
+ambiguous and deny. Ambiguity never falls back to a broader prefix or to
+`defaultDeny: false`. An exact policy resolves otherwise overlapping templates.
+Paths are case-sensitive and are not percent-decoded or canonicalized. Template
+aliases created by repeated/trailing slashes or dot segments deny; an explicitly
+registered exact spelling retains precedence. Encoded values remain opaque
+segments, including `%2F`; upstream decoding remains a deployment contract.
+`skipPathPrefixes` is checked against the original concrete identity and the
+selected policy, and disabled/skipped ACLs retain their shared request/response
+gates.
+
+The selected endpoint key and immutable ACL runtime generation are retained for
+request authorization and response filtering. Ordinary body-bearing proxy/router
+requests are bounded and authorized before upstream dispatch, then replayed
+through Pingora's existing prebuffered-body hook. Earlier tokenization is applied
+once before authorization, as in the former body-filter path. Portal command/query
+envelope decoding, MCP tool identities, A2A policy identities, and the MCP/LLM-owned
+body authorization paths keep their protocol-specific behavior.
+
 ## Handler Placement
 
 The access-control handler should run after authentication and before routing to
