@@ -34,6 +34,7 @@ url = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+light-pingora = { path = "../../frameworks/light-pingora", features = ["test-support"] }
 base64 = { workspace = true }
 futures-util = { workspace = true }
 h2 = "0.4"

@@ -405,6 +405,7 @@ struct GatewayProxy {
     hmac_runtime: Arc<ConfigManager<Option<HmacRuntime>>>,
     security_execution: Arc<ConfigManager<GatewaySecurityExecutionSnapshot>>,
     hmac_body_bytes: Arc<AtomicUsize>,
+    acl_body_bytes: Arc<AtomicUsize>,
     hmac_metrics: Arc<HmacMetricsRecorder>,
     rate_limit_runtime: Arc<ConfigManager<Option<RateLimitRuntime>>>,
     path_prefix_service_config: Arc<ConfigManager<Option<PathPrefixServiceConfig>>>,
@@ -591,9 +592,11 @@ impl HmacBodyPermit {
     }
 
     fn grow(&mut self, bytes: usize, limit: usize) -> Result<(), ()> {
-        let added = Self::acquire(Arc::clone(&self.used), bytes, limit)?;
+        let mut added = Self::acquire(Arc::clone(&self.used), bytes, limit)?;
         self.bytes = self.bytes.saturating_add(added.bytes);
-        std::mem::forget(added);
+        // Transfer the charge, not the Arc ownership. Forgetting the temporary
+        // permit leaked one counter reference on every streamed growth.
+        added.bytes = 0;
         Ok(())
     }
 }
@@ -1555,6 +1558,7 @@ impl GatewayProxy {
             hmac_runtime,
             security_execution,
             hmac_body_bytes: Arc::new(AtomicUsize::new(0)),
+            acl_body_bytes: Arc::new(AtomicUsize::new(0)),
             hmac_metrics: Arc::new(HmacMetricsRecorder::default()),
             rate_limit_runtime,
             path_prefix_service_config,
@@ -3442,19 +3446,37 @@ impl GatewayProxy {
         max_body_bytes: usize,
         max_buffered_body_bytes: usize,
     ) -> pingora::Result<Result<(Bytes, HmacBodyPermit), HmacCaptureFailure>> {
+        self.capture_body(
+            session,
+            max_body_bytes,
+            max_buffered_body_bytes,
+            Arc::clone(&self.hmac_body_bytes),
+        )
+        .await
+    }
+
+    async fn capture_body(
+        &self,
+        session: &mut Session,
+        max_body_bytes: usize,
+        max_buffered_body_bytes: usize,
+        budget: Arc<AtomicUsize>,
+    ) -> pingora::Result<Result<(Bytes, HmacBodyPermit), HmacCaptureFailure>> {
         let advertised = content_length(&session.req_header().headers);
         if advertised.is_some_and(|length| length > max_body_bytes) {
             return Ok(Err(HmacCaptureFailure::TooLarge));
         }
         let initial = advertised.unwrap_or(0);
-        let mut permit = match HmacBodyPermit::acquire(
-            Arc::clone(&self.hmac_body_bytes),
-            initial,
-            max_buffered_body_bytes,
-        ) {
+        let mut permit = match HmacBodyPermit::acquire(budget, initial, max_buffered_body_bytes) {
             Ok(permit) => permit,
             Err(()) => return Ok(Err(HmacCaptureFailure::BufferUnavailable)),
         };
+        // Header-only size/budget checks precede the interim response.
+        if request_header(session, "expect")
+            .is_some_and(|value| value.eq_ignore_ascii_case("100-continue"))
+        {
+            session.write_continue_response().await?;
+        }
         let mut output = BytesMut::with_capacity(initial);
         loop {
             let Some(chunk) = session.read_request_body().await? else {
@@ -3540,6 +3562,17 @@ impl GatewayProxy {
                 .map(Some);
         }
         let headers = session.req_header().headers.clone();
+        if runtime.validate_capture_headers(profile, &headers).is_err() {
+            self.hmac_metrics.request(profile, "invalid");
+            return self
+                .write_rejection_response(
+                    session,
+                    ctx,
+                    HandlerRejection::new(401, "ERR10001", "invalid webhook authentication"),
+                )
+                .await
+                .map(Some);
+        }
         let capture = timeout(
             Duration::from_millis(timeout_millis),
             self.capture_hmac_body(session, max_body_bytes, runtime.max_buffered_body_bytes()),
@@ -3836,6 +3869,24 @@ impl ProxyHttp for GatewayProxy {
         let resolved = active_handlers
             .resolve_handler_chain(&request_path, &method)
             .map_err(pingora_internal_error)?;
+        let guard_started = Instant::now();
+        if let Err(reason) =
+            active_handlers.check_http_acl_path(&request_path, &method, &resolved.handler_ids)
+        {
+            ctx.correlation
+                .correlation_id
+                .get_or_insert_with(|| uuid::Uuid::now_v7().to_string());
+            warn!(
+                method = method.as_str(),
+                correlation_id = ctx.correlation.correlation_id.as_deref().unwrap_or(""),
+                reason = reason.as_str(),
+                "access-control route guard denied request"
+            );
+            ctx.record_handler_duration("access-control-route-guard", guard_started.elapsed());
+            return self
+                .write_text_response(session, ctx, 400, "unsupported ACL path alias")
+                .await;
+        }
         ctx.handler_ids = resolved.handler_ids.clone();
         ctx.endpoint = resolved.endpoint(&request_path, &method);
         ctx.path_params = resolved
@@ -4104,11 +4155,13 @@ impl ProxyHttp for GatewayProxy {
                                     ctx.auth = outcome.principal;
                                 }
                                 if let Some(profile) = outcome.hmac_profile {
-                                    ctx.record_handler_duration(&handler_id, started.elapsed());
-                                    if let Some(response) = self
+                                    let result = self
                                         .enter_hmac_gate(session, ctx, "unified-security", &profile)
-                                        .await?
-                                    {
+                                        .await;
+                                    if !matches!(&result, Ok(None)) {
+                                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                                    }
+                                    if let Some(response) = result? {
                                         return Ok(response);
                                     }
                                 }
@@ -4129,8 +4182,8 @@ impl ProxyHttp for GatewayProxy {
                         .as_ref()
                         .and_then(|runtime| runtime.standalone_profile(&request_path, &method))
                         .map(str::to_string);
-                    ctx.record_handler_duration(&handler_id, started.elapsed());
                     let Some(profile) = profile else {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
                         self.hmac_metrics.request("unmatched", "chain_error");
                         return self
                             .write_rejection_response(
@@ -4140,9 +4193,11 @@ impl ProxyHttp for GatewayProxy {
                             )
                             .await;
                     };
-                    if let Some(response) =
-                        self.enter_hmac_gate(session, ctx, "hmac", &profile).await?
-                    {
+                    let result = self.enter_hmac_gate(session, ctx, "hmac", &profile).await;
+                    if !matches!(&result, Ok(None)) {
+                        ctx.record_handler_duration(&handler_id, started.elapsed());
+                    }
+                    if let Some(response) = result? {
                         return Ok(response);
                     }
                 }
@@ -4207,7 +4262,6 @@ impl ProxyHttp for GatewayProxy {
                                 )
                                 .await;
                         }
-                        session.req_header_mut().remove_header("content-length");
                         ctx.tokenize_active = true;
                     }
                 }
@@ -4250,6 +4304,20 @@ impl ProxyHttp for GatewayProxy {
                             match runtime.resolve_http_policy(&ctx.request_path, &ctx.method) {
                                 Ok(endpoint) => endpoint,
                                 Err(message) => {
+                                    // Resolver failures may precede a configured
+                                    // correlation handler. Correlate audit and
+                                    // terminal diagnostics without raw headers.
+                                    ctx.correlation
+                                        .correlation_id
+                                        .get_or_insert_with(|| uuid::Uuid::now_v7().to_string());
+                                    warn!(
+                                        endpoint = ctx.endpoint.as_str(),
+                                        method = ctx.method.as_str(),
+                                        correlation_id =
+                                            ctx.correlation.correlation_id.as_deref().unwrap_or(""),
+                                        reason = message.as_str(),
+                                        "access-control resolver denied request"
+                                    );
                                     ctx.record_handler_duration(&handler_id, started.elapsed());
                                     return self
                                         .write_string_response(session, ctx, 403, message)
@@ -4284,25 +4352,55 @@ impl ProxyHttp for GatewayProxy {
                             .iter()
                             .any(|id| matches!(id.as_str(), "llm" | "mcp"));
                     let captured_body = if preauthorize_body {
-                        let mut body = if let Some(body) = ctx.hmac_verified_body.as_ref() {
-                            body.to_vec()
+                        let (capture_timeout, capture_budget) = runtime.body_capture_limits();
+                        let original = if let Some(body) = ctx.hmac_verified_body.as_ref() {
+                            body.clone()
                         } else {
-                            let Some(body) =
-                                read_bounded_request_body(session, ACCESS_CONTROL_MAX_BODY_SIZE)
-                                    .await?
-                            else {
+                            let captured = tokio::time::timeout(
+                                Duration::from_millis(capture_timeout),
+                                self.capture_body(
+                                    session,
+                                    ACCESS_CONTROL_MAX_BODY_SIZE,
+                                    capture_budget,
+                                    Arc::clone(&self.acl_body_bytes),
+                                ),
+                            )
+                            .await;
+                            let (status, message) = match captured {
+                                Ok(Ok(Ok((body, permit)))) => {
+                                    ctx.access_control_body_permit = Some(permit);
+                                    (0, Some(body))
+                                }
+                                Ok(Ok(Err(HmacCaptureFailure::TooLarge))) => (413, None),
+                                Ok(Ok(Err(HmacCaptureFailure::BufferUnavailable))) => (503, None),
+                                Ok(Err(error)) => {
+                                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                                    return Err(error);
+                                }
+                                Err(_) => (408, None),
+                            };
+                            if let Some(body) = message {
+                                body
+                            } else {
+                                ctx.record_handler_duration(&handler_id, started.elapsed());
                                 return self
                                     .write_text_response(
                                         session,
                                         ctx,
-                                        413,
-                                        "access-control request body exceeds limit",
+                                        status,
+                                        match status {
+                                            413 => "access-control request body exceeds limit",
+                                            503 => {
+                                                "access-control buffered body budget unavailable"
+                                            }
+                                            _ => "access-control request body capture timed out",
+                                        },
                                     )
                                     .await;
-                            };
-                            body
+                            }
                         };
-                        if body.len() > ACCESS_CONTROL_MAX_BODY_SIZE {
+                        if original.len() > ACCESS_CONTROL_MAX_BODY_SIZE {
+                            ctx.record_handler_duration(&handler_id, started.elapsed());
                             return self
                                 .write_text_response(
                                     session,
@@ -4312,7 +4410,8 @@ impl ProxyHttp for GatewayProxy {
                                 )
                                 .await;
                         }
-                        ctx.access_control_authorized_body = Some(Bytes::copy_from_slice(&body));
+                        ctx.access_control_authorized_body = Some(original.clone());
+                        let mut body = original;
                         if ctx.tokenize_active {
                             let tokenizer = self.pii_tokenization.load();
                             let tokenizer = tokenizer.as_ref().as_ref().ok_or_else(|| {
@@ -4322,6 +4421,7 @@ impl ProxyHttp for GatewayProxy {
                                 )
                             })?;
                             if body.len() > tokenizer.max_body_size() {
+                                ctx.record_handler_duration(&handler_id, started.elapsed());
                                 return self
                                     .write_text_response(
                                         session,
@@ -4331,7 +4431,27 @@ impl ProxyHttp for GatewayProxy {
                                     )
                                     .await;
                             }
-                            body = tokenizer
+                            let transformed_limit =
+                                tokenizer.max_body_size().min(ACCESS_CONTROL_MAX_BODY_SIZE);
+                            let mut transformed_permit = match HmacBodyPermit::acquire(
+                                Arc::clone(&self.acl_body_bytes),
+                                transformed_limit,
+                                capture_budget,
+                            ) {
+                                Ok(permit) => permit,
+                                Err(()) => {
+                                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                                    return self
+                                        .write_text_response(
+                                            session,
+                                            ctx,
+                                            503,
+                                            "access-control transformed body budget unavailable",
+                                        )
+                                        .await;
+                                }
+                            };
+                            body = match tokenizer
                                 .tokenize_request_body(
                                     ctx.auth.as_ref(),
                                     &ctx.request_path,
@@ -4339,21 +4459,43 @@ impl ProxyHttp for GatewayProxy {
                                     &body,
                                 )
                                 .await
-                                .map_err(handler_rejection_error)?;
-                            if body.len() > ACCESS_CONTROL_MAX_BODY_SIZE {
+                            {
+                                Ok(body) => Bytes::from(body),
+                                Err(rejection) => {
+                                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                                    return self
+                                        .write_rejection_response(session, ctx, rejection)
+                                        .await;
+                                }
+                            };
+                            if body.len() > transformed_limit {
+                                ctx.record_handler_duration(&handler_id, started.elapsed());
                                 return self
                                     .write_text_response(
                                         session,
                                         ctx,
                                         413,
-                                        "access-control request body exceeds limit",
+                                        "tokenized request body exceeds limit",
                                     )
                                     .await;
                             }
-                            ctx.access_control_tokenized_body = Some(Bytes::copy_from_slice(&body));
+                            let released = transformed_permit.bytes - body.len();
+                            transformed_permit
+                                .used
+                                .fetch_sub(released, Ordering::AcqRel);
+                            transformed_permit.bytes = body.len();
+                            if let Some(mut original_permit) = ctx.access_control_body_permit.take()
+                            {
+                                original_permit.bytes += transformed_permit.bytes;
+                                transformed_permit.bytes = 0;
+                                ctx.access_control_body_permit = Some(original_permit);
+                            } else {
+                                ctx.access_control_body_permit = Some(transformed_permit);
+                            }
+                            ctx.access_control_tokenized_body = Some(body.clone());
                             ctx.tokenize_active = false;
                         }
-                        Some(Bytes::from(body))
+                        Some(body)
                     } else {
                         None
                     };
@@ -5678,8 +5820,31 @@ impl ProxyHttp for GatewayProxy {
                 rewrite_upstream_path(upstream_request, &target.path_prefix)?;
             }
         }
-        if ctx.access_control_active || ctx.access_control_response_active {
+        if ctx.access_control_active || ctx.access_control_response_active || ctx.detokenize_active
+        {
             upstream_request.remove_header("accept-encoding");
+        }
+        // Never alter downstream framing before its body reader is initialized.
+        // Cached transformation has an exact upstream length; deferred complete-
+        // body transformation retains the existing unknown-length semantics.
+        if let Some(tokenized) = ctx.access_control_tokenized_body.as_ref() {
+            upstream_request.remove_header("transfer-encoding");
+            upstream_request.insert_header("content-length", tokenized.len().to_string())?;
+        } else if ctx.tokenize_active {
+            upstream_request.remove_header("content-length");
+            // This hook runs after Pingora has selected the actual upstream
+            // protocol (including HTTP/2 fallback). Transformation changes the
+            // length, so HTTP/1.1 needs chunks; HTTP/2 uses DATA frames.
+            upstream_request.remove_header("transfer-encoding");
+            if session.is_body_empty() {
+                upstream_request.insert_header("content-length", "0")?;
+            } else if upstream_request.version == http::Version::HTTP_11 {
+                upstream_request.insert_header("transfer-encoding", "chunked")?;
+            } else if upstream_request.version != http::Version::HTTP_2 {
+                return Err(pingora_internal_error(RuntimeError::Config(
+                    "deferred tokenization requires HTTP/1.1 or HTTP/2 upstream framing".into(),
+                )));
+            }
         }
         if self.request_handler_active(ctx, model_provider_sidecar::SIDECAR_IDENTITY_HANDLER) {
             model_provider_sidecar::apply_sidecar_upstream_headers(upstream_request)
@@ -5767,10 +5932,14 @@ impl ProxyHttp for GatewayProxy {
             .or(ctx.hmac_verified_body.as_ref())
             .or(ctx.a2a_authorized_body.as_ref())
         {
-            if !end_of_stream || body.as_ref() != Some(verified) {
+            if !end_of_stream
+                || body
+                    .as_ref()
+                    .map_or(!verified.is_empty(), |body| body != verified)
+            {
                 return Err(Error::explain(
                     ErrorType::InternalError,
-                    "verified HMAC body was not re-injected as one exact final chunk",
+                    "captured request body (ACL/HMAC/A2A) was not replayed as one exact final chunk",
                 ));
             }
         }
@@ -6137,6 +6306,7 @@ impl ProxyHttp for GatewayProxy {
             self.release_hmac_reservation(ctx).await;
         }
         ctx.hmac_body_permit = None;
+        ctx.access_control_body_permit = None;
         if error.is_some() {
             self.record_metrics(ctx, 500);
         }
@@ -6434,6 +6604,7 @@ struct GatewayRequestContext {
     access_control_exchange: Option<AccessControlExchange>,
     access_control_policy_endpoint: Option<String>,
     access_control_authorized_body: Option<Bytes>,
+    access_control_body_permit: Option<HmacBodyPermit>,
     access_control_tokenized_body: Option<Bytes>,
     access_control_runtime: Option<Arc<Option<AccessControlRuntime>>>,
     upstream_status: Option<u16>,
@@ -6512,6 +6683,7 @@ impl Default for GatewayRequestContext {
             access_control_exchange: None,
             access_control_policy_endpoint: None,
             access_control_authorized_body: None,
+            access_control_body_permit: None,
             access_control_tokenized_body: None,
             access_control_runtime: None,
             upstream_status: None,
@@ -6589,6 +6761,7 @@ impl GatewayRequestContext {
         self.access_control_exchange = None;
         self.access_control_policy_endpoint = None;
         self.access_control_authorized_body = None;
+        self.access_control_body_permit = None;
         self.access_control_tokenized_body = None;
         self.access_control_runtime = None;
         self.upstream_status = None;
@@ -7676,9 +7849,7 @@ fn validate_hmac_chain(
             .or_else(|| unified_positions.first().copied())
             .expect("validated HMAC entry point");
         let router = chain.iter().position(|id| id == "router").ok_or_else(|| {
-            RuntimeError::Config(format!(
-                "HMAC route `{location}` must use a proxy/router chain"
-            ))
+            RuntimeError::Config(format!("HMAC route `{location}` must use a router chain"))
         })?;
         if entry >= router {
             return Err(RuntimeError::Config(format!(
@@ -7694,6 +7865,17 @@ fn validate_hmac_effective_chains(
     hmac: Option<&HmacRuntime>,
     unified: Option<&UnifiedSecurityConfig>,
 ) -> Result<(), RuntimeError> {
+    validate_body_handler_chain(
+        "default",
+        &active_handlers.materialized_default_handler_ids()?,
+    )?;
+    for path in &active_handlers.config().paths {
+        validate_body_handler_chain_for_method(
+            &format!("{}@{}", path.path, path.method),
+            &active_handlers.materialized_path_handler_ids(path)?,
+            &path.method,
+        )?;
+    }
     let representative_methods = [
         "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD", "TRACE", "CONNECT",
     ]
@@ -7752,20 +7934,31 @@ fn validate_hmac_effective_chains(
     for path in &active_handlers.config().paths {
         let request_path = hmac_handler_path_probe(path.path.as_str());
         let chain = active_handlers.materialized_path_handler_ids(path)?;
-        let standalone_profile =
-            hmac.and_then(|runtime| runtime.standalone_profile(&request_path, &path.method));
-        let composed_profile =
-            unified.and_then(|config| config.hmac_profile_for(&request_path, &path.method));
-        if standalone_profile.is_some()
-            || composed_profile.is_some()
-            || chain.iter().any(|id| id == "hmac")
-        {
-            validate_hmac_chain(
-                format!("{}@{}", path.path, path.method.to_ascii_lowercase()).as_str(),
-                &chain,
-                standalone_profile,
-                composed_profile,
-            )?;
+        let methods = if path.method == "*" {
+            representative_methods
+                .iter()
+                .filter(|m| m.as_str() != "*")
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            vec![path.method.clone()]
+        };
+        for method in methods {
+            let standalone_profile =
+                hmac.and_then(|runtime| runtime.standalone_profile(&request_path, &method));
+            let composed_profile =
+                unified.and_then(|config| config.hmac_profile_for(&request_path, &method));
+            if standalone_profile.is_some()
+                || composed_profile.is_some()
+                || chain.iter().any(|id| id == "hmac")
+            {
+                validate_hmac_chain(
+                    format!("{}@{}", path.path, method.to_ascii_lowercase()).as_str(),
+                    &chain,
+                    standalone_profile,
+                    composed_profile,
+                )?;
+            }
         }
     }
     let default_chain = active_handlers.materialized_default_handler_ids()?;
@@ -7778,6 +7971,51 @@ fn validate_hmac_effective_chains(
                 hmac.and_then(|runtime| runtime.standalone_profile("/", method)),
                 unified.and_then(|config| config.hmac_profile_for("/", method)),
             )?;
+        }
+    }
+    Ok(())
+}
+
+// Buffered ACL chains must observe the intended transformed body and may not
+// consume the original stream before a later HMAC gate.
+fn validate_body_handler_chain(endpoint: &str, chain: &[String]) -> Result<(), RuntimeError> {
+    validate_body_handler_chain_for_method(endpoint, chain, "*")
+}
+
+fn validate_body_handler_chain_for_method(
+    endpoint: &str,
+    chain: &[String],
+    method: &str,
+) -> Result<(), RuntimeError> {
+    let position = |id: &str| chain.iter().position(|handler| handler == id);
+    if let Some(acl) = position("access-control") {
+        if !matches!(method.to_ascii_uppercase().as_str(), "GET" | "HEAD")
+            && position("tokenize").is_some_and(|tokenize| tokenize > acl)
+        {
+            return Err(RuntimeError::Config(format!(
+                "{endpoint}: tokenize must precede access-control so ACL evaluates transformed bytes"
+            )));
+        }
+        if position("hmac").is_some_and(|hmac| hmac > acl)
+            || ["security", "jwt", "unified-security", "unified"]
+                .iter()
+                .any(|id| position(id).is_some_and(|security| security > acl))
+        {
+            return Err(RuntimeError::Config(format!(
+                "{endpoint}: hmac/security must precede body-capturing access-control; original bytes must be authenticated before ACL capture"
+            )));
+        }
+    }
+    if let (Some(tokenize), Some(hmac)) = (
+        position("tokenize"),
+        position("hmac")
+            .or(position("unified-security"))
+            .or(position("unified")),
+    ) {
+        if tokenize < hmac {
+            return Err(RuntimeError::Config(format!(
+                "{endpoint}: hmac must precede tokenize to verify original bytes"
+            )));
         }
     }
     Ok(())
@@ -10950,6 +11188,7 @@ replayStores:
         let mut first = HmacBodyPermit::acquire(Arc::clone(&used), 5, 8).expect("first permit");
         assert!(HmacBodyPermit::acquire(Arc::clone(&used), 4, 8).is_err());
         first.grow(3, 8).expect("grow to budget boundary");
+        assert_eq!(Arc::strong_count(&used), 2);
         assert_eq!(used.load(Ordering::Acquire), 8);
         drop(first);
         assert_eq!(used.load(Ordering::Acquire), 0);
@@ -13906,4 +14145,444 @@ endpointRules:
         );
     }
     include!("mcp_conformance_tests.rs");
+    #[test]
+    fn http_acl_review_body_handler_order_contract() {
+        for chain in [
+            vec![
+                "security",
+                "tokenize",
+                "access-control",
+                "detokenize",
+                "proxy",
+            ],
+            vec!["hmac", "security", "tokenize", "access-control", "proxy"],
+            vec!["security", "access-control", "proxy"],
+        ] {
+            validate_body_handler_chain(
+                "/test@post",
+                &chain.into_iter().map(str::to_owned).collect::<Vec<_>>(),
+            )
+            .unwrap();
+        }
+        for (chain, diagnostic) in [
+            (
+                vec!["security", "access-control", "tokenize", "proxy"],
+                "tokenize must precede",
+            ),
+            (
+                vec!["access-control", "hmac", "proxy"],
+                "hmac/security must precede",
+            ),
+            (
+                vec!["access-control", "security", "proxy"],
+                "hmac/security must precede",
+            ),
+            (
+                vec!["tokenize", "hmac", "access-control", "proxy"],
+                "hmac must precede",
+            ),
+        ] {
+            let error = validate_body_handler_chain(
+                "/test@post",
+                &chain.into_iter().map(str::to_owned).collect::<Vec<_>>(),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains(diagnostic), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn http_acl_r3_invalid_protected_routes_fail_load_and_reload() {
+        let local = TempDir::new().unwrap();
+        let external = TempDir::new().unwrap();
+        let handler = |path: &str, acl: bool| {
+            format!(
+                "handlers: [access-control, proxy]\npaths:\n  - path: '{path}'\n    method: GET\n    exec: [{}proxy]\ndefaultHandlers: [proxy]\n",
+                if acl { "access-control, " } else { "" }
+            )
+        };
+        std::fs::write(
+            local.path().join("handler.yml"),
+            handler("/strict/private", true),
+        )
+        .unwrap();
+        let config = runtime_config(&local, &external, HashMap::new());
+        let proxy = GatewayProxy::from_runtime_config(&config).unwrap();
+        let pinned = proxy.active_handlers.load();
+        for path in [
+            "/strict//private",
+            "/strict/%2Fprivate",
+            "/strict/%252Fprivate",
+            "/strict/..",
+            "/strict/private;x=1",
+            "/strict/private%3Bx=1",
+        ] {
+            std::fs::write(external.path().join("handler.yml"), handler(path, true)).unwrap();
+            let candidate = config.reload_context().await.unwrap();
+            let result = config
+                .module_registry
+                .reload_modules(candidate, &[light_pingora::HANDLER_MODULE_ID.to_owned()])
+                .await;
+            assert!(!result.failed.is_empty(), "{path}");
+            assert_eq!(
+                proxy.active_handlers.load().config().paths[0].path,
+                "/strict/private"
+            );
+            assert_eq!(pinned.config().paths[0].path, "/strict/private");
+            let error = GatewayProxy::from_runtime_config(&runtime_config(
+                &local,
+                &external,
+                HashMap::new(),
+            ))
+            .err()
+            .expect("invalid ACL route must reject load")
+            .to_string();
+            assert!(
+                error.contains("ACL handler route") && error.contains("unsupported path syntax"),
+                "{error}"
+            );
+            // Unprotected routes keep legacy raw matching, so there is no
+            // canonicalization failure to silently fall through.
+            std::fs::write(external.path().join("handler.yml"), handler(path, false)).unwrap();
+            let raw = GatewayProxy::from_runtime_config(&runtime_config(
+                &local,
+                &external,
+                HashMap::new(),
+            ))
+            .unwrap();
+            assert_eq!(
+                raw.active_handlers
+                    .load()
+                    .resolve_handler_ids(path, "GET")
+                    .unwrap(),
+                vec!["proxy"]
+            );
+        }
+        for path in [
+            "/strict%2Fprivate",
+            "/%73trict/private",
+            "/strict/%252e%252e/strict/private",
+        ] {
+            let raw = pinned.resolve_handler_ids(path, "GET").unwrap();
+            assert!(
+                pinned.check_http_acl_path(path, "GET", &raw).is_err(),
+                "{path}"
+            );
+        }
+        std::fs::write(external.path().join("handler.yml"), "handlers: [access-control, proxy]\npaths:\n  - {path: '/api/{id}', method: GET, exec: [proxy]}\n  - {path: '/api/*', method: GET, exec: [access-control, proxy]}\ndefaultHandlers: [proxy]\n").unwrap();
+        let routes =
+            GatewayProxy::from_runtime_config(&runtime_config(&local, &external, HashMap::new()))
+                .unwrap();
+        let active = routes.active_handlers.load();
+        let ids = active.resolve_handler_ids("/api/x%2Fy", "GET").unwrap();
+        assert_eq!(ids, vec!["proxy"]);
+        assert!(
+            active
+                .check_http_acl_path("/api/x%2Fy", "GET", &ids)
+                .is_err()
+        );
+        assert!(
+            active
+                .check_http_acl_path("/api/%73afe", "GET", &ids)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn http_acl_r4_semicolon_alias_guard_and_configuration_rejection() {
+        let local = TempDir::new().unwrap();
+        let external = TempDir::new().unwrap();
+        std::fs::write(local.path().join("handler.yml"), "handlers: [access-control, proxy]\npaths:\n  - {path: /strict/private, method: GET, exec: [access-control, proxy]}\n  - {path: /api/*, method: GET, exec: [access-control, proxy]}\ndefaultHandlers: [proxy]\n").unwrap();
+        let proxy =
+            GatewayProxy::from_runtime_config(&runtime_config(&local, &external, HashMap::new()))
+                .unwrap();
+        let active = proxy.active_handlers.load();
+        for path in [
+            "/strict/private;x=1",
+            "/strict;x=1/private",
+            "/strict/private%3Bx=1",
+            "/strict/private%253Bx=1",
+            "/api/private;x",
+            "/api/private%3bx",
+        ] {
+            let ids = active.resolve_handler_ids(path, "GET").unwrap();
+            assert!(
+                active.check_http_acl_path(path, "GET", &ids).is_err(),
+                "{path}"
+            );
+        }
+        let ids = active.resolve_handler_ids("/open/a;x=1", "GET").unwrap();
+        active
+            .check_http_acl_path("/open/a;x=1", "GET", &ids)
+            .unwrap();
+        for path in ["/open%2Fprivate", "/open/private;x=1", "/open/%70rivate/"] {
+            std::fs::write(local.path().join("handler.yml"), format!("handlers: [access-control, proxy]\npaths:\n  - {{path: '{path}', method: GET, exec: [proxy]}}\ndefaultHandlers: [access-control, proxy]\n")).unwrap();
+            let error = GatewayProxy::from_runtime_config(&runtime_config(
+                &local,
+                &external,
+                HashMap::new(),
+            ))
+            .err()
+            .expect("unreachable alias route must fail load")
+            .to_string();
+            assert!(
+                error.contains("unprotected handler route") && error.contains("alias"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn http_acl_r3_base_path_and_default_chain_alias_guard() {
+        let local = TempDir::new().unwrap();
+        let external = TempDir::new().unwrap();
+        for (config_text, path) in [(
+            "handlers: [access-control, proxy]\nbasePath: /tenant/%61pi\npaths:\n  - {path: /private, method: GET, exec: [access-control, proxy]}\ndefaultHandlers: [proxy]\n",
+            "/tenant/api/private",
+        )] {
+            std::fs::write(local.path().join("handler.yml"), config_text).unwrap();
+            let proxy = GatewayProxy::from_runtime_config(&runtime_config(
+                &local,
+                &external,
+                HashMap::new(),
+            ))
+            .unwrap();
+            let active = proxy.active_handlers.load();
+            let ids = active.resolve_handler_ids(path, "GET").unwrap();
+            assert_eq!(ids, vec!["proxy"]);
+            assert!(active.check_http_acl_path(path, "GET", &ids).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn http_acl_r4_alias_configuration_overlap_methods_and_reload() {
+        let local = TempDir::new().unwrap();
+        let external = TempDir::new().unwrap();
+        let valid = "handlers: [access-control, proxy]\npaths:\n  - {path: /strict/private, method: GET, exec: [access-control, proxy]}\ndefaultHandlers: [proxy]\n";
+        std::fs::write(local.path().join("handler.yml"), valid).unwrap();
+        let config = runtime_config(&local, &external, HashMap::new());
+        let proxy = GatewayProxy::from_runtime_config(&config).unwrap();
+        let pinned = proxy.active_handlers.load();
+        for path in ["/strict%2Fprivate", "/strict/private;x=1", "/strict%2F{id}"] {
+            let text = format!(
+                "handlers: [access-control, proxy]\npaths:\n  - {{path: '{path}', method: GET, exec: [proxy]}}\n  - {{path: /strict/private, method: GET, exec: [access-control, proxy]}}\ndefaultHandlers: [proxy]\n"
+            );
+            std::fs::write(external.path().join("handler.yml"), &text).unwrap();
+            let error = GatewayProxy::from_runtime_config(&runtime_config(
+                &local,
+                &external,
+                HashMap::new(),
+            ))
+            .err()
+            .expect("overlapping alias must fail load")
+            .to_string();
+            assert!(
+                error.contains(path) && error.contains("unprotected handler route"),
+                "{error}"
+            );
+            let candidate = config.reload_context().await.unwrap();
+            let result = config
+                .module_registry
+                .reload_modules(candidate, &[light_pingora::HANDLER_MODULE_ID.to_owned()])
+                .await;
+            assert!(!result.failed.is_empty(), "{path}");
+            assert_eq!(
+                proxy.active_handlers.load().config().paths[0].path,
+                "/strict/private"
+            );
+            assert_eq!(pinned.config().paths[0].path, "/strict/private");
+            // Method isolation: an alias on POST does not overlap GET's ACL.
+            std::fs::write(
+                external.path().join("handler.yml"),
+                text.replacen("method: GET", "method: POST", 1),
+            )
+            .unwrap();
+            let other_method = GatewayProxy::from_runtime_config(&runtime_config(
+                &local,
+                &external,
+                HashMap::new(),
+            ))
+            .unwrap();
+            let active = other_method.active_handlers.load();
+            let request = path.replace("{id}", "private");
+            let ids = active.resolve_handler_ids(&request, "POST").unwrap();
+            active.check_http_acl_path(&request, "POST", &ids).unwrap();
+        }
+        // A prior unprotected wildcard fully covers the alias view; no route
+        // silently disappears and ordinary raw matching remains compatible.
+        std::fs::write(external.path().join("handler.yml"), "handlers: [access-control, proxy]\npaths:\n  - {path: '/open/*', method: GET, exec: [proxy]}\n  - {path: '/open%2Fprivate', method: GET, exec: [proxy]}\ndefaultHandlers: [access-control, proxy]\n").unwrap();
+        let safe =
+            GatewayProxy::from_runtime_config(&runtime_config(&local, &external, HashMap::new()))
+                .unwrap();
+        let active = safe.active_handlers.load();
+        let ids = active
+            .resolve_handler_ids("/open%2Fprivate", "GET")
+            .unwrap();
+        active
+            .check_http_acl_path("/open%2Fprivate", "GET", &ids)
+            .unwrap();
+    }
+
+    #[test]
+    fn http_acl_review_method_aware_order_and_router_contract() {
+        let chain = ["security", "access-control", "tokenize", "router"].map(str::to_owned);
+        for method in ["GET", "HEAD", "get"] {
+            validate_body_handler_chain_for_method("/test", &chain, method).unwrap();
+        }
+        for method in ["POST", "DELETE", "*"] {
+            assert!(validate_body_handler_chain_for_method("/test", &chain, method).is_err());
+        }
+        // This validator intentionally does not expand stateless/token/basic
+        // authentication behavior. Only the existing recognized gates apply.
+        let chain = ["access-control", "stateless", "token", "router"].map(str::to_owned);
+        validate_body_handler_chain_for_method("/test", &chain, "GET").unwrap();
+        assert!(
+            validate_hmac_chain(
+                "/test",
+                &["hmac".into(), "proxy".into()],
+                Some("fixture"),
+                None
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("router chain")
+        );
+        validate_hmac_chain(
+            "/test",
+            &["hmac".into(), "router".into()],
+            Some("fixture"),
+            None,
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn http_acl_review_permit_released_on_timeout_and_cancellation() {
+        let used = Arc::new(AtomicUsize::new(0));
+        let permit = HmacBodyPermit::acquire(Arc::clone(&used), 8, 8).unwrap();
+        let result = tokio::time::timeout(Duration::from_millis(1), async move {
+            let _permit = permit;
+            std::future::pending::<()>().await;
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(used.load(Ordering::Acquire), 0);
+        let permit = HmacBodyPermit::acquire(Arc::clone(&used), 8, 8).unwrap();
+        let task = tokio::spawn(async move {
+            let _permit = permit;
+            std::future::pending::<()>().await;
+        });
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(used.load(Ordering::Acquire), 0);
+    }
+    #[tokio::test]
+    async fn http_acl_review_reload_rejection_retains_active_and_pinned_policy() {
+        let config_dir = TempDir::new().unwrap();
+        let external_dir = TempDir::new().unwrap();
+        std::fs::write(config_dir.path().join("handler.yml"), "handlers: [access-control, proxy]\npaths: []\ndefaultHandlers: [access-control, proxy]\n").unwrap();
+        std::fs::write(
+            config_dir.path().join("access-control.yml"),
+            "enabled: true\ndefaultDeny: false\n",
+        )
+        .unwrap();
+        let rules = r#"ruleBodies:
+  columns:
+    ruleId: columns
+    ruleName: Columns
+    ruleType: res-fil
+    common: Y
+    actions:
+      - actionClassName: com.networknt.rule.ResponseColumnFilterAction
+endpointRules:
+  /api/{id}@get:
+    permission:
+      col: {role: {admin: '["id"]'}}
+    res-fil: [columns]
+"#;
+        std::fs::write(config_dir.path().join("rule.yml"), rules).unwrap();
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let proxy = GatewayProxy::from_runtime_config(&config).unwrap();
+        let pinned = proxy.access_control.load();
+        let old = pinned.as_ref().as_ref().unwrap();
+        let selected = old.resolve_http_policy("/api/725", "GET").unwrap();
+        assert_eq!(selected, "/api/{id}@get");
+        let old_revision = old.policy_revision();
+        std::fs::write(
+            external_dir.path().join("rule.yml"),
+            "endpointRules:\n  /api/*@get: {}\n",
+        )
+        .unwrap();
+        let rejected = config
+            .module_registry
+            .reload_modules(
+                config.reload_context().await.unwrap(),
+                &[light_pingora::RULE_MODULE_ID.to_string()],
+            )
+            .await;
+        assert_eq!(rejected.failed.len(), 1);
+        assert!(rejected.failed[0].message.contains("wildcard ACL"));
+        assert_eq!(
+            proxy
+                .access_control
+                .load()
+                .as_ref()
+                .as_ref()
+                .unwrap()
+                .policy_revision(),
+            old_revision
+        );
+        std::fs::write(
+            external_dir.path().join("rule.yml"),
+            "endpointRules:\n  /other@get: {}\n",
+        )
+        .unwrap();
+        let reloaded = config
+            .module_registry
+            .reload_modules(
+                config.reload_context().await.unwrap(),
+                &[light_pingora::RULE_MODULE_ID.to_string()],
+            )
+            .await;
+        assert!(reloaded.failed.is_empty(), "{:?}", reloaded.failed);
+        assert!(!reloaded.reloaded.is_empty());
+        assert_ne!(
+            proxy
+                .access_control
+                .load()
+                .as_ref()
+                .as_ref()
+                .unwrap()
+                .policy_revision(),
+            old_revision
+        );
+        let principal = AuthPrincipal {
+            role: Some("admin".into()),
+            claims: json!({"role":"admin"}),
+            ..Default::default()
+        };
+        assert_eq!(
+            old.authorize_http_endpoint(&selected, &[], Some(&principal), &json!({}), None)
+                .await,
+            AccessDecision::Allowed
+        );
+        let filtered = old
+            .filter_http_response(
+                &selected,
+                &[],
+                Some(&principal),
+                &json!({}),
+                None,
+                200,
+                br#"{"id":725,"secret":"removed"}"#,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<JsonValue>(&filtered.unwrap()).unwrap(),
+            json!({"id":725})
+        );
+        assert_eq!(old.policy_revision(), old_revision);
+    }
 }

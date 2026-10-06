@@ -90,7 +90,8 @@ pub use handler::{
     ActiveHandlerSet, HANDLER_CONFIG_NAME, HANDLER_FILE, HANDLER_LEGACY_FILE, HANDLER_MODULE_ID,
     HandlerBuildContext, HandlerChain, HandlerConfig, HandlerMetricsLogLevel, HandlerModuleConfig,
     HandlerPath, PathMatch, PingoraHandler, PingoraHandlerDescriptor, PingoraHandlerFactory,
-    PingoraHandlerKind, PingoraHandlerRegistry, ResolvedHandlerChain, load_active_handlers,
+    PingoraHandlerKind, PingoraHandlerRegistry, ResolvedHandlerChain, canonical_http_path,
+    load_active_handlers,
 };
 pub use header::{
     HEADER_CONFIG_NAME, HEADER_FILE, HEADER_MODULE_ID, HeaderConfig, HeaderMutation,

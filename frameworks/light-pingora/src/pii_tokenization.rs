@@ -185,6 +185,52 @@ impl fmt::Debug for PiiTokenizationRuntime {
 }
 
 impl PiiTokenizationRuntime {
+    /// Disconnected, cache-only fixture for cross-crate handler composition tests.
+    /// Missing cache entries fail against an unreachable pool; no test can
+    /// silently obtain tokens from a shared database.
+    #[cfg(feature = "test-support")]
+    pub async fn cached_test_fixture(
+        config: PiiTokenizationConfig,
+        host_id: Uuid,
+        seeds: &[(TokenScheme, &str, &str)],
+    ) -> Result<Self, RuntimeError> {
+        let rules = compile_rules(&config)?;
+        let keyring = Arc::new(PiiKeyring::from_config(&config.crypto)?);
+        let cache = Arc::new(PiiTokenCache::new(&config.cache));
+        for (scheme, value, token) in seeds {
+            cache
+                .insert_token(
+                    ValueCacheKey {
+                        host_id,
+                        scheme_id: scheme.id(),
+                        value_hash: keyring.value_hash(host_id, scheme.id(), value),
+                    },
+                    (*token).into(),
+                )
+                .await;
+            cache
+                .insert_cleartext(
+                    TokenCacheKey {
+                        host_id,
+                        token: (*token).into(),
+                    },
+                    (*value).into(),
+                )
+                .await;
+        }
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(100))
+            .connect_lazy("postgres://fixture@127.0.0.1:1/disconnected")
+            .map_err(|error| RuntimeError::Config(error.to_string()))?;
+        Ok(Self {
+            config: Arc::new(config),
+            pool,
+            keyring,
+            cache,
+            rules: Arc::new(rules),
+        })
+    }
+
     pub fn config(&self) -> &PiiTokenizationConfig {
         &self.config
     }

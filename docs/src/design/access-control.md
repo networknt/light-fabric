@@ -63,11 +63,51 @@ Ordinary HTTP policies resolve in this order:
 Methods compare case-insensitively; policies differing only in method case are
 ambiguous and deny. Ambiguity never falls back to a broader prefix or to
 `defaultDeny: false`. An exact policy resolves otherwise overlapping templates.
-Paths are case-sensitive and are not percent-decoded or canonicalized. Template
-aliases created by repeated/trailing slashes or dot segments deny; an explicitly
-registered exact spelling retains precedence. Encoded values remain opaque
-segments, including `%2F`; upstream decoding remains a deployment contract.
-`skipPathPrefixes` is checked against the original concrete identity and the
+Paths remain case-sensitive. Gateway preserves the received URI: routing uses
+legacy raw matching and forwarding retains punctuation, escapes, repeated and
+trailing slashes, apart from existing configured routing rewrites. There is no ingress rewrite or new path-signing requirement.
+Ordinary HTTP ACL lookup uses a separate policy identity: decode one level,
+validate UTF-8, retain URI segment characters, and use uppercase escapes for
+space/UTF-8 data. Encoded unreserved aliases select their stricter exact policy.
+A single trailing slash is equivalent for policy lookup only; the wire slash
+remains, preserving directory redirects and signed paths.
+
+On a chain containing access-control, ambiguous separators, dot segments,
+malformed escapes, ASCII controls, invalid UTF-8, decoded percent signs and
+repeated slashes reject. Literal or encoded semicolons also reject on these
+chains: some upstream routers strip segment path parameters, which could let
+`/api/private;x=1` miss an exact policy and select a broader prefix. This
+restriction includes semicolons intended as literal segment data.
+If raw routing would select an unprotected chain but
+an alias would select an ACL chain, a guard rejects before dispatch. Its
+conservative alias probe is never used for forwarding or handler selection;
+it honors route order and recognizes separators, double encoding, segment
+parameters and dot collapse. Parameter stripping is only a denial probe; raw
+unprotected paths such as `/x/;jsessionid=...` remain unchanged unless their
+alias crosses an ACL boundary. Protected route patterns and base paths are validated and compiled
+once at load/reload; invalid candidates fail with diagnostics and retain the
+active runtime. Unprotected patterns are not canonicalized or silently dropped.
+An explicitly spelled unprotected alias route (for example `/open%2Fprivate`)
+fails load/reload if its alias overlaps a protected route or default chain
+without earlier complete unprotected coverage. Validation respects methods,
+route order, base paths, segment templates and terminal wildcards; partial
+unprotected coverage is conservatively insufficient. Use an unambiguous route
+spelling or explicitly protect the route, retaining endpoint-specific ACL
+policies. Do not broaden grants to silence this diagnostic. Rejected reloads
+retain the active handler set and pinned requests. Dynamic aliases in ordinary
+template/wildcard captures remain guarded at request time.
+Normal route matching performs no per-pattern canonicalization.
+
+Spaces and UTF-8 remain supported in ACL-protected segment data. Queries are
+unchanged. Direct `/branches/feature%2Ftopic` remains restricted on an ACL chain,
+because upstream separator/data interpretation is not uniform. An applicable
+query `ref` is unchanged; it does not make the direct branch endpoint supported.
+Unprotected `%2F`, `%25` and repeated slashes retain legacy behavior unless an
+alias would cross into an ACL chain. HMAC sees the original request path.
+
+The legacy `/@method` policy matches the root itself; it does not implicitly
+grant all descendants. A non-root trailing slash selects its canonical policy.
+`skipPathPrefixes` is checked against the canonical concrete identity and the
 selected policy, and disabled/skipped ACLs retain their shared request/response
 gates.
 
@@ -555,3 +595,94 @@ and add an HTTP response-body adapter:
 - Add handler-level tests for exact endpoint, path template endpoint, parent
   path endpoint, default deny, skip prefixes, row filtering, and column
   filtering.
+
+
+## Ordinary HTTP capture and chain compatibility
+
+Wildcard handler routes (including `/github/repos/*` for every method) are
+independent of ACL keys and remain supported. Wildcard ordinary HTTP ACL keys
+containing `*` are unsupported: startup/reload rejects them with a migration
+diagnostic under both default-deny modes. Migrate ACL rules to exact paths,
+full-path templates, or deliberate literal-prefix policies; do not change
+wildcard handler routing or broaden grants. A rejected reload retains the valid
+active ACL runtime. Already admitted requests retain their selected key and
+runtime for both authorization and response filtering across a valid reload.
+
+`access-control.yml` has two explicit capture settings, independent of HMAC,
+LLM, and tokenizer configuration:
+
+```yaml
+bodyReadTimeoutMillis: 10000
+maxBufferedBodyBytes: 268435456
+```
+
+Both must be positive. Ordinary HTTP ACL retains its 10 MiB per-body limit.
+Declared lengths reject before allocation/interim responses; streamed bytes
+remain bounded. The deadline covers the entire body read, including writing
+`100 Continue`. An aggregate permit accounts for retained payload bytes and is
+released with request ownership on completion, denial, failure, timeout, or
+cancellation. HMAC-captured originals keep their existing HMAC permit; shared
+`Bytes` avoid a second original-body allocation. ACL-transform output reserves
+its configured tokenizer maximum (capped by the ACL limit) before tokenization,
+then reduces its charge to actual retained output. Budget exhaustion returns
+503, size excess 413, and read timeout 408. These payload quotas are not a
+process-RSS bound: protocol chunks, allocator slack, JSON parsing/serialization,
+and token-vault operations have separate resource costs. The capture deadline
+does not bound token-vault database operations or rule evaluation.
+
+Supported body chains authenticate first, run `tokenize` before `access-control`,
+and dispatch only after authorization. HMAC (standalone or through
+`unified-security`/`unified`) authenticates original bytes before ACL capture;
+ACL observes tokenized bytes and upstream receives the cached transformation
+once. Downstream framing is preserved until capture; transformed upstream
+framing is updated independently. Detokenization requests uncompressed upstream
+responses even when ACL has already authorized the body. Empty-body DELETE
+remains valid. HMAC checks signature/selector/delivery-header syntax before body
+capture but validates the MAC only over original captured bytes.
+
+Startup and handler/security reload reject tokenizer-after-body-capturing-ACL,
+recognized-security-gate-after-ACL, or tokenizer-before-HMAC/unified orders with precise
+order diagnostics. `jwt` is a security alias. Existing HMAC validation also
+rejects duplicate entry points or simultaneous standalone HMAC and unified
+security on the same effective chain. The recognized gates are `hmac`,
+`security`, `jwt`, `unified-security` and `unified`; this is not a validator of
+all authentication handlers (such as `stateless`, `token`, Basic or API-key).
+GET/HEAD ACL evaluates query/header data and does not require tokenizer-before-ACL;
+other gates and original-byte HMAC order still apply. Wildcard-method routes
+remain unsupported by handler configuration loading; the body-order helper
+treats a wildcard conservatively when called directly. HMAC terminal chains
+remain router-only. The shared MCP/A2A matcher is unchanged.
+
+Deferred tokenization uses chunked HTTP/1.1 upstream framing or HTTP/2 DATA
+frames, selected from the actual negotiated protocol, not its configuration
+preference. Known empty bodies retain length zero; preauthorized transformed
+bodies retain their exact length. Deferred transformation over HTTP/1.0 is
+unsupported and fails explicitly.
+
+The 10-second capture deadline is total elapsed read time, unlike an idle timeout
+that resets after every chunk. Slow uploads that previously progressed indefinitely
+can now receive 408. The ACL body ceiling remains 10 MiB; the tokenizer default
+is 1 MiB. Owners should explicitly select a total deadline for supported upload
+sizes and minimum acceptable throughput before rollout, without changing unrelated
+proxy idle settings. Reserving a full tokenizer output maximum under the default
+256 MiB budget reduces concurrent upload capacity: each original plus its maximum
+output is charged until transformation completes. This conservative reservation
+also accounts for originals shared from HMAC through its independent budget;
+the combined budgets are not one process-wide memory ceiling.
+
+Local regression commands (no live requests):
+
+```sh
+rtk cargo test -p light-gateway http_acl -- --test-threads=2
+rtk cargo test -p light-pingora --lib http_policy -- --test-threads=2
+rtk cargo test -p light-pingora --lib capture_headers -- --test-threads=2
+rtk cargo test -p light-gateway -- --test-threads=2
+rtk cargo test -p light-pingora --lib -- --test-threads=2
+```
+
+The cache-only composition fixture is enabled by a development-only
+`test-support` dependency. It uses seeded token-cache entries and a disconnected
+pool, exercises production Gateway/tokenizer methods, and does not qualify a
+PostgreSQL vault or any deployed runtime. Recorder finish requires stopped
+producers, drains a nonblocking OS listener through `WouldBlock`, and joins every
+accepted worker. A pending asynchronous accept is never treated as queue proof.

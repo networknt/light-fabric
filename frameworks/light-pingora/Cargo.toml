@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license = "Apache-2.0"
 
+[features]
+test-support = []
+
 [dependencies]
 workflow-action = { path = "../../crates/workflow-action" }
 a2a-core = { path = "../../crates/a2a-core" }

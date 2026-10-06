@@ -243,11 +243,55 @@ impl ResolvedHandlerChain {
 #[derive(Clone)]
 pub struct ActiveHandlerSet {
     config: HandlerConfig,
+    acl_guard_paths: Vec<(HandlerPath, bool)>,
+    acl_guard_has_aliases: bool,
+    acl_guard_active: bool,
+    acl_guard_default: bool,
+    acl_guard_base_path: String,
     active_handler_ids: Vec<String>,
     handlers: Vec<Arc<dyn PingoraHandler>>,
 }
 
 impl ActiveHandlerSet {
+    /// Preserve legacy routing/forwarding. Reject aliases that would escape an
+    /// ACL-protected literal route into an unprotected effective chain.
+    pub fn check_http_acl_path(
+        &self,
+        path: &str,
+        method: &str,
+        ids: &[String],
+    ) -> Result<(), String> {
+        if ids.iter().any(|id| id == "access-control") {
+            return canonical_http_path(path).map(|_| ()).map_err(str::to_owned);
+        }
+        if !self.acl_guard_active {
+            return Ok(());
+        }
+        if !self.acl_guard_has_aliases
+            && !path.contains(['%', '\\', ';'])
+            && !path.contains("//")
+            && !path.split('/').any(|s| matches!(s, "." | ".."))
+        {
+            return Ok(());
+        }
+        let alias = http_acl_route_alias(path);
+        for (compiled, acl) in &self.acl_guard_paths {
+            if handler_path_match_with_base(&self.acl_guard_base_path, compiled, &alias, method)
+                .is_some()
+            {
+                return if *acl {
+                    Err("path alias would bypass an access-control handler chain".into())
+                } else {
+                    Ok(())
+                };
+            }
+        }
+        if self.acl_guard_default {
+            Err("path alias would bypass the default access-control chain".into())
+        } else {
+            Ok(())
+        }
+    }
     pub fn config(&self) -> &HandlerConfig {
         &self.config
     }
@@ -388,12 +432,41 @@ impl PingoraHandlerRegistry {
         if !config.enabled {
             return Ok(ActiveHandlerSet {
                 config,
+                acl_guard_paths: Vec::new(),
+                acl_guard_has_aliases: false,
+                acl_guard_active: false,
+                acl_guard_default: false,
+                acl_guard_base_path: String::new(),
                 active_handler_ids: Vec::new(),
                 handlers: Vec::new(),
             });
         }
 
         validate_handler_config(&config)?;
+        let mut acl_guard_paths = Vec::new();
+        let mut acl_guard_has_aliases = false;
+        let mut default_ids = Vec::new();
+        resolve_exec_handlers(
+            &config.default_handlers,
+            &config,
+            &mut Vec::new(),
+            &mut default_ids,
+        )?;
+        let acl_guard_default = default_ids.iter().any(|id| id == "access-control");
+        let mut acl_guard_active = acl_guard_default;
+        for path in &config.paths {
+            let mut ids = Vec::new();
+            resolve_exec_handlers(&path.exec, &config, &mut Vec::new(), &mut ids)?;
+            let acl = ids.iter().any(|id| id == "access-control");
+            let mut compiled = path.clone();
+            if acl {
+                acl_guard_active = true;
+                compiled.path = canonical_http_pattern(&path.path).map_err(|reason| RuntimeError::Config(format!(
+                    "ACL handler route {}@{} has unsupported path syntax: {reason}; use unambiguous literal segments/templates, retaining wildcard HANDLER routing", path.path, path.method)))?;
+                acl_guard_has_aliases |= compiled.path != path.path;
+            }
+            acl_guard_paths.push((compiled, acl));
+        }
         let declared_handlers = declared_handlers(&config)?;
         for handler_id in &declared_handlers {
             if !self.contains(handler_id) {
@@ -426,8 +499,29 @@ impl PingoraHandlerRegistry {
             handlers.push(handler);
         }
 
+        let acl_guard_base_path = if acl_guard_active {
+            canonical_http_path(&config.base_path).map_err(|reason| {
+                RuntimeError::Config(format!(
+                    "ACL handler.basePath has unsupported path syntax: {reason}"
+                ))
+            })?
+        } else {
+            config.base_path.clone()
+        };
+        acl_guard_has_aliases |= acl_guard_base_path != config.base_path;
+        validate_unprotected_acl_alias_routes(
+            &config,
+            &acl_guard_paths,
+            &acl_guard_base_path,
+            acl_guard_default,
+        )?;
         Ok(ActiveHandlerSet {
             config,
+            acl_guard_paths,
+            acl_guard_has_aliases,
+            acl_guard_active,
+            acl_guard_default,
+            acl_guard_base_path,
             active_handler_ids,
             handlers,
         })
@@ -668,13 +762,22 @@ fn handler_path_match(
     request_path: &str,
     method: &str,
 ) -> Option<PathMatch> {
+    handler_path_match_with_base(&config.base_path, handler_path, request_path, method)
+}
+
+fn handler_path_match_with_base(
+    base_path: &str,
+    handler_path: &HandlerPath,
+    request_path: &str,
+    method: &str,
+) -> Option<PathMatch> {
     if !handler_path.method.eq_ignore_ascii_case(method) {
         return None;
     }
 
     path_template_match(&handler_path.path, request_path)
         .or_else(|| {
-            strip_base_path(&config.base_path, request_path)
+            strip_base_path(base_path, request_path)
                 .and_then(|path| path_template_match(&handler_path.path, path))
         })
         .map(|params| PathMatch {
@@ -682,6 +785,288 @@ fn handler_path_match(
             method: handler_path.method.to_ascii_uppercase(),
             params,
         })
+}
+
+/// HTTP ACL policy identity and compiled protected-route guard spelling only.
+/// Never replaces the routed/forwarded URI. Query values are outside this view.
+/// Ambiguous separators and double encoding fail on ACL-protected chains.
+pub fn canonical_http_path(path: &str) -> Result<String, &'static str> {
+    canonical_http_path_impl(path, false)
+}
+
+// Security probe only: never becomes a routed/forwarded URI. Repeated decoding,
+// separator and dot collapse conservatively recognize aliases of ACL routes;
+// the ACL path validator rejects these spellings on protected chains.
+fn http_acl_route_alias(path: &str) -> String {
+    http_acl_route_alias_impl(path, false)
+}
+
+fn http_acl_route_alias_impl(path: &str, pattern: bool) -> String {
+    // Stack reduction recognizes nested escapes in linear time: each reduction
+    // consumes three bytes and emits one, instead of rescanning the whole path.
+    let mut output = Vec::with_capacity(path.len());
+    for byte in path.bytes() {
+        output.push(byte);
+        loop {
+            let len = output.len();
+            if len < 3 || output[len - 3] != b'%' {
+                break;
+            }
+            let (Some(hi), Some(lo)) = (
+                (output[len - 2] as char).to_digit(16),
+                (output[len - 1] as char).to_digit(16),
+            ) else {
+                break;
+            };
+            output.truncate(len - 3);
+            output.push((hi * 16 + lo) as u8);
+        }
+    }
+    let decoded = String::from_utf8_lossy(&output);
+    let decoded = decoded.replace('\\', "/");
+    let mut segments = Vec::new();
+    for segment in decoded.split('/') {
+        // Java-style path parameters are ignored by some upstream routers.
+        // Strip them only in this denial probe, never in the forwarded URI.
+        let segment = segment.split(';').next().unwrap_or_default();
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            _ => segments.push(segment),
+        }
+    }
+    let alias = format!("/{}", segments.join("/"));
+    canonical_http_path_impl(&alias, pattern).unwrap_or(alias)
+}
+
+pub(crate) fn canonical_http_pattern(path: &str) -> Result<String, &'static str> {
+    canonical_http_path_impl(path, true)
+}
+
+/// Reject explicitly configured alias routes whose normalized view can enter a
+/// protected chain. Dynamic aliases in ordinary template/wildcard captures are
+/// still checked per request. This only validates configuration; it never routes.
+fn validate_unprotected_acl_alias_routes(
+    config: &HandlerConfig,
+    paths: &[(HandlerPath, bool)],
+    base_path: &str,
+    default_acl: bool,
+) -> Result<(), RuntimeError> {
+    if !default_acl && !paths.iter().any(|(_, acl)| *acl) {
+        return Ok(());
+    }
+    for (route, acl) in paths {
+        if *acl {
+            continue;
+        }
+        for raw in [
+            route.path.clone(),
+            format!("{}{}", config.base_path.trim_end_matches('/'), route.path),
+        ] {
+            let alias = http_acl_route_alias_impl(&raw, true);
+            if alias == raw {
+                continue;
+            }
+            let mut covered = false;
+            let mut protected = default_acl;
+            for (candidate, candidate_acl) in paths {
+                if !candidate.method.eq_ignore_ascii_case(&route.method) {
+                    continue;
+                }
+                let patterns = [
+                    candidate.path.clone(),
+                    format!("{}{}", base_path.trim_end_matches('/'), candidate.path),
+                ];
+                if *candidate_acl
+                    && patterns
+                        .iter()
+                        .any(|pattern| acl_patterns_overlap(pattern, &alias))
+                {
+                    protected = true;
+                    break;
+                }
+                if !candidate_acl
+                    && patterns
+                        .iter()
+                        .any(|pattern| acl_pattern_covers(pattern, &alias))
+                {
+                    covered = true;
+                    break;
+                }
+            }
+            if protected && !covered {
+                return Err(RuntimeError::Config(format!(
+                    "unprotected handler route {}@{} has a path alias overlapping an access-control route or default chain; use an unambiguous route spelling or protect this route explicitly (do not broaden ACL grants)",
+                    route.path, route.method
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn acl_template_segment(segment: &str) -> bool {
+    segment.starts_with('{') && segment.ends_with('}')
+}
+
+// Configuration-only conservative overlap/coverage for the existing segment
+// template and terminal wildcard grammar. Partial unprotected coverage cannot
+// establish that all aliases are safe, so it does not mask protected overlap.
+fn acl_patterns_overlap(left: &str, right: &str) -> bool {
+    let left_wildcard = left.ends_with("/*");
+    let right_wildcard = right.ends_with("/*");
+    let left_segments = path_segments(left);
+    let right_segments = path_segments(right);
+    let mut left = left_segments.into_iter().peekable();
+    let mut right = right_segments.into_iter().peekable();
+    loop {
+        match (left.next(), right.next()) {
+            (Some("*"), _) if left_wildcard && left.peek().is_none() => return true,
+            (_, Some("*")) if right_wildcard && right.peek().is_none() => return true,
+            (None, None) => return true,
+            (Some(a), Some(b)) if a == b || acl_template_segment(a) || acl_template_segment(b) => {}
+            _ => return false,
+        }
+    }
+}
+
+fn acl_pattern_covers(pattern: &str, alias: &str) -> bool {
+    let pattern_wildcard = pattern.ends_with("/*");
+    let alias_wildcard = alias.ends_with("/*");
+    let pattern_segments = path_segments(pattern);
+    let alias_segments = path_segments(alias);
+    let mut pattern = pattern_segments.into_iter().peekable();
+    let mut alias = alias_segments.into_iter().peekable();
+    loop {
+        match (pattern.next(), alias.next()) {
+            (Some("*"), _) if pattern_wildcard && pattern.peek().is_none() => return true,
+            (None, None) => return true,
+            (Some(a), Some(b))
+                if a == b
+                    || (acl_template_segment(a)
+                        && !(b == "*" && alias_wildcard && alias.peek().is_none())) => {}
+            _ => return false,
+        }
+    }
+}
+
+fn canonical_http_path_impl(path: &str, pattern: bool) -> Result<String, &'static str> {
+    if path == "/" {
+        return Ok(path.into());
+    }
+    if !path.starts_with('/') {
+        return Err("path must start with slash");
+    }
+    let mut result = String::new();
+    for segment in path.strip_suffix('/').unwrap_or(path)[1..].split('/') {
+        if segment.is_empty() {
+            return Err("repeated slash");
+        }
+        result.push('/');
+        if pattern && (segment == "*" || (segment.starts_with('{') && segment.ends_with('}'))) {
+            result.push_str(segment);
+            continue;
+        }
+        let bytes = segment.as_bytes();
+        let mut decoded = Vec::with_capacity(bytes.len());
+        let mut index = 0;
+        while index < bytes.len() {
+            let byte = if bytes[index] == b'%' {
+                if index + 2 >= bytes.len() {
+                    return Err("malformed escape");
+                }
+                let hi = (bytes[index + 1] as char)
+                    .to_digit(16)
+                    .ok_or("malformed escape")?;
+                let lo = (bytes[index + 2] as char)
+                    .to_digit(16)
+                    .ok_or("malformed escape")?;
+                index += 3;
+                (hi * 16 + lo) as u8
+            } else {
+                index += 1;
+                bytes[index - 1]
+            };
+            if byte == b';' {
+                return Err("path parameters are unsupported on access-control chains");
+            }
+            if byte == b'/' || byte == b'\\' || byte == b'%' || byte.is_ascii_control() {
+                return Err("separator, percent or control character");
+            }
+            decoded.push(byte);
+        }
+        std::str::from_utf8(&decoded).map_err(|_| "invalid UTF-8")?;
+        if decoded == b"." || decoded == b".." {
+            return Err("dot segment");
+        }
+        const HEX: &[u8] = b"0123456789ABCDEF";
+        for byte in decoded {
+            if byte.is_ascii_alphanumeric() || b"-._~!$&'()+,;=:@*".contains(&byte) {
+                result.push(byte as char);
+            } else {
+                result.push('%');
+                result.push(HEX[(byte >> 4) as usize] as char);
+                result.push(HEX[(byte & 15) as usize] as char);
+            }
+        }
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod canonical_path_review_tests {
+    use super::*;
+    #[test]
+    fn alias_configuration_overlap_uses_the_legacy_segment_grammar() {
+        assert!(acl_pattern_covers("/open/*", "/open/{id}"));
+        assert!(acl_pattern_covers("/open//private/", "/open/private"));
+        assert!(acl_patterns_overlap("/open/{id}", "/open/private"));
+        assert!(acl_patterns_overlap("/open/*", "/open"));
+        assert!(!acl_pattern_covers("/open/{id}", "/open/*"));
+        assert!(!acl_pattern_covers("/open/*/suffix", "/open/private"));
+        assert!(!acl_patterns_overlap("/open/*/suffix", "/open/private"));
+        assert!(acl_pattern_covers("/open/{id}/suffix", "/open/*/suffix"));
+    }
+    #[test]
+    fn github_segment_data_and_alias_contract() {
+        for (input, output) in [
+            (
+                "/github/repos/o/r/labels/help%20wanted",
+                "/github/repos/o/r/labels/help%20wanted",
+            ),
+            (
+                "/github/repos/o/r/contents/dir%20name/caf%c3%a9.txt",
+                "/github/repos/o/r/contents/dir%20name/caf%C3%A9.txt",
+            ),
+            ("/api/%70rivate/", "/api/private"),
+            ("/", "/"),
+        ] {
+            assert_eq!(canonical_http_path(input).unwrap(), output);
+        }
+        for input in [
+            "/github/repos/o/r/branches/feature%2Ftopic",
+            "/a/%5c",
+            "/a/%2e",
+            "/a/..",
+            "/a//b",
+            "/a/%252F",
+            "/a/%",
+            "/a/%xy",
+            "/a/%ff",
+            "/api/private;x=1",
+            "/api/private%3Bx=1",
+        ] {
+            assert!(canonical_http_path(input).is_err(), "{input}");
+        }
+    }
+    #[test]
+    fn wildcard_method_and_configured_literal_aliases_match() {
+        let config: HandlerConfig = serde_yaml::from_str("handlers: [router]\npaths:\n  - path: /api/%70rivate/\n    method: '*'\n    exec: [router]\n").unwrap();
+        assert!(validate_handler_config(&config).is_err());
+        assert!(handler_path_match(&config, &config.paths[0], "/api/private", "GET").is_none());
+    }
 }
 
 fn strip_base_path<'a>(base_path: &str, request_path: &'a str) -> Option<&'a str> {
@@ -1068,6 +1453,11 @@ defaultHandlers:
             ..HandlerConfig::default()
         };
         let active = ActiveHandlerSet {
+            acl_guard_paths: Vec::new(),
+            acl_guard_has_aliases: false,
+            acl_guard_active: false,
+            acl_guard_default: false,
+            acl_guard_base_path: String::new(),
             config,
             active_handler_ids: Vec::new(),
             handlers: Vec::new(),
@@ -1103,6 +1493,11 @@ defaultHandlers:
     #[test]
     fn resolves_handler_paths_after_base_path_is_removed() {
         let active = ActiveHandlerSet {
+            acl_guard_paths: Vec::new(),
+            acl_guard_has_aliases: false,
+            acl_guard_active: false,
+            acl_guard_default: false,
+            acl_guard_base_path: String::new(),
             config: HandlerConfig {
                 base_path: "/api".to_string(),
                 paths: vec![HandlerPath {
@@ -1128,6 +1523,11 @@ defaultHandlers:
     #[test]
     fn resolves_trailing_wildcard_paths() {
         let active = ActiveHandlerSet {
+            acl_guard_paths: Vec::new(),
+            acl_guard_has_aliases: false,
+            acl_guard_active: false,
+            acl_guard_default: false,
+            acl_guard_base_path: String::new(),
             config: HandlerConfig {
                 paths: vec![
                     HandlerPath {

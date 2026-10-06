@@ -479,19 +479,36 @@ impl HmacRuntime {
         }
     }
 
-    pub fn verify(
+    /// Reject malformed/missing signatures and unavailable selectors before
+    /// sending 100 Continue or allocating a request body. The MAC comparison
+    /// still occurs only against the original captured bytes.
+    pub fn validate_capture_headers(
         &self,
         profile_name: &str,
         headers: &HeaderMap,
-        body: &[u8],
-    ) -> Result<HmacEvidence, HmacVerificationError> {
+    ) -> Result<(), HmacVerificationError> {
+        let (_, selector, _) = self.verification_inputs(profile_name, headers)?;
+        // Constructing an attempt validates delivery headers and configured
+        // store availability without reserving a replay key before the MAC.
+        self.replay_attempt(
+            &HmacEvidence {
+                profile: profile_name.to_owned(),
+                selector,
+            },
+            headers,
+        )
+        .map(|_| ())
+    }
+
+    fn verification_inputs<'a>(
+        &'a self,
+        profile_name: &str,
+        headers: &HeaderMap,
+    ) -> Result<(Vec<u8>, Option<String>, &'a Vec<Vec<u8>>), HmacVerificationError> {
         let profile = self
             .profiles
             .get(profile_name)
             .ok_or(HmacVerificationError::Invalid)?;
-        if body.len() > profile.max_body_bytes {
-            return Err(HmacVerificationError::BodyTooLarge);
-        }
         let signature = exactly_one_header(headers, &profile.signature_header)?
             .trim_matches(|character| character == ' ' || character == '\t');
         let signature = signature
@@ -533,6 +550,24 @@ impl HmacRuntime {
         if candidates.is_empty() {
             return Err(HmacVerificationError::Invalid);
         }
+
+        Ok((signature, selector, candidates))
+    }
+
+    pub fn verify(
+        &self,
+        profile_name: &str,
+        headers: &HeaderMap,
+        body: &[u8],
+    ) -> Result<HmacEvidence, HmacVerificationError> {
+        let profile = self
+            .profiles
+            .get(profile_name)
+            .ok_or(HmacVerificationError::Invalid)?;
+        if body.len() > profile.max_body_bytes {
+            return Err(HmacVerificationError::BodyTooLarge);
+        }
+        let (signature, selector, candidates) = self.verification_inputs(profile_name, headers)?;
 
         let mut matched = false;
         for secret in candidates {
@@ -1058,6 +1093,57 @@ profiles:
             runtime.verify("github", &headers, b"Hello, World!\n"),
             Err(HmacVerificationError::Invalid)
         ));
+    }
+
+    #[tokio::test]
+    async fn capture_headers_reject_before_body_and_replay_reservation() {
+        let mut config = github_config();
+        config.profiles.get_mut("github").unwrap().replay = HmacReplayConfig {
+            enabled: true,
+            id_header: "X-Delivery".into(),
+            store: "local".into(),
+            retention_seconds: 60,
+        };
+        config
+            .replay_stores
+            .insert("local".into(), ReplayStoreConfig::Local { max_entries: 4 });
+        let runtime = HmacRuntime::compile(&config, &resolver()).unwrap();
+        let mut headers = HeaderMap::new();
+        assert!(
+            runtime
+                .validate_capture_headers("github", &headers)
+                .is_err()
+        );
+        headers.insert(
+            "x-hub-signature-256",
+            HeaderValue::from_static(
+                "sha256=0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+        );
+        assert!(
+            runtime
+                .validate_capture_headers("github", &headers)
+                .is_err()
+        );
+        headers.insert("x-delivery", HeaderValue::from_static("fixture-id"));
+        runtime
+            .validate_capture_headers("github", &headers)
+            .unwrap();
+        assert_eq!(
+            runtime
+                .replay_store("github")
+                .unwrap()
+                .local_entries()
+                .await,
+            Some(0)
+        );
+        assert!(runtime.verify("github", &headers, b"original").is_err());
+        headers.append("x-hub-signature-256", HeaderValue::from_static("duplicate"));
+        assert!(
+            runtime
+                .validate_capture_headers("github", &headers)
+                .is_err()
+        );
     }
 
     #[test]

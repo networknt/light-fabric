@@ -66,6 +66,11 @@ pub struct AccessControlConfig {
     pub claim_mappings: BTreeMap<String, Vec<String>>,
     #[serde(default, alias = "toolsListAccessControl")]
     pub tools_list_access_control: ToolsListAccessControlConfig,
+    /// Ordinary HTTP capture limits, independent of HMAC and LLM settings.
+    #[serde(default = "default_body_read_timeout_millis")]
+    pub body_read_timeout_millis: u64,
+    #[serde(default = "default_max_buffered_body_bytes")]
+    pub max_buffered_body_bytes: usize,
 }
 
 impl Default for AccessControlConfig {
@@ -79,8 +84,17 @@ impl Default for AccessControlConfig {
             log_full_cel_context: false,
             claim_mappings: BTreeMap::new(),
             tools_list_access_control: ToolsListAccessControlConfig::default(),
+            body_read_timeout_millis: default_body_read_timeout_millis(),
+            max_buffered_body_bytes: default_max_buffered_body_bytes(),
         }
     }
+}
+
+fn default_body_read_timeout_millis() -> u64 {
+    10_000
+}
+fn default_max_buffered_body_bytes() -> usize {
+    256 * 1024 * 1024
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -145,6 +159,8 @@ pub struct AccessControlRuntime {
     rules: RuleFileConfig,
     engine: Arc<RuleEngine>,
     claim_mappings: Arc<BTreeMap<String, Vec<String>>>,
+    http_policy_keys: BTreeMap<String, Vec<String>>,
+    http_policy_patterns: BTreeMap<String, Result<String, &'static str>>,
 }
 
 impl fmt::Debug for AccessControlRuntime {
@@ -216,6 +232,22 @@ pub enum ToolVisibility {
 
 impl AccessControlRuntime {
     pub fn new(access: Option<AccessControlConfig>, rules: RuleFileConfig) -> Self {
+        let mut http_policy_keys: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut http_policy_patterns = BTreeMap::new();
+        for key in rules
+            .endpoint_rules
+            .keys()
+            .filter(|key| key.starts_with('/'))
+        {
+            http_policy_patterns.insert(
+                key.clone(),
+                crate::handler::canonical_http_pattern(split_endpoint(key).0),
+            );
+            http_policy_keys
+                .entry(split_endpoint(key).1.to_ascii_lowercase())
+                .or_default()
+                .push(key.clone());
+        }
         let claim_mappings = Arc::new(effective_claim_mappings(access.as_ref()));
         let log_full_cel_context = access
             .as_ref()
@@ -236,11 +268,28 @@ impl AccessControlRuntime {
                 .with_log_full_cel_context(log_full_cel_context),
             ),
             claim_mappings,
+            http_policy_keys,
+            http_policy_patterns,
         }
     }
 
     pub fn authorization_enabled(&self) -> bool {
         self.access.as_ref().is_some_and(|config| config.enabled)
+    }
+
+    pub fn body_capture_limits(&self) -> (u64, usize) {
+        self.access.as_ref().map_or(
+            (
+                default_body_read_timeout_millis(),
+                default_max_buffered_body_bytes(),
+            ),
+            |config| {
+                (
+                    config.body_read_timeout_millis,
+                    config.max_buffered_body_bytes,
+                )
+            },
+        )
     }
 
     /// Stable, non-secret fingerprint for diagnostics and reload verification.
@@ -904,78 +953,99 @@ impl AccessControlRuntime {
     /// ambiguous (parameter names/length never establish specificity). Literal
     /// prefix policies retain their legacy longest-prefix fallback. Missing
     /// policies retain the concrete identity for configured default-deny handling.
-    /// Paths are not decoded or normalized: repeated/trailing slashes and dot
-    /// segments must not become aliases of a registered template.
+    /// ACL identity is separate from raw routing and forwarding. Unreserved aliases
+    /// and a single trailing slash select their canonical policy; ambiguous
+    /// separators, dot segments and repeated encoding fail closed.
     pub fn resolve_http_policy(&self, path: &str, method: &str) -> Result<String, String> {
         let path = path.split_once('?').map_or(path, |(path, _)| path);
+        let canonical = crate::canonical_http_path(path)
+            .map_err(|reason| format!("Access denied: noncanonical path: {reason}"))?;
+        let path = canonical.as_str();
         let endpoint = format!("{path}@{}", method.to_ascii_lowercase());
         if self.active_config_for_endpoint(&endpoint).is_none() {
             return Ok(endpoint);
         }
-        let candidates = self
-            .rules
-            .endpoint_rules
-            .keys()
-            .filter(|key| {
-                let (_, policy_method) = split_endpoint(key);
-                policy_method.eq_ignore_ascii_case(method)
-            })
-            .collect::<Vec<_>>();
-        let exact = candidates
-            .iter()
-            .copied()
-            .filter(|key| split_endpoint(key).0 == path)
-            .collect::<Vec<_>>();
-        if exact.len() == 1 {
-            return Ok(exact[0].clone());
-        }
-        let canonical_segments = path
-            .strip_prefix('/')
-            .unwrap_or(path)
-            .split('/')
-            .all(|segment| !segment.is_empty() && segment != "." && segment != "..");
-        if !canonical_segments
-            && candidates.iter().any(|key| {
-                let (pattern, _) = split_endpoint(key);
-                pattern.contains('{') && path_template_matches(pattern, path)
-            })
+        let mut exact = None;
+        let mut template = None;
+        let mut template_count = 0;
+        let mut prefix: Option<&String> = None;
+        let mut prefix_ambiguous = false;
+        let mut exact_ambiguous = false;
+        for key in self
+            .http_policy_keys
+            .get(&method.to_ascii_lowercase())
+            .into_iter()
+            .flatten()
         {
-            return Err(format!("Access denied: noncanonical path for {endpoint}"));
+            let (_, policy_method) = split_endpoint(key);
+            let canonical_pattern = self.http_policy_patterns[key]
+                .as_ref()
+                .map_err(|reason| format!("Access denied: unsupported ACL path {key}: {reason}"))?;
+            let pattern = canonical_pattern.as_str();
+            if !policy_method.eq_ignore_ascii_case(method) {
+                continue;
+            }
+            if pattern.contains('*') {
+                return Err(format!(
+                    "Access denied: unsupported wildcard ACL key {key}; migrate to exact paths, templates or literal prefixes"
+                ));
+            }
+            if pattern == path {
+                exact_ambiguous |= exact.is_some();
+                exact = Some(key);
+            } else if pattern.contains('{') {
+                if path_template_matches(pattern, path) {
+                    template_count += 1;
+                    template = Some(key);
+                }
+            } else if path
+                .strip_prefix(pattern)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+            {
+                match prefix {
+                    Some(previous)
+                        if self.http_policy_patterns[previous]
+                            .as_ref()
+                            .map_or(0, |p| p.len())
+                            > pattern.len() => {}
+                    Some(previous)
+                        if self.http_policy_patterns[previous]
+                            .as_ref()
+                            .map_or(0, |p| p.len())
+                            == pattern.len() =>
+                    {
+                        prefix_ambiguous = true;
+                    }
+                    _ => {
+                        prefix = Some(key);
+                        prefix_ambiguous = false;
+                    }
+                }
+            }
         }
-        let templates = candidates
-            .iter()
-            .copied()
-            .filter(|key| {
-                let (pattern, _) = split_endpoint(key);
-                pattern.contains('{') && canonical_segments && path_template_matches(pattern, path)
-            })
-            .collect::<Vec<_>>();
-        if exact.len() > 1 || templates.len() > 1 {
+        if exact_ambiguous {
             return Err(format!(
                 "Access denied: ambiguous access control policies for {endpoint}"
             ));
         }
-        if let Some(template) = templates.first() {
-            return Ok((*template).clone());
+        if let Some(exact) = exact {
+            return Ok(exact.clone());
         }
-        let mut prefixes = candidates
-            .iter()
-            .copied()
-            .filter(|key| {
-                let (pattern, _) = split_endpoint(key);
-                !pattern.contains('{') && endpoint_pattern_matches(key, &endpoint)
-            })
-            .collect::<Vec<_>>();
-        prefixes.sort_by_key(|key| std::cmp::Reverse(split_endpoint(key).0.len()));
-        if let Some(prefix) = prefixes.first() {
-            if prefixes.get(1).is_some_and(|other| {
-                split_endpoint(other).0.len() == split_endpoint(prefix).0.len()
-            }) {
-                return Err(format!(
-                    "Access denied: ambiguous access control policies for {endpoint}"
-                ));
-            }
-            return Ok((*prefix).clone());
+        if template_count > 1 {
+            return Err(format!(
+                "Access denied: ambiguous access control policies for {endpoint}"
+            ));
+        }
+        if let Some(template) = template {
+            return Ok(template.clone());
+        }
+        if prefix_ambiguous {
+            return Err(format!(
+                "Access denied: ambiguous access control policies for {endpoint}"
+            ));
+        }
+        if let Some(prefix) = prefix {
+            return Ok(prefix.clone());
         }
         Ok(endpoint)
     }
@@ -1052,6 +1122,7 @@ pub fn load_access_control_runtime(
 
     let mut access_config = access.map(|(_, config)| config);
     let rule_config = rules.map(|(_, config)| config).unwrap_or_default();
+    validate_http_acl_configuration(access_config.as_ref(), &rule_config)?;
     if access_config.is_none()
         && (!rule_config.rule_bodies.is_empty() || !rule_config.endpoint_rules.is_empty())
     {
@@ -1073,6 +1144,29 @@ pub fn load_access_control_runtime(
     }
 
     Ok(Some(AccessControlRuntime::new(access_config, rule_config)))
+}
+
+fn validate_http_acl_configuration(
+    access: Option<&AccessControlConfig>,
+    rules: &RuleFileConfig,
+) -> Result<(), RuntimeError> {
+    if access.is_some_and(|config| {
+        config.body_read_timeout_millis == 0 || config.max_buffered_body_bytes == 0
+    }) {
+        return Err(RuntimeError::Config(
+            "access-control bodyReadTimeoutMillis and maxBufferedBodyBytes must be positive".into(),
+        ));
+    }
+    if let Some(key) = rules
+        .endpoint_rules
+        .keys()
+        .find(|key| key.starts_with('/') && split_endpoint(key).0.contains('*'))
+    {
+        return Err(RuntimeError::Config(format!(
+            "unsupported wildcard ACL key {key}; migrate ACL rules to exact paths, full-path templates, or literal prefixes; keep wildcard HANDLER routes unchanged"
+        )));
+    }
+    Ok(())
 }
 
 fn load_values_config<T>(
@@ -2432,11 +2526,12 @@ mod tests {
     #[test]
     fn http_policy_does_not_normalize_template_paths() {
         let runtime = http_resolution_fixture(&["/api/{id}@get"]);
-        for path in ["/api//1", "/api/1/", "/api/.", "/api/.."] {
+        for path in ["/api//1", "/api/.", "/api/.."] {
             assert!(runtime.resolve_http_policy(path, "GET").is_err(), "{path}");
         }
+        assert!(runtime.resolve_http_policy("/api/a%2Fb", "GET").is_err());
         assert_eq!(
-            runtime.resolve_http_policy("/api/a%2Fb", "GET").unwrap(),
+            runtime.resolve_http_policy("/api/1/", "GET").unwrap(),
             "/api/{id}@get"
         );
     }
@@ -5191,5 +5286,167 @@ endpointRules:
                 "Access denied by access control rule for /weather@get".to_string()
             )
         );
+    }
+    #[test]
+    fn http_policy_review_aliases_cannot_fall_back_to_broad_prefix() {
+        let runtime =
+            http_resolution_fixture(&["/@get", "/api@get", "/api/private@get", "/api/{id}@post"]);
+        for path in [
+            "",
+            "api/private",
+            "/api//private",
+            "/api/./private",
+            "/api/x/../private",
+            "/api/%2e/private",
+            "/api/%2E%2e/private",
+            "/api%2fprivate",
+            "/api%2Fprivate",
+            "/api/%252e/private",
+            "/api/%5cprivate",
+            "/api/\\private",
+            "/api/%",
+            "/api/%xy",
+            "/api/private;x=1",
+            "/api;jsessionid=fixture/private",
+            "/api/private%3Bx=1",
+            "/api/private%253Bx=1",
+        ] {
+            for method in ["GET", "POST", "DELETE"] {
+                assert!(
+                    runtime.resolve_http_policy(path, method).is_err(),
+                    "{path}@{method}"
+                );
+            }
+        }
+        assert_eq!(runtime.resolve_http_policy("/", "GET").unwrap(), "/@get");
+        assert_eq!(
+            runtime.resolve_http_policy("/api/private", "GET").unwrap(),
+            "/api/private@get"
+        );
+        assert_eq!(
+            runtime.resolve_http_policy("/api/a%20b", "POST").unwrap(),
+            "/api/{id}@post"
+        );
+        for alias in ["/api/private/", "/api/%70rivate", "/api/priv%61te/"] {
+            assert_eq!(
+                runtime.resolve_http_policy(alias, "GET").unwrap(),
+                "/api/private@get"
+            );
+        }
+        for path in ["/api/a%20b", "/api/%C3%A9", "/api/%37", "/api/%3fprivate"] {
+            assert_eq!(
+                runtime.resolve_http_policy(path, "GET").unwrap(),
+                "/api@get"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn http_policy_r4_parameters_never_select_a_broader_policy_or_default_allow() {
+        for deny in [false, true] {
+            let mut runtime = http_resolution_fixture(&["/api@get", "/api/private@get"]);
+            runtime.access.as_mut().unwrap().default_deny = deny;
+            for path in [
+                "/api/private;x=1",
+                "/api;x=1/private",
+                "/api/private%3bx=1",
+                "/api/private%253Bx=1",
+                "/unmatched/a;x=1",
+            ] {
+                assert!(
+                    runtime.resolve_http_policy(path, "GET").is_err(),
+                    "{path}; defaultDeny={deny}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn http_policy_review_encoded_unmatched_paths_obey_default_deny() {
+        for deny in [false, true] {
+            let mut runtime =
+                http_resolution_fixture(&["/api@get", "/api/private@get", "/api/%70rivate@post"]);
+            runtime.access.as_mut().unwrap().default_deny = deny;
+            for path in [
+                "/unmatched/help%20wanted",
+                "/unmatched/caf%C3%A9/",
+                "/unmatched/%61",
+            ] {
+                let endpoint = runtime.resolve_http_policy(path, "GET").unwrap();
+                let decision = runtime
+                    .authorize_http_endpoint(&endpoint, &[], None, &json!({}), None)
+                    .await;
+                assert_eq!(
+                    matches!(decision, AccessDecision::Denied(_)),
+                    deny,
+                    "{path}: {decision:?}"
+                );
+            }
+            assert_eq!(
+                runtime
+                    .resolve_http_policy("/api/private/", "POST")
+                    .unwrap(),
+                "/api/%70rivate@post"
+            );
+            for path in [
+                "/unmatched/%2F",
+                "/unmatched/%252e",
+                "/unmatched/%zz",
+                "/unmatched/..",
+            ] {
+                assert!(runtime.resolve_http_policy(path, "GET").is_err());
+            }
+        }
+        let runtime = http_resolution_fixture(&["/api/private@get", "/api/%70rivate@GET"]);
+        assert!(runtime.resolve_http_policy("/api/private", "GET").is_err());
+    }
+
+    #[test]
+    fn http_policy_review_wildcards_rejected_under_both_default_modes() {
+        for default_deny in [true, false] {
+            let mut rules = RuleFileConfig::default();
+            rules.endpoint_rules.insert(
+                "/github/repos/*@get".into(),
+                EndpointConfig::Map(HashMap::new()),
+            );
+            let config = AccessControlConfig {
+                default_deny,
+                ..Default::default()
+            };
+            let error = validate_http_acl_configuration(Some(&config), &rules)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("migrate ACL"), "{error}");
+            let runtime = AccessControlRuntime::new(Some(config), rules);
+            assert!(
+                runtime
+                    .resolve_http_policy("/github/repos/org/repo", "GET")
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn http_policy_review_capture_limits_are_explicit_and_positive() {
+        let config: AccessControlConfig =
+            serde_yaml::from_str("bodyReadTimeoutMillis: 123\nmaxBufferedBodyBytes: 456\n")
+                .unwrap();
+        let runtime = AccessControlRuntime::new(Some(config.clone()), RuleFileConfig::default());
+        assert_eq!(runtime.body_capture_limits(), (123, 456));
+        for invalid in [
+            AccessControlConfig {
+                body_read_timeout_millis: 0,
+                ..config.clone()
+            },
+            AccessControlConfig {
+                max_buffered_body_bytes: 0,
+                ..config
+            },
+        ] {
+            assert!(
+                validate_http_acl_configuration(Some(&invalid), &RuleFileConfig::default())
+                    .is_err()
+            );
+        }
     }
 }
