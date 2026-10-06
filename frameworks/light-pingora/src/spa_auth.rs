@@ -194,7 +194,12 @@ impl SpaSessionRuntime {
             validate_csrf(session, &principal.claims)?;
             if token_needs_refresh(&principal.claims, self.cookies.renew_before_seconds) {
                 return self
-                    .renew_or_expire(session, refresh_token.as_deref(), token_header)
+                    .renew_or_expire(
+                        session,
+                        refresh_token.as_deref(),
+                        token_header,
+                        claim_string(&principal.claims, "csrf").as_deref(),
+                    )
                     .await;
             }
             inject_bearer_token(session, token_header, access_token)?;
@@ -206,7 +211,7 @@ impl SpaSessionRuntime {
 
         if refresh_token.is_some() {
             return self
-                .renew_or_expire(session, refresh_token.as_deref(), token_header)
+                .renew_or_expire(session, refresh_token.as_deref(), token_header, None)
                 .await;
         }
 
@@ -226,6 +231,7 @@ impl SpaSessionRuntime {
         session: &mut Session,
         refresh_token: Option<&str>,
         token_header: &str,
+        verified_csrf: Option<&str>,
     ) -> Result<SpaSessionOutcome, HandlerRejection> {
         let Some(refresh_token) = refresh_token.filter(|value| !value.trim().is_empty()) else {
             return Ok(SpaSessionOutcome::Respond(session_expired_response(
@@ -234,7 +240,7 @@ impl SpaSessionRuntime {
         };
         match self
             .refresh
-            .renew(self.token_client.as_ref(), refresh_token)
+            .renew(self.token_client.as_ref(), refresh_token, verified_csrf)
             .await
         {
             Ok(result) => {
@@ -678,7 +684,7 @@ pub struct RefreshResult {
 struct RefreshSingleFlight {
     cache_ms: u64,
     max_entries: usize,
-    entries: Mutex<BTreeMap<String, RefreshResult>>,
+    entries: Mutex<BTreeMap<(String, Option<String>), RefreshResult>>,
 }
 
 impl RefreshSingleFlight {
@@ -694,14 +700,22 @@ impl RefreshSingleFlight {
         &self,
         client: &SpaTokenClient,
         refresh_token: &str,
+        verified_csrf: Option<&str>,
     ) -> Result<RefreshResult, HandlerRejection> {
         let now = now_millis();
         let mut entries = self.entries.lock().await;
         entries.retain(|_, value| now.saturating_sub(value.completed_at_millis) <= self.cache_ms);
-        if let Some(result) = entries.get(refresh_token) {
+        // A refresh-only request has no authenticated CSRF value to preserve.
+        // Do not let its cached result rotate CSRF for a verified session.
+        let cache_key = (refresh_token.to_string(), verified_csrf.map(str::to_string));
+        if let Some(result) = entries.get(&cache_key) {
             return Ok(result.clone());
         }
-        let csrf = generate_csrf();
+        // Preserve the value validated against the signed access JWT, never an
+        // unverified cookie/header. This keeps in-flight headers and WS protocols valid.
+        let csrf = verified_csrf
+            .map(str::to_string)
+            .unwrap_or_else(generate_csrf);
         let response = client.refresh_token(refresh_token, csrf.as_str()).await?;
         let result = RefreshResult {
             response,
@@ -714,7 +728,7 @@ impl RefreshSingleFlight {
             {
                 entries.remove(&first_key);
             }
-            entries.insert(refresh_token.to_string(), result.clone());
+            entries.insert(cache_key, result.clone());
         }
         Ok(result)
     }
@@ -1418,6 +1432,88 @@ fn default_refresh_max_entries() -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn renewal_preserves_verified_csrf_and_isolates_refresh_only_cache() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut forms = Vec::new();
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let mut buffer = [0; 4096];
+                loop {
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&buffer[..count]);
+                    if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .unwrap()
+                            .trim()
+                            .parse()
+                            .unwrap();
+                        if bytes.len() >= end + 4 + length {
+                            forms.push(
+                                url::form_urlencoded::parse(&bytes[end + 4..end + 4 + length])
+                                    .into_owned()
+                                    .collect::<std::collections::BTreeMap<_, _>>(),
+                            );
+                            break;
+                        }
+                    }
+                }
+                let body = r#"{"access_token":"test-access","refresh_token":"test-refresh"}"#;
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            }
+            forms
+        });
+        let mut config = super::ClientTokenConfig::default();
+        config.oauth.token.server_url = Some(format!("http://{address}"));
+        config.oauth.token.refresh_token.client_id = "test-client".into();
+        config.oauth.token.refresh_token.client_secret = "test-secret".into();
+        let client = super::SpaTokenClient::new(config, None);
+        let refresh = super::RefreshSingleFlight::new(60_000, 10);
+
+        // A refresh-only result must not be reused by a verified JWT session.
+        let fresh = refresh.renew(&client, "refresh", None).await.unwrap();
+        assert!(!fresh.csrf.is_empty());
+        assert_ne!(fresh.csrf, "verified-csrf");
+        let preserved = refresh
+            .renew(&client, "refresh", Some("verified-csrf"))
+            .await
+            .unwrap();
+        assert_eq!(preserved.csrf, "verified-csrf");
+        let cached = refresh
+            .renew(&client, "refresh", Some("verified-csrf"))
+            .await
+            .unwrap();
+        assert_eq!(cached.csrf, preserved.csrf);
+        // A later renewal using the rotated refresh token preserves the same CSRF.
+        let later = refresh
+            .renew(&client, "test-refresh", Some("verified-csrf"))
+            .await
+            .unwrap();
+        assert_eq!(later.csrf, "verified-csrf");
+        let forms = server.join().unwrap();
+        assert_eq!(forms[0].get("csrf"), Some(&fresh.csrf));
+        assert_eq!(
+            forms[1].get("csrf").map(String::as_str),
+            Some("verified-csrf")
+        );
+        assert_eq!(
+            forms[2].get("csrf").map(String::as_str),
+            Some("verified-csrf")
+        );
+    }
+
     #[test]
     fn csrf_diagnostics_distinguish_duplicate_matches_from_selected_cookie() {
         let headers = [
