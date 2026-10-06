@@ -129,7 +129,13 @@ where
         let host = req.remove_header(&http::header::HOST);
 
         session.upstream_compression.request_filter(&req);
-        let body_empty = session.as_mut().is_body_empty();
+        // A consumed downstream stream may still have a retry/application
+        // replay body. Let the normal body loop send that buffer and its EOS,
+        // including an empty buffer, rather than closing the stream here.
+        let has_replay = session.as_ref().get_retry_buffer().is_some()
+            || (session.as_mut().is_body_done()
+                && self.inner.prebuffered_request_body(session, ctx).is_some());
+        let body_empty = session.as_mut().is_body_empty() && !has_replay;
 
         // whether we support sending END_STREAM on HEADERS if body is empty
         let send_end_stream = req.send_end_stream().expect("req must be h2");
