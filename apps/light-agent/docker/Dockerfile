@@ -29,7 +29,12 @@ WORKDIR /usr/src/app/apps/light-agent
 RUN --mount=type=cache,id=light-fabric-rust198-registry-${CARGO_CACHE_ID},target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=light-fabric-rust198-git-${CARGO_CACHE_ID},target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=light-fabric-rust198-target-${CARGO_CACHE_ID}-app-musl,target=/usr/src/app/target,sharing=locked \
-    cargo build --locked --release --target x86_64-unknown-linux-musl \
+    # Cargo uses source mtimes for freshness. COPY can restore older mtimes
+    # when switching checkouts while this target cache retains newer artifacts.
+    # Refresh only copied workspace inputs, never downloaded dependency sources.
+    find /usr/src/app/contracts /usr/src/app/crates /usr/src/app/frameworks \
+         /usr/src/app/apps /usr/src/app/patches -type f -exec touch {} + \
+    && cargo build --locked --release --target x86_64-unknown-linux-musl \
     && mkdir -p /out \
     && cp /usr/src/app/target/x86_64-unknown-linux-musl/release/light-agent /out/light-agent
 
