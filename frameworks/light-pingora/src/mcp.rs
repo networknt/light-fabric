@@ -1611,6 +1611,7 @@ async fn call_native_workflow_tool(
     authorization: &str,
     scope_authorization: &str,
     publisher_token: Option<&str>,
+    correlation_id: Option<&str>,
     tool_name: &str,
     arguments: JsonValue,
 ) -> Result<JsonValue, NativeWorkflowError> {
@@ -1619,6 +1620,7 @@ async fn call_native_workflow_tool(
         authorization,
         scope_authorization,
         publisher_token,
+        correlation_id,
         tool_name,
         arguments,
         None,
@@ -1631,6 +1633,7 @@ async fn call_native_workflow_tool_with_timeout(
     authorization: &str,
     scope_authorization: &str,
     publisher_token: Option<&str>,
+    correlation_id: Option<&str>,
     tool_name: &str,
     arguments: JsonValue,
     request_timeout: Option<Duration>,
@@ -1667,6 +1670,9 @@ async fn call_native_workflow_tool_with_timeout(
         .json(&request_json);
     if let Some(token) = publisher_token {
         request_builder = request_builder.header("x-publisher-token", token);
+    }
+    if let Some(correlation_id) = correlation_id {
+        request_builder = request_builder.header("x-correlation-id", correlation_id);
     }
     if let Some(timeout) = request_timeout {
         request_builder = request_builder.timeout(timeout);
@@ -4429,6 +4435,7 @@ impl McpRouterRuntime {
             &authorization,
             scope_authorization,
             publisher_token,
+            context.correlation_id.as_deref(),
             "workflow_invoke",
             invoke_arguments,
             Some(timeout),
@@ -4563,6 +4570,7 @@ impl McpRouterRuntime {
                 &user_authorization,
                 scope_authorization,
                 publisher_token,
+                context.correlation_id.as_deref(),
                 &tool.name,
                 arguments.clone(),
             )
@@ -5108,6 +5116,7 @@ impl McpRouterRuntime {
                 &authorization,
                 scope,
                 publisher,
+                effective.request.correlation_id.as_deref(),
                 &tool.name,
                 arguments.clone(),
             )
@@ -19019,6 +19028,131 @@ toolMetadata:
             .unwrap()
             .unwrap();
         serde_json::from_slice(response.body.buffered().unwrap()).unwrap()
+    }
+
+    async fn correlation_test_call(
+        runtime: &McpRouterRuntime,
+        name: &str,
+        arguments: JsonValue,
+        publisher: Option<&str>,
+        user: bool,
+        purpose: Option<&str>,
+        role: Option<&str>,
+        correlation_id: Option<&str>,
+    ) -> JsonValue {
+        let mut headers = accept_json_with_session(runtime);
+        headers.push(("authorization".into(), "Bearer caller-test".into()));
+        if let Some(token) = publisher {
+            headers.push(("x-publisher-token".into(), token.into()));
+        }
+        let response = runtime
+            .handle_request_with_context(
+                McpHttpRequest {
+                    method: "POST".into(),
+                    path: "/mcp".into(),
+                    headers,
+                    body: serde_json::to_vec(&json!({
+                        "jsonrpc":"2.0","id":1,"method":"tools/call",
+                        "params":{"name":name,"arguments":arguments}
+                    }))
+                    .unwrap(),
+                },
+                McpRequestContext {
+                    auth: Some(AuthPrincipal {
+                        client_id: Some("f7d42348-c647-4efb-a52d-4c5787421e72".into()),
+                        user_id: user.then(|| "user-test".into()),
+                        host: Some("15000000-0000-0000-0000-000000000003".into()),
+                        role: role.map(str::to_owned),
+                        claims: purpose
+                            .map(|purpose| json!({"token_use":purpose}))
+                            .unwrap_or_else(|| json!({})),
+                        ..AuthPrincipal::default()
+                    }),
+                    authorization: Some("Bearer caller-test".into()),
+                    correlation_id: correlation_id.map(str::to_owned),
+                    ..McpRequestContext::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        serde_json::from_slice(response.body.buffered().unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn workflow_correlation_forwarding_preserves_receipt_and_request_identity() {
+        let expected = json!({"isError":true,"content":[],"structuredContent":{"status":"timeout"}});
+        let (base, received) = spawn_http_sequence_server(vec![http_json_response(json!({
+            "jsonrpc":"2.0","id":"backend","result":expected
+        }))]).await;
+        let runtime = step15_runtime(&base, vec![step15_workflow_tool("published", true, Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))]);
+        let result = correlation_test_call(&runtime, "published", json!({"x":1}),
+            Some("publisher-fixture"), true, Some("user"), None, Some("checkpoint-correlation-fixture")).await;
+        assert_eq!(result["result"], expected);
+        let requests = received.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let headers = requests[0].split("\r\n\r\n").next().unwrap().to_ascii_lowercase();
+        for header in ["x-correlation-id: checkpoint-correlation-fixture", "authorization: bearer caller-test",
+            "x-scope-token: bearer scope-test", "x-publisher-token: publisher-fixture"] {
+            assert!(headers.contains(header), "missing synthetic header: {header}");
+        }
+        let body = request_json_body(&requests[0]);
+        assert_eq!(body["params"]["name"], "workflow_invoke");
+        assert_ne!(body["id"], "checkpoint-correlation-fixture");
+        assert_ne!(body["id"], 1);
+        assert!(Uuid::parse_str(body["id"].as_str().unwrap()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn workflow_correlation_forwarding_absent_and_invalid_header_behavior() {
+        let (base, received) = spawn_http_sequence_server(vec![http_json_response(json!({
+            "jsonrpc":"2.0","id":"backend","result":{"isError":false}
+        }))]).await;
+        let runtime = WorkflowDispatchRuntime { client: reqwest::Client::new(), invocation_url:base,
+            scope_authorization:None };
+        let result = call_native_workflow_tool(&runtime, "Bearer caller-fixture", "Bearer scope-fixture",
+            None, None, "workflow_get_status", json!({})).await;
+        assert!(result.is_ok());
+        let requests = received.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(!requests[0].to_ascii_lowercase().contains("x-correlation-id:"));
+        let invalid = call_native_workflow_tool(&runtime, "Bearer caller-fixture", "Bearer scope-fixture",
+            None, Some("invalid\r\nheader"), "workflow_get_status", json!({})).await;
+        assert!(matches!(invalid, Err(NativeWorkflowError::Transport(_))));
+    }
+
+    #[tokio::test]
+    async fn workflow_correlation_forwarding_lifecycle_receipt() {
+        let expected = json!({"isError":false,"content":[],"structuredContent":{"status":"completed"}});
+        let (base, received) = spawn_http_sequence_server(vec![http_json_response(json!({
+            "jsonrpc":"2.0","id":"backend","result":expected
+        }))]).await;
+        let tool = serde_yaml::from_str::<McpToolConfig>(r#"
+name: workflow_get_status
+endpointName: workflow_get_status
+serviceId: com.networknt.workflow-1.0.0
+path: /mcp
+method: CALL
+endpoint: workflow_get_status@call
+apiType: mcp
+inputSchema: {type: object}
+"#).unwrap();
+        let discovery: Arc<dyn McpDiscoveryResolver> = Arc::new(FakeDiscovery::new(
+            discovery_snapshot(&base, "com.networknt.workflow-1.0.0", None, Some("http"))));
+        let mut config = McpRouterConfig::default();
+        config.workflow.invocation_url = base.clone();
+        config.tools.push(tool);
+        let mut runtime = McpRouterRuntime::new_with_discovery(config, Some(discovery)).unwrap();
+        runtime.workflow_dispatch = Some(Arc::new(WorkflowDispatchRuntime {
+            client:reqwest::Client::new(), invocation_url:base,
+            scope_authorization:Some("Bearer scope-test".into()) }));
+        let result = correlation_test_call(&runtime, "workflow_get_status", json!({}), None,
+            true, Some("user"), None, Some("lifecycle-correlation-fixture")).await;
+        assert_eq!(result["result"], expected);
+        let requests = received.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].to_ascii_lowercase().contains("\r\nx-correlation-id: lifecycle-correlation-fixture\r\n"));
+        assert_ne!(request_json_body(&requests[0])["id"], "lifecycle-correlation-fixture");
     }
 
     #[tokio::test]

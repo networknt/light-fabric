@@ -52,6 +52,40 @@ configured sink cannot redirect evidence or its bearer token. The
 must use an approved tenant telemetry or audit collector. `gateway_ops` is a
 bounded delivery spool, not the long-term traffic warehouse.
 
+### Upstream dispatch observation
+
+`gateway-evidence.dispatchObservationEnabled` defaults to `false`. Configure it
+through Config Server alongside the other evidence properties; it is not a
+release-image setting and needs no additional per-service configuration file.
+When `true`, durable evidence must also be enabled and the dispatch migrations
+must be installed. The observer currently covers only GET issue and issue-comment
+requests under `/github/repos/{owner}/{repo}/issues/{number}` and its `/comments`
+suffix, not all Gateway endpoints.
+
+The observer gives each covered request an audit identity before authentication
+and ACL processing, then records start, upstream attempts, request handoffs and
+completion. A complete denied lifecycle with zero attempts and zero handoffs
+demonstrates that this request did not dispatch upstream. A 401/403 response on
+its own does not establish that. An attempt can fail before handoff; handoff does
+not establish that GitHub processed the request. Retries count as additional
+attempts. Incomplete observation cannot prove non-dispatch.
+
+This adds durable metadata writes and associated latency/storage cost; it does
+not grant access or change routing. It exports no tokens, headers, request bodies,
+response bodies or full repository/issue paths. Observation persistence failure
+marks proof incomplete rather than introducing a new request denial policy.
+Use it for scoped qualification or an explicit audit requirement; leave it off
+when that evidence is unnecessary. Disabled observation does not disable the
+separate general evidence facility or its existing required audit events.
+
+Observer identity uses the automatically computed executable/configuration hashes
+and process identity. It does not require an image digest property. Install
+`0003_gateway_dispatch_image_optional.sql` after the existing observer migration
+using the operational migration mechanism before running the updated observer.
+The migration preserves all historical rows and permits older binaries to keep
+writing their image values. Rolling back the binary does not require reversing
+this additive schema change.
+
 ## Docker
 
 Build a local image from the workspace root context:

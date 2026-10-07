@@ -1,6 +1,7 @@
 # Bounded operational evidence. The record contract contains metadata and
 # digests only; request/response content and credentials are not representable.
 enabled: ${gateway-evidence.enabled:false}
+dispatchObservationEnabled: ${gateway-evidence.dispatchObservationEnabled:false}
 contractVersion: ${gateway-evidence.contractVersion:2}
 databaseUrlFile: ${gateway-evidence.databaseUrlFile:/run/secrets/operational-database-url}
 bindingId: ${gateway-evidence.bindingId:00000000-0000-0000-0000-000000000000}

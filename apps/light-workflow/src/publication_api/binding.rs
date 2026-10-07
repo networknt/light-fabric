@@ -12,6 +12,10 @@ use workflow_core::models::{
 };
 use workflow_invocation_contract::{ErrorCode, InvocationBudget, InvocationMode};
 
+const MAXIMUM_SYNC_WAIT_MS: i32 = 20_000;
+// Per-binding opt-in through totalDeadlineMs; existing bindings are not rewritten.
+const MAXIMUM_BINDING_DEADLINE_MS: i32 = 300_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Binding {
@@ -254,12 +258,12 @@ fn validate_binding(binding: &Binding) -> Result<(), ApiError> {
             "binding requires sync, interactive and compact-json settings",
         ));
     }
-    if !(1..=20_000).contains(&binding.sync_wait_ms)
+    if !(1..=MAXIMUM_SYNC_WAIT_MS).contains(&binding.sync_wait_ms)
         || binding.total_deadline_ms < binding.sync_wait_ms
-        || binding.total_deadline_ms > 30_000
+        || binding.total_deadline_ms > MAXIMUM_BINDING_DEADLINE_MS
     {
         return Err(invalid(
-            "syncWaitMs must be 1..20000 and at most totalDeadlineMs 30000",
+            "syncWaitMs must be 1..20000 and at most totalDeadlineMs 300000",
         ));
     }
     if !matches!(
@@ -2639,6 +2643,30 @@ mod tests {
         );
     }
     #[test]
+    fn five_minute_deadline_is_an_explicit_binding_opt_in() {
+        let base = example();
+        assert_eq!(base.binding.total_deadline_ms, 30_000);
+        validate_binding(&base.binding).unwrap();
+        for deadline in [30_000, 30_001, 60_000, 299_999, 300_000] {
+            let mut extended = base.binding.clone();
+            extended.total_deadline_ms = deadline;
+            validate_binding(&extended).unwrap();
+        }
+        for deadline in [0, -1, 300_001, i32::MAX] {
+            let mut invalid = base.binding.clone();
+            invalid.total_deadline_ms = deadline;
+            assert!(validate_binding(&invalid).is_err(), "{deadline}");
+        }
+        let mut extended = base.binding.clone();
+        extended.total_deadline_ms = 300_000;
+        extended.sync_wait_ms = 20_000;
+        validate_binding(&extended).unwrap();
+        extended.sync_wait_ms = 20_001;
+        assert!(validate_binding(&extended).is_err());
+        assert_eq!(example().binding.total_deadline_ms, 30_000);
+    }
+
+    #[test]
     fn field_rules_reject_each_invalid_binding_family() {
         let base = example();
         validate_binding(&base.binding).unwrap();
@@ -2664,7 +2692,7 @@ mod tests {
         bad.sync_wait_ms = 0;
         assert!(validate_binding(&bad).is_err());
         let mut bad = base.binding.clone();
-        bad.total_deadline_ms = 31_000;
+        bad.total_deadline_ms = 300_001;
         assert!(validate_binding(&bad).is_err());
         let mut bad = base.binding.clone();
         bad.total_deadline_ms = bad.sync_wait_ms - 1;

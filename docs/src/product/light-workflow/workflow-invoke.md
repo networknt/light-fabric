@@ -1395,6 +1395,18 @@ key kind, so a client retry within ten minutes gets the stored result instead
 of a second write. A different input under the same explicit or business key
 returns `WORKFLOW_IDEMPOTENCY_CONFLICT`.
 
+For v2 Invoke, `X-Correlation-Id` identifies one logical request for immutable
+acceptance recovery. Keep it unchanged when recovering an uncertain request;
+use a new correlation for a new read. This receipt identity is separate from
+the binding's derived, explicit or business idempotency key: different
+correlations still attach to the same in-flight run or replay within its window.
+After that window expires, a new request can claim a new run while both earlier
+instances and their immutable receipts remain retained. An attachment also gets
+its own immutable receipt, so recovering it after expiry cannot start another
+run. Empty, duplicate or overlong correlation values fail before admission.
+Callers without a correlation retain their legacy exact-recovery identity;
+they cannot use that identity to distinguish a fresh call from receipt recovery.
+
 The attach check runs before admission, so it skips capacity checks and keeps
 the original deadline. Two identical calls that arrive together may both miss
 it; the loser can get `WORKFLOW_CAPACITY_EXHAUSTED`, and its retry attaches.

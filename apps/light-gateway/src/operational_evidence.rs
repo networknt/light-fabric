@@ -16,11 +16,67 @@ pub const GATEWAY_EVIDENCE_FILE: &str = "gateway-evidence.yml";
 pub const GATEWAY_EVIDENCE_MODULE_ID: &str = "light-gateway/gateway-evidence";
 const GATEWAY_EVIDENCE_CONFIG_NAME: &str = "gateway-evidence";
 
+fn registry_digest(registry: &light_runtime::ModuleRegistry) -> Result<String, serde_json::Error> {
+    let mut summaries = serde_json::to_value(registry.module_summaries())?;
+    // Pingora registers action-gateway again while preparing its TLS listener.
+    // An identical registration changes loadedAt, not effective configuration.
+    // Retain lastReload and all effective flags so actual reloads invalidate proof.
+    for summary in summaries.as_array_mut().expect("module summaries are an array") {
+        summary.as_object_mut().expect("module summary is an object").remove("loadedAt");
+    }
+    Ok(gateway_operational_store::sha256_digest(&serde_json::to_string(&(
+        registry.component_configs(), summaries,
+    ))?))
+}
+
+#[cfg(test)]
+mod registry_identity_tests {
+    use super::*;
+    #[test]
+    fn dispatch_observer_configuration_requires_no_release_image_digest() {
+        let config: GatewayEvidenceConfig = serde_json::from_value(serde_json::json!({
+            "enabled": true, "dispatchObservationEnabled": true, "contractVersion": 2,
+            "databaseUrlFile": "/run/secrets/database-url",
+            "bindingId": "11111111-1111-7111-8111-111111111111",
+            "bindingDigest": format!("sha256:{}", "b".repeat(64)),
+            "hostId": "22222222-2222-7222-8222-222222222222",
+            "environment": "test", "serverHost": "postgres", "port": 5432,
+            "tlsMode": "DISABLE", "serviceOwner": "light-gateway", "schema": "gateway_ops",
+            "expectedDatabase": "operations", "minimumSchemaGeneration": 2,
+            "credentialGeneration": 1, "gatewayInstance": "test",
+            "maximumPendingRecords": 8192, "maximumPendingBytes": 67108864,
+            "sinkEndpoint": "stdout://collector", "publisherBatchRecords": 128,
+            "publisherPollMs": 250, "publisherRetryMs": 1000,
+            "publisherLeaseSeconds": 30, "deliveredRetentionSeconds": 3600
+        })).unwrap();
+        validate_config(&config).unwrap();
+        assert!(serde_json::to_value(config).unwrap().get("deploymentImageDigest").is_none());
+    }
+    #[test]
+    fn repeated_listener_registration_preserves_identity_but_configuration_changes_do_not() {
+        let registry = light_runtime::ModuleRegistry::default();
+        let register = |value, enabled| registry.register_config(
+            "action-gateway", "action-gateway", ModuleKind::Framework,
+            serde_json::json!({"enabled": value}), [], true, Some(enabled), false,
+        );
+        register(true, true);
+        let original = registry_digest(&registry).unwrap();
+        register(true, true);
+        assert_eq!(original, registry_digest(&registry).unwrap());
+        register(false, true);
+        assert_ne!(original, registry_digest(&registry).unwrap());
+        register(true, false);
+        assert_ne!(original, registry_digest(&registry).unwrap());
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GatewayEvidenceConfig {
     #[serde(default)]
     enabled: bool,
+    #[serde(default)]
+    dispatch_observation_enabled: bool,
     contract_version: u16,
     database_url_file: String,
     binding_id: Uuid,
@@ -57,6 +113,19 @@ pub struct GatewayEvidenceRuntime {
     repository: Repository,
     expected_binding: ExpectedBindingOwned,
     validated: OnceCell<()>,
+    pub dispatch_identity: Option<DispatchIdentity>,
+    dispatch_validated: OnceCell<()>,
+    configuration_registry: Arc<light_runtime::ModuleRegistry>,
+}
+
+#[derive(Serialize)]
+pub struct DispatchIdentity {
+    pub digest: String,
+    process_id: Uuid,
+    binary_digest: String,
+    configuration_digest: String,
+    #[serde(skip)]
+    registry_digest: String,
 }
 
 #[derive(Clone)]
@@ -73,6 +142,40 @@ struct ExpectedBindingOwned {
 }
 
 impl GatewayEvidenceRuntime {
+    pub fn configuration_current(&self) -> bool {
+        self.dispatch_identity.as_ref().is_some_and(|identity| {
+            registry_digest(&self.configuration_registry)
+                .is_ok_and(|digest| digest == identity.registry_digest)
+        })
+    }
+    pub async fn record_dispatch(
+        &self,
+        record: &gateway_operational_store::EvidenceRecord,
+    ) -> Result<(), StoreError> {
+        self.ensure_validated().await?;
+        let identity = self
+            .dispatch_identity
+            .as_ref()
+            .ok_or_else(|| StoreError::Scope("dispatch observation is disabled".into()))?;
+        self.dispatch_validated.get_or_try_init(|| async {
+            let count: i64=sqlx::query_scalar("SELECT count(*) FROM operational_meta.operational_schema_migration_t WHERE migration_owner='gateway-operational-store' AND schema_name='gateway_ops' AND migration_id=$1")
+                .bind(gateway_operational_store::DISPATCH_MIGRATION_ID).fetch_one(self.repository.pool()).await?;
+            if count != 1 { return Err(StoreError::Scope("dispatch observation migration is not installed".into())); }
+            let count: i64=sqlx::query_scalar("SELECT count(*) FROM operational_meta.operational_schema_migration_t WHERE migration_owner='gateway-operational-store' AND schema_name='gateway_ops' AND migration_id='0003_gateway_dispatch_image_optional'")
+                .fetch_one(self.repository.pool()).await?;
+            if count != 1 { return Err(StoreError::Scope("dispatch image-optional migration is not installed".into())); }
+            sqlx::query("INSERT INTO gateway_ops.gateway_dispatch_identity_t(deployment_config_digest,process_id,binary_digest,configuration_digest,observer_contract_version) VALUES($1,$2,$3,$4,1)")
+                .bind(&identity.digest).bind(identity.process_id).bind(&identity.binary_digest).bind(&identity.configuration_digest)
+                .execute(self.repository.pool()).await?;
+            Ok(())
+        }).await?;
+        match self.repository.record(record).await? {
+            gateway_operational_store::AdmissionOutcome::Persisted => Ok(()),
+            gateway_operational_store::AdmissionOutcome::DroppedOptional => Err(StoreError::Scope(
+                "required dispatch observation was dropped".into(),
+            )),
+        }
+    }
     pub async fn record(
         &self,
         record: &gateway_operational_store::EvidenceRecord,
@@ -128,6 +231,11 @@ pub fn load_gateway_evidence_runtime(
         false,
     )?;
     if !config.enabled {
+        if config.dispatch_observation_enabled {
+            return Err(RuntimeError::Config(
+                "dispatch observation requires enabled durable Gateway evidence".into(),
+            ));
+        }
         return Ok(None);
     }
     validate_config(&config)?;
@@ -167,6 +275,36 @@ pub fn load_gateway_evidence_runtime(
     };
     let publisher = HttpPublisher::new(config.sink_endpoint.clone(), bearer_token)
         .map_err(|error| RuntimeError::Config(error.to_string()))?;
+    let dispatch_identity = if config.dispatch_observation_enabled {
+        use sha2::{Digest, Sha256};
+        let process_id = Uuid::now_v7();
+        let binary = std::fs::read(std::env::current_exe().map_err(|_| {
+            RuntimeError::Config("cannot locate dispatch observer executable".into())
+        })?)
+        .map_err(|_| RuntimeError::Config("cannot hash dispatch observer executable".into()))?;
+        let binary_digest = format!("sha256:{:x}", Sha256::digest(binary));
+        let ordered: std::collections::BTreeMap<_, _> =
+            runtime_config.resolved_values.iter().collect();
+        let components = runtime_config.module_registry.component_configs();
+        let registry_digest = registry_digest(&runtime_config.module_registry)
+            .map_err(|_| RuntimeError::Config("cannot hash observer components".into()))?;
+        let configuration_digest = gateway_operational_store::sha256_digest(
+            &serde_json::to_string(&(ordered, components))
+                .map_err(|_| RuntimeError::Config("cannot hash observer configuration".into()))?,
+        );
+        let digest = gateway_operational_store::sha256_digest(&format!(
+            "{process_id}|{binary_digest}|{configuration_digest}|1"
+        ));
+        Some(DispatchIdentity {
+            digest,
+            process_id,
+            binary_digest,
+            configuration_digest,
+            registry_digest,
+        })
+    } else {
+        None
+    };
     let runtime = Arc::new(GatewayEvidenceRuntime {
         repository,
         expected_binding: ExpectedBindingOwned {
@@ -181,6 +319,9 @@ pub fn load_gateway_evidence_runtime(
             minimum_schema_generation: config.minimum_schema_generation,
         },
         validated: OnceCell::new(),
+        dispatch_identity,
+        dispatch_validated: OnceCell::new(),
+        configuration_registry: Arc::clone(&runtime_config.module_registry),
     });
     start_publisher(Arc::clone(&runtime), publisher, config, admission);
     Ok(Some(runtime))

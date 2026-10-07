@@ -279,6 +279,34 @@ pub(crate) async fn invoke(
     invoke_with_interlude(state, headers, arguments, std::future::ready(())).await
 }
 
+// Receipt identity distinguishes a logical request from the binding's input
+// idempotency scope. Reusing this correlation recovers the same acceptance;
+// a different request still passes through the transactional scope claim.
+fn invoke_receipt_identity(
+    headers: &HeaderMap,
+    tool: Uuid,
+) -> Result<(String, Option<String>), ApiError> {
+    let values = headers.get_all("x-correlation-id");
+    let mut values = values.iter();
+    let Some(value) = values.next() else {
+        // Preserve exact recovery identities of callers without correlation.
+        return Ok((format!("workflow_invoke:{tool}"), None));
+    };
+    let correlation = value
+        .to_str()
+        .map_err(|_| ApiError::input_invalid("invalid Invoke correlation identity"))?;
+    if values.next().is_some()
+        || correlation.is_empty()
+        || correlation.len() > 128
+        || correlation.chars().any(char::is_control)
+    {
+        return Err(ApiError::input_invalid("invalid Invoke correlation identity"));
+    }
+    let key = canonical_sha256(&json!({"correlationId":correlation}))
+        .map_err(|_| ApiError::input_invalid("invalid Invoke correlation identity"))?;
+    Ok((format!("workflow_invoke_request:{tool}"), Some(key)))
+}
+
 async fn invoke_with_interlude<I: std::future::Future<Output = ()>>(
     state: RuleApiState,
     headers: HeaderMap,
@@ -300,14 +328,23 @@ async fn invoke_with_interlude<I: std::future::Future<Output = ()>>(
     }
     let input_digest = canonical_sha256(&input.input)
         .map_err(|_| ApiError::input_invalid("workflow input is invalid"))?;
-    let operation_kind = format!("workflow_invoke:{}", input.stable_tool_ref);
-    let mut recovery = InvokeRecovery::new(
+    let (operation_kind, request_key) = invoke_receipt_identity(&headers, input.stable_tool_ref)?;
+    let mut recovery = if let Some(key) = request_key.as_deref() {
+        InvokeRecovery {
+            candidates: Vec::new(),
+            selected: Some(crate::operational_admission::Operation::new(
+                &identity, &operation_kind, key, &arguments,
+            )?),
+        }
+    } else {
+        InvokeRecovery::new(
         &identity,
         &operation_kind,
         input.idempotency_key.as_deref(),
         &input_digest,
         &arguments,
-    )?;
+        )?
+    };
     for (operation, authoritative) in recovery.lookups() {
         if let Some(committed) = recover_operation(operation, authoritative, &state.pool).await? {
             let accepted = committed
@@ -363,7 +400,7 @@ async fn invoke_with_interlude<I: std::future::Future<Output = ()>>(
         .map_err(|_| ApiError::input_invalid("workflow input is invalid"))?;
     let key = selected_key(kind, &input_digest, input.idempotency_key.as_deref())?;
     let scoped_key_digest = scope_digest(kind_name, &identity, input.stable_tool_ref, key)?;
-    let operation = crate::operational_admission::Operation::new(&identity, &operation_kind, key, &arguments)?;
+    let operation = crate::operational_admission::Operation::new(&identity, &operation_kind, request_key.as_deref().unwrap_or(key), &arguments)?;
     // From this point the binding has selected the actual operation identity.
     // Failure-race recovery must not inspect another policy's candidate key.
     recovery.selected = Some(operation.clone());
@@ -381,7 +418,7 @@ async fn invoke_with_interlude<I: std::future::Future<Output = ()>>(
     let authored: Value = serde_yaml::from_str(&row.try_get::<String, _>("definition").map_err(ApiError::database)?)
         .map_err(|_| ApiError::definition_mismatch("invalid authored definition"))?;
     let v2 = crate::operational_admission::profile(&authored)? == workflow_expression::Profile::CelWorkflowV2;
-    if v2 {
+    if v2 && request_key.is_none() {
         let historical: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_invocation_idempotency_t WHERE host_id=$1 AND scope_digest=$2)")
             .bind(identity.host_id).bind(&scoped_key_digest).fetch_one(&state.pool).await.map_err(ApiError::database)?;
         if historical { return Err(crate::operational_admission::unavailable()); }
@@ -893,6 +930,37 @@ impl InvokeAdmission {
 mod tests {
     use super::*;
 
+    #[test]
+    fn request_receipt_identity_is_distinct_from_input_and_legacy_identity() {
+        let tool = Uuid::from_u128(29);
+        let mut headers = HeaderMap::new();
+        assert_eq!(invoke_receipt_identity(&headers, tool).unwrap(),
+            (format!("workflow_invoke:{tool}"), None));
+        headers.insert("x-correlation-id", "logical-request-a".parse().unwrap());
+        let first = invoke_receipt_identity(&headers, tool).unwrap();
+        assert!(first.0.len() <= 64);
+        assert!(first.0.starts_with("workflow_invoke_request:"));
+        assert!(first.1.as_ref().unwrap().len() <= 512);
+        assert_eq!(first, invoke_receipt_identity(&headers, tool).unwrap());
+        headers.insert("x-correlation-id", "logical-request-b".parse().unwrap());
+        let second = invoke_receipt_identity(&headers, tool).unwrap();
+        assert_eq!(first.0, second.0);
+        assert_ne!(first.1, second.1);
+    }
+
+    #[test]
+    fn request_receipt_identity_rejects_empty_oversized_and_duplicate_correlations() {
+        for correlation in [String::new(), "x".repeat(129)] {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-correlation-id", correlation.parse().unwrap());
+            assert!(invoke_receipt_identity(&headers, Uuid::nil()).is_err());
+        }
+        let mut headers = HeaderMap::new();
+        headers.append("x-correlation-id", "first".parse().unwrap());
+        headers.append("x-correlation-id", "second".parse().unwrap());
+        assert!(invoke_receipt_identity(&headers, Uuid::nil()).is_err());
+    }
+
     fn recovery_identity() -> InvocationIdentity {
         InvocationIdentity {
             host_id: Uuid::from_u128(1),
@@ -1174,6 +1242,156 @@ pub(crate) mod handler_postgres_tests {
     use axum::routing::post;
     use sqlx::{PgPool, postgres::PgPoolOptions};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    async fn request_receipt_fixture() -> Fixture {
+        let mut f = fixture().await;
+        let mut raw: Value = serde_yaml::from_str(DEFINITION).unwrap();
+        raw["document"]["metadata"] = json!({"lightExpressionProfile":"cel-workflow-v2"});
+        let definition = serde_yaml::to_string(&raw).unwrap();
+        f.definition_digest = crate::publication_api::definition_digest(&definition).unwrap();
+        sqlx::query("UPDATE wf_definition_t SET definition=$2 WHERE host_id=$1")
+            .bind(f.host).bind(&definition).execute(&f.pool).await.unwrap();
+        sqlx::query("UPDATE wf_definition_version_t SET definition=$2,definition_digest=$3 WHERE host_id=$1")
+            .bind(f.host).bind(&definition).bind(&f.definition_digest).execute(&f.pool).await.unwrap();
+        sqlx::query("UPDATE workflow_tool_binding_t SET definition_digest=$2 WHERE host_id=$1")
+            .bind(f.host).bind(&f.definition_digest).execute(&f.pool).await.unwrap();
+        let admin = PgPool::connect(&std::env::var("ADMIN_DATABASE_URL").unwrap()).await.unwrap();
+        sqlx::query("UPDATE workflow_ops.workflow_expression_profile_policy_t SET admission_enabled=true WHERE profile_id='cel-workflow-v2'")
+            .execute(&admin).await.unwrap();
+        admin.close().await;
+        f.state.definition_validator = Some(crate::expression_test_support::engine(
+            workflow_expression::WorkerConfig { workers:1, ..Default::default() }).unwrap());
+        f
+    }
+
+    fn request_receipt_headers(f: &Fixture, correlation: &str) -> HeaderMap {
+        let mut h = headers(f.host, f.user, "user");
+        h.insert("x-correlation-id", correlation.parse().unwrap());
+        h
+    }
+
+    // Owned fixture state only. The real terminal cleanup trigger supplies the
+    // binding replay window and removes the run credential.
+    async fn request_receipt_terminal(f: &Fixture, run: Uuid, state: &str, effect: &str) {
+        sqlx::query("UPDATE workflow_invocation_t SET state=$3,effect_state=$4,terminal_ts=clock_timestamp(),updated_ts=clock_timestamp(),public_result=$5 WHERE host_id=$1 AND workflow_instance_id=$2")
+            .bind(f.host).bind(run).bind(state).bind(effect)
+            .bind((state=="COMPLETED").then(||json!({"status":"ok"})))
+            .execute(&f.pool).await.unwrap();
+    }
+
+    async fn request_receipt_error(result: Result<Value, ApiError>) -> String {
+        let response = result.unwrap_err().into_response();
+        let body: Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(),65536).await.unwrap()).unwrap();
+        body["code"].as_str().unwrap().to_owned()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires owned scratch DATABASE_URL and ADMIN_DATABASE_URL"]
+    async fn request_receipt_expired_clean_failure_preserves_legacy_acceptance() {
+        let _worker = crate::expression_test_support::acquire().await;
+        let f = request_receipt_fixture().await;
+        let old = running_run(invoke(f.state.clone(),headers(f.host,f.user,"user"),arguments(&f)).await).await;
+        request_receipt_terminal(&f,old,"FAILED","none").await;
+        let before: Value = sqlx::query_scalar("SELECT to_jsonb(r) FROM workflow_operation_receipt_t r WHERE host_id=$1")
+            .bind(f.host).fetch_one(&f.pool).await.unwrap();
+        let fresh = running_run(invoke(f.state.clone(),request_receipt_headers(&f,"fresh-after-clean-failure"),arguments(&f)).await).await;
+        assert_ne!(old,fresh);
+        let after: Value = sqlx::query_scalar("SELECT to_jsonb(r) FROM workflow_operation_receipt_t r WHERE host_id=$1 AND operation_kind=$2")
+            .bind(f.host).bind(format!("workflow_invoke:{}",f.tool)).fetch_one(&f.pool).await.unwrap();
+        assert_eq!(before,after);
+        let rows: Vec<(Uuid,bool)> = sqlx::query_as("SELECT workflow_instance_id,active FROM workflow_invocation_idempotency_t WHERE host_id=$1 ORDER BY workflow_instance_id")
+            .bind(f.host).fetch_all(&f.pool).await.unwrap();
+        assert_eq!(rows.len(),2);
+        assert!(rows.contains(&(old,false)) && rows.contains(&(fresh,true)));
+        tokio::fs::remove_file(&f.keyring).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires owned scratch DATABASE_URL and ADMIN_DATABASE_URL"]
+    async fn request_receipt_zero_replay_is_fresh_but_same_request_recovers_original() {
+        let _worker = crate::expression_test_support::acquire().await;
+        let f = request_receipt_fixture().await;
+        let old = running_run(invoke(f.state.clone(),request_receipt_headers(&f,"original-read"),arguments(&f)).await).await;
+        request_receipt_terminal(&f,old,"COMPLETED","none").await;
+        let recovered = invoke(f.state.clone(),request_receipt_headers(&f,"original-read"),arguments(&f)).await.unwrap();
+        assert_eq!(recovered["workflowInstanceId"],old.to_string());
+        assert_eq!(recovered["output"],json!({"status":"ok"}));
+        let fresh = running_run(invoke(f.state.clone(),request_receipt_headers(&f,"new-read"),arguments(&f)).await).await;
+        assert_ne!(old,fresh);
+        let recovered = invoke(f.state.clone(),request_receipt_headers(&f,"original-read"),arguments(&f)).await.unwrap();
+        assert_eq!(recovered["workflowInstanceId"],old.to_string());
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_invocation_t WHERE host_id=$1")
+            .bind(f.host).fetch_one(&f.pool).await.unwrap();
+        assert_eq!(count,2);
+        tokio::fs::remove_file(&f.keyring).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires owned scratch DATABASE_URL and ADMIN_DATABASE_URL"]
+    async fn request_receipt_positive_window_attaches_and_retains_its_identity() {
+        let _worker = crate::expression_test_support::acquire().await;
+        let f = request_receipt_fixture().await;
+        sqlx::query("UPDATE workflow_tool_binding_t SET idempotency_policy=$2 WHERE host_id=$1")
+            .bind(f.host).bind(json!({"kind":"derived","resultReplayMs":60000})).execute(&f.pool).await.unwrap();
+        let old = running_run(invoke(f.state.clone(),request_receipt_headers(&f,"positive-original"),arguments(&f)).await).await;
+        request_receipt_terminal(&f,old,"COMPLETED","confirmed").await;
+        let attached = invoke(f.state.clone(),request_receipt_headers(&f,"positive-attachment"),arguments(&f)).await.unwrap();
+        assert_eq!(attached["workflowInstanceId"],old.to_string());
+        let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_operation_receipt_t WHERE host_id=$1")
+            .bind(f.host).fetch_one(&f.pool).await.unwrap();
+        assert_eq!(receipts,2);
+        // Advance only the disposable fixture reservation's clock to model TTL expiry.
+        sqlx::query("UPDATE workflow_invocation_idempotency_t SET in_flight_until=clock_timestamp()-interval '2 seconds',result_replay_until=clock_timestamp()-interval '1 second' WHERE host_id=$1")
+            .bind(f.host).execute(&f.pool).await.unwrap();
+        let fresh = running_run(invoke(f.state.clone(),request_receipt_headers(&f,"positive-after-expiry"),arguments(&f)).await).await;
+        assert_ne!(fresh,old);
+        let recovered = invoke(f.state.clone(),request_receipt_headers(&f,"positive-attachment"),arguments(&f)).await.unwrap();
+        assert_eq!(recovered["workflowInstanceId"],old.to_string());
+        tokio::fs::remove_file(&f.keyring).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires owned scratch DATABASE_URL and ADMIN_DATABASE_URL"]
+    async fn request_receipt_inflight_and_explicit_key_conflicts_cannot_duplicate() {
+        let _worker = crate::expression_test_support::acquire().await;
+        let f = request_receipt_fixture().await;
+        sqlx::query("UPDATE workflow_tool_binding_t SET idempotency_policy=$2 WHERE host_id=$1")
+            .bind(f.host).bind(json!({"kind":"explicit","resultReplayMs":0})).execute(&f.pool).await.unwrap();
+        let mut args = arguments(&f);args["idempotencyKey"]=json!("fixed-key");args["input"]=json!({"x":1});
+        let old = running_run(invoke(f.state.clone(),request_receipt_headers(&f,"inflight-original"),args.clone()).await).await;
+        let attached = running_run(invoke(f.state.clone(),request_receipt_headers(&f,"inflight-attachment"),args.clone()).await).await;
+        assert_eq!(old,attached);
+        args["input"]=json!({"x":2});
+        for correlation in ["inflight-original","different-input-request"] {
+            let code = request_receipt_error(invoke(f.state.clone(),request_receipt_headers(&f,correlation),args.clone()).await).await;
+            assert_eq!(code,"WORKFLOW_IDEMPOTENCY_CONFLICT");
+        }
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_invocation_t WHERE host_id=$1")
+            .bind(f.host).fetch_one(&f.pool).await.unwrap();
+        assert_eq!(count,1);
+        tokio::fs::remove_file(&f.keyring).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires owned scratch DATABASE_URL and ADMIN_DATABASE_URL"]
+    async fn request_receipt_concurrent_fresh_calls_share_one_new_acceptance() {
+        let _worker = crate::expression_test_support::acquire().await;
+        let f = request_receipt_fixture().await;
+        let old = running_run(invoke(f.state.clone(),request_receipt_headers(&f,"concurrent-old"),arguments(&f)).await).await;
+        request_receipt_terminal(&f,old,"FAILED","none").await;
+        let (a,b) = tokio::join!(
+            invoke(f.state.clone(),request_receipt_headers(&f,"concurrent-a"),arguments(&f)),
+            invoke(f.state.clone(),request_receipt_headers(&f,"concurrent-b"),arguments(&f)));
+        let a = running_run(a).await;let b = running_run(b).await;
+        assert_eq!(a,b);assert_ne!(a,old);
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_invocation_t WHERE host_id=$1")
+            .bind(f.host).fetch_one(&f.pool).await.unwrap();
+        assert_eq!(count,2);
+        let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_operation_receipt_t WHERE host_id=$1")
+            .bind(f.host).fetch_one(&f.pool).await.unwrap();
+        assert_eq!(receipts,3);
+        tokio::fs::remove_file(&f.keyring).await.unwrap();
+    }
 
     async fn owned_gateway() -> (
         tempfile::TempDir,

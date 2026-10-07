@@ -1,5 +1,5 @@
 use crate::config_util::request_header;
-use light_security::token_purpose::{TokenUse, validate_verified_purpose, verify_with_purpose};
+use light_security::token_purpose::{TokenUse, validate_verified_purpose};
 use light_security::verify_jwt_token_for_services;
 use pingora::prelude::Session;
 
@@ -61,7 +61,7 @@ pub async fn verify_jwt_request_with_service_ids(
     let authorization = request_header(session, AUTHORIZATION);
     let token = required_authorization_bearer(authorization.as_deref())?;
     let scope_header = request_header(session, SCOPE_TOKEN);
-    verify_optional_app_scope(runtime, scope_header.as_deref()).await?;
+    verify_optional_scope(runtime, scope_header.as_deref()).await?;
     let mut effective_service_ids = normalized_service_ids(service_ids);
     if effective_service_ids.is_empty()
         && let Some(service_id) = runtime.service_id_for_request(
@@ -91,14 +91,17 @@ fn required_authorization_bearer(value: Option<&str>) -> Result<&str, HandlerRej
     })
 }
 
-async fn verify_optional_app_scope(
+async fn verify_optional_scope(
     runtime: &SecurityRuntime,
     header: Option<&str>,
 ) -> Result<(), HandlerRejection> {
     if let Some(header) = header {
         let token = parse_bearer(header)
             .ok_or_else(|| HandlerRejection::unauthorized("invalid X-Scope-Token bearer token"))?;
-        verify_with_purpose(runtime, token, TokenUse::App, &[]).await?;
+        // Service scope credentials may be legacy JWTs without token_use.
+        // Keep cryptographic/issuer/audience/expiry checks; this header never
+        // substitutes for the separate caller Authorization identity.
+        verify_jwt_token(runtime, token, JwtExpiryMode::Enforce).await?;
     }
     Ok(())
 }
@@ -200,7 +203,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn user_authorization_is_required_and_optional_scope_must_be_an_app() {
+    async fn user_authorization_is_required_and_optional_scope_is_verified() {
         let runtime = SecurityRuntime::with_test_hs256_key("gateway-dual", KEY).await;
         let user = signed("user");
         let app = signed("app");
@@ -210,24 +213,24 @@ mod tests {
             required_authorization_bearer(Some(&format!("Bearer {user}"))).unwrap(),
             user
         );
-        assert!(verify_optional_app_scope(&runtime, None).await.is_ok());
+        assert!(verify_optional_scope(&runtime, None).await.is_ok());
         assert!(
-            verify_optional_app_scope(&runtime, Some(&format!("Bearer {app}")))
+            verify_optional_scope(&runtime, Some(&format!("Bearer {app}")))
                 .await
                 .is_ok()
         );
         assert!(
-            verify_optional_app_scope(&runtime, Some(&format!("Bearer {user}")))
+            verify_optional_scope(&runtime, Some(&format!("Bearer {user}")))
+                .await
+                .is_ok()
+        );
+        assert!(
+            verify_optional_scope(&runtime, Some("Bearer invalid"))
                 .await
                 .is_err()
         );
         assert!(
-            verify_optional_app_scope(&runtime, Some("Bearer invalid"))
-                .await
-                .is_err()
-        );
-        assert!(
-            verify_optional_app_scope(&runtime, Some(&app))
+            verify_optional_scope(&runtime, Some(&app))
                 .await
                 .is_err()
         );
@@ -235,5 +238,48 @@ mod tests {
             .await
             .unwrap();
         assert!(validate_verified_purpose(&app, &app_principal, TokenUse::User, &[]).is_err());
+    }
+
+    fn signed_scope_claims(claims: serde_json::Value, key: &[u8]) -> String {
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
+        header.kid = Some("gateway-dual".into());
+        jsonwebtoken::encode(&header, &claims, &jsonwebtoken::EncodingKey::from_secret(key))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn legacy_scope_without_purpose_is_verified() {
+        let runtime = SecurityRuntime::with_test_hs256_key("gateway-dual", KEY).await;
+        let token = signed_scope_claims(
+            json!({"iss":"gateway-dual","aud":"workflow","exp":4102444800u64,
+                "sub":"workflow-service","scope":"portal.r portal.w"}),
+            KEY,
+        );
+        assert!(verify_optional_scope(&runtime, Some(&format!("Bearer {token}"))).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn scope_without_purpose_still_rejects_bad_signature() {
+        let runtime = SecurityRuntime::with_test_hs256_key("gateway-dual", KEY).await;
+        let token = signed_scope_claims(
+            json!({"iss":"gateway-dual","exp":4102444800u64}),
+            b"different-untrusted-test-signing-key",
+        );
+        assert!(verify_optional_scope(&runtime, Some(&format!("Bearer {token}"))).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn scope_without_purpose_still_rejects_expiry() {
+        let runtime = SecurityRuntime::with_test_hs256_key("gateway-dual", KEY).await;
+        let token = signed_scope_claims(json!({"iss":"gateway-dual","exp":1u64}), KEY);
+        assert!(verify_optional_scope(&runtime, Some(&format!("Bearer {token}"))).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn scope_without_purpose_still_rejects_wrong_issuer() {
+        let mut runtime = SecurityRuntime::with_test_hs256_key("gateway-dual", KEY).await;
+        runtime.config.issuer = "gateway-dual".into();
+        let token = signed_scope_claims(json!({"iss":"untrusted","exp":4102444800u64}), KEY);
+        assert!(verify_optional_scope(&runtime, Some(&format!("Bearer {token}"))).await.is_err());
     }
 }

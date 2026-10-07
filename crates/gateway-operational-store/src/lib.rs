@@ -12,6 +12,12 @@ use std::path::Path;
 use std::time::Duration;
 use uuid::Uuid;
 
+mod dispatch;
+pub use dispatch::{DISPATCH_CONTRACT_VERSION, DispatchObservation, DispatchPhase};
+pub const DISPATCH_MIGRATION_ID: &str = "0002_gateway_dispatch_observation";
+pub const DISPATCH_MIGRATION_SQL: &str =
+    include_str!("../migrations/gateway-postgres/0002_gateway_dispatch_observation.sql");
+
 pub const EXPECTED_DATABASE: &str = "operations";
 pub const EXPECTED_SCHEMA: &str = "gateway_ops";
 pub const EXPECTED_RUNTIME_ROLE: &str = "operations_gateway_runtime";
@@ -67,11 +73,13 @@ pub struct EvidenceRecord {
     pub policy_digest: Option<String>,
     pub handler_digest: Option<String>,
     pub occurred_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_observation: Option<DispatchObservation>,
 }
 
 impl EvidenceRecord {
     pub fn digest(&self, host_id: Uuid, gateway_instance: &str) -> String {
-        let canonical = format!(
+        let mut canonical = format!(
             "{host_id}|{gateway_instance}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.event_id,
             self.event_class.as_str(),
@@ -88,6 +96,11 @@ impl EvidenceRecord {
             self.handler_digest.as_deref().unwrap_or(""),
             self.occurred_at.to_rfc3339(),
         );
+        if let Some(dispatch) = &self.dispatch_observation {
+            canonical.push('|');
+            canonical
+                .push_str(&serde_json::to_string(dispatch).expect("dispatch metadata serializes"));
+        }
         format!("sha256:{:x}", Sha256::digest(canonical.as_bytes()))
     }
 }
@@ -123,6 +136,8 @@ pub struct ClaimedEvidence {
     pub policy_digest: Option<String>,
     pub handler_digest: Option<String>,
     pub evidence_digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dispatch_observation: Option<DispatchObservation>,
     #[serde(skip)]
     pub record_bytes: i32,
     #[serde(skip)]
@@ -243,32 +258,48 @@ impl Repository {
             return Err(StoreError::SpoolFull);
         }
 
-        sqlx::query(
+        let dispatch_json = record
+            .dispatch_observation
+            .as_ref()
+            .map(|value| sqlx::types::Json(value.clone()));
+        // Legacy records remain usable before the additive observer migration.
+        let insert = if dispatch_json.is_some() {
+            "INSERT INTO gateway_evidence_spool_t(
+               host_id,event_id,gateway_instance,event_class,event_type,method,endpoint,status_code,
+               duration_micros,request_bytes,response_bytes,correlation_digest,principal_digest,
+               policy_digest,handler_digest,evidence_digest,record_bytes,dispatch_observation)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)"
+        } else {
             "INSERT INTO gateway_evidence_spool_t(
                host_id,event_id,gateway_instance,event_class,event_type,method,endpoint,status_code,
                duration_micros,request_bytes,response_bytes,correlation_digest,principal_digest,
                policy_digest,handler_digest,evidence_digest,record_bytes)
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
-        )
-        .bind(self.host_id)
-        .bind(record.event_id)
-        .bind(&self.gateway_instance)
-        .bind(record.event_class.as_str())
-        .bind(&record.event_type)
-        .bind(&record.method)
-        .bind(&record.endpoint)
-        .bind(i32::from(record.status_code))
-        .bind(i64::try_from(record.duration_micros).unwrap_or(i64::MAX))
-        .bind(i64::try_from(record.request_bytes).unwrap_or(i64::MAX))
-        .bind(i64::try_from(record.response_bytes).unwrap_or(i64::MAX))
-        .bind(&record.correlation_digest)
-        .bind(&record.principal_digest)
-        .bind(&record.policy_digest)
-        .bind(&record.handler_digest)
-        .bind(record.digest(self.host_id, &self.gateway_instance))
-        .bind(record_bytes)
-        .execute(&mut *tx)
-        .await?;
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)"
+        };
+        let query = sqlx::query(insert)
+            .bind(self.host_id)
+            .bind(record.event_id)
+            .bind(&self.gateway_instance)
+            .bind(record.event_class.as_str())
+            .bind(&record.event_type)
+            .bind(&record.method)
+            .bind(&record.endpoint)
+            .bind(i32::from(record.status_code))
+            .bind(i64::try_from(record.duration_micros).unwrap_or(i64::MAX))
+            .bind(i64::try_from(record.request_bytes).unwrap_or(i64::MAX))
+            .bind(i64::try_from(record.response_bytes).unwrap_or(i64::MAX))
+            .bind(&record.correlation_digest)
+            .bind(&record.principal_digest)
+            .bind(&record.policy_digest)
+            .bind(&record.handler_digest)
+            .bind(record.digest(self.host_id, &self.gateway_instance))
+            .bind(record_bytes);
+        let query = if dispatch_json.is_some() {
+            query.bind(dispatch_json)
+        } else {
+            query
+        };
+        query.execute(&mut *tx).await?;
         sqlx::query(
             "UPDATE gateway_evidence_quota_t
              SET pending_records=pending_records+1,pending_bytes=pending_bytes+$2,updated_ts=now()
@@ -311,7 +342,8 @@ impl Repository {
              RETURNING s.host_id,s.event_id,s.gateway_instance,s.event_class,s.event_type,
                s.method,s.endpoint,s.status_code,s.duration_micros,s.request_bytes,s.response_bytes,
                s.correlation_digest,s.principal_digest,s.policy_digest,s.handler_digest,
-               s.evidence_digest,s.record_bytes,s.leased_by,s.attempt",
+               s.evidence_digest,s.record_bytes,s.leased_by,s.attempt,
+               NULLIF(to_jsonb(s)->'dispatch_observation','null'::jsonb) AS dispatch_observation",
         )
         .bind(self.host_id)
         .bind(maximum_records)
@@ -338,6 +370,11 @@ impl Repository {
                     policy_digest: row.try_get("policy_digest")?,
                     handler_digest: row.try_get("handler_digest")?,
                     evidence_digest: row.try_get("evidence_digest")?,
+                    dispatch_observation: row
+                        .try_get::<Option<sqlx::types::Json<DispatchObservation>>, _>(
+                            "dispatch_observation",
+                        )?
+                        .map(|value| value.0),
                     record_bytes: row.try_get("record_bytes")?,
                     leased_by: row.try_get("leased_by")?,
                     attempt: row.try_get("attempt")?,
@@ -511,6 +548,19 @@ impl HttpPublisher {
 }
 
 fn validate_record(record: &EvidenceRecord) -> Result<(), StoreError> {
+    if let Some(dispatch) = &record.dispatch_observation {
+        dispatch.validate(record)?;
+    } else if matches!(
+        record.event_type.as_str(),
+        "gateway.dispatch.observation.started"
+            | "gateway.upstream.attempt"
+            | "gateway.upstream.handoff"
+            | "gateway.dispatch.observation.terminal"
+    ) {
+        return Err(StoreError::Scope(
+            "dispatch event requires observation metadata".into(),
+        ));
+    }
     if record.event_type.trim().is_empty()
         || record.event_type.len() > 128
         || record.method.is_empty()
@@ -658,6 +708,7 @@ mod tests {
             policy_digest: None,
             handler_digest: None,
             occurred_at: Utc::now(),
+            dispatch_observation: None,
         })
         .unwrap();
         let rendered = json.to_string().to_ascii_lowercase();

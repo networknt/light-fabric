@@ -1859,7 +1859,10 @@ pub(crate) async fn start_invocation_new(
     let raw: Value = serde_yaml::from_str(&binding.definition)
         .map_err(|_| ApiError::definition_mismatch("invalid authored workflow"))?;
     let expression_profile = crate::operational_admission::profile(&raw)?;
-    if expression_profile == workflow_expression::Profile::CelWorkflowV2 {
+    let request_receipt = profile == AdmissionProfile::WorkflowBacked
+        && invoke_admission.is_some()
+        && operation.kind.starts_with("workflow_invoke_request:");
+    if expression_profile == workflow_expression::Profile::CelWorkflowV2 && !request_receipt {
         let historical: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_invocation_idempotency_t WHERE host_id=$1 AND scope_digest=$2)")
             .bind(identity.host_id).bind(&request.idempotency.scoped_key_digest).fetch_one(&state.pool).await.map_err(ApiError::database)?;
         if historical {
@@ -2410,13 +2413,15 @@ pub(crate) async fn start_invocation_new(
         }
     }
     let acceptance = if validated.is_some() {
-        if !matches!(outcome, AcceptOutcome::Accepted { .. }) {
+        if !matches!(outcome, AcceptOutcome::Accepted { .. }) && !request_receipt {
             return Err(crate::operational_admission::unavailable());
         }
         let (accepted_ts, updated_ts, deadline_ts, state_version): (DateTime<Utc>,DateTime<Utc>,DateTime<Utc>,i64) =
             sqlx::query_as("SELECT accepted_ts,updated_ts,deadline_ts,state_version FROM workflow_invocation_t WHERE host_id=$1 AND workflow_instance_id=$2")
                 .bind(identity.host_id).bind(accepted_run).fetch_one(&mut *tx).await.map_err(ApiError::database)?;
-        let status = InvocationStatus {
+        let status = if matches!(outcome, AcceptOutcome::Replay { .. }) {
+            load_status_for_receipt(&mut tx, &identity, accepted_run).await?
+        } else { InvocationStatus {
             contract_version: CONTRACT_VERSION,
             workflow_instance_id: accepted_run,
             stable_tool_ref: request.stable_tool_ref,
@@ -2431,7 +2436,7 @@ pub(crate) async fn start_invocation_new(
             non_cancellable_reason: None,
             public_result: None,
             error: None,
-        };
+        }};
         let receipt = if operation.kind == "workflow_start" {
             json!({"accepted":true,"workflowInstanceId":accepted_run,"processId":process_id,
                 "workflowDefinitionId":request.workflow_definition_id,"definitionDigest":request.definition_digest,
@@ -2935,6 +2940,42 @@ pub(crate) async fn cancel_invocation(
     ))
 }
 
+// Receipt attachment observes the selected run within the acceptance transaction
+// and never refreshes its credential or touches its original acceptance receipt.
+async fn load_status_for_receipt(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    identity: &InvocationIdentity,
+    workflow_instance_id: Uuid,
+) -> Result<InvocationStatus, ApiError> {
+    let row = sqlx::query(
+        "SELECT stable_tool_ref,definition_digest,state,state_version,accepted_ts,updated_ts,deadline_ts,
+                public_result,normalized_error,correlation_id,effect_state,non_cancellable_reason,
+                response_policy_snapshot->>'acceptedSubjectClaimsDigest' AS accepted_claims_digest,
+                response_policy_snapshot->'acceptedSubjectClaims' AS accepted_claims
+           FROM workflow_invocation_t
+          WHERE host_id=$1 AND workflow_instance_id=$2
+            AND principal_subject=$3 AND end_user_subject=$4",
+    )
+    .bind(identity.host_id)
+    .bind(workflow_instance_id)
+    .bind(&identity.principal_subject)
+    .bind(&identity.end_user_subject)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(ApiError::database)?
+    .ok_or_else(|| ApiError::not_found("workflow invocation is unavailable"))?;
+    let claims: Value = row.try_get("accepted_claims").map_err(ApiError::database)?;
+    let digest: String = row.try_get("accepted_claims_digest").map_err(ApiError::database)?;
+    if !workflow_invocation_contract::accepted_subject_claims_match(
+        &claims, &digest, &identity.caller_claims_digest,
+    ).unwrap_or(false) {
+        return Err(ApiError::unauthorized(
+            "current subject authorization no longer matches the accepted disclosure ceiling",
+        ));
+    }
+    status_from_receipt_row(&row, workflow_instance_id, None)
+}
+
 pub(crate) async fn load_status(
     pool: &PgPool,
     identity: &InvocationIdentity,
@@ -3006,6 +3047,15 @@ pub(crate) async fn load_status(
         .await
         .map_err(ApiError::database)?;
     }
+    status_from_receipt_row(&row, workflow_instance_id, refreshed_updated_ts)
+}
+
+fn status_from_receipt_row(
+    row: &sqlx::postgres::PgRow,
+    workflow_instance_id: Uuid,
+    observed_updated_ts: Option<DateTime<Utc>>,
+) -> Result<InvocationStatus, ApiError> {
+    let state = parse_state(&row.try_get::<String, _>("state").map_err(ApiError::database)?)?;
     let normalized_error: Option<Value> = row
         .try_get("normalized_error")
         .map_err(ApiError::database)?;
@@ -3020,7 +3070,7 @@ pub(crate) async fn load_status(
         state,
         state_version: row.try_get("state_version").map_err(ApiError::database)?,
         accepted_ts: row.try_get("accepted_ts").map_err(ApiError::database)?,
-        updated_ts: refreshed_updated_ts
+        updated_ts: observed_updated_ts
             .map_or_else(|| row.try_get("updated_ts"), Ok)
             .map_err(ApiError::database)?,
         deadline_ts: row.try_get("deadline_ts").map_err(ApiError::database)?,
@@ -3054,6 +3104,7 @@ pub(crate) async fn load_status(
         }),
     })
 }
+
 
 pub(crate) async fn authenticate(
     state: &RuleApiState,

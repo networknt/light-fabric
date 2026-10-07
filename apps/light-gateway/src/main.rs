@@ -81,6 +81,7 @@ use live_validation::{
 };
 mod operational_evidence;
 use operational_evidence::{GatewayEvidenceRuntime, load_gateway_evidence_runtime};
+mod dispatch_observation;
 
 mod embedded_config {
     include!(concat!(env!("OUT_DIR"), "/embedded_config.rs"));
@@ -940,6 +941,68 @@ impl DelegationReplayStore for PostgresDelegationReplayStore {
 }
 
 impl GatewayProxy {
+    async fn record_dispatch_phase(
+        &self,
+        ctx: &mut GatewayRequestContext,
+        phase: gateway_operational_store::DispatchPhase,
+        error: bool,
+    ) {
+        let Some(state) = ctx.dispatch_observation.as_mut() else {
+            return;
+        };
+        if self
+            .gateway_evidence
+            .as_ref()
+            .is_none_or(|runtime| !runtime.configuration_current())
+        {
+            state.writes_complete = false;
+        }
+        let Some(observation) = state.event(phase, error) else {
+            state.writes_complete = false;
+            return;
+        };
+        let event_type = match phase {
+            gateway_operational_store::DispatchPhase::Started => {
+                "gateway.dispatch.observation.started"
+            }
+            gateway_operational_store::DispatchPhase::Attempt => "gateway.upstream.attempt",
+            gateway_operational_store::DispatchPhase::Handoff => "gateway.upstream.handoff",
+            gateway_operational_store::DispatchPhase::Terminal => {
+                "gateway.dispatch.observation.terminal"
+            }
+        };
+        let record = EvidenceRecord {
+            event_id: uuid::Uuid::now_v7(),
+            event_class: EvidenceClass::RequiredAudit,
+            event_type: event_type.into(),
+            method: "GET".into(),
+            endpoint: "/github/repos/*@get".into(),
+            status_code: ctx
+                .response_status
+                .or(ctx.upstream_status)
+                .unwrap_or(if error { 500 } else { 200 }),
+            duration_micros: u64::try_from(ctx.request_start.elapsed().as_micros())
+                .unwrap_or(u64::MAX),
+            request_bytes: 0,
+            response_bytes: 0,
+            correlation_digest: Some(state.correlation_digest.clone()),
+            principal_digest: None,
+            policy_digest: None,
+            handler_digest: None,
+            occurred_at: Utc::now(),
+            dispatch_observation: Some(observation),
+        };
+        // Observation failure degrades proof, without adding a new fail-closed
+        // request policy. Counters still advance and terminal marks incomplete.
+        if let Some(runtime) = self.gateway_evidence.as_ref() {
+            if runtime.record_dispatch(&record).await.is_err() {
+                state.writes_complete = false;
+                tracing::error!(request_audit_id=%state.audit_id,"Gateway dispatch observation persistence failed; proof is incomplete");
+            }
+        } else {
+            state.writes_complete = false;
+        }
+    }
     fn active_spa_session_endpoint(
         &self,
         active_handlers: &ActiveHandlerSet,
@@ -1189,7 +1252,6 @@ impl GatewayProxy {
             active_handlers.is_handler_active("websocket"),
             access_control.clone().map(Arc::new),
         )?;
-        let gateway_evidence = load_gateway_evidence_runtime(config, admission.clone())?;
         let llm_gateway =
             load_llm_gateway_module_at_startup(config, active_handlers.is_handler_active("llm"));
         let router_route =
@@ -1544,6 +1606,7 @@ impl GatewayProxy {
                     .map(Arc::new)
             })
             .transpose()?;
+        let gateway_evidence = load_gateway_evidence_runtime(config, admission.clone())?;
         Ok(Self {
             outbound_trust,
             workflow_actions,
@@ -3798,6 +3861,29 @@ impl ProxyHttp for GatewayProxy {
 
         let method = session.req_header().method.as_str().to_string();
         ctx.method = method.clone();
+        if dispatch_observation::in_scope(&method, &request_path)
+            && let Some(runtime) = self.gateway_evidence.as_ref()
+            && let Some(identity) = runtime.dispatch_identity.as_ref()
+        {
+            // Capture correlation before security/ACL and all early response paths.
+            if let Some(config) = self.correlation_config.load().as_ref().as_ref() {
+                ctx.correlation = apply_correlation_request(session, config)?;
+            }
+            let correlation = ctx
+                .correlation
+                .correlation_id
+                .get_or_insert_with(|| uuid::Uuid::now_v7().to_string());
+            ctx.dispatch_observation = Some(dispatch_observation::DispatchState::new(
+                sha256_digest(correlation),
+                identity.digest.clone(),
+            ));
+            self.record_dispatch_phase(
+                ctx,
+                gateway_operational_store::DispatchPhase::Started,
+                false,
+            )
+            .await;
+        }
         // RFC 9728 metadata is public and must remain discoverable before
         // bearer verification. It contains configured public URLs only.
         let mcp_runtime = self.mcp_router.load();
@@ -3838,6 +3924,13 @@ impl ProxyHttp for GatewayProxy {
         }
         let security_execution = self.security_execution.load();
         ctx.security_execution = Some(Arc::clone(&security_execution));
+        // Startup identity hashes the startup configuration. Reload requires a
+        // fresh identity/recreation for proof, never silently claim old digests.
+        if security_execution.generation != 1
+            && let Some(observer) = ctx.dispatch_observation.as_mut()
+        {
+            observer.writes_complete = false;
+        }
         let active_handlers = Arc::clone(&security_execution.active_handlers);
         let spa_session_endpoint = self
             .active_spa_session_endpoint(&active_handlers, &request_path)
@@ -4043,7 +4136,9 @@ impl ProxyHttp for GatewayProxy {
             }
             match handler_id.as_str() {
                 "correlation" => {
-                    if let Some(config) = self.correlation_config.load().as_ref().as_ref() {
+                    if ctx.dispatch_observation.is_none()
+                        && let Some(config) = self.correlation_config.load().as_ref().as_ref()
+                    {
                         ctx.correlation = apply_correlation_request(session, config)?;
                     }
                 }
@@ -5677,6 +5772,12 @@ impl ProxyHttp for GatewayProxy {
         _session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<Box<HttpPeer>> {
+        self.record_dispatch_phase(
+            ctx,
+            gateway_operational_store::DispatchPhase::Attempt,
+            false,
+        )
+        .await;
         let upstream = ctx.proxy_target.as_ref().ok_or_else(|| {
             Error::explain(
                 ErrorType::InternalError,
@@ -5859,6 +5960,12 @@ impl ProxyHttp for GatewayProxy {
             upstream_request
                 .insert_header(light_pingora::TRACEABILITY_ID_HEADER, traceability_id)?;
         }
+        self.record_dispatch_phase(
+            ctx,
+            gateway_operational_store::DispatchPhase::Handoff,
+            false,
+        )
+        .await;
         Ok(())
     }
 
@@ -6311,6 +6418,12 @@ impl ProxyHttp for GatewayProxy {
             self.record_metrics(ctx, 500);
         }
         self.record_stream_terminal(error, ctx);
+        self.record_dispatch_phase(
+            ctx,
+            gateway_operational_store::DispatchPhase::Terminal,
+            error.is_some(),
+        )
+        .await;
         if let Some(runtime) = self.gateway_evidence.as_ref()
             && !ctx.method.is_empty()
         {
@@ -6367,6 +6480,7 @@ impl ProxyHttp for GatewayProxy {
                 policy_digest,
                 handler_digest,
                 occurred_at: Utc::now(),
+                dispatch_observation: None,
             };
             match runtime.record(&record).await {
                 Ok(gateway_operational_store::AdmissionOutcome::Persisted) => {}
@@ -6551,6 +6665,7 @@ impl StreamMetricsRecorder {
 }
 
 struct GatewayRequestContext {
+    dispatch_observation: Option<dispatch_observation::DispatchState>,
     admission_permit: Option<AdmissionPermit>,
     proxy_target: Option<ProxyTarget>,
     upstream_http2_enabled: bool,
@@ -6630,6 +6745,7 @@ struct GatewayRequestContext {
 impl Default for GatewayRequestContext {
     fn default() -> Self {
         Self {
+            dispatch_observation: None,
             admission_permit: None,
             proxy_target: None,
             upstream_http2_enabled: false,
@@ -6710,6 +6826,7 @@ impl Default for GatewayRequestContext {
 
 impl GatewayRequestContext {
     fn begin_request(&mut self) {
+        self.dispatch_observation = None;
         self.llm_identity = None;
         self.llm_module = None;
         self.admission_permit = None;
@@ -8343,6 +8460,8 @@ fn build_registered_gateway_handler(
 
 #[cfg(test)]
 mod tests {
+    include!("dispatch_integration_tests.rs");
+    include!("dispatch_role_tests.rs");
     include!("dual_token_tests.rs");
     include!("workflow_auth_tests.rs");
     include!("http_acl_tests.rs");

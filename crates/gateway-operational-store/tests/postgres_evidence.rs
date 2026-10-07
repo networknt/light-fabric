@@ -28,6 +28,7 @@ fn record(class: EvidenceClass, endpoint: &str) -> EvidenceRecord {
         policy_digest: Some(sha256_digest("policy")),
         handler_digest: Some(sha256_digest("handler")),
         occurred_at: Utc::now(),
+        dispatch_observation: None,
     }
 }
 
