@@ -98,10 +98,12 @@ async fn verify_optional_scope(
     if let Some(header) = header {
         let token = parse_bearer(header)
             .ok_or_else(|| HandlerRejection::unauthorized("invalid X-Scope-Token bearer token"))?;
-        // Service scope credentials may be legacy JWTs without token_use.
-        // Keep cryptographic/issuer/audience/expiry checks; this header never
-        // substitutes for the separate caller Authorization identity.
-        verify_jwt_token(runtime, token, JwtExpiryMode::Enforce).await?;
+        // Preserve signed legacy scope credentials without a purpose marker,
+        // but never accept an explicit user (or malformed) purpose as app scope.
+        let principal = verify_jwt_token(runtime, token, JwtExpiryMode::Enforce).await?;
+        if principal.claims.get("token_use").is_some() {
+            validate_verified_purpose(token, &principal, TokenUse::App, &[])?;
+        }
     }
     Ok(())
 }
@@ -222,7 +224,7 @@ mod tests {
         assert!(
             verify_optional_scope(&runtime, Some(&format!("Bearer {user}")))
                 .await
-                .is_ok()
+                .is_err()
         );
         assert!(
             verify_optional_scope(&runtime, Some("Bearer invalid"))
@@ -238,6 +240,17 @@ mod tests {
             .await
             .unwrap();
         assert!(validate_verified_purpose(&app, &app_principal, TokenUse::User, &[]).is_err());
+        for purpose in [json!(null), json!("invalid"), json!(false), json!([])] {
+            let token = signed_scope_claims(
+                json!({"iss":"gateway-dual","exp":4102444800u64,"token_use":purpose}),
+                KEY,
+            );
+            assert!(
+                verify_optional_scope(&runtime, Some(&format!("Bearer {token}")))
+                    .await
+                    .is_err()
+            );
+        }
     }
 
     fn signed_scope_claims(claims: serde_json::Value, key: &[u8]) -> String {

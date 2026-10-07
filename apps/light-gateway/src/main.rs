@@ -3834,6 +3834,9 @@ impl ProxyHttp for GatewayProxy {
         Self::CTX: Send + Sync,
     {
         ctx.begin_request();
+        // Only a caller-supplied identity may select a Workflow request receipt.
+        // Observability handlers may generate/mutate this header later.
+        let caller_correlation_id = request_header(session, "x-correlation-id");
         let request_path = session.req_header().uri.path().to_string();
         ctx.request_path = request_path.clone();
         if request_path == HEALTH_PATH {
@@ -5357,7 +5360,7 @@ impl ProxyHttp for GatewayProxy {
                                 action,
                                 auth: ctx.auth.clone(),
                                 authorization: request_header(session, "authorization"),
-                                correlation_id: ctx.correlation.correlation_id.clone(),
+                                correlation_id: caller_correlation_id.clone(),
                                 delegation: ctx.agent_delegation.clone(),
                                 anonymous_binding: client_ip(session)
                                     .map(|address| format!("peer:{address}")),
