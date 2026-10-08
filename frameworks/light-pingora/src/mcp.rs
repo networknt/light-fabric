@@ -19081,20 +19081,49 @@ toolMetadata:
 
     #[tokio::test]
     async fn workflow_correlation_forwarding_preserves_receipt_and_request_identity() {
-        let expected = json!({"isError":true,"content":[],"structuredContent":{"status":"timeout"}});
+        let expected =
+            json!({"isError":true,"content":[],"structuredContent":{"status":"timeout"}});
         let (base, received) = spawn_http_sequence_server(vec![http_json_response(json!({
             "jsonrpc":"2.0","id":"backend","result":expected
-        }))]).await;
-        let runtime = step15_runtime(&base, vec![step15_workflow_tool("published", true, Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))]);
-        let result = correlation_test_call(&runtime, "published", json!({"x":1}),
-            Some("publisher-fixture"), true, Some("user"), None, Some("checkpoint-correlation-fixture")).await;
+        }))])
+        .await;
+        let runtime = step15_runtime(
+            &base,
+            vec![step15_workflow_tool(
+                "published",
+                true,
+                Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            )],
+        );
+        let result = correlation_test_call(
+            &runtime,
+            "published",
+            json!({"x":1}),
+            Some("publisher-fixture"),
+            true,
+            Some("user"),
+            None,
+            Some("checkpoint-correlation-fixture"),
+        )
+        .await;
         assert_eq!(result["result"], expected);
         let requests = received.await.unwrap();
         assert_eq!(requests.len(), 1);
-        let headers = requests[0].split("\r\n\r\n").next().unwrap().to_ascii_lowercase();
-        for header in ["x-correlation-id: checkpoint-correlation-fixture", "authorization: bearer caller-test",
-            "x-scope-token: bearer scope-test", "x-publisher-token: publisher-fixture"] {
-            assert!(headers.contains(header), "missing synthetic header: {header}");
+        let headers = requests[0]
+            .split("\r\n\r\n")
+            .next()
+            .unwrap()
+            .to_ascii_lowercase();
+        for header in [
+            "x-correlation-id: checkpoint-correlation-fixture",
+            "authorization: bearer caller-test",
+            "x-scope-token: bearer scope-test",
+            "x-publisher-token: publisher-fixture",
+        ] {
+            assert!(
+                headers.contains(header),
+                "missing synthetic header: {header}"
+            );
         }
         let body = request_json_body(&requests[0]);
         assert_eq!(body["params"]["name"], "workflow_invoke");
@@ -19107,27 +19136,54 @@ toolMetadata:
     async fn workflow_correlation_forwarding_absent_and_invalid_header_behavior() {
         let (base, received) = spawn_http_sequence_server(vec![http_json_response(json!({
             "jsonrpc":"2.0","id":"backend","result":{"isError":false}
-        }))]).await;
-        let runtime = WorkflowDispatchRuntime { client: reqwest::Client::new(), invocation_url:base,
-            scope_authorization:None };
-        let result = call_native_workflow_tool(&runtime, "Bearer caller-fixture", "Bearer scope-fixture",
-            None, None, "workflow_get_status", json!({})).await;
+        }))])
+        .await;
+        let runtime = WorkflowDispatchRuntime {
+            client: reqwest::Client::new(),
+            invocation_url: base,
+            scope_authorization: None,
+        };
+        let result = call_native_workflow_tool(
+            &runtime,
+            "Bearer caller-fixture",
+            "Bearer scope-fixture",
+            None,
+            None,
+            "workflow_get_status",
+            json!({}),
+        )
+        .await;
         assert!(result.is_ok());
         let requests = received.await.unwrap();
         assert_eq!(requests.len(), 1);
-        assert!(!requests[0].to_ascii_lowercase().contains("x-correlation-id:"));
-        let invalid = call_native_workflow_tool(&runtime, "Bearer caller-fixture", "Bearer scope-fixture",
-            None, Some("invalid\r\nheader"), "workflow_get_status", json!({})).await;
+        assert!(
+            !requests[0]
+                .to_ascii_lowercase()
+                .contains("x-correlation-id:")
+        );
+        let invalid = call_native_workflow_tool(
+            &runtime,
+            "Bearer caller-fixture",
+            "Bearer scope-fixture",
+            None,
+            Some("invalid\r\nheader"),
+            "workflow_get_status",
+            json!({}),
+        )
+        .await;
         assert!(matches!(invalid, Err(NativeWorkflowError::Transport(_))));
     }
 
     #[tokio::test]
     async fn workflow_correlation_forwarding_lifecycle_receipt() {
-        let expected = json!({"isError":false,"content":[],"structuredContent":{"status":"completed"}});
+        let expected =
+            json!({"isError":false,"content":[],"structuredContent":{"status":"completed"}});
         let (base, received) = spawn_http_sequence_server(vec![http_json_response(json!({
             "jsonrpc":"2.0","id":"backend","result":expected
-        }))]).await;
-        let tool = serde_yaml::from_str::<McpToolConfig>(r#"
+        }))])
+        .await;
+        let tool = serde_yaml::from_str::<McpToolConfig>(
+            r#"
 name: workflow_get_status
 endpointName: workflow_get_status
 serviceId: com.networknt.workflow-1.0.0
@@ -19136,23 +19192,44 @@ method: CALL
 endpoint: workflow_get_status@call
 apiType: mcp
 inputSchema: {type: object}
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let discovery: Arc<dyn McpDiscoveryResolver> = Arc::new(FakeDiscovery::new(
-            discovery_snapshot(&base, "com.networknt.workflow-1.0.0", None, Some("http"))));
+            discovery_snapshot(&base, "com.networknt.workflow-1.0.0", None, Some("http")),
+        ));
         let mut config = McpRouterConfig::default();
         config.workflow.invocation_url = base.clone();
         config.tools.push(tool);
         let mut runtime = McpRouterRuntime::new_with_discovery(config, Some(discovery)).unwrap();
         runtime.workflow_dispatch = Some(Arc::new(WorkflowDispatchRuntime {
-            client:reqwest::Client::new(), invocation_url:base,
-            scope_authorization:Some("Bearer scope-test".into()) }));
-        let result = correlation_test_call(&runtime, "workflow_get_status", json!({}), None,
-            true, Some("user"), None, Some("lifecycle-correlation-fixture")).await;
+            client: reqwest::Client::new(),
+            invocation_url: base,
+            scope_authorization: Some("Bearer scope-test".into()),
+        }));
+        let result = correlation_test_call(
+            &runtime,
+            "workflow_get_status",
+            json!({}),
+            None,
+            true,
+            Some("user"),
+            None,
+            Some("lifecycle-correlation-fixture"),
+        )
+        .await;
         assert_eq!(result["result"], expected);
         let requests = received.await.unwrap();
         assert_eq!(requests.len(), 1);
-        assert!(requests[0].to_ascii_lowercase().contains("\r\nx-correlation-id: lifecycle-correlation-fixture\r\n"));
-        assert_ne!(request_json_body(&requests[0])["id"], "lifecycle-correlation-fixture");
+        assert!(
+            requests[0]
+                .to_ascii_lowercase()
+                .contains("\r\nx-correlation-id: lifecycle-correlation-fixture\r\n")
+        );
+        assert_ne!(
+            request_json_body(&requests[0])["id"],
+            "lifecycle-correlation-fixture"
+        );
     }
 
     #[tokio::test]

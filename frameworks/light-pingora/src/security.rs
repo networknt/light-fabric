@@ -231,11 +231,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(
-            verify_optional_scope(&runtime, Some(&app))
-                .await
-                .is_err()
-        );
+        assert!(verify_optional_scope(&runtime, Some(&app)).await.is_err());
         let app_principal = verify_jwt_token(&runtime, &app, JwtExpiryMode::Enforce)
             .await
             .unwrap();
@@ -256,8 +252,12 @@ mod tests {
     fn signed_scope_claims(claims: serde_json::Value, key: &[u8]) -> String {
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
         header.kid = Some("gateway-dual".into());
-        jsonwebtoken::encode(&header, &claims, &jsonwebtoken::EncodingKey::from_secret(key))
-            .unwrap()
+        jsonwebtoken::encode(
+            &header,
+            &claims,
+            &jsonwebtoken::EncodingKey::from_secret(key),
+        )
+        .unwrap()
     }
 
     #[tokio::test]
@@ -268,7 +268,11 @@ mod tests {
                 "sub":"workflow-service","scope":"portal.r portal.w"}),
             KEY,
         );
-        assert!(verify_optional_scope(&runtime, Some(&format!("Bearer {token}"))).await.is_ok());
+        assert!(
+            verify_optional_scope(&runtime, Some(&format!("Bearer {token}")))
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -278,14 +282,22 @@ mod tests {
             json!({"iss":"gateway-dual","exp":4102444800u64}),
             b"different-untrusted-test-signing-key",
         );
-        assert!(verify_optional_scope(&runtime, Some(&format!("Bearer {token}"))).await.is_err());
+        assert!(
+            verify_optional_scope(&runtime, Some(&format!("Bearer {token}")))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn scope_without_purpose_still_rejects_expiry() {
         let runtime = SecurityRuntime::with_test_hs256_key("gateway-dual", KEY).await;
         let token = signed_scope_claims(json!({"iss":"gateway-dual","exp":1u64}), KEY);
-        assert!(verify_optional_scope(&runtime, Some(&format!("Bearer {token}"))).await.is_err());
+        assert!(
+            verify_optional_scope(&runtime, Some(&format!("Bearer {token}")))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -293,6 +305,10 @@ mod tests {
         let mut runtime = SecurityRuntime::with_test_hs256_key("gateway-dual", KEY).await;
         runtime.config.issuer = "gateway-dual".into();
         let token = signed_scope_claims(json!({"iss":"untrusted","exp":4102444800u64}), KEY);
-        assert!(verify_optional_scope(&runtime, Some(&format!("Bearer {token}"))).await.is_err());
+        assert!(
+            verify_optional_scope(&runtime, Some(&format!("Bearer {token}")))
+                .await
+                .is_err()
+        );
     }
 }
