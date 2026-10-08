@@ -1257,7 +1257,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!((valid, invalid), (6, 27));
+        assert_eq!((valid, invalid), (6, 28));
     }
     #[test]
     fn spa_root_generated_config_cache_and_subdirectory() {
