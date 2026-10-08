@@ -1773,6 +1773,18 @@ impl GatewayProxy {
         }
 
         match resolution {
+            StaticResolution::Generated(response) => {
+                self.write_bytes_response_with_headers(
+                    session,
+                    ctx,
+                    200,
+                    Some(response.content_type),
+                    Some(response.cache_control),
+                    response.body,
+                    &response.headers,
+                )
+                .await
+            }
             StaticResolution::File(file) => {
                 let metadata = tokio::fs::metadata(&file.path).await.map_err(|error| {
                     Error::because(
@@ -7025,6 +7037,130 @@ enum GatewayCommand {
     ValidateConfig { local_only: bool },
     ShowLlmLiveHelp,
     ValidateLlmLive(LiveValidationOptions),
+    ValidatePortalRelease(PortalReleaseValidation),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PortalReleaseValidation {
+    release_dir: std::path::PathBuf,
+    runtime_config: std::path::PathBuf,
+    key_dir: std::path::PathBuf,
+    mount_path: String,
+    handler_config: Option<std::path::PathBuf>,
+}
+
+fn parse_portal_release_options(args: &[String]) -> Result<PortalReleaseValidation> {
+    let mut options = std::collections::BTreeMap::new();
+    let mut args = args.iter();
+    while let Some(key) = args.next() {
+        if !matches!(
+            key.as_str(),
+            "--release-dir"
+                | "--runtime-config"
+                | "--key-dir"
+                | "--mount-path"
+                | "--handler-config"
+        ) {
+            anyhow::bail!("unknown validate-portal-release option");
+        }
+        let value = args
+            .next()
+            .filter(|s| !s.is_empty() && !s.starts_with("--"))
+            .ok_or_else(|| anyhow::anyhow!("missing validate-portal-release option value"))?;
+        if options.insert(key.as_str(), value.clone()).is_some() {
+            anyhow::bail!("duplicate validate-portal-release option");
+        }
+    }
+    let mut required = |key| {
+        options
+            .remove(key)
+            .ok_or_else(|| anyhow::anyhow!("missing required validate-portal-release option {key}"))
+    };
+    let release_dir = required("--release-dir")?.into();
+    let runtime_config = required("--runtime-config")?.into();
+    let key_dir = required("--key-dir")?.into();
+    let mount_path = required("--mount-path")?;
+    Ok(PortalReleaseValidation {
+        release_dir,
+        runtime_config,
+        key_dir,
+        mount_path,
+        handler_config: options.remove("--handler-config").map(Into::into),
+    })
+}
+
+fn validate_portal_release(options: &PortalReleaseValidation) -> (i32, serde_json::Value) {
+    use light_pingora::spa::{
+        PORTAL_SPA_CAPABILITY_VERSION, load_spa, validate_spa_guard_collisions,
+    };
+    use light_pingora::{SpaConfig, StaticSite};
+    let mut report =
+        serde_json::json!({"status": "error", "capability": PORTAL_SPA_CAPABILITY_VERSION});
+    let result = (|| -> Result<()> {
+        let mount = &options.mount_path;
+        if !mount.starts_with('/')
+            || mount != "/" && mount.ends_with('/')
+            || mount.split('/').skip(1).any(|p| {
+                p.is_empty() && mount != "/"
+                    || p == "."
+                    || p == ".."
+                    || p.contains(['\\', '?', '#', '%'])
+                    || p.chars().any(|c| c.is_whitespace() || c.is_control())
+            })
+        {
+            anyhow::bail!("invalid gateway mount path");
+        }
+        let spa = SpaConfig {
+            enabled: true,
+            index: "index.html".into(),
+            runtime_config: options.runtime_config.to_string_lossy().into_owned(),
+            release_manifest: options
+                .release_dir
+                .join("release-manifest.json")
+                .to_string_lossy()
+                .into_owned(),
+            release_key_dir: options.key_dir.to_string_lossy().into_owned(),
+            base_placeholder: "__PORTAL_BASE_HREF__".into(),
+        };
+        let loaded = Arc::new(load_spa(
+            "offline",
+            &options.release_dir.join("dist"),
+            &spa,
+            std::path::Path::new(""),
+        )?);
+        report["version"] = loaded.version.clone().into();
+        report["manifestDigest"] = loaded.manifest_digest.clone().into();
+        report["runtimeConfigDigest"] = loaded.runtime_config_digest.clone().into();
+        if let Some(file) = &options.handler_config {
+            let bytes = std::fs::read(file).context("cannot read handler configuration")?;
+            let handler: light_pingora::HandlerConfig = serde_yaml::from_slice(&bytes)
+                .map_err(|_| anyhow::anyhow!("invalid handler configuration structure"))?;
+            let mut statics = StaticResourceSet::empty();
+            statics.virtual_hosts.insert(
+                "offline".into(),
+                StaticSite {
+                    path: mount.clone(),
+                    base: loaded.release_dir.join("dist"),
+                    spa: Some(loaded),
+                    prefix: true,
+                    transfer_min_size: 10_245_760,
+                    directory_listing_enabled: false,
+                },
+            );
+            validate_spa_guard_collisions(&handler, &statics)?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            report["status"] = "ok".into();
+            (0, report)
+        }
+        Err(e) => {
+            report["error"] = e.to_string().into();
+            (2, report)
+        }
+    }
 }
 
 fn parse_gateway_command<I, S>(args: I) -> Result<GatewayCommand>
@@ -7052,17 +7188,35 @@ where
         {
             Ok(GatewayCommand::ShowLlmLiveHelp)
         }
+        [command, options @ ..] if command == "validate-portal-release" => {
+            parse_portal_release_options(options).map(GatewayCommand::ValidatePortalRelease)
+        }
         [command, options @ ..] if command == "validate-llm-live" => {
             parse_live_validation_options(options).map(GatewayCommand::ValidateLlmLive)
         }
         _ => anyhow::bail!(
-            "unknown light-gateway arguments; expected no arguments, `validate-config [--local-only|--with-remote]`, or `validate-llm-live --help`"
+            "unknown light-gateway arguments; expected no arguments, `validate-config [--local-only|--with-remote]`, or `validate-llm-live --help`, or `validate-portal-release --release-dir <dir> --runtime-config <file> --key-dir <dir> --mount-path <path> [--handler-config <file>]`"
         ),
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Offline verification precedes shutdown hooks, tracing, embedded-config,
+    // LightRuntimeBuilder, config-server and network initialization.
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|s| s == "validate-portal-release") {
+        let (code, report) = match parse_gateway_command(&args) {
+            Ok(GatewayCommand::ValidatePortalRelease(options)) => validate_portal_release(&options),
+            Err(e) => (
+                1,
+                serde_json::json!({"status":"error", "capability":light_pingora::spa::PORTAL_SPA_CAPABILITY_VERSION, "error":e.to_string()}),
+            ),
+            _ => unreachable!("offline command dispatch"),
+        };
+        println!("{}", report);
+        std::process::exit(code);
+    }
     let watcher = ShutdownWatcher::install().context("failed to install shutdown handlers")?;
     let tracing_guard = init_tracing(
         TracingOptions::new("light-gateway").with_legacy_ansi_env("GATEWAY_LOG_ANSI"),
@@ -14706,5 +14860,389 @@ endpointRules:
             json!({"id":725})
         );
         assert_eq!(old.policy_revision(), old_revision);
+    }
+    fn wp8_options(r: &light_pingora::spa::test_support::TestRelease) -> PortalReleaseValidation {
+        PortalReleaseValidation {
+            release_dir: r.root.clone(),
+            runtime_config: r.runtime.clone(),
+            key_dir: r.keys.clone(),
+            mount_path: "/".into(),
+            handler_config: None,
+        }
+    }
+    #[test]
+    fn gateway_portal_release_cli_parser() {
+        let args = [
+            "validate-portal-release",
+            "--release-dir",
+            "release",
+            "--runtime-config",
+            "runtime.json",
+            "--key-dir",
+            "keys",
+            "--mount-path",
+            "/ai/portal",
+            "--handler-config",
+            "handler.yml",
+        ];
+        assert!(matches!(
+            parse_gateway_command(args).unwrap(),
+            GatewayCommand::ValidatePortalRelease(_)
+        ));
+        for bad in [
+            vec!["validate-portal-release"],
+            args[..8].to_vec(),
+            [args.to_vec(), vec!["--key-dir", "again"]].concat(),
+            [args.to_vec(), vec!["--unknown", "x"]].concat(),
+            [args.to_vec(), vec!["--handler-config"]].concat(),
+        ] {
+            assert!(parse_gateway_command(bad).is_err());
+        }
+    }
+    #[test]
+    fn gateway_portal_release_offline_validation_status_and_json() {
+        use light_pingora::spa::test_support::TestRelease;
+        let temp = TempDir::new().unwrap();
+        let r = TestRelease::new(temp.path(), "20261008-0123456789ab");
+        let options = wp8_options(&r);
+        let (code, ok) = validate_portal_release(&options);
+        assert_eq!(code, 0);
+        assert_eq!(ok["status"], "ok");
+        assert_eq!(ok["version"], "20261008-0123456789ab");
+        assert_eq!(ok["capability"], 1);
+        for key in ["manifestDigest", "runtimeConfigDigest"] {
+            assert_eq!(ok[key].as_str().unwrap().len(), 64);
+        }
+        assert!(ok.get("error").is_none());
+        std::fs::write(r.root.join("dist/VERSION"), "tampered").unwrap();
+        let (code, e) = validate_portal_release(&options);
+        assert_eq!(code, 2);
+        assert_eq!(e["status"], "error");
+        assert!(e["error"].as_str().unwrap().contains("SHA-256"));
+        assert!(e.get("version").is_none());
+        r.resign("20261008-0123456789ab", |_| {});
+        std::fs::write(r.root.join("release-manifest.sig"), [0; 64]).unwrap();
+        let (code, e) = validate_portal_release(&options);
+        assert_eq!(code, 2);
+        assert!(
+            e["error"]
+                .as_str()
+                .unwrap()
+                .contains("signature verification")
+        );
+        r.resign("20261008-0123456789ab", |m| {
+            m["minimumGatewayCapability"] = 2.into()
+        });
+        let (code, e) = validate_portal_release(&options);
+        assert_eq!(code, 2);
+        assert!(
+            e["error"]
+                .as_str()
+                .unwrap()
+                .contains("minimumGatewayCapability")
+        );
+        r.resign("20261008-0123456789ab", |_| {});
+        let original = std::fs::read(&r.runtime).unwrap();
+        std::fs::write(&r.runtime, "{}").unwrap();
+        let (code, e) = validate_portal_release(&options);
+        assert_eq!(code, 2);
+        assert!(e["error"].as_str().unwrap().contains("runtime JSON Schema"));
+        std::fs::write(&r.runtime, original).unwrap();
+        let handler = temp.path().join("handler.yml");
+        std::fs::write(
+            &handler,
+            "paths:\n  - path: /app/*\n    method: '*'\n    exec: [not-found]\n",
+        )
+        .unwrap();
+        let mut options = options;
+        options.handler_config = Some(handler);
+        let (code, e) = validate_portal_release(&options);
+        assert_eq!(code, 2);
+        assert!(e["error"].as_str().unwrap().contains("guard `/app`"));
+        assert_eq!(e["version"], ok["version"]);
+    }
+    #[test]
+    #[ignore = "requires cargo build -p light-gateway; run this subprocess gate explicitly with --ignored"]
+    fn gateway_portal_release_offline_process_exit_contract() {
+        use light_pingora::spa::test_support::TestRelease;
+        // Build with cargo build -p light-gateway before this explicit filter.
+        let binary = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/debug/light-gateway");
+        let temp = TempDir::new().unwrap();
+        let r = TestRelease::new(temp.path(), "20261008-0123456789ab");
+        let run = |extra: &[&str]| {
+            let output = std::process::Command::new(&binary)
+                .current_dir(temp.path())
+                .args([
+                    "validate-portal-release",
+                    "--release-dir",
+                    r.root.to_str().unwrap(),
+                    "--runtime-config",
+                    r.runtime.to_str().unwrap(),
+                    "--key-dir",
+                    r.keys.to_str().unwrap(),
+                    "--mount-path",
+                    "/",
+                ])
+                .args(extra)
+                .output()
+                .expect("offline binary; build first");
+            assert!(
+                output.stderr.is_empty(),
+                "unexpected initialization diagnostics: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                output
+                    .stdout
+                    .split(|b| *b == b'\n')
+                    .filter(|l| !l.is_empty())
+                    .count(),
+                1
+            );
+            (
+                output.status.code().unwrap(),
+                serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+            )
+        };
+        let (code, ok) = run(&[]);
+        assert_eq!(code, 0);
+        assert_eq!(ok["status"], "ok");
+        assert_eq!(ok["capability"], 1);
+        assert!(ok.get("manifestDigest").is_some());
+        let (code, e) = run(&["--unknown", "x"]);
+        assert_eq!(code, 1);
+        assert_eq!(e["status"], "error");
+        assert!(e.get("version").is_none());
+        std::fs::write(r.root.join("dist/VERSION"), "tampered").unwrap();
+        let (code, e) = run(&[]);
+        assert_eq!(code, 2);
+        assert!(e["error"].as_str().unwrap().contains("SHA-256"));
+        r.resign("20261008-0123456789ab", |_| {});
+        std::fs::write(r.root.join("release-manifest.sig"), [0; 64]).unwrap();
+        let (code, e) = run(&[]);
+        assert_eq!(code, 2);
+        assert!(
+            e["error"]
+                .as_str()
+                .unwrap()
+                .contains("signature verification")
+        );
+        r.resign("20261008-0123456789ab", |m| {
+            m["minimumGatewayCapability"] = 2.into()
+        });
+        let (code, e) = run(&[]);
+        assert_eq!(code, 2);
+        assert!(
+            e["error"]
+                .as_str()
+                .unwrap()
+                .contains("minimumGatewayCapability")
+        );
+        r.resign("20261008-0123456789ab", |_| {});
+        let original = std::fs::read(&r.runtime).unwrap();
+        std::fs::write(&r.runtime, "{}").unwrap();
+        let (code, e) = run(&[]);
+        assert_eq!(code, 2);
+        assert!(e["error"].as_str().unwrap().contains("runtime JSON Schema"));
+        std::fs::write(&r.runtime, original).unwrap();
+        let handler = temp.path().join("handler.yml");
+        std::fs::write(
+            &handler,
+            "paths:\n  - path: /app/*\n    method: '*'\n    exec: [not-found]\n",
+        )
+        .unwrap();
+        let (code, e) = run(&["--handler-config", handler.to_str().unwrap()]);
+        assert_eq!(code, 2);
+        assert!(e["error"].as_str().unwrap().contains("guard `/app`"));
+        assert_eq!(e["version"], ok["version"]);
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gateway_static_resources_spa_pinning_and_failed_reload_retention() {
+        use light_pingora::spa::test_support::TestRelease;
+        let config_dir = TempDir::new().unwrap();
+        let external_dir = TempDir::new().unwrap();
+        let v1 = TestRelease::new(
+            &config_dir.path().join("releases/v1"),
+            "20261008-0123456789ab",
+        );
+        let mut v2 = TestRelease::new(
+            &config_dir.path().join("releases/v2"),
+            "20261008-abcdef012345",
+        );
+        v2.key = v1.copy_test_key();
+        std::fs::copy(v1.keys.join("test-key.pem"), v2.keys.join("test-key.pem")).unwrap();
+        v2.resign("20261008-abcdef012345", |_| {});
+        let mut next_config: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&v2.runtime).unwrap()).unwrap();
+        next_config["routing"]["publicBasePath"] = "/next".into();
+        std::fs::write(&v2.runtime, serde_json::to_vec(&next_config).unwrap()).unwrap();
+        let current = config_dir.path().join("current");
+        std::os::unix::fs::symlink(&v1.root, &current).unwrap();
+        let host = light_pingora::VirtualHost {
+            domain: "test.example".into(),
+            path: "/".into(),
+            base: current.join("dist").to_str().unwrap().into(),
+            transfer_min_size: 10_245_760,
+            directory_listing_enabled: false,
+            spa: Some(light_pingora::SpaConfig {
+                release_manifest: current
+                    .join("release-manifest.json")
+                    .to_str()
+                    .unwrap()
+                    .into(),
+                ..v1.spa()
+            }),
+        };
+        std::fs::write(
+            config_dir.path().join(light_pingora::VIRTUAL_HOST_FILE),
+            serde_yaml::to_string(&light_pingora::VirtualHostConfig {
+                hosts: vec![host.clone()],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let runtime = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let proxy = GatewayProxy::from_runtime_config(&runtime).unwrap();
+        let before = proxy.static_resources.load();
+        let generated = before.resolve_virtual_host(Some("test.example"), "/");
+        let cfg = before.resolve_virtual_host(Some("test.example"), "/portal-config.json");
+        std::fs::remove_file(&current).unwrap();
+        std::os::unix::fs::symlink(&v2.root, &current).unwrap();
+        let pinned = proxy.static_resources.load();
+        assert_eq!(
+            pinned.resolve_virtual_host(Some("test.example"), "/"),
+            generated
+        );
+        assert_eq!(
+            pinned.resolve_virtual_host(Some("test.example"), "/portal-config.json"),
+            cfg
+        );
+        match pinned.resolve_virtual_host(Some("test.example"), "/VERSION") {
+            StaticResolution::File(f) => assert_eq!(
+                std::fs::read_to_string(f.path).unwrap(),
+                "20261008-0123456789ab"
+            ),
+            o => panic!("{o:?}"),
+        }
+        std::fs::write(v2.root.join("dist/VERSION"), "corrupt").unwrap();
+        let failed = runtime
+            .module_registry
+            .reload_modules(
+                ReloadContext::new(runtime.clone()),
+                &[light_pingora::VIRTUAL_HOST_MODULE_ID.into()],
+            )
+            .await;
+        assert_eq!(failed.failed.len(), 1);
+        assert!(failed.failed[0].message.contains("SHA-256"));
+        assert!(failed.reloaded.is_empty());
+        assert!(Arc::ptr_eq(&before, &proxy.static_resources.load()));
+        assert_eq!(
+            proxy
+                .static_resources
+                .load()
+                .resolve_virtual_host(Some("test.example"), "/"),
+            generated
+        );
+        std::fs::write(v2.root.join("dist/VERSION"), "20261008-abcdef012345").unwrap();
+        let mut next = host;
+        next.spa.as_mut().unwrap().runtime_config = v2.runtime.to_str().unwrap().into();
+        next.spa.as_mut().unwrap().release_key_dir = v2.keys.to_str().unwrap().into();
+        // Failed candidate must use the candidate's trusted key; retry config below.
+        std::fs::write(
+            config_dir.path().join(light_pingora::VIRTUAL_HOST_FILE),
+            serde_yaml::to_string(&light_pingora::VirtualHostConfig { hosts: vec![next] }).unwrap(),
+        )
+        .unwrap();
+        let success = runtime
+            .module_registry
+            .reload_modules(
+                ReloadContext::new(runtime.clone()),
+                &[light_pingora::VIRTUAL_HOST_MODULE_ID.into()],
+            )
+            .await;
+        assert!(success.failed.is_empty(), "{:?}", success.failed);
+        assert_eq!(success.reloaded.len(), 1);
+        let after = proxy.static_resources.load();
+        assert_ne!(
+            after.resolve_virtual_host(Some("test.example"), "/"),
+            generated
+        );
+        assert_ne!(
+            after.resolve_virtual_host(Some("test.example"), "/portal-config.json"),
+            cfg
+        );
+        // The old retained snapshot still serves old content after successful publication.
+        assert_eq!(
+            before.resolve_virtual_host(Some("test.example"), "/"),
+            generated
+        );
+        match after.resolve_virtual_host(Some("test.example"), "/VERSION") {
+            StaticResolution::File(f) => assert_eq!(
+                std::fs::read_to_string(f.path).unwrap(),
+                "20261008-abcdef012345"
+            ),
+            o => panic!("{o:?}"),
+        }
+    }
+    #[tokio::test]
+    async fn gateway_static_resources_generated_get_head_and_method() {
+        use light_pingora::spa::test_support::TestRelease;
+        let config_dir = TempDir::new().unwrap();
+        let external_dir = TempDir::new().unwrap();
+        let r = TestRelease::new(&config_dir.path().join("release"), "20261008-0123456789ab");
+        let proxy = GatewayProxy::from_runtime_config(&runtime_config(
+            &config_dir,
+            &external_dir,
+            HashMap::new(),
+        ))
+        .unwrap();
+        let site = r.site("/");
+        for path in ["/", "/portal-config.json"] {
+            for method in ["GET", "HEAD", "POST"] {
+                let resolution = site.resolve(path);
+                let expected = match &resolution {
+                    StaticResolution::Generated(r) => r.clone(),
+                    o => panic!("{o:?}"),
+                };
+                let (mut client, server) = tokio::io::duplex(16 * 1024);
+                client.write_all(format!("{method} {path} HTTP/1.1\r\nHost: test.example\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+                let mut session = Session::new_h1(Box::new(server));
+                assert!(session.as_downstream_mut().read_request().await.unwrap());
+                let mut ctx = proxy.new_ctx();
+                proxy
+                    .write_static_resolution(&mut session, &mut ctx, resolution)
+                    .await
+                    .unwrap();
+                drop(session);
+                let mut wire = Vec::new();
+                client.read_to_end(&mut wire).await.unwrap();
+                let wire = String::from_utf8(wire).unwrap();
+                let (headers, body) = wire.split_once("\r\n\r\n").unwrap();
+                if method == "POST" {
+                    assert!(headers.starts_with("HTTP/1.1 405"));
+                    assert!(headers.to_ascii_lowercase().contains("allow: get, head"));
+                    continue;
+                }
+                assert!(headers.starts_with("HTTP/1.1 200"));
+                let lower = headers.to_ascii_lowercase();
+                assert!(lower.contains(&format!("content-type: {}", expected.content_type)));
+                assert!(lower.contains(&format!("cache-control: {}", expected.cache_control)));
+                assert!(lower.contains(&format!("content-length: {}", expected.body.len())));
+                for (name, value) in expected.headers {
+                    assert!(lower.contains(&format!(
+                        "{}: {}",
+                        name.to_ascii_lowercase(),
+                        value.to_ascii_lowercase()
+                    )));
+                }
+                if method == "HEAD" {
+                    assert!(body.is_empty());
+                } else {
+                    assert_eq!(body.as_bytes(), expected.body.as_ref());
+                }
+            }
+        }
     }
 }
