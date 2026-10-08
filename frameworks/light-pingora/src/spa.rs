@@ -116,6 +116,13 @@ fn bounded_read(path: &Path, limit: u64) -> Result<Vec<u8>, &'static str> {
     }
     Ok(bytes)
 }
+/// Operator runtime configuration and trust keys may be projected-volume symlinks
+/// (Kubernetes ConfigMap/Secret); only the resolved target must be a regular file.
+/// Release payload members never use this and keep strict symlink rejection.
+fn bounded_read_resolved(path: &Path, limit: u64) -> Result<Vec<u8>, &'static str> {
+    let resolved = std::fs::canonicalize(path).map_err(|_| "file is missing or unreadable")?;
+    bounded_read(&resolved, limit)
+}
 fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
@@ -201,7 +208,7 @@ pub fn load_spa(
     {
         return Err(fail("invalid keyId"));
     }
-    let pem = bounded_read(
+    let pem = bounded_read_resolved(
         &resolve(config_dir, &spa.release_key_dir).join(format!("{key_id}.pem")),
         4096,
     )
@@ -264,11 +271,15 @@ pub fn load_spa(
     if files != cache_classes.keys().cloned().collect() {
         return Err(fail("missing or extra dist member"));
     }
+    // Rendering and validation use exactly these hashed bytes; never reopen them.
+    let mut verified = BTreeMap::new();
     for member in &manifest.members {
+        let retain = member.path == spa.index || member.path == "portal-config.schema.json";
         let mut file =
             File::open(dist.join(&member.path)).map_err(|_| fail("member read failed"))?;
         let mut hash = Sha256::new();
         let mut size = 0u64;
+        let mut kept = Vec::new();
         let mut buffer = [0u8; 65536];
         loop {
             let n = file
@@ -279,9 +290,18 @@ pub fn load_spa(
             }
             size += n as u64;
             hash.update(&buffer[..n]);
+            if retain {
+                if size > 4 * 1024 * 1024 {
+                    return Err(fail("index or schema exceeds size limit"));
+                }
+                kept.extend_from_slice(&buffer[..n]);
+            }
         }
         if size != member.size || hex::encode(hash.finalize()) != member.sha256 {
             return Err(fail("member size or SHA-256 mismatch"));
+        }
+        if retain {
+            verified.insert(member.path.clone(), kept);
         }
     }
     if !cache_classes.contains_key("portal-config.schema.json")
@@ -291,10 +311,12 @@ pub fn load_spa(
         return Err(fail("index and schema must be verified members"));
     }
     let schema: serde_json::Value = serde_json::from_slice(
-        &bounded_read(&dist.join("portal-config.schema.json"), 4 * 1024 * 1024).map_err(fail)?,
+        verified
+            .get("portal-config.schema.json")
+            .ok_or_else(|| fail("index and schema must be verified members"))?,
     )
     .map_err(|_| fail("invalid verified schema JSON"))?;
-    let document = bounded_read(&resolve(config_dir, &spa.runtime_config), 65536)
+    let document = bounded_read_resolved(&resolve(config_dir, &spa.runtime_config), 65536)
         .map_err(|e| fail(&format!("runtime config: {e}")))?;
     let config = validate_runtime_config(&document, &schema).map_err(fail)?;
     if !manifest
@@ -305,8 +327,12 @@ pub fn load_spa(
     }
     let runtime_config_json =
         serde_json::to_vec(&config).map_err(|_| fail("runtime config serialization failed"))?;
-    let index =
-        std::fs::read_to_string(dist.join(&spa.index)).map_err(|_| fail("index must be UTF-8"))?;
+    let index = String::from_utf8(
+        verified
+            .remove(&spa.index)
+            .ok_or_else(|| fail("index and schema must be verified members"))?,
+    )
+    .map_err(|_| fail("index must be UTF-8"))?;
     if spa.base_placeholder.is_empty() || index.matches(&spa.base_placeholder).count() != 1 {
         return Err(fail("index must contain exactly one base placeholder"));
     }
@@ -636,10 +662,26 @@ pub fn validate_runtime_config(
         &config.features.pre_registration_url,
         &config.features.tools_sync_url,
     ] {
-        if s.starts_with('/') || s.is_empty() {
-            if !canonical_path(s, true, true) {
+        if s.is_empty() {
+            continue;
+        }
+        if s.starts_with('/') {
+            // Root-relative BFF endpoint: canonical segments plus {apiId}/{version}
+            // templates and an optional query.
+            let raw_path = s.split('?').next().unwrap_or(s);
+            if raw_path != "/"
+                && !raw_path[1..].split('/').all(|p| {
+                    !p.is_empty()
+                        && p != "."
+                        && p != ".."
+                        && p.bytes().all(|c| {
+                            c.is_ascii_alphanumeric() || b"._~!$&'()*+,;=:@-{}".contains(&c)
+                        })
+                })
+            {
                 return Err("invalid feature URL path");
             }
+            strict_url(s, true, false)?;
         } else {
             strict_url(s, false, false)?;
         }
@@ -1078,10 +1120,17 @@ pub mod test_support {
           "const": ""
         },
         {
-          "const": "/"
-        },
-        {
-          "$ref": "#/$defs/path"
+          "type": "string",
+          "maxLength": 2048,
+          "allOf": [
+            {
+              "$ref": "#/$defs/rawUrl"
+            },
+            {
+              "pattern": "^/(?:[A-Za-z0-9._~!$&'()*+,;=:@{}-]+(?:/[A-Za-z0-9._~!$&'()*+,;=:@{}-]+)*)?(\\?.*)?$"
+            }
+          ],
+          "$comment": "Root-relative BFF endpoint: canonical path segments, {apiId}/{version} templates and an optional query."
         },
         {
           "$ref": "#/$defs/httpsUrl"
@@ -1257,7 +1306,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!((valid, invalid), (6, 28));
+        assert_eq!((valid, invalid), (7, 28));
     }
     #[test]
     fn spa_root_generated_config_cache_and_subdirectory() {
@@ -1476,6 +1525,35 @@ mod tests {
         |r: &TestRelease| r.resign(V, |m| m["unexpected"] = true.into()),
         "strict manifest"
     );
+    #[cfg(unix)]
+    #[test]
+    fn spa_load_accepts_projected_config_and_key_symlinks() {
+        // Kubernetes ConfigMap/Secret volumes expose keys as ..data/<key> symlinks.
+        let (_t, r) = fixture();
+        for (file, dir) in [
+            (r.runtime.clone(), r.root.join("config-projection")),
+            (r.keys.join("test-key.pem"), r.root.join("key-projection")),
+        ] {
+            let data = dir.join("..2026_10_08").join(file.file_name().unwrap());
+            std::fs::create_dir_all(data.parent().unwrap()).unwrap();
+            std::fs::rename(&file, &data).unwrap();
+            std::os::unix::fs::symlink(&data, &file).unwrap();
+        }
+        let loaded = r.load().unwrap();
+        assert!(!loaded.runtime_config_digest.is_empty());
+        std::os::unix::fs::symlink("VERSION", r.root.join("dist/link")).unwrap();
+        let e = r.load().unwrap_err().to_string();
+        assert!(e.contains("symlink"), "{e}");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn spa_load_rejects_config_symlink_to_non_file() {
+        let (_t, r) = fixture();
+        std::fs::remove_file(&r.runtime).unwrap();
+        std::os::unix::fs::symlink(&r.keys, &r.runtime).unwrap();
+        let e = r.load().unwrap_err().to_string();
+        assert!(e.contains("runtime config"), "{e}");
+    }
     #[test]
     fn spa_load_wrong_base() {
         let (_t, r) = fixture();
@@ -1585,6 +1663,44 @@ mod tests {
             exec: vec!["not-found".into()],
         }];
         assert!(validate_spa_guard_collisions(&handler, &statics).is_err());
+    }
+    #[test]
+    fn spa_runtime_root_relative_feature_templates() {
+        let (_t, r) = fixture();
+        let schema = serde_json::from_str(SCHEMA).unwrap();
+        let base: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&r.runtime).unwrap()).unwrap();
+        let check = |value: &str| {
+            let mut config = base.clone();
+            config["features"]["toolsSyncUrl"] = value.into();
+            config["features"]["preRegistrationUrl"] = value.into();
+            validate_runtime_config(&serde_json::to_vec(&config).unwrap(), &schema)
+        };
+        for value in [
+            "",
+            "/",
+            "/sync?x=1",
+            "/register?source=portal&next=/a%2Fb",
+            "/registry/apis/{apiId}/versions/{version}/tools",
+        ] {
+            assert!(check(value).is_ok(), "{value}: {:?}", check(value));
+        }
+        for value in [
+            "/sync/",
+            "/a//sync",
+            "/a/../sync",
+            "/./sync",
+            "/a%2Fb",
+            "/a%2e%2e/b",
+            "/a%20b",
+            "/sync#x",
+            "/sy nc",
+            "/sy\\nc",
+            "/sync?x=%zz",
+            "//host",
+        ] {
+            assert!(check(value).is_err(), "{value}");
+        }
     }
     #[test]
     fn spa_runtime_semantic_edges_and_mapping_key_exception() {
