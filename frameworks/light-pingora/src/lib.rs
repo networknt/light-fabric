@@ -28,6 +28,7 @@ mod resource;
 mod router;
 mod security;
 mod service;
+pub mod spa;
 mod spa_auth;
 mod stateless_auth;
 mod streaming;
@@ -148,10 +149,11 @@ pub use rate_limit::{
     load_rate_limit_runtime,
 };
 pub use resource::{
-    PATH_RESOURCE_CONFIG_NAME, PATH_RESOURCE_FILE, PATH_RESOURCE_LEGACY_FILE,
-    PATH_RESOURCE_MODULE_ID, PathResourceConfig, StaticFile, StaticResolution, StaticResourceSet,
-    StaticSite, VIRTUAL_HOST_CONFIG_NAME, VIRTUAL_HOST_FILE, VIRTUAL_HOST_LEGACY_FILE,
-    VIRTUAL_HOST_MODULE_ID, VirtualHost, VirtualHostConfig, load_static_resources,
+    GeneratedResponse, PATH_RESOURCE_CONFIG_NAME, PATH_RESOURCE_FILE, PATH_RESOURCE_LEGACY_FILE,
+    PATH_RESOURCE_MODULE_ID, PathResourceConfig, SpaConfig, StaticFile, StaticResolution,
+    StaticResourceSet, StaticSite, VIRTUAL_HOST_CONFIG_NAME, VIRTUAL_HOST_FILE,
+    VIRTUAL_HOST_LEGACY_FILE, VIRTUAL_HOST_MODULE_ID, VirtualHost, VirtualHostConfig,
+    load_static_resources,
 };
 pub use router::{
     MethodRewriteRule, QueryHeaderRewriteRule, ROUTER_CONFIG_NAME, ROUTER_FILE, ROUTER_MODULE_ID,

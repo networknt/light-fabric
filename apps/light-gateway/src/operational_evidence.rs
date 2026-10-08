@@ -21,12 +21,18 @@ fn registry_digest(registry: &light_runtime::ModuleRegistry) -> Result<String, s
     // Pingora registers action-gateway again while preparing its TLS listener.
     // An identical registration changes loadedAt, not effective configuration.
     // Retain lastReload and all effective flags so actual reloads invalidate proof.
-    for summary in summaries.as_array_mut().expect("module summaries are an array") {
-        summary.as_object_mut().expect("module summary is an object").remove("loadedAt");
+    for summary in summaries
+        .as_array_mut()
+        .expect("module summaries are an array")
+    {
+        summary
+            .as_object_mut()
+            .expect("module summary is an object")
+            .remove("loadedAt");
     }
-    Ok(gateway_operational_store::sha256_digest(&serde_json::to_string(&(
-        registry.component_configs(), summaries,
-    ))?))
+    Ok(gateway_operational_store::sha256_digest(
+        &serde_json::to_string(&(registry.component_configs(), summaries))?,
+    ))
 }
 
 #[cfg(test)]
@@ -48,17 +54,31 @@ mod registry_identity_tests {
             "sinkEndpoint": "stdout://collector", "publisherBatchRecords": 128,
             "publisherPollMs": 250, "publisherRetryMs": 1000,
             "publisherLeaseSeconds": 30, "deliveredRetentionSeconds": 3600
-        })).unwrap();
+        }))
+        .unwrap();
         validate_config(&config).unwrap();
-        assert!(serde_json::to_value(config).unwrap().get("deploymentImageDigest").is_none());
+        assert!(
+            serde_json::to_value(config)
+                .unwrap()
+                .get("deploymentImageDigest")
+                .is_none()
+        );
     }
     #[test]
     fn repeated_listener_registration_preserves_identity_but_configuration_changes_do_not() {
         let registry = light_runtime::ModuleRegistry::default();
-        let register = |value, enabled| registry.register_config(
-            "action-gateway", "action-gateway", ModuleKind::Framework,
-            serde_json::json!({"enabled": value}), [], true, Some(enabled), false,
-        );
+        let register = |value, enabled| {
+            registry.register_config(
+                "action-gateway",
+                "action-gateway",
+                ModuleKind::Framework,
+                serde_json::json!({"enabled": value}),
+                [],
+                true,
+                Some(enabled),
+                false,
+            )
+        };
         register(true, true);
         let original = registry_digest(&registry).unwrap();
         register(true, true);

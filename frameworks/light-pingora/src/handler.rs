@@ -253,6 +253,30 @@ pub struct ActiveHandlerSet {
 }
 
 impl ActiveHandlerSet {
+    /// Build a candidate without publishing active handler metadata.
+    /// Factories used here must only prepare their handler instances.
+    pub fn prepare(
+        runtime_config: &RuntimeConfig,
+        registry: &PingoraHandlerRegistry,
+    ) -> Result<Self, RuntimeError> {
+        registry.build_active_handlers(runtime_config, load_handler_config(runtime_config)?)
+    }
+
+    pub fn publish_metadata(&self, runtime_config: &RuntimeConfig) -> Result<(), RuntimeError> {
+        let config = HandlerModuleConfig::new(self.config(), self.active_handler_ids().to_vec());
+        runtime_config.module_registry.register_loaded_config(
+            HANDLER_MODULE_ID,
+            HANDLER_CONFIG_NAME,
+            ModuleKind::Framework,
+            &config,
+            [],
+            self.config.enabled,
+            Some(self.config.enabled),
+            false,
+        )?;
+        Ok(())
+    }
+
     /// Preserve legacy routing/forwarding. Reject aliases that would escape an
     /// ACL-protected literal route into an unprotected effective chain.
     pub fn check_http_acl_path(
@@ -602,7 +626,15 @@ fn validate_handler_config(config: &HandlerConfig) -> Result<(), RuntimeError> {
 fn is_http_method(method: &str) -> bool {
     matches!(
         method.to_ascii_uppercase().as_str(),
-        "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS" | "HEAD" | "TRACE" | "CONNECT"
+        "*" | "GET"
+            | "POST"
+            | "PUT"
+            | "DELETE"
+            | "PATCH"
+            | "OPTIONS"
+            | "HEAD"
+            | "TRACE"
+            | "CONNECT"
     )
 }
 
@@ -771,7 +803,7 @@ fn handler_path_match_with_base(
     request_path: &str,
     method: &str,
 ) -> Option<PathMatch> {
-    if !handler_path.method.eq_ignore_ascii_case(method) {
+    if handler_path.method != "*" && !handler_path.method.eq_ignore_ascii_case(method) {
         return None;
     }
 
@@ -1064,7 +1096,7 @@ mod canonical_path_review_tests {
     #[test]
     fn wildcard_method_and_configured_literal_aliases_match() {
         let config: HandlerConfig = serde_yaml::from_str("handlers: [router]\npaths:\n  - path: /api/%70rivate/\n    method: '*'\n    exec: [router]\n").unwrap();
-        assert!(validate_handler_config(&config).is_err());
+        assert!(validate_handler_config(&config).is_ok());
         assert!(handler_path_match(&config, &config.paths[0], "/api/private", "GET").is_none());
     }
 }
@@ -1565,5 +1597,174 @@ defaultHandlers:
                 .expect("resolve catch-all wildcard"),
             vec!["unused".to_string()]
         );
+    }
+
+    fn wp9_handlers(yaml: &str) -> ActiveHandlerSet {
+        let temp = TempDir::new().unwrap();
+        let registry = ["router", "cors", "not-found", "virtual", "access-control"]
+            .into_iter()
+            .fold(PingoraHandlerRegistry::new(), |r, id| {
+                r.register(simple_descriptor(id))
+            });
+        registry
+            .build_active_handlers(&runtime_config(&temp), serde_yaml::from_str(yaml).unwrap())
+            .unwrap()
+    }
+
+    #[test]
+    fn wp9_wildcard_methods_route_order_and_segment_boundaries() {
+        let active = wp9_handlers(
+            "handlers: [router, cors, not-found, virtual]\npaths:\n  - {path: /portal/query, method: GET, exec: [router]}\nadditionalPaths:\n  - {path: '/portal/*', method: '*', exec: [cors, not-found]}\ndefaultHandlers: [virtual]\n",
+        );
+        assert_eq!(active.config.paths[0].path, "/portal/query");
+        assert_eq!(active.config.paths[1].path, "/portal/*");
+        assert_eq!(
+            active.resolve_handler_ids("/portal/query", "gEt").unwrap(),
+            ["router"]
+        );
+        for method in [
+            "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT",
+            "CUSTOM",
+        ] {
+            for path in ["/portal/quer", "/portal/command", "/portal"] {
+                let chain = active.resolve_handler_chain(path, method).unwrap();
+                assert_eq!(chain.handler_ids, ["cors", "not-found"], "{method} {path}");
+                assert_eq!(chain.path.unwrap().method, "*");
+            }
+        }
+        assert_eq!(
+            active.resolve_handler_ids("/portal/query", "POST").unwrap(),
+            ["cors", "not-found"]
+        );
+        assert_eq!(
+            active.resolve_handler_ids("/portalx", "GET").unwrap(),
+            ["virtual"]
+        );
+        let exact = HandlerPath {
+            path: "/x".into(),
+            method: "post".into(),
+            exec: vec![],
+        };
+        assert_eq!(
+            handler_path_match_with_base("/bff", &exact, "/bff/x", "POST")
+                .unwrap()
+                .method,
+            "POST"
+        );
+        assert!(handler_path_match_with_base("/bff", &exact, "/x", "GET").is_none());
+        assert!(!is_http_method("BOGUS"));
+    }
+
+    #[test]
+    fn wp9_exact_acl_before_wildcard_guard_retains_alias_protection() {
+        for base in ["/", "/bff"] {
+            let active = wp9_handlers(&format!(
+                "basePath: {base}\nhandlers: [router, access-control, not-found]\npaths:\n  - {{path: /portal/query, method: GET, exec: [access-control, router]}}\n  - {{path: '/portal/*', method: '*', exec: [not-found]}}\ndefaultHandlers: [router]\n"
+            ));
+            let prefix = base.trim_end_matches('/');
+            for path in [
+                "/portal/query".to_string(),
+                format!("{prefix}/portal/query"),
+            ] {
+                let chain = active.resolve_handler_chain(&path, "GET").unwrap();
+                assert_eq!(chain.handler_ids, ["access-control", "router"]);
+                assert!(
+                    active
+                        .check_http_acl_path(&path, "GET", &chain.handler_ids)
+                        .is_ok()
+                );
+                let post = active.resolve_handler_chain(&path, "POST").unwrap();
+                assert_eq!(post.handler_ids, ["not-found"]);
+                assert!(
+                    active
+                        .check_http_acl_path(&path, "POST", &post.handler_ids)
+                        .is_ok()
+                );
+            }
+            for suffix in [
+                "/portal/%71uery",
+                "/portal/%2571uery",
+                "/portal/query;x=1",
+                "/portal/query%3Bx=1",
+                "/portal//query",
+                "/portal/x/../query",
+                "/portal%2Fquery",
+                "/portal%252Fquery",
+                "/portal\\query",
+            ] {
+                for path in [suffix.to_string(), format!("{prefix}{suffix}")] {
+                    let original = path.clone();
+                    let raw = active.resolve_handler_chain(&path, "GET").unwrap();
+                    assert!(
+                        active
+                            .check_http_acl_path(&path, "GET", &raw.handler_ids)
+                            .is_err(),
+                        "{base}: {path}"
+                    );
+                    assert_eq!(path, original);
+                    // An exact GET ACL does not acquire POST authorization identity.
+                    let post = active.resolve_handler_chain(&path, "POST").unwrap();
+                    assert!(
+                        active
+                            .check_http_acl_path(&path, "POST", &post.handler_ids)
+                            .is_ok(),
+                        "{path}"
+                    );
+                }
+            }
+            let path = format!("{prefix}/portal/quer");
+            let ids = active.resolve_handler_ids(&path, "GET").unwrap();
+            assert!(active.check_http_acl_path(&path, "GET", &ids).is_ok());
+        }
+    }
+
+    #[test]
+    fn wp9_wildcard_acl_aliases_and_original_route_identity() {
+        let active = wp9_handlers(
+            "basePath: /bff\nhandlers: [router, access-control]\npaths:\n  - {path: '/private/*', method: '*', exec: [access-control, router]}\n  - {path: '/open/{id}', method: GET, exec: [router]}\ndefaultHandlers: [router]\n",
+        );
+        for method in ["GET", "POST", "HEAD", "OPTIONS", "CUSTOM"] {
+            for path in ["/private/item", "/bff/private/item"] {
+                let raw = active.resolve_handler_chain(path, method).unwrap();
+                assert_eq!(raw.handler_ids, ["access-control", "router"]);
+                assert_eq!(raw.path.unwrap().method, "*");
+                assert!(
+                    active
+                        .check_http_acl_path(
+                            path,
+                            method,
+                            &["access-control".into(), "router".into()]
+                        )
+                        .is_ok()
+                );
+            }
+            for path in [
+                "/private/item;x=1",
+                "/private/item%3Bx=1",
+                "/%70rivate/item",
+                "/bff/%70rivate/item",
+                "/bff/private%2Fitem",
+                "/private/item%252Fother",
+                "/private//item",
+            ] {
+                let ids = active.resolve_handler_ids(path, method).unwrap();
+                assert!(
+                    active.check_http_acl_path(path, method, &ids).is_err(),
+                    "{method} {path}"
+                );
+            }
+        }
+        let uri = "/bff/open/a%2Fb?x=%253B";
+        let path = uri.split('?').next().unwrap();
+        let raw = active.resolve_handler_chain(path, "GET").unwrap();
+        assert_eq!(raw.handler_ids, ["router"]);
+        assert_eq!(raw.path.as_ref().unwrap().params["id"], "a%2Fb");
+        assert!(
+            active
+                .check_http_acl_path(path, "GET", &raw.handler_ids)
+                .is_ok()
+        );
+        assert_eq!(uri, "/bff/open/a%2Fb?x=%253B");
+        assert_eq!(raw.endpoint(path, "GET"), "/open/{id}@get");
     }
 }

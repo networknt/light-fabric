@@ -2421,22 +2421,24 @@ pub(crate) async fn start_invocation_new(
                 .bind(identity.host_id).bind(accepted_run).fetch_one(&mut *tx).await.map_err(ApiError::database)?;
         let status = if matches!(outcome, AcceptOutcome::Replay { .. }) {
             load_status_for_receipt(&mut tx, &identity, accepted_run).await?
-        } else { InvocationStatus {
-            contract_version: CONTRACT_VERSION,
-            workflow_instance_id: accepted_run,
-            stable_tool_ref: request.stable_tool_ref,
-            definition_digest: request.definition_digest.clone(),
-            state: InvocationState::Accepted,
-            state_version,
-            accepted_ts,
-            updated_ts,
-            deadline_ts,
-            retryable: false,
-            effect_state: EffectState::None,
-            non_cancellable_reason: None,
-            public_result: None,
-            error: None,
-        }};
+        } else {
+            InvocationStatus {
+                contract_version: CONTRACT_VERSION,
+                workflow_instance_id: accepted_run,
+                stable_tool_ref: request.stable_tool_ref,
+                definition_digest: request.definition_digest.clone(),
+                state: InvocationState::Accepted,
+                state_version,
+                accepted_ts,
+                updated_ts,
+                deadline_ts,
+                retryable: false,
+                effect_state: EffectState::None,
+                non_cancellable_reason: None,
+                public_result: None,
+                error: None,
+            }
+        };
         let receipt = if operation.kind == "workflow_start" {
             json!({"accepted":true,"workflowInstanceId":accepted_run,"processId":process_id,
                 "workflowDefinitionId":request.workflow_definition_id,"definitionDigest":request.definition_digest,
@@ -2965,10 +2967,16 @@ async fn load_status_for_receipt(
     .map_err(ApiError::database)?
     .ok_or_else(|| ApiError::not_found("workflow invocation is unavailable"))?;
     let claims: Value = row.try_get("accepted_claims").map_err(ApiError::database)?;
-    let digest: String = row.try_get("accepted_claims_digest").map_err(ApiError::database)?;
+    let digest: String = row
+        .try_get("accepted_claims_digest")
+        .map_err(ApiError::database)?;
     if !workflow_invocation_contract::accepted_subject_claims_match(
-        &claims, &digest, &identity.caller_claims_digest,
-    ).unwrap_or(false) {
+        &claims,
+        &digest,
+        &identity.caller_claims_digest,
+    )
+    .unwrap_or(false)
+    {
         return Err(ApiError::unauthorized(
             "current subject authorization no longer matches the accepted disclosure ceiling",
         ));
@@ -3055,7 +3063,10 @@ fn status_from_receipt_row(
     workflow_instance_id: Uuid,
     observed_updated_ts: Option<DateTime<Utc>>,
 ) -> Result<InvocationStatus, ApiError> {
-    let state = parse_state(&row.try_get::<String, _>("state").map_err(ApiError::database)?)?;
+    let state = parse_state(
+        &row.try_get::<String, _>("state")
+            .map_err(ApiError::database)?,
+    )?;
     let normalized_error: Option<Value> = row
         .try_get("normalized_error")
         .map_err(ApiError::database)?;
@@ -3104,7 +3115,6 @@ fn status_from_receipt_row(
         }),
     })
 }
-
 
 pub(crate) async fn authenticate(
     state: &RuleApiState,

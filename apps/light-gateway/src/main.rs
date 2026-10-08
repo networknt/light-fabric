@@ -27,12 +27,12 @@ use light_pingora::{
     apply_rate_limit_headers, apply_router_upstream_request, apply_token_request,
     apply_websocket_upstream_request, build_metrics_event, check_rate_limit,
     correlation_id_for_upstream, evaluate_cors_request, load_a2a_router_runtime,
-    load_access_control_runtime, load_active_handlers, load_api_key_config, load_basic_auth_config,
+    load_access_control_runtime, load_api_key_config, load_basic_auth_config,
     load_correlation_config, load_cors_config, load_header_config, load_hmac_runtime,
     load_hmac_runtime_preserving, load_mcp_router_runtime, load_metrics_config,
     load_msal_auth_runtime, load_msal_exchange_runtime, load_path_prefix_service_config,
     load_pii_tokenization_runtime, load_proxy_route, load_rate_limit_runtime, load_router_route,
-    load_security_runtime, load_stateless_auth_runtime, load_static_resources, load_token_runtime,
+    load_security_runtime, load_stateless_auth_runtime, load_token_runtime,
     load_unified_security_config, load_websocket_router_runtime_with_policy,
     merge_extra_response_headers, prepend_path_prefix, record_mcp_router_reload_rejection,
     record_spa_auth_legacy_get, select_router_target, validate_mcp_router_runtime_config,
@@ -1162,7 +1162,14 @@ impl GatewayProxy {
         hmac_replay_admin: Arc<HmacReplayAdmin>,
     ) -> Result<Self, RuntimeError> {
         let outbound_trust = Arc::new(light_pingora::OutboundTrustSnapshot::capture(config)?);
-        let active_handlers = load_active_handlers(config, &gateway_handler_registry())?;
+        let active_handlers = ActiveHandlerSet::prepare(config, &gateway_handler_registry())?;
+        let (static_resources, static_metadata) = StaticResourceSet::prepare(config)?;
+        light_pingora::spa::validate_spa_guard_collisions(
+            active_handlers.config(),
+            &static_resources,
+        )?;
+        active_handlers.publish_metadata(config)?;
+        publish_static_metadata(config, static_metadata);
         let correlation_config =
             load_correlation_config(config, active_handlers.is_handler_active("correlation"))?;
         let cors_config = load_cors_config(config, active_handlers.is_handler_active("cors"))?;
@@ -1257,7 +1264,6 @@ impl GatewayProxy {
         let router_route =
             load_router_route(config, handler_active(&active_handlers, &["router", "a2a"]))?;
         let proxy_route = load_proxy_route(config)?;
-        let static_resources = load_static_resources(config)?;
         report_known_streaming_handler_conflicts(
             &active_handlers,
             pii_tokenization.as_ref(),
@@ -1305,12 +1311,15 @@ impl GatewayProxy {
         let router_route = Arc::new(ConfigManager::new(router_route));
         let proxy_route = Arc::new(ConfigManager::new(proxy_route));
         let static_resources = Arc::new(ConfigManager::new(static_resources));
+        let spa_pairing_lock = Arc::new(tokio::sync::Mutex::new(()));
         let metrics_recorder = Arc::new(MetricsRecorder::default());
         let stream_metrics = Arc::new(StreamMetricsRecorder::default());
 
         config.module_registry.register_reloader(
             light_pingora::HANDLER_MODULE_ID,
             Arc::new(HandlerReloader {
+                static_resources: Arc::clone(&static_resources),
+                spa_pairing_lock: Arc::clone(&spa_pairing_lock),
                 active_handlers: Arc::clone(&active_handlers),
                 correlation_config: Arc::clone(&correlation_config),
                 cors_config: Arc::clone(&cors_config),
@@ -1549,6 +1558,8 @@ impl GatewayProxy {
             }),
         );
         let static_reloader: Arc<dyn ReloadableModule> = Arc::new(StaticResourceReloader {
+            active_handlers: Arc::clone(&active_handlers),
+            spa_pairing_lock: Arc::clone(&spa_pairing_lock),
             static_resources: Arc::clone(&static_resources),
         });
         config.module_registry.register_reloader(
@@ -1773,6 +1784,18 @@ impl GatewayProxy {
         }
 
         match resolution {
+            StaticResolution::Generated(response) => {
+                self.write_bytes_response_with_headers(
+                    session,
+                    ctx,
+                    200,
+                    Some(response.content_type),
+                    Some(response.cache_control),
+                    response.body,
+                    &response.headers,
+                )
+                .await
+            }
             StaticResolution::File(file) => {
                 let metadata = tokio::fs::metadata(&file.path).await.map_err(|error| {
                     Error::because(
@@ -2604,6 +2627,8 @@ impl GatewayProxy {
 }
 
 struct HandlerReloader {
+    static_resources: Arc<ConfigManager<StaticResourceSet>>,
+    spa_pairing_lock: Arc<tokio::sync::Mutex<()>>,
     active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
     correlation_config: Arc<ConfigManager<Option<CorrelationConfig>>>,
     cors_config: Arc<ConfigManager<Option<CorsConfig>>>,
@@ -2635,7 +2660,14 @@ struct HandlerReloader {
 impl ReloadableModule for HandlerReloader {
     async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
         let active_handlers =
-            load_active_handlers(&ctx.runtime_config, &gateway_handler_registry())?;
+            ActiveHandlerSet::prepare(&ctx.runtime_config, &gateway_handler_registry())?;
+        // Check before any other loader: those loaders may publish metadata,
+        // register caches, evict MCP sessions, or change LLM background tasks.
+        let _pairing_guard = self.spa_pairing_lock.lock().await;
+        light_pingora::spa::validate_spa_guard_collisions(
+            active_handlers.config(),
+            &self.static_resources.load(),
+        )?;
         let correlation_config = load_correlation_config(
             &ctx.runtime_config,
             active_handlers.is_handler_active("correlation"),
@@ -2772,6 +2804,7 @@ impl ReloadableModule for HandlerReloader {
             unified_security_config.clone(),
             hmac_runtime.clone(),
         );
+        active_handlers.publish_metadata(&ctx.runtime_config)?;
         self.active_handlers.store(active_handlers);
         self.correlation_config.store(correlation_config);
         self.cors_config.store(cors_config);
@@ -3464,14 +3497,37 @@ impl ReloadableModule for RouterReloader {
     }
 }
 
+fn publish_static_metadata(config: &RuntimeConfig, entries: Vec<light_runtime::ModuleEntry>) {
+    for entry in entries {
+        config.module_registry.register_config(
+            entry.module_id,
+            entry.config_name,
+            entry.kind,
+            entry.config,
+            entry.masks,
+            entry.active,
+            entry.enabled,
+            entry.reloadable,
+        );
+    }
+}
+
 struct StaticResourceReloader {
     static_resources: Arc<ConfigManager<StaticResourceSet>>,
+    active_handlers: Arc<ConfigManager<ActiveHandlerSet>>,
+    spa_pairing_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[async_trait]
 impl ReloadableModule for StaticResourceReloader {
     async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError> {
-        let static_resources = load_static_resources(&ctx.runtime_config)?;
+        let (static_resources, metadata) = StaticResourceSet::prepare(&ctx.runtime_config)?;
+        let _pairing_guard = self.spa_pairing_lock.lock().await;
+        light_pingora::spa::validate_spa_guard_collisions(
+            self.active_handlers.load().config(),
+            &static_resources,
+        )?;
+        publish_static_metadata(&ctx.runtime_config, metadata);
         self.static_resources.store(static_resources);
         Ok(ReloadOutcome::success(
             "static resource configuration reloaded",
@@ -5581,6 +5637,13 @@ impl ProxyHttp for GatewayProxy {
                         .write_text_response(session, ctx, 404, "not found")
                         .await;
                 }
+                "not-found" => {
+                    ctx.record_handler_duration(&handler_id, started.elapsed());
+                    return self.write_bytes_response(
+                        session, ctx, 404, "application/json", Some("no-store"),
+                        Bytes::from_static(b"{\"statusCode\":404,\"message\":\"NOT_FOUND\",\"description\":\"No API endpoint matches this path.\"}"),
+                    ).await;
+                }
                 "sidecar-identity" => {
                     let body = model_provider_sidecar::sidecar_identity_json()
                         .map_err(|error| pingora_internal_error(RuntimeError::Config(error)))?;
@@ -7025,6 +7088,130 @@ enum GatewayCommand {
     ValidateConfig { local_only: bool },
     ShowLlmLiveHelp,
     ValidateLlmLive(LiveValidationOptions),
+    ValidatePortalRelease(PortalReleaseValidation),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PortalReleaseValidation {
+    release_dir: std::path::PathBuf,
+    runtime_config: std::path::PathBuf,
+    key_dir: std::path::PathBuf,
+    mount_path: String,
+    handler_config: Option<std::path::PathBuf>,
+}
+
+fn parse_portal_release_options(args: &[String]) -> Result<PortalReleaseValidation> {
+    let mut options = std::collections::BTreeMap::new();
+    let mut args = args.iter();
+    while let Some(key) = args.next() {
+        if !matches!(
+            key.as_str(),
+            "--release-dir"
+                | "--runtime-config"
+                | "--key-dir"
+                | "--mount-path"
+                | "--handler-config"
+        ) {
+            anyhow::bail!("unknown validate-portal-release option");
+        }
+        let value = args
+            .next()
+            .filter(|s| !s.is_empty() && !s.starts_with("--"))
+            .ok_or_else(|| anyhow::anyhow!("missing validate-portal-release option value"))?;
+        if options.insert(key.as_str(), value.clone()).is_some() {
+            anyhow::bail!("duplicate validate-portal-release option");
+        }
+    }
+    let mut required = |key| {
+        options
+            .remove(key)
+            .ok_or_else(|| anyhow::anyhow!("missing required validate-portal-release option {key}"))
+    };
+    let release_dir = required("--release-dir")?.into();
+    let runtime_config = required("--runtime-config")?.into();
+    let key_dir = required("--key-dir")?.into();
+    let mount_path = required("--mount-path")?;
+    Ok(PortalReleaseValidation {
+        release_dir,
+        runtime_config,
+        key_dir,
+        mount_path,
+        handler_config: options.remove("--handler-config").map(Into::into),
+    })
+}
+
+fn validate_portal_release(options: &PortalReleaseValidation) -> (i32, serde_json::Value) {
+    use light_pingora::spa::{
+        PORTAL_SPA_CAPABILITY_VERSION, load_spa, validate_spa_guard_collisions,
+    };
+    use light_pingora::{SpaConfig, StaticSite};
+    let mut report =
+        serde_json::json!({"status": "error", "capability": PORTAL_SPA_CAPABILITY_VERSION});
+    let result = (|| -> Result<()> {
+        let mount = &options.mount_path;
+        if !mount.starts_with('/')
+            || mount != "/" && mount.ends_with('/')
+            || mount.split('/').skip(1).any(|p| {
+                p.is_empty() && mount != "/"
+                    || p == "."
+                    || p == ".."
+                    || p.contains(['\\', '?', '#', '%'])
+                    || p.chars().any(|c| c.is_whitespace() || c.is_control())
+            })
+        {
+            anyhow::bail!("invalid gateway mount path");
+        }
+        let spa = SpaConfig {
+            enabled: true,
+            index: "index.html".into(),
+            runtime_config: options.runtime_config.to_string_lossy().into_owned(),
+            release_manifest: options
+                .release_dir
+                .join("release-manifest.json")
+                .to_string_lossy()
+                .into_owned(),
+            release_key_dir: options.key_dir.to_string_lossy().into_owned(),
+            base_placeholder: "__PORTAL_BASE_HREF__".into(),
+        };
+        let loaded = Arc::new(load_spa(
+            "offline",
+            &options.release_dir.join("dist"),
+            &spa,
+            std::path::Path::new(""),
+        )?);
+        report["version"] = loaded.version.clone().into();
+        report["manifestDigest"] = loaded.manifest_digest.clone().into();
+        report["runtimeConfigDigest"] = loaded.runtime_config_digest.clone().into();
+        if let Some(file) = &options.handler_config {
+            let bytes = std::fs::read(file).context("cannot read handler configuration")?;
+            let handler: light_pingora::HandlerConfig = serde_yaml::from_slice(&bytes)
+                .map_err(|_| anyhow::anyhow!("invalid handler configuration structure"))?;
+            let mut statics = StaticResourceSet::empty();
+            statics.virtual_hosts.insert(
+                "offline".into(),
+                StaticSite {
+                    path: mount.clone(),
+                    base: loaded.release_dir.join("dist"),
+                    spa: Some(loaded),
+                    prefix: true,
+                    transfer_min_size: 10_245_760,
+                    directory_listing_enabled: false,
+                },
+            );
+            validate_spa_guard_collisions(&handler, &statics)?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            report["status"] = "ok".into();
+            (0, report)
+        }
+        Err(e) => {
+            report["error"] = e.to_string().into();
+            (2, report)
+        }
+    }
 }
 
 fn parse_gateway_command<I, S>(args: I) -> Result<GatewayCommand>
@@ -7052,17 +7239,35 @@ where
         {
             Ok(GatewayCommand::ShowLlmLiveHelp)
         }
+        [command, options @ ..] if command == "validate-portal-release" => {
+            parse_portal_release_options(options).map(GatewayCommand::ValidatePortalRelease)
+        }
         [command, options @ ..] if command == "validate-llm-live" => {
             parse_live_validation_options(options).map(GatewayCommand::ValidateLlmLive)
         }
         _ => anyhow::bail!(
-            "unknown light-gateway arguments; expected no arguments, `validate-config [--local-only|--with-remote]`, or `validate-llm-live --help`"
+            "unknown light-gateway arguments; expected no arguments, `validate-config [--local-only|--with-remote]`, or `validate-llm-live --help`, or `validate-portal-release --release-dir <dir> --runtime-config <file> --key-dir <dir> --mount-path <path> [--handler-config <file>]`"
         ),
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Offline verification precedes shutdown hooks, tracing, embedded-config,
+    // LightRuntimeBuilder, config-server and network initialization.
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|s| s == "validate-portal-release") {
+        let (code, report) = match parse_gateway_command(&args) {
+            Ok(GatewayCommand::ValidatePortalRelease(options)) => validate_portal_release(&options),
+            Err(e) => (
+                1,
+                serde_json::json!({"status":"error", "capability":light_pingora::spa::PORTAL_SPA_CAPABILITY_VERSION, "error":e.to_string()}),
+            ),
+            _ => unreachable!("offline command dispatch"),
+        };
+        println!("{}", report);
+        std::process::exit(code);
+    }
     let watcher = ShutdownWatcher::install().context("failed to install shutdown handlers")?;
     let tracing_guard = init_tracing(
         TracingOptions::new("light-gateway").with_legacy_ansi_env("GATEWAY_LOG_ANSI"),
@@ -8418,6 +8623,7 @@ const GATEWAY_HANDLER_DESCRIPTORS: &[(&str, PingoraHandlerKind)] = &[
     ("chaospost", PingoraHandlerKind::Application),
     ("health", PingoraHandlerKind::Application),
     ("sidecar-deny", PingoraHandlerKind::Security),
+    ("not-found", PingoraHandlerKind::Application),
     ("sidecar-identity", PingoraHandlerKind::Application),
     ("info", PingoraHandlerKind::Application),
     ("getLogger", PingoraHandlerKind::Application),
@@ -14706,5 +14912,1347 @@ endpointRules:
             json!({"id":725})
         );
         assert_eq!(old.policy_revision(), old_revision);
+    }
+    fn wp8_options(r: &light_pingora::spa::test_support::TestRelease) -> PortalReleaseValidation {
+        PortalReleaseValidation {
+            release_dir: r.root.clone(),
+            runtime_config: r.runtime.clone(),
+            key_dir: r.keys.clone(),
+            mount_path: "/".into(),
+            handler_config: None,
+        }
+    }
+    #[test]
+    fn gateway_portal_release_cli_parser() {
+        let args = [
+            "validate-portal-release",
+            "--release-dir",
+            "release",
+            "--runtime-config",
+            "runtime.json",
+            "--key-dir",
+            "keys",
+            "--mount-path",
+            "/ai/portal",
+            "--handler-config",
+            "handler.yml",
+        ];
+        assert!(matches!(
+            parse_gateway_command(args).unwrap(),
+            GatewayCommand::ValidatePortalRelease(_)
+        ));
+        for bad in [
+            vec!["validate-portal-release"],
+            args[..8].to_vec(),
+            [args.to_vec(), vec!["--key-dir", "again"]].concat(),
+            [args.to_vec(), vec!["--unknown", "x"]].concat(),
+            [args.to_vec(), vec!["--handler-config"]].concat(),
+        ] {
+            assert!(parse_gateway_command(bad).is_err());
+        }
+    }
+    #[test]
+    fn gateway_portal_release_offline_validation_status_and_json() {
+        use light_pingora::spa::test_support::TestRelease;
+        let temp = TempDir::new().unwrap();
+        let r = TestRelease::new(temp.path(), "20261008-0123456789ab");
+        let options = wp8_options(&r);
+        let (code, ok) = validate_portal_release(&options);
+        assert_eq!(code, 0);
+        assert_eq!(ok["status"], "ok");
+        assert_eq!(ok["version"], "20261008-0123456789ab");
+        assert_eq!(ok["capability"], 1);
+        for key in ["manifestDigest", "runtimeConfigDigest"] {
+            assert_eq!(ok[key].as_str().unwrap().len(), 64);
+        }
+        assert!(ok.get("error").is_none());
+        std::fs::write(r.root.join("dist/VERSION"), "tampered").unwrap();
+        let (code, e) = validate_portal_release(&options);
+        assert_eq!(code, 2);
+        assert_eq!(e["status"], "error");
+        assert!(e["error"].as_str().unwrap().contains("SHA-256"));
+        assert!(e.get("version").is_none());
+        r.resign("20261008-0123456789ab", |_| {});
+        std::fs::write(r.root.join("release-manifest.sig"), [0; 64]).unwrap();
+        let (code, e) = validate_portal_release(&options);
+        assert_eq!(code, 2);
+        assert!(
+            e["error"]
+                .as_str()
+                .unwrap()
+                .contains("signature verification")
+        );
+        r.resign("20261008-0123456789ab", |m| {
+            m["minimumGatewayCapability"] = 2.into()
+        });
+        let (code, e) = validate_portal_release(&options);
+        assert_eq!(code, 2);
+        assert!(
+            e["error"]
+                .as_str()
+                .unwrap()
+                .contains("minimumGatewayCapability")
+        );
+        r.resign("20261008-0123456789ab", |_| {});
+        let original = std::fs::read(&r.runtime).unwrap();
+        std::fs::write(&r.runtime, "{}").unwrap();
+        let (code, e) = validate_portal_release(&options);
+        assert_eq!(code, 2);
+        assert!(e["error"].as_str().unwrap().contains("runtime JSON Schema"));
+        std::fs::write(&r.runtime, original).unwrap();
+        let handler = temp.path().join("handler.yml");
+        std::fs::write(
+            &handler,
+            "paths:\n  - path: /app/*\n    method: '*'\n    exec: [not-found]\n",
+        )
+        .unwrap();
+        let mut options = options;
+        options.handler_config = Some(handler);
+        let (code, e) = validate_portal_release(&options);
+        assert_eq!(code, 2);
+        assert!(e["error"].as_str().unwrap().contains("guard `/app`"));
+        assert_eq!(e["version"], ok["version"]);
+    }
+    #[test]
+    #[ignore = "requires cargo build -p light-gateway; run this subprocess gate explicitly with --ignored"]
+    fn gateway_portal_release_offline_process_exit_contract() {
+        use light_pingora::spa::test_support::TestRelease;
+        // Build with cargo build -p light-gateway before this explicit filter.
+        let binary = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/debug/light-gateway");
+        let temp = TempDir::new().unwrap();
+        let r = TestRelease::new(temp.path(), "20261008-0123456789ab");
+        let run = |extra: &[&str]| {
+            let output = std::process::Command::new(&binary)
+                .current_dir(temp.path())
+                .args([
+                    "validate-portal-release",
+                    "--release-dir",
+                    r.root.to_str().unwrap(),
+                    "--runtime-config",
+                    r.runtime.to_str().unwrap(),
+                    "--key-dir",
+                    r.keys.to_str().unwrap(),
+                    "--mount-path",
+                    "/",
+                ])
+                .args(extra)
+                .output()
+                .expect("offline binary; build first");
+            assert!(
+                output.stderr.is_empty(),
+                "unexpected initialization diagnostics: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                output
+                    .stdout
+                    .split(|b| *b == b'\n')
+                    .filter(|l| !l.is_empty())
+                    .count(),
+                1
+            );
+            (
+                output.status.code().unwrap(),
+                serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+            )
+        };
+        let (code, ok) = run(&[]);
+        assert_eq!(code, 0);
+        assert_eq!(ok["status"], "ok");
+        assert_eq!(ok["capability"], 1);
+        assert!(ok.get("manifestDigest").is_some());
+        let (code, e) = run(&["--unknown", "x"]);
+        assert_eq!(code, 1);
+        assert_eq!(e["status"], "error");
+        assert!(e.get("version").is_none());
+        std::fs::write(r.root.join("dist/VERSION"), "tampered").unwrap();
+        let (code, e) = run(&[]);
+        assert_eq!(code, 2);
+        assert!(e["error"].as_str().unwrap().contains("SHA-256"));
+        r.resign("20261008-0123456789ab", |_| {});
+        std::fs::write(r.root.join("release-manifest.sig"), [0; 64]).unwrap();
+        let (code, e) = run(&[]);
+        assert_eq!(code, 2);
+        assert!(
+            e["error"]
+                .as_str()
+                .unwrap()
+                .contains("signature verification")
+        );
+        r.resign("20261008-0123456789ab", |m| {
+            m["minimumGatewayCapability"] = 2.into()
+        });
+        let (code, e) = run(&[]);
+        assert_eq!(code, 2);
+        assert!(
+            e["error"]
+                .as_str()
+                .unwrap()
+                .contains("minimumGatewayCapability")
+        );
+        r.resign("20261008-0123456789ab", |_| {});
+        let original = std::fs::read(&r.runtime).unwrap();
+        std::fs::write(&r.runtime, "{}").unwrap();
+        let (code, e) = run(&[]);
+        assert_eq!(code, 2);
+        assert!(e["error"].as_str().unwrap().contains("runtime JSON Schema"));
+        std::fs::write(&r.runtime, original).unwrap();
+        let handler = temp.path().join("handler.yml");
+        std::fs::write(
+            &handler,
+            "paths:\n  - path: /app/*\n    method: '*'\n    exec: [not-found]\n",
+        )
+        .unwrap();
+        let (code, e) = run(&["--handler-config", handler.to_str().unwrap()]);
+        assert_eq!(code, 2);
+        assert!(e["error"].as_str().unwrap().contains("guard `/app`"));
+        assert_eq!(e["version"], ok["version"]);
+    }
+    fn wp9_route_config(guard: &str) -> light_pingora::HandlerConfig {
+        light_pingora::HandlerConfig {
+            handlers: vec!["virtual".into(), "not-found".into()],
+            paths: vec![light_pingora::HandlerPath {
+                path: format!("{guard}/*"),
+                method: "*".into(),
+                exec: vec!["not-found".into()],
+            }],
+            default_handlers: vec!["virtual".into()],
+            ..Default::default()
+        }
+    }
+
+    fn wp9_write_handlers(dir: &TempDir, config: &light_pingora::HandlerConfig) {
+        std::fs::write(
+            dir.path().join(light_pingora::HANDLER_FILE),
+            serde_yaml::to_string(config).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn wp9_write_host(dir: &TempDir, release: &light_pingora::spa::test_support::TestRelease) {
+        let host = light_pingora::VirtualHost {
+            domain: "test.example".into(),
+            path: "/".into(),
+            base: release.root.join("dist").to_str().unwrap().into(),
+            transfer_min_size: 10_245_760,
+            directory_listing_enabled: false,
+            spa: Some(release.spa()),
+        };
+        std::fs::write(
+            dir.path().join(light_pingora::VIRTUAL_HOST_FILE),
+            serde_yaml::to_string(&light_pingora::VirtualHostConfig { hosts: vec![host] }).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn wp9_reloaders(
+        proxy: &GatewayProxy,
+    ) -> (
+        HandlerReloader,
+        StaticResourceReloader,
+        Arc<tokio::sync::Mutex<()>>,
+    ) {
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let handler = HandlerReloader {
+            static_resources: Arc::clone(&proxy.static_resources),
+            spa_pairing_lock: Arc::clone(&lock),
+            active_handlers: Arc::clone(&proxy.active_handlers),
+            correlation_config: Arc::clone(&proxy.correlation_config),
+            cors_config: Arc::clone(&proxy.cors_config),
+            metrics_config: Arc::clone(&proxy.metrics_config),
+            header_config: Arc::clone(&proxy.header_config),
+            api_key_config: Arc::new(ConfigManager::new(
+                proxy.security_execution.load().api_key.as_ref().clone(),
+            )),
+            basic_auth_config: Arc::new(ConfigManager::new(
+                proxy.security_execution.load().basic_auth.as_ref().clone(),
+            )),
+            security_runtime: Arc::new(ConfigManager::new(
+                proxy.security_execution.load().security.as_ref().clone(),
+            )),
+            unified_security_config: Arc::new(ConfigManager::new(
+                proxy
+                    .security_execution
+                    .load()
+                    .unified_security
+                    .as_ref()
+                    .clone(),
+            )),
+            hmac_runtime: Arc::clone(&proxy.hmac_runtime),
+            security_execution: Arc::clone(&proxy.security_execution),
+            hmac_replay_admin: Arc::new(HmacReplayAdmin::default()),
+            rate_limit_runtime: Arc::clone(&proxy.rate_limit_runtime),
+            path_prefix_service_config: Arc::clone(&proxy.path_prefix_service_config),
+            token_runtime: Arc::clone(&proxy.token_runtime),
+            stateless_auth: Arc::clone(&proxy.stateless_auth),
+            msal_exchange: Arc::clone(&proxy.msal_exchange),
+            msal_auth: Arc::clone(&proxy.msal_auth),
+            pii_tokenization: Arc::clone(&proxy.pii_tokenization),
+            access_control: Arc::clone(&proxy.access_control),
+            a2a_router: Arc::clone(&proxy.a2a_router),
+            mcp_router: Arc::clone(&proxy.mcp_router),
+            websocket_router: Arc::clone(&proxy.websocket_router),
+            llm_gateway: Arc::clone(&proxy.llm_gateway),
+            router_route: Arc::clone(&proxy.router_route),
+        };
+        let statics = StaticResourceReloader {
+            static_resources: Arc::clone(&proxy.static_resources),
+            active_handlers: Arc::clone(&proxy.active_handlers),
+            spa_pairing_lock: Arc::clone(&lock),
+        };
+        (handler, statics, lock)
+    }
+
+    fn wp9_metadata(runtime: &RuntimeConfig) -> serde_json::Value {
+        serde_json::to_value(runtime.module_registry.entries()).unwrap()
+    }
+
+    #[test]
+    fn wp9_startup_collision_rejects_before_metadata_and_accepts_valid_pair() {
+        use light_pingora::spa::test_support::TestRelease;
+        let dir = TempDir::new().unwrap();
+        let external = TempDir::new().unwrap();
+        let release = TestRelease::new(&dir.path().join("release"), "20261008-0123456789ab");
+        wp9_write_host(&dir, &release);
+        wp9_write_handlers(&dir, &wp9_route_config("/app"));
+        let runtime = runtime_config(&dir, &external, HashMap::new());
+        let before = wp9_metadata(&runtime);
+        let error = GatewayProxy::from_runtime_config(&runtime)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("guard `/app`"), "{error}");
+        assert_eq!(wp9_metadata(&runtime), before);
+        wp9_write_handlers(&dir, &wp9_route_config("/portal"));
+        let proxy = GatewayProxy::from_runtime_config(&runtime).unwrap();
+        light_pingora::spa::validate_spa_guard_collisions(
+            proxy.active_handlers.load().config(),
+            &proxy.static_resources.load(),
+        )
+        .unwrap();
+        assert_eq!(
+            proxy
+                .active_handlers
+                .load()
+                .resolve_handler_ids("/app/dashboard", "GET")
+                .unwrap(),
+            ["virtual"]
+        );
+        assert!(matches!(
+            proxy
+                .static_resources
+                .load()
+                .resolve_virtual_host(Some("test.example"), "/app/dashboard"),
+            StaticResolution::Generated(_)
+        ));
+        let entries = wp9_metadata(&runtime);
+        assert!(
+            entries
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["moduleId"] == light_pingora::HANDLER_MODULE_ID)
+        );
+    }
+
+    #[tokio::test]
+    async fn wp9_handler_collision_retains_all_modules_metadata_and_caches() {
+        use light_pingora::spa::test_support::TestRelease;
+        let dir = TempDir::new().unwrap();
+        let external = TempDir::new().unwrap();
+        let release = TestRelease::new(&dir.path().join("release"), "20261008-0123456789ab");
+        wp9_write_host(&dir, &release);
+        wp9_write_handlers(&dir, &wp9_route_config("/portal"));
+        let mut runtime = runtime_config(&dir, &external, HashMap::new());
+        runtime.cache_registry = Some(Arc::new(CacheRegistry::new()));
+        let proxy = GatewayProxy::from_runtime_config(&runtime).unwrap();
+        let (handler, _, _) = wp9_reloaders(&proxy);
+        let cache: Arc<dyn light_runtime::RuntimeCache> =
+            Arc::new(light_runtime::MokaRuntimeCache::<String, String>::new(4));
+        runtime.cache_registry.as_ref().unwrap().register_arc(
+            light_pingora::PII_TOKENIZATION_CACHE_NAME,
+            Arc::clone(&cache),
+        );
+        let metadata = wp9_metadata(&runtime);
+        let original = proxy
+            .static_resources
+            .load()
+            .resolve_virtual_host(Some("test.example"), "/app/dashboard");
+        let before_handlers = proxy.active_handlers.load();
+        let before_active_handlers = proxy.active_handlers.load();
+        let before_correlation_config = proxy.correlation_config.load();
+        let before_cors_config = proxy.cors_config.load();
+        let before_metrics_config = proxy.metrics_config.load();
+        let before_header_config = proxy.header_config.load();
+        let before_api_key_config = handler.api_key_config.load();
+        let before_basic_auth_config = handler.basic_auth_config.load();
+        let before_security_runtime = handler.security_runtime.load();
+        let before_unified_security_config = handler.unified_security_config.load();
+        let before_hmac_runtime = proxy.hmac_runtime.load();
+        let before_security_execution = proxy.security_execution.load();
+        let before_rate_limit_runtime = proxy.rate_limit_runtime.load();
+        let before_path_prefix_service_config = proxy.path_prefix_service_config.load();
+        let before_token_runtime = proxy.token_runtime.load();
+        let before_stateless_auth = proxy.stateless_auth.load();
+        let before_msal_exchange = proxy.msal_exchange.load();
+        let before_msal_auth = proxy.msal_auth.load();
+        let before_pii_tokenization = proxy.pii_tokenization.load();
+        let before_access_control = proxy.access_control.load();
+        let before_a2a_router = proxy.a2a_router.load();
+        let before_mcp_router = proxy.mcp_router.load();
+        let before_websocket_router = proxy.websocket_router.load();
+        let before_router_route = proxy.router_route.load();
+        let mut candidate = wp9_route_config("/app");
+        // These would register caches, mutate sessions/tasks or require files if reached.
+        candidate
+            .handlers
+            .extend(["mcp", "token", "llm"].map(str::to_string));
+        candidate
+            .default_handlers
+            .extend(["mcp", "token", "llm"].map(str::to_string));
+        wp9_write_handlers(&dir, &candidate);
+        let error = handler
+            .reload(ReloadContext::new(runtime.clone()))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("guard `/app`"), "{error}");
+        assert_eq!(wp9_metadata(&runtime), metadata);
+        assert!(Arc::ptr_eq(
+            &cache,
+            &runtime
+                .cache_registry
+                .as_ref()
+                .unwrap()
+                .cache(light_pingora::PII_TOKENIZATION_CACHE_NAME)
+                .unwrap()
+        ));
+        assert_eq!(
+            runtime.cache_registry.as_ref().unwrap().names(),
+            [light_pingora::PII_TOKENIZATION_CACHE_NAME]
+        );
+        assert!(Arc::ptr_eq(&before_handlers, &proxy.active_handlers.load()));
+        assert!(
+            Arc::ptr_eq(&before_active_handlers, &proxy.active_handlers.load()),
+            "active_handlers"
+        );
+        assert!(
+            Arc::ptr_eq(&before_correlation_config, &proxy.correlation_config.load()),
+            "correlation_config"
+        );
+        assert!(
+            Arc::ptr_eq(&before_cors_config, &proxy.cors_config.load()),
+            "cors_config"
+        );
+        assert!(
+            Arc::ptr_eq(&before_metrics_config, &proxy.metrics_config.load()),
+            "metrics_config"
+        );
+        assert!(
+            Arc::ptr_eq(&before_header_config, &proxy.header_config.load()),
+            "header_config"
+        );
+        assert!(
+            Arc::ptr_eq(&before_api_key_config, &handler.api_key_config.load()),
+            "api_key_config"
+        );
+        assert!(
+            Arc::ptr_eq(&before_basic_auth_config, &handler.basic_auth_config.load()),
+            "basic_auth_config"
+        );
+        assert!(
+            Arc::ptr_eq(&before_security_runtime, &handler.security_runtime.load()),
+            "security_runtime"
+        );
+        assert!(
+            Arc::ptr_eq(
+                &before_unified_security_config,
+                &handler.unified_security_config.load()
+            ),
+            "unified_security_config"
+        );
+        assert!(
+            Arc::ptr_eq(&before_hmac_runtime, &proxy.hmac_runtime.load()),
+            "hmac_runtime"
+        );
+        assert!(
+            Arc::ptr_eq(&before_security_execution, &proxy.security_execution.load()),
+            "security_execution"
+        );
+        assert!(
+            Arc::ptr_eq(&before_rate_limit_runtime, &proxy.rate_limit_runtime.load()),
+            "rate_limit_runtime"
+        );
+        assert!(
+            Arc::ptr_eq(
+                &before_path_prefix_service_config,
+                &proxy.path_prefix_service_config.load()
+            ),
+            "path_prefix_service_config"
+        );
+        assert!(
+            Arc::ptr_eq(&before_token_runtime, &proxy.token_runtime.load()),
+            "token_runtime"
+        );
+        assert!(
+            Arc::ptr_eq(&before_stateless_auth, &proxy.stateless_auth.load()),
+            "stateless_auth"
+        );
+        assert!(
+            Arc::ptr_eq(&before_msal_exchange, &proxy.msal_exchange.load()),
+            "msal_exchange"
+        );
+        assert!(
+            Arc::ptr_eq(&before_msal_auth, &proxy.msal_auth.load()),
+            "msal_auth"
+        );
+        assert!(
+            Arc::ptr_eq(&before_pii_tokenization, &proxy.pii_tokenization.load()),
+            "pii_tokenization"
+        );
+        assert!(
+            Arc::ptr_eq(&before_access_control, &proxy.access_control.load()),
+            "access_control"
+        );
+        assert!(
+            Arc::ptr_eq(&before_a2a_router, &proxy.a2a_router.load()),
+            "a2a_router"
+        );
+        assert!(
+            Arc::ptr_eq(&before_mcp_router, &proxy.mcp_router.load()),
+            "mcp_router"
+        );
+        assert!(
+            Arc::ptr_eq(&before_websocket_router, &proxy.websocket_router.load()),
+            "websocket_router"
+        );
+        assert!(
+            Arc::ptr_eq(&before_router_route, &proxy.router_route.load()),
+            "router_route"
+        );
+        assert_eq!(
+            proxy
+                .active_handlers
+                .load()
+                .resolve_handler_ids("/app/dashboard", "GET")
+                .unwrap(),
+            ["virtual"]
+        );
+        assert_eq!(
+            proxy
+                .static_resources
+                .load()
+                .resolve_virtual_host(Some("test.example"), "/app/dashboard"),
+            original
+        );
+        assert!(proxy.llm_gateway.load_full().is_none());
+        assert!(proxy.mcp_router.load().is_none());
+    }
+
+    #[tokio::test]
+    async fn wp9_static_collision_retains_snapshot_metadata_and_accepted_reloads_publish() {
+        use light_pingora::spa::test_support::TestRelease;
+        let dir = TempDir::new().unwrap();
+        let external = TempDir::new().unwrap();
+        let v1 = TestRelease::new(&dir.path().join("v1"), "20261008-0123456789ab");
+        let v2 = TestRelease::new(&dir.path().join("v2"), "20261008-abcdef012345");
+        v2.resign("20261008-abcdef012345", |m| {
+            m["spaRoutes"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({"path":"/legacy","match":"prefix"}));
+        });
+        wp9_write_host(&dir, &v1);
+        wp9_write_handlers(&dir, &wp9_route_config("/legacy"));
+        let runtime = runtime_config(&dir, &external, HashMap::new());
+        let proxy = GatewayProxy::from_runtime_config(&runtime).unwrap();
+        let (handler, statics, _) = wp9_reloaders(&proxy);
+        let before = proxy.static_resources.load();
+        let before_handlers = proxy.active_handlers.load();
+        let metadata = wp9_metadata(&runtime);
+        wp9_write_host(&dir, &v2);
+        let error = statics
+            .reload(ReloadContext::new(runtime.clone()))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("guard `/legacy`"), "{error}");
+        assert!(Arc::ptr_eq(&before, &proxy.static_resources.load()));
+        assert!(Arc::ptr_eq(&before_handlers, &proxy.active_handlers.load()));
+        assert_eq!(wp9_metadata(&runtime), metadata);
+        assert_eq!(
+            proxy
+                .static_resources
+                .load()
+                .resolve_virtual_host(Some("test.example"), "/"),
+            before.resolve_virtual_host(Some("test.example"), "/")
+        );
+        assert!(proxy.mcp_router.load().is_none());
+        // Removing that guard is accepted against v1, then v2 is accepted against the new handlers.
+        wp9_write_handlers(&dir, &wp9_route_config("/portal"));
+        handler
+            .reload(ReloadContext::new(runtime.clone()))
+            .await
+            .unwrap();
+        statics
+            .reload(ReloadContext::new(runtime.clone()))
+            .await
+            .unwrap();
+        let after = proxy.static_resources.load();
+        assert!(!Arc::ptr_eq(&before, &after));
+        light_pingora::spa::validate_spa_guard_collisions(
+            proxy.active_handlers.load().config(),
+            &after,
+        )
+        .unwrap();
+        let entries = wp9_metadata(&runtime);
+        let entries = entries.as_array().unwrap();
+        let handler_entry = entries
+            .iter()
+            .find(|e| e["moduleId"] == light_pingora::HANDLER_MODULE_ID)
+            .unwrap();
+        assert_eq!(handler_entry["config"]["paths"][0]["path"], "/portal/*");
+        let static_entry = entries
+            .iter()
+            .find(|e| e["moduleId"] == light_pingora::VIRTUAL_HOST_MODULE_ID)
+            .unwrap();
+        assert_eq!(
+            static_entry["config"]["spaHosts"][0]["version"],
+            "20261008-abcdef012345"
+        );
+        assert_eq!(
+            static_entry["config"]["spaHosts"][0]["manifestDigest"],
+            after.virtual_hosts["test.example"]
+                .spa
+                .as_ref()
+                .unwrap()
+                .manifest_digest
+        );
+    }
+
+    #[tokio::test]
+    async fn wp9_concurrent_reloads_serialize_conflicting_candidates_in_both_orders() {
+        use light_pingora::spa::test_support::TestRelease;
+        use std::future::Future;
+        use std::task::Poll;
+        for handler_first in [true, false] {
+            let dir = TempDir::new().unwrap();
+            let external = TempDir::new().unwrap();
+            let v1 = TestRelease::new(&dir.path().join("v1"), "20261008-0123456789ab");
+            let v2 = TestRelease::new(&dir.path().join("v2"), "20261008-abcdef012345");
+            v2.resign("20261008-abcdef012345", |m| {
+                m["spaRoutes"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!({"path":"/legacy","match":"prefix"}))
+            });
+            wp9_write_host(&dir, &v1);
+            wp9_write_handlers(&dir, &wp9_route_config("/portal"));
+            let runtime = runtime_config(&dir, &external, HashMap::new());
+            let proxy = GatewayProxy::from_runtime_config(&runtime).unwrap();
+            let (handler, statics, lock) = wp9_reloaders(&proxy);
+            let old_handlers = proxy.active_handlers.load();
+            let old_statics = proxy.static_resources.load();
+            let candidate_handlers = wp9_route_config("/legacy");
+            wp9_write_handlers(&dir, &candidate_handlers);
+            wp9_write_host(&dir, &v2);
+            let (candidate_statics, _) = StaticResourceSet::prepare(&runtime).unwrap();
+            light_pingora::spa::validate_spa_guard_collisions(&candidate_handlers, &old_statics)
+                .unwrap();
+            light_pingora::spa::validate_spa_guard_collisions(
+                old_handlers.config(),
+                &candidate_statics,
+            )
+            .unwrap();
+            assert!(
+                light_pingora::spa::validate_spa_guard_collisions(
+                    &candidate_handlers,
+                    &candidate_statics
+                )
+                .is_err()
+            );
+            let metadata = wp9_metadata(&runtime);
+            let held = lock.lock().await;
+            let mut handler_reload = Box::pin(handler.reload(ReloadContext::new(runtime.clone())));
+            let mut static_reload = Box::pin(statics.reload(ReloadContext::new(runtime.clone())));
+            // Both real reloaders finish preparation and queue on the held pairing
+            // mutex. Explicit polling fixes FIFO acquisition order without sleeps,
+            // controller locks, or a replacement validation/publication test path.
+            std::future::poll_fn(|cx| {
+                if handler_first {
+                    assert!(handler_reload.as_mut().poll(cx).is_pending());
+                    assert!(static_reload.as_mut().poll(cx).is_pending());
+                } else {
+                    assert!(static_reload.as_mut().poll(cx).is_pending());
+                    assert!(handler_reload.as_mut().poll(cx).is_pending());
+                }
+                Poll::Ready(())
+            })
+            .await;
+            assert_eq!(wp9_metadata(&runtime), metadata);
+            assert!(Arc::ptr_eq(&old_handlers, &proxy.active_handlers.load()));
+            assert!(Arc::ptr_eq(&old_statics, &proxy.static_resources.load()));
+            drop(held);
+            let (h, s) = tokio::join!(handler_reload, static_reload);
+            assert_eq!(h.is_ok(), handler_first);
+            assert_eq!(s.is_ok(), !handler_first);
+            let new_handlers = proxy.active_handlers.load();
+            let new_statics = proxy.static_resources.load();
+            light_pingora::spa::validate_spa_guard_collisions(new_handlers.config(), &new_statics)
+                .unwrap();
+            assert_eq!(Arc::ptr_eq(&old_handlers, &new_handlers), !handler_first);
+            assert_eq!(Arc::ptr_eq(&old_statics, &new_statics), handler_first);
+            let entries = wp9_metadata(&runtime);
+            for id in [
+                light_pingora::HANDLER_MODULE_ID,
+                light_pingora::PATH_RESOURCE_MODULE_ID,
+                light_pingora::VIRTUAL_HOST_MODULE_ID,
+            ] {
+                let before = metadata
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|e| e["moduleId"] == id)
+                    .unwrap();
+                let after = entries
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|e| e["moduleId"] == id)
+                    .unwrap();
+                if (id == light_pingora::HANDLER_MODULE_ID) != handler_first {
+                    assert_eq!(after, before, "rejected metadata: {id}");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn wp9_rejected_reload_directions_do_not_activate_caches_or_subscriptions() {
+        use light_pingora::spa::test_support::TestRelease;
+        use std::future::Future;
+        use std::task::Poll;
+        for reject_handler in [true, false] {
+            let dir = TempDir::new().unwrap();
+            let external = TempDir::new().unwrap();
+            let v1 = TestRelease::new(&dir.path().join("v1"), "20261008-0123456789ab");
+            let v2 = TestRelease::new(&dir.path().join("v2"), "20261008-abcdef012345");
+            v2.resign("20261008-abcdef012345", |m| {
+                m["spaRoutes"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!({"path":"/legacy","match":"prefix"}))
+            });
+            wp9_write_host(&dir, &v1);
+            let mut initial = wp9_route_config("/legacy");
+            initial.handlers.push("mcp".into());
+            initial.paths.push(light_pingora::HandlerPath {
+                path: "/mcp".into(),
+                method: "POST".into(),
+                exec: vec!["mcp".into()],
+            });
+            wp9_write_handlers(&dir, &initial);
+            std::fs::write(
+                dir.path().join(light_pingora::MCP_ROUTER_FILE),
+                "protocols:\n  stateless:\n    versions: ['2026-07-28']\ntools: []\n",
+            )
+            .unwrap();
+            std::fs::write(
+                dir.path().join(light_pingora::CLIENT_FILE),
+                "tls:\n  verifyHostname: false\n",
+            )
+            .unwrap();
+            let mut runtime = runtime_config(&dir, &external, HashMap::new());
+            runtime.cache_registry = Some(Arc::new(CacheRegistry::new()));
+            let proxy = GatewayProxy::from_runtime_config(&runtime).unwrap();
+            let (handler, statics, _) = wp9_reloaders(&proxy);
+            let before_mcp = proxy.mcp_router.load();
+            let response = before_mcp.as_ref().as_ref().unwrap().handle_request_with_context(McpHttpRequest {
+                method: "POST".into(), path: "/mcp".into(),
+                headers: vec![("accept".into(), "application/json, text/event-stream".into()), ("content-type".into(), "application/json".into()), ("mcp-protocol-version".into(), "2026-07-28".into()), ("mcp-method".into(), "subscriptions/listen".into())],
+                body: serde_json::to_vec(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"subscriptions/listen","params":{"notifications":{"toolsListChanged":true},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"wp9","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}})).unwrap(),
+            }, McpRequestContext { anonymous_binding: Some("wp9-in-process-peer".into()), ..Default::default() }).await.unwrap().unwrap();
+            assert_eq!(response.status, 200, "{response:?}");
+            let McpResponseBody::Stream(mut subscription) = response.body else {
+                panic!("expected subscription")
+            };
+            let ack = subscription.next_frame().await.unwrap();
+            assert!(
+                String::from_utf8_lossy(&ack).contains("notifications/subscriptions/acknowledged")
+            );
+            let cache_registry = runtime.cache_registry.as_ref().unwrap();
+            let cache_names = cache_registry.names();
+            let caches: Vec<_> = cache_names
+                .iter()
+                .map(|name| cache_registry.cache(name).unwrap())
+                .collect();
+            let metadata = wp9_metadata(&runtime);
+            let handlers = proxy.active_handlers.load();
+            let resources = proxy.static_resources.load();
+            let error = if reject_handler {
+                // Removing MCP would close this live in-memory subscription if
+                // preparation/publication ran before collision acceptance.
+                wp9_write_handlers(&dir, &wp9_route_config("/app"));
+                handler
+                    .reload(ReloadContext::new(runtime.clone()))
+                    .await
+                    .unwrap_err()
+            } else {
+                wp9_write_host(&dir, &v2);
+                statics
+                    .reload(ReloadContext::new(runtime.clone()))
+                    .await
+                    .unwrap_err()
+            };
+            assert!(error.to_string().contains("conflicts with reservation"));
+            assert!(Arc::ptr_eq(&handlers, &proxy.active_handlers.load()));
+            assert!(Arc::ptr_eq(&resources, &proxy.static_resources.load()));
+            assert!(Arc::ptr_eq(&before_mcp, &proxy.mcp_router.load()));
+            assert_eq!(wp9_metadata(&runtime), metadata);
+            assert_eq!(cache_registry.names(), cache_names);
+            for (name, cache) in cache_names.iter().zip(caches) {
+                assert!(Arc::ptr_eq(&cache, &cache_registry.cache(name).unwrap()));
+            }
+            // An activated reload would yield a terminal/change frame or EOF;
+            // Pending proves the existing subscription remains open, without sleeps.
+            {
+                let mut frame = Box::pin(subscription.next_frame());
+                std::future::poll_fn(|cx| {
+                    assert!(frame.as_mut().poll(cx).is_pending());
+                    Poll::Ready(())
+                })
+                .await;
+            }
+            // Positive control: accepted removal activates subscription closure.
+            wp9_write_handlers(&dir, &wp9_route_config("/portal"));
+            handler
+                .reload(ReloadContext::new(runtime.clone()))
+                .await
+                .unwrap();
+            assert!(subscription.next_frame().await.is_some());
+            assert!(subscription.next_frame().await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn wp9_not_found_terminal_json_get_head_and_uri_identity() {
+        let dir = TempDir::new().unwrap();
+        let external = TempDir::new().unwrap();
+        std::fs::write(dir.path().join(light_pingora::HANDLER_FILE), "reportHandlerDuration: true\nhandlers: [not-found, virtual]\npaths:\n  - {path: '/portal/*', method: '*', exec: [not-found, virtual]}\ndefaultHandlers: [virtual]\n").unwrap();
+        let proxy =
+            GatewayProxy::from_runtime_config(&runtime_config(&dir, &external, HashMap::new()))
+                .unwrap();
+        let body_expected = r#"{"statusCode":404,"message":"NOT_FOUND","description":"No API endpoint matches this path."}"#;
+        for method in ["GET", "HEAD", "POST", "OPTIONS", "DELETE"] {
+            let uri = "/portal/quer?raw=%253B";
+            let (mut client, server) = tokio::io::duplex(16384);
+            client
+                .write_all(
+                    format!(
+                        "{method} {uri} HTTP/1.1\r\nHost: test.example\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            let mut session = Session::new_h1(Box::new(server));
+            assert!(session.as_downstream_mut().read_request().await.unwrap());
+            let mut ctx = proxy.new_ctx();
+            assert!(proxy.request_filter(&mut session, &mut ctx).await.unwrap());
+            assert_eq!(session.req_header().uri.to_string(), uri);
+            assert!(
+                ctx.handler_timings
+                    .iter()
+                    .any(|timing| timing.handler_id == "not-found")
+            );
+            assert!(
+                !ctx.handler_timings
+                    .iter()
+                    .any(|timing| timing.handler_id == "virtual")
+            );
+            drop(session);
+            let mut wire = Vec::new();
+            client.read_to_end(&mut wire).await.unwrap();
+            let wire = String::from_utf8(wire).unwrap();
+            let (headers, body) = wire.split_once("\r\n\r\n").unwrap();
+            assert!(headers.starts_with("HTTP/1.1 404"));
+            let lower = headers.to_ascii_lowercase();
+            assert!(lower.contains("content-type: application/json"));
+            assert!(lower.contains("cache-control: no-store"));
+            assert!(lower.contains(&format!("content-length: {}", body_expected.len())));
+            assert_eq!(body, if method == "HEAD" { "" } else { body_expected });
+        }
+    }
+
+    #[tokio::test]
+    async fn wp9_configured_hmac_cache_publication_follows_collision_acceptance() {
+        use light_pingora::spa::test_support::TestRelease;
+
+        let dir = TempDir::new().unwrap();
+        let external = TempDir::new().unwrap();
+        let release = TestRelease::new(&dir.path().join("release"), "20261008-0123456789ab");
+        wp9_write_host(&dir, &release);
+        write_hmac_phase1_fixture(dir.path(), 1024);
+        let mut handlers: light_pingora::HandlerConfig = serde_yaml::from_str(
+            &std::fs::read_to_string(dir.path().join(light_pingora::HANDLER_FILE)).unwrap(),
+        )
+        .unwrap();
+        handlers
+            .handlers
+            .extend(["virtual".into(), "not-found".into()]);
+        handlers.paths.extend(wp9_route_config("/portal").paths);
+        handlers.default_handlers = vec!["virtual".into()];
+        wp9_write_handlers(&dir, &handlers);
+        let mut runtime = runtime_config(&dir, &external, HashMap::new());
+        runtime.cache_registry = Some(Arc::new(CacheRegistry::new()));
+        let proxy = GatewayProxy::from_runtime_config(&runtime).unwrap();
+        let (reloader, _, _) = wp9_reloaders(&proxy);
+        let caches = runtime.cache_registry.as_ref().unwrap();
+        let local_name = format!("{}local", light_pingora::HMAC_REPLAY_CACHE_PREFIX);
+        let next_name = format!("{}next", light_pingora::HMAC_REPLAY_CACHE_PREFIX);
+        assert_eq!(caches.names(), [local_name.clone()]);
+        let local_cache = caches.cache(&local_name).unwrap();
+        let before_hmac = proxy.current_hmac_runtime();
+        let before_handlers = proxy.active_handlers.load();
+        let before_execution = proxy.current_security_execution();
+        let before_metadata = wp9_metadata(&runtime);
+        let replay_store = before_hmac
+            .as_ref()
+            .as_ref()
+            .unwrap()
+            .replay_store("github")
+            .unwrap();
+        let key = light_pingora::WebhookReplayKey::new("github", "shared", "wp9-cache-retention")
+            .unwrap();
+        assert!(matches!(
+            replay_store
+                .reserve(&key, Duration::from_secs(60))
+                .await
+                .unwrap(),
+            light_pingora::ReserveOutcome::Reserved(_)
+        ));
+
+        // A new configured store would remove local and register next if activated.
+        let hmac = std::fs::read_to_string(dir.path().join(light_pingora::HMAC_FILE)).unwrap();
+        std::fs::write(
+            dir.path().join(light_pingora::HMAC_FILE),
+            hmac.replace("store: local", "store: next")
+                .replace("  local:\n", "  next:\n"),
+        )
+        .unwrap();
+        let mut conflicting = handlers.clone();
+        conflicting.paths.last_mut().unwrap().path = "/app/*".into();
+        wp9_write_handlers(&dir, &conflicting);
+        let error = reloader
+            .reload(ReloadContext::new(runtime.clone()))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("conflicts with reservation"));
+        assert!(Arc::ptr_eq(&before_handlers, &proxy.active_handlers.load()));
+        assert!(Arc::ptr_eq(&before_hmac, &proxy.current_hmac_runtime()));
+        assert!(Arc::ptr_eq(
+            &before_execution,
+            &proxy.current_security_execution()
+        ));
+        assert_eq!(wp9_metadata(&runtime), before_metadata);
+        assert_eq!(caches.names(), [local_name.clone()]);
+        assert!(Arc::ptr_eq(
+            &local_cache,
+            &caches.cache(&local_name).unwrap()
+        ));
+        assert!(caches.cache(&next_name).is_none());
+        assert!(matches!(
+            replay_store
+                .reserve(&key, Duration::from_secs(60))
+                .await
+                .unwrap(),
+            light_pingora::ReserveOutcome::Duplicate
+        ));
+
+        wp9_write_handlers(&dir, &handlers);
+        reloader
+            .reload(ReloadContext::new(runtime.clone()))
+            .await
+            .unwrap();
+        assert_eq!(caches.names(), [next_name.clone()]);
+        assert!(caches.cache(&local_name).is_none());
+        assert!(!Arc::ptr_eq(
+            &local_cache,
+            &caches.cache(&next_name).unwrap()
+        ));
+        let accepted = proxy.current_hmac_runtime();
+        assert!(!Arc::ptr_eq(&before_hmac, &accepted));
+        let accepted_store = accepted
+            .as_ref()
+            .as_ref()
+            .unwrap()
+            .replay_store("github")
+            .unwrap();
+        let execution = proxy.current_security_execution();
+        let execution_store = execution
+            .hmac
+            .as_ref()
+            .as_ref()
+            .unwrap()
+            .replay_store("github")
+            .unwrap();
+        assert!(Arc::ptr_eq(&accepted_store, &execution_store));
+        assert!(matches!(
+            accepted_store
+                .reserve(&key, Duration::from_secs(60))
+                .await
+                .unwrap(),
+            light_pingora::ReserveOutcome::Reserved(_)
+        ));
+        let metadata = runtime.module_registry.component_configs();
+        assert_eq!(
+            metadata["hmac"]["profiles"]["github"]["replay"]["store"],
+            "next"
+        );
+        assert_ne!(wp9_metadata(&runtime), before_metadata);
+    }
+
+    #[tokio::test]
+    async fn wp9_configured_cors_and_response_headers_follow_handler_acceptance() {
+        use light_pingora::spa::test_support::TestRelease;
+
+        async fn response(
+            proxy: &GatewayProxy,
+            method: &str,
+            origin: Option<&str>,
+        ) -> (String, String, GatewayRequestContext) {
+            let (mut client, server) = tokio::io::duplex(16384);
+            let origin = origin
+                .map(|origin| format!("Origin: {origin}\r\n"))
+                .unwrap_or_default();
+            let preflight = if method == "OPTIONS" {
+                "Access-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: X-WP9\r\n"
+            } else {
+                ""
+            };
+            client.write_all(format!("{method} /portal/miss?original=%253B HTTP/1.1\r\nHost: test.example\r\n{origin}{preflight}Connection: close\r\n\r\n").as_bytes()).await.unwrap();
+            let mut session = Session::new_h1(Box::new(server));
+            assert!(session.as_downstream_mut().read_request().await.unwrap());
+            let mut ctx = proxy.new_ctx();
+            assert!(proxy.request_filter(&mut session, &mut ctx).await.unwrap());
+            assert_eq!(
+                session.req_header().uri.to_string(),
+                "/portal/miss?original=%253B"
+            );
+            drop(session);
+            let mut wire = Vec::new();
+            client.read_to_end(&mut wire).await.unwrap();
+            let wire = String::from_utf8(wire).unwrap();
+            let (headers, body) = wire.split_once("\r\n\r\n").unwrap();
+            (headers.to_ascii_lowercase(), body.to_owned(), ctx)
+        }
+
+        let dir = TempDir::new().unwrap();
+        let external = TempDir::new().unwrap();
+        let release = TestRelease::new(&dir.path().join("release"), "20261008-0123456789ab");
+        wp9_write_host(&dir, &release);
+        let mut handlers = wp9_route_config("/portal");
+        handlers.report_handler_duration = true;
+        handlers.handlers.extend(["cors".into(), "header".into()]);
+        handlers.paths[0].exec = vec![
+            "cors".into(),
+            "header".into(),
+            "not-found".into(),
+            "virtual".into(),
+        ];
+        wp9_write_handlers(&dir, &handlers);
+        std::fs::write(dir.path().join(light_pingora::CORS_FILE), "enabled: true\nallowedOrigins: [https://initial.example]\nallowedMethods: [GET, HEAD, POST, OPTIONS]\n").unwrap();
+        std::fs::write(
+            dir.path().join(light_pingora::HEADER_FILE),
+            "enabled: true\nresponse:\n  update:\n    X-WP9-State: initial\n",
+        )
+        .unwrap();
+        let runtime = runtime_config(&dir, &external, HashMap::new());
+        let proxy = GatewayProxy::from_runtime_config(&runtime).unwrap();
+        let (reloader, _, _) = wp9_reloaders(&proxy);
+        let metadata = wp9_metadata(&runtime);
+        let before_cors = proxy.cors_config.load();
+        let before_headers = proxy.header_config.load();
+
+        for phase in ["initial", "rejected", "accepted"] {
+            if phase != "initial" {
+                std::fs::write(dir.path().join(light_pingora::CORS_FILE), "enabled: true\nallowedOrigins: [https://accepted.example]\nallowedMethods: [GET, HEAD, POST, OPTIONS]\n").unwrap();
+                std::fs::write(
+                    dir.path().join(light_pingora::HEADER_FILE),
+                    "enabled: true\nresponse:\n  update:\n    X-WP9-State: accepted\n",
+                )
+                .unwrap();
+                let mut candidate = handlers.clone();
+                if phase == "rejected" {
+                    candidate.paths[0].path = "/app/*".into();
+                }
+                wp9_write_handlers(&dir, &candidate);
+                let result = reloader.reload(ReloadContext::new(runtime.clone())).await;
+                if phase == "rejected" {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .to_string()
+                            .contains("conflicts with reservation")
+                    );
+                    assert_eq!(wp9_metadata(&runtime), metadata);
+                    assert!(Arc::ptr_eq(&before_cors, &proxy.cors_config.load()));
+                    assert!(Arc::ptr_eq(&before_headers, &proxy.header_config.load()));
+                } else {
+                    result.unwrap();
+                    assert_ne!(wp9_metadata(&runtime), metadata);
+                    let configs = runtime.module_registry.component_configs();
+                    assert_eq!(
+                        configs["cors"]["allowedOrigins"][0],
+                        "https://accepted.example"
+                    );
+                    assert_eq!(
+                        configs["header"]["response"]["update"]["X-WP9-State"],
+                        "accepted"
+                    );
+                }
+            }
+            let state = if phase == "accepted" {
+                "accepted"
+            } else {
+                "initial"
+            };
+            let origin = format!("https://{state}.example");
+            for method in ["GET", "HEAD", "POST"] {
+                let (headers, body, ctx) = response(&proxy, method, Some(&origin)).await;
+                assert!(headers.starts_with("http/1.1 404"));
+                assert!(headers.contains(&format!("access-control-allow-origin: {origin}")));
+                assert!(headers.contains(&format!("x-wp9-state: {state}")));
+                assert!(headers.contains("content-type: application/json"));
+                assert!(headers.contains("cache-control: no-store"));
+                assert!(
+                    ctx.handler_timings
+                        .iter()
+                        .any(|t| t.handler_id == "not-found")
+                );
+                assert!(
+                    !ctx.handler_timings
+                        .iter()
+                        .any(|t| t.handler_id == "virtual")
+                );
+                if method == "HEAD" {
+                    assert!(body.is_empty());
+                } else {
+                    assert!(body.contains("\"message\":\"NOT_FOUND\""));
+                }
+            }
+            let (headers, body, ctx) = response(&proxy, "OPTIONS", Some(&origin)).await;
+            assert!(headers.starts_with("http/1.1 200"));
+            assert!(headers.contains(&format!("access-control-allow-origin: {origin}")));
+            assert!(headers.contains("access-control-allow-methods: get, head, post, options"));
+            assert!(headers.contains("access-control-allow-headers: x-wp9"));
+            assert!(body.is_empty());
+            assert!(
+                !ctx.handler_timings
+                    .iter()
+                    .any(|t| t.handler_id == "not-found")
+            );
+            let (headers, _, ctx) = response(&proxy, "GET", Some("https://denied.example")).await;
+            assert!(headers.starts_with("http/1.1 403"));
+            assert!(!headers.contains("access-control-allow-origin:"));
+            assert!(
+                !ctx.handler_timings
+                    .iter()
+                    .any(|t| t.handler_id == "not-found")
+            );
+            let (headers, _, _) = response(&proxy, "GET", None).await;
+            assert!(headers.starts_with("http/1.1 404"));
+            assert!(!headers.contains("access-control-allow-origin:"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gateway_static_resources_spa_pinning_and_failed_reload_retention() {
+        use light_pingora::spa::test_support::TestRelease;
+        let config_dir = TempDir::new().unwrap();
+        let external_dir = TempDir::new().unwrap();
+        let v1 = TestRelease::new(
+            &config_dir.path().join("releases/v1"),
+            "20261008-0123456789ab",
+        );
+        let mut v2 = TestRelease::new(
+            &config_dir.path().join("releases/v2"),
+            "20261008-abcdef012345",
+        );
+        v2.key = v1.copy_test_key();
+        std::fs::copy(v1.keys.join("test-key.pem"), v2.keys.join("test-key.pem")).unwrap();
+        v2.resign("20261008-abcdef012345", |_| {});
+        let mut next_config: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&v2.runtime).unwrap()).unwrap();
+        next_config["routing"]["publicBasePath"] = "/next".into();
+        std::fs::write(&v2.runtime, serde_json::to_vec(&next_config).unwrap()).unwrap();
+        let current = config_dir.path().join("current");
+        std::os::unix::fs::symlink(&v1.root, &current).unwrap();
+        let host = light_pingora::VirtualHost {
+            domain: "test.example".into(),
+            path: "/".into(),
+            base: current.join("dist").to_str().unwrap().into(),
+            transfer_min_size: 10_245_760,
+            directory_listing_enabled: false,
+            spa: Some(light_pingora::SpaConfig {
+                release_manifest: current
+                    .join("release-manifest.json")
+                    .to_str()
+                    .unwrap()
+                    .into(),
+                ..v1.spa()
+            }),
+        };
+        std::fs::write(
+            config_dir.path().join(light_pingora::VIRTUAL_HOST_FILE),
+            serde_yaml::to_string(&light_pingora::VirtualHostConfig {
+                hosts: vec![host.clone()],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let runtime = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let proxy = GatewayProxy::from_runtime_config(&runtime).unwrap();
+        let before = proxy.static_resources.load();
+        let generated = before.resolve_virtual_host(Some("test.example"), "/");
+        let cfg = before.resolve_virtual_host(Some("test.example"), "/portal-config.json");
+        std::fs::remove_file(&current).unwrap();
+        std::os::unix::fs::symlink(&v2.root, &current).unwrap();
+        let pinned = proxy.static_resources.load();
+        assert_eq!(
+            pinned.resolve_virtual_host(Some("test.example"), "/"),
+            generated
+        );
+        assert_eq!(
+            pinned.resolve_virtual_host(Some("test.example"), "/portal-config.json"),
+            cfg
+        );
+        match pinned.resolve_virtual_host(Some("test.example"), "/VERSION") {
+            StaticResolution::File(f) => assert_eq!(
+                std::fs::read_to_string(f.path).unwrap(),
+                "20261008-0123456789ab"
+            ),
+            o => panic!("{o:?}"),
+        }
+        std::fs::write(v2.root.join("dist/VERSION"), "corrupt").unwrap();
+        let failed = runtime
+            .module_registry
+            .reload_modules(
+                ReloadContext::new(runtime.clone()),
+                &[light_pingora::VIRTUAL_HOST_MODULE_ID.into()],
+            )
+            .await;
+        assert_eq!(failed.failed.len(), 1);
+        assert!(failed.failed[0].message.contains("SHA-256"));
+        assert!(failed.reloaded.is_empty());
+        assert!(Arc::ptr_eq(&before, &proxy.static_resources.load()));
+        assert_eq!(
+            proxy
+                .static_resources
+                .load()
+                .resolve_virtual_host(Some("test.example"), "/"),
+            generated
+        );
+        std::fs::write(v2.root.join("dist/VERSION"), "20261008-abcdef012345").unwrap();
+        let mut next = host;
+        next.spa.as_mut().unwrap().runtime_config = v2.runtime.to_str().unwrap().into();
+        next.spa.as_mut().unwrap().release_key_dir = v2.keys.to_str().unwrap().into();
+        // Failed candidate must use the candidate's trusted key; retry config below.
+        std::fs::write(
+            config_dir.path().join(light_pingora::VIRTUAL_HOST_FILE),
+            serde_yaml::to_string(&light_pingora::VirtualHostConfig { hosts: vec![next] }).unwrap(),
+        )
+        .unwrap();
+        let success = runtime
+            .module_registry
+            .reload_modules(
+                ReloadContext::new(runtime.clone()),
+                &[light_pingora::VIRTUAL_HOST_MODULE_ID.into()],
+            )
+            .await;
+        assert!(success.failed.is_empty(), "{:?}", success.failed);
+        assert_eq!(success.reloaded.len(), 1);
+        let after = proxy.static_resources.load();
+        assert_ne!(
+            after.resolve_virtual_host(Some("test.example"), "/"),
+            generated
+        );
+        assert_ne!(
+            after.resolve_virtual_host(Some("test.example"), "/portal-config.json"),
+            cfg
+        );
+        // The old retained snapshot still serves old content after successful publication.
+        assert_eq!(
+            before.resolve_virtual_host(Some("test.example"), "/"),
+            generated
+        );
+        match after.resolve_virtual_host(Some("test.example"), "/VERSION") {
+            StaticResolution::File(f) => assert_eq!(
+                std::fs::read_to_string(f.path).unwrap(),
+                "20261008-abcdef012345"
+            ),
+            o => panic!("{o:?}"),
+        }
+    }
+    #[tokio::test]
+    async fn gateway_static_resources_generated_get_head_and_method() {
+        use light_pingora::spa::test_support::TestRelease;
+        let config_dir = TempDir::new().unwrap();
+        let external_dir = TempDir::new().unwrap();
+        let r = TestRelease::new(&config_dir.path().join("release"), "20261008-0123456789ab");
+        let proxy = GatewayProxy::from_runtime_config(&runtime_config(
+            &config_dir,
+            &external_dir,
+            HashMap::new(),
+        ))
+        .unwrap();
+        let site = r.site("/");
+        for path in ["/", "/portal-config.json"] {
+            for method in ["GET", "HEAD", "POST"] {
+                let resolution = site.resolve(path);
+                let expected = match &resolution {
+                    StaticResolution::Generated(r) => r.clone(),
+                    o => panic!("{o:?}"),
+                };
+                let (mut client, server) = tokio::io::duplex(16 * 1024);
+                client.write_all(format!("{method} {path} HTTP/1.1\r\nHost: test.example\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+                let mut session = Session::new_h1(Box::new(server));
+                assert!(session.as_downstream_mut().read_request().await.unwrap());
+                let mut ctx = proxy.new_ctx();
+                proxy
+                    .write_static_resolution(&mut session, &mut ctx, resolution)
+                    .await
+                    .unwrap();
+                drop(session);
+                let mut wire = Vec::new();
+                client.read_to_end(&mut wire).await.unwrap();
+                let wire = String::from_utf8(wire).unwrap();
+                let (headers, body) = wire.split_once("\r\n\r\n").unwrap();
+                if method == "POST" {
+                    assert!(headers.starts_with("HTTP/1.1 405"));
+                    assert!(headers.to_ascii_lowercase().contains("allow: get, head"));
+                    continue;
+                }
+                assert!(headers.starts_with("HTTP/1.1 200"));
+                let lower = headers.to_ascii_lowercase();
+                assert!(lower.contains(&format!("content-type: {}", expected.content_type)));
+                assert!(lower.contains(&format!("cache-control: {}", expected.cache_control)));
+                assert!(lower.contains(&format!("content-length: {}", expected.body.len())));
+                for (name, value) in expected.headers {
+                    assert!(lower.contains(&format!(
+                        "{}: {}",
+                        name.to_ascii_lowercase(),
+                        value.to_ascii_lowercase()
+                    )));
+                }
+                if method == "HEAD" {
+                    assert!(body.is_empty());
+                } else {
+                    assert_eq!(body.as_bytes(), expected.body.as_ref());
+                }
+            }
+        }
     }
 }

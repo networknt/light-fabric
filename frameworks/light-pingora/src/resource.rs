@@ -1,7 +1,9 @@
+use crate::spa::{CacheClass, LoadedSpa, load_spa};
 use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub const PATH_RESOURCE_FILE: &str = "path-resource.yml";
 pub const PATH_RESOURCE_LEGACY_FILE: &str = "path-resource.yaml";
@@ -55,6 +57,8 @@ pub struct VirtualHostConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VirtualHost {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spa: Option<SpaConfig>,
     pub domain: String,
     pub path: String,
     pub base: String,
@@ -62,6 +66,30 @@ pub struct VirtualHost {
     pub transfer_min_size: u64,
     #[serde(default)]
     pub directory_listing_enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SpaConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_spa_index")]
+    pub index: String,
+    pub runtime_config: String,
+    pub release_manifest: String,
+    #[serde(default = "default_release_key_dir")]
+    pub release_key_dir: String,
+    #[serde(default = "default_base_placeholder")]
+    pub base_placeholder: String,
+}
+fn default_spa_index() -> String {
+    "index.html".into()
+}
+fn default_release_key_dir() -> String {
+    "/config/portal-view-release-keys".into()
+}
+fn default_base_placeholder() -> String {
+    "__PORTAL_BASE_HREF__".into()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -73,6 +101,18 @@ pub struct StaticResourceSet {
 }
 
 impl StaticResourceSet {
+    /// Prepare verified resources and their metadata in an isolated registry.
+    /// Existing loaders remain the supported load-and-register wrapper for
+    /// callers that do not need a cross-configuration acceptance boundary.
+    pub fn prepare(
+        runtime_config: &RuntimeConfig,
+    ) -> Result<(Self, Vec<light_runtime::ModuleEntry>), RuntimeError> {
+        let mut candidate = runtime_config.clone();
+        candidate.module_registry = Arc::new(light_runtime::ModuleRegistry::new());
+        let resources = load_static_resources(&candidate)?;
+        Ok((resources, candidate.module_registry.entries()))
+    }
+
     pub fn empty() -> Self {
         Self {
             path_resource: None,
@@ -112,6 +152,8 @@ impl StaticResourceSet {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StaticSite {
+    #[serde(skip)]
+    pub spa: Option<Arc<LoadedSpa>>,
     pub path: String,
     pub base: PathBuf,
     pub prefix: bool,
@@ -128,6 +170,33 @@ impl StaticSite {
             return StaticResolution::Forbidden;
         };
 
+        if let Some(spa) = &self.spa {
+            if request_path == crate::spa::join_mount(&self.path, "portal-config.json") {
+                return StaticResolution::Generated(GeneratedResponse {
+                    content_type: "application/json",
+                    cache_control: "no-store",
+                    headers: vec![
+                        ("X-Content-Type-Options".into(), "nosniff".into()),
+                        (
+                            "ETag".into(),
+                            format!("\"sha256-{}\"", spa.runtime_config_digest),
+                        ),
+                        (
+                            "X-Portal-Config-Digest".into(),
+                            spa.runtime_config_digest.clone(),
+                        ),
+                        (
+                            "X-Portal-Release-Digest".into(),
+                            spa.manifest_digest.clone(),
+                        ),
+                    ],
+                    body: spa.runtime_config_json.clone(),
+                });
+            }
+            if relative_path.as_os_str().is_empty() || relative_path == Path::new(&spa.index) {
+                return self.rendered_index(spa);
+            }
+        }
         let candidate = self.base.join(&relative_path);
         if candidate.is_file() {
             return self.file(candidate);
@@ -141,6 +210,9 @@ impl StaticSite {
         }
 
         if !looks_like_asset(&relative_path) {
+            if let Some(spa) = &self.spa {
+                return self.rendered_index(spa);
+            }
             let index = self.base.join("index.html");
             if index.is_file() {
                 return self.file(index);
@@ -150,13 +222,54 @@ impl StaticSite {
         StaticResolution::NotFound
     }
 
+    fn rendered_index(&self, spa: &LoadedSpa) -> StaticResolution {
+        StaticResolution::Generated(GeneratedResponse {
+            content_type: "text/html; charset=utf-8",
+            cache_control: "no-cache",
+            headers: vec![
+                ("Content-Security-Policy".into(), "base-uri 'self'".into()),
+                (
+                    "X-Portal-Release-Digest".into(),
+                    spa.manifest_digest.clone(),
+                ),
+            ],
+            body: spa.rendered_index.clone(),
+        })
+    }
     fn file(&self, path: PathBuf) -> StaticResolution {
-        StaticResolution::file(path, self.transfer_min_size)
+        let mut resolution = StaticResolution::file(path.clone(), self.transfer_min_size);
+        if let Some(spa) = &self.spa {
+            let Some(class) = path
+                .strip_prefix(&self.base)
+                .ok()
+                .and_then(|p| p.to_str())
+                .and_then(|p| spa.cache_classes.get(p))
+            else {
+                return StaticResolution::NotFound;
+            };
+            if let StaticResolution::File(file) = &mut resolution {
+                file.cache_control = match class {
+                    CacheClass::Immutable => "public, max-age=31536000, immutable",
+                    CacheClass::Revalidate => "no-cache",
+                }
+                .into();
+            }
+        }
+        resolution
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedResponse {
+    pub content_type: &'static str,
+    pub cache_control: &'static str,
+    pub headers: Vec<(String, String)>,
+    pub body: bytes::Bytes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StaticResolution {
+    Generated(GeneratedResponse),
     File(StaticFile),
     NotFound,
     Forbidden,
@@ -284,11 +397,24 @@ fn load_virtual_hosts(runtime_config: &RuntimeConfig) -> Result<VirtualHostSites
             }
         }
     }
+    let spa_hosts: Vec<_> = exact.iter().map(|(domain, site)| (domain.clone(), site)).chain(wildcard.iter().map(|(suffix, site)| (format!("*{suffix}"), site))).filter_map(|(domain, site)| {
+        site.spa.as_ref().map(|spa| serde_json::json!({ "domain": domain, "path": site.path,
+            "version": spa.version, "manifestDigest": spa.manifest_digest,
+            "runtimeConfigDigest": spa.runtime_config_digest, "publicBasePath": spa.public_base_path,
+            "apiBasePath": spa.api_base_path, "authentication": { "mode": spa.authentication_mode },
+            "capability": crate::spa::PORTAL_SPA_CAPABILITY_VERSION, "loadedAt": spa.loaded_at }))
+    }).collect();
+    let summary = if spa_hosts.is_empty() {
+        serde_json::to_value(&config)
+    } else {
+        Ok(serde_json::json!({ "hosts": config.hosts, "spaHosts": spa_hosts }))
+    }
+    .map_err(|_| RuntimeError::Unsupported("virtual-host summary serialization failed".into()))?;
     runtime_config.module_registry.register_loaded_config(
         VIRTUAL_HOST_MODULE_ID,
         VIRTUAL_HOST_CONFIG_NAME,
         ModuleKind::Framework,
-        &config,
+        &summary,
         [],
         !exact.is_empty() || !wildcard.is_empty(),
         Some(!config.hosts.is_empty()),
@@ -346,6 +472,7 @@ fn build_path_resource_site(
         ));
     }
     Ok(StaticSite {
+        spa: None,
         path: validate_static_path(&config.path, "path-resource.path")?,
         base: resolve_base_path(runtime_config, &config.base),
         prefix: config.prefix,
@@ -363,9 +490,17 @@ fn build_virtual_host_site(
             "virtual-host.hosts base must not be empty".to_string(),
         ));
     }
+    let base = resolve_base_path(runtime_config, &host.base);
+    let spa = host
+        .spa
+        .as_ref()
+        .filter(|s| s.enabled)
+        .map(|s| load_spa(&host.domain, &base, s, &runtime_config.config_dir).map(Arc::new))
+        .transpose()?;
     Ok(StaticSite {
+        base: spa.as_ref().map_or(base, |s| s.release_dir.join("dist")),
+        spa,
         path: validate_static_path(&host.path, "virtual-host.hosts.path")?,
-        base: resolve_base_path(runtime_config, &host.base),
         prefix: true,
         transfer_min_size: host.transfer_min_size,
         directory_listing_enabled: host.directory_listing_enabled,
@@ -670,6 +805,7 @@ hosts:
     #[test]
     fn static_resolution_blocks_traversal_and_dotfiles() {
         let site = StaticSite {
+            spa: None,
             path: "/".to_string(),
             base: PathBuf::from("/tmp/static"),
             prefix: true,
@@ -700,6 +836,91 @@ hosts:
                 .module_summaries()
                 .iter()
                 .any(|entry| entry.module_id == PATH_RESOURCE_MODULE_ID && !entry.active)
+        );
+    }
+    #[test]
+    fn static_resources_disabled_spa_preserves_legacy_behavior() {
+        let config_dir = TempDir::new().unwrap();
+        let release = crate::spa::test_support::TestRelease::new(
+            &config_dir.path().join("release"),
+            "20261008-0123456789ab",
+        );
+        let host = VirtualHost {
+            domain: "local.localhost".into(),
+            path: "/".into(),
+            base: release.root.join("dist").to_str().unwrap().into(),
+            transfer_min_size: 10_245_760,
+            directory_listing_enabled: false,
+            spa: Some(SpaConfig {
+                enabled: false,
+                runtime_config: "does-not-exist".into(),
+                release_manifest: "does-not-exist".into(),
+                ..release.spa()
+            }),
+        };
+        let site = build_virtual_host_site(&runtime_config(&config_dir), &host).unwrap();
+        assert!(site.spa.is_none());
+        match site.resolve("/app/dashboard") {
+            StaticResolution::File(f) => {
+                assert_eq!(f.cache_control, "no-cache");
+                assert!(
+                    std::fs::read_to_string(f.path)
+                        .unwrap()
+                        .contains("__PORTAL_BASE_HREF__")
+                );
+            }
+            o => panic!("{o:?}"),
+        }
+        match site.resolve("/assets/app-m7DsXjYC.js") {
+            StaticResolution::File(f) => assert_eq!(f.cache_control, "public, max-age=3600"),
+            o => panic!("{o:?}"),
+        }
+    }
+    #[test]
+    fn static_resources_spa_sanitized_registry_summary() {
+        let config_dir = TempDir::new().unwrap();
+        let r = crate::spa::test_support::TestRelease::new(
+            &config_dir.path().join("release"),
+            "20261008-0123456789ab",
+        );
+        let host = VirtualHost {
+            domain: "local.localhost".into(),
+            path: "/".into(),
+            base: r.root.join("dist").to_str().unwrap().into(),
+            transfer_min_size: 10_245_760,
+            directory_listing_enabled: false,
+            spa: Some(r.spa()),
+        };
+        std::fs::write(
+            config_dir.path().join(VIRTUAL_HOST_FILE),
+            serde_yaml::to_string(&VirtualHostConfig { hosts: vec![host] }).unwrap(),
+        )
+        .unwrap();
+        let runtime = runtime_config(&config_dir);
+        let resources = load_static_resources(&runtime).unwrap();
+        let configs = runtime.module_registry.component_configs();
+        let summary = &configs[VIRTUAL_HOST_CONFIG_NAME]["spaHosts"][0];
+        assert_eq!(summary["domain"], "local.localhost");
+        assert_eq!(summary["path"], "/");
+        assert_eq!(summary["version"], "20261008-0123456789ab");
+        let spa = resources.virtual_hosts["local.localhost"]
+            .spa
+            .as_ref()
+            .unwrap();
+        assert_eq!(summary["manifestDigest"], spa.manifest_digest);
+        assert_eq!(summary["runtimeConfigDigest"], spa.runtime_config_digest);
+        assert_eq!(summary["publicBasePath"], "/");
+        assert_eq!(summary["apiBasePath"], "");
+        assert_eq!(summary["authentication"]["mode"], "oauth2");
+        assert_eq!(summary["capability"], 1);
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(summary["loadedAt"].as_str().unwrap()).is_ok()
+        );
+        let json = serde_json::to_string(&configs).unwrap();
+        assert!(
+            !json.contains("client_id")
+                && !json.contains("features")
+                && !json.contains("signInUrl")
         );
     }
 }
