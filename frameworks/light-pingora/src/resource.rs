@@ -101,6 +101,18 @@ pub struct StaticResourceSet {
 }
 
 impl StaticResourceSet {
+    /// Prepare verified resources and their metadata in an isolated registry.
+    /// Existing loaders remain the supported load-and-register wrapper for
+    /// callers that do not need a cross-configuration acceptance boundary.
+    pub fn prepare(
+        runtime_config: &RuntimeConfig,
+    ) -> Result<(Self, Vec<light_runtime::ModuleEntry>), RuntimeError> {
+        let mut candidate = runtime_config.clone();
+        candidate.module_registry = Arc::new(light_runtime::ModuleRegistry::new());
+        let resources = load_static_resources(&candidate)?;
+        Ok((resources, candidate.module_registry.entries()))
+    }
+
     pub fn empty() -> Self {
         Self {
             path_resource: None,
