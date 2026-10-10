@@ -335,7 +335,6 @@ fn environment(home: &Path) -> Result<BTreeMap<OsString, OsString>> {
     for key in [
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
-        "ANTHROPIC_BASE_URL",
         "CLAUDE_CODE_OAUTH_TOKEN",
         "CLAUDE_CODE_USE_BEDROCK",
         "CLAUDE_CODE_USE_VERTEX",
@@ -349,6 +348,8 @@ fn environment(home: &Path) -> Result<BTreeMap<OsString, OsString>> {
             "conflicting native Claude environment"
         );
     }
+    // Provider endpoint overrides are excluded by this allowlist and env_clear()
+    // at launch; an inherited ANTHROPIC_BASE_URL need not reject the attempt.
     let mut result = BTreeMap::new();
     for key in [
         "HOME",

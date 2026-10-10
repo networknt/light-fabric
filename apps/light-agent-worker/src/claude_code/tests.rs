@@ -2,6 +2,19 @@ use super::*;
 use coding_agent_runtime::{CodingRole, CodingRoleExecutionProfile, CodingThreadControl};
 use std::{collections::BTreeSet, os::unix::fs::PermissionsExt};
 
+#[test]
+fn native_launch_excludes_inherited_provider_endpoint() {
+    let (_root, host, _digest) = fixture();
+    let env = environment(&host.native_home).unwrap();
+    assert!(!env.contains_key(std::ffi::OsStr::new("ANTHROPIC_BASE_URL")));
+    let cmd = command(&host, &env);
+    assert!(
+        !cmd.as_std()
+            .get_envs()
+            .any(|(key, _)| key == "ANTHROPIC_BASE_URL")
+    );
+}
+
 fn policy() -> LaunchPolicy {
     LaunchPolicy {
         permission_source: PermissionSource::ClaudeCli,
