@@ -172,6 +172,25 @@ Derive every operation budget from the smaller of remaining invocation time and 
 
 Add generic HTTP dispatch only when a concrete platform needs it; reuse the gateway's destination validation and client policy rather than allowing arbitrary request-controlled URLs.
 
+### Runtime API response-post limitation (WP9/L1-08 amendment)
+
+For pinned `lambda_runtime 1.4.0`, a received HTTP 500 from invocation
+`/response` posting is logged by the SDK and polling resumes. The framework
+neither independently retries that response post nor redispatches the business
+invocation. The SDK remains the sole invocation response/error poster;
+framework-owned `/init/error` reporting is a separate pre-run requirement.
+Connection refusal/loss are distinct transport failures and propagate runtime
+errors under the verified contract.
+
+A failed response post does not show that a caller received the response, and
+the component's observed one-dispatch/one-post counts do not establish end-to-end
+exactly-once execution. The owner-approved L1-08 case now checks a failed first
+post, the redacted SDK diagnostic, resumed polling and normal completion of a
+distinct second invocation, with explicit IDs/counts and no duplicate first
+dispatch/post or `/error`. Deterministic fake Runtime API shutdown is a test
+boundary, not a new production termination mechanism. Previous termination-on-500
+expectations and their failed assertions remain in approval/evidence history.
+
 ## Portal Config Server and controller-rs
 
 Portal manages desired configuration and Config Server resolves it; controller-rs is not used by the AWS gateway function (see below). No direct database reads or projection writes from the gateway. Neither Config Server nor controller-rs is on the request path.

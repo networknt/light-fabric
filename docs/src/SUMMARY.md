@@ -144,6 +144,7 @@
   - [MCP Tool Metadata Usage](product/light-gateway/mcp-tool-metadata-usage.md)
   - [Workflow-Backed MCP Tools](product/light-gateway/workflow-backed-mcp-tools.md)
 - [Light Lambda](product/light-lambda/design.md)
+- [Light AWS](product/light-aws/design.md)
 - [Light Identity Issuer](product/light-identity-issuer/service-identity-and-revocation.md)
 - [Light-Workflow](product/light-workflow.md)
   - [Bounded Workflow Expressions — Evaluator Decision Pending](product/light-workflow/expression-transformations.md)
