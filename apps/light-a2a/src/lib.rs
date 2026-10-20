@@ -3145,8 +3145,9 @@ mod tests {
 
     fn valid_config(revocation_epoch: u64) -> A2aConfig {
         let now = Utc::now();
+        // Parallel tests must not truncate a key file another test is reading.
         let backend_key_file =
-            std::env::temp_dir().join(format!("light-a2a-backend-test-key-{}", std::process::id()));
+            std::env::temp_dir().join(format!("light-a2a-backend-test-key-{}", Uuid::now_v7()));
         std::fs::write(&backend_key_file, vec![b'b'; 32]).unwrap();
         let mut config = A2aConfig {
             runtime_policy: RuntimePolicy {
