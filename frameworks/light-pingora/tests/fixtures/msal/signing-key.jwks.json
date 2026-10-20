@@ -1,0 +1,12 @@
+{
+  "keys": [
+    {
+      "kty": "RSA",
+      "kid": "msal-test",
+      "alg": "RS256",
+      "use": "sig",
+      "n": "unluMx9t_VxLF_2dfn1ZHpg5Lx1JUUj6K4oC6EjgYaqmCYr7BAyyznyepoog_SBIApQg4Qu8kswCbyT_S0xPwIFJJkXpHDsS3WVlheeN4GXHiK23a84UdIc5APqhE3dHpPyk0cOQ8CBUtTqKgPgZHshFNeEv5eYyNpyYquM_Zr7eobFNaEXPg3xf9hhvbfiKR_BqvdYB5szYnWDgoD6BT0p6sk0CgFZ6xx9sDcYwY7KyGdYVgqG7OMWimBjA1Ym-t-0J_QmN-x9vhqOln6bOZnjRoeVHDyhwv84sZMlvPsp4uOhpZ-g6OOtopjYjy_dVLzqj5OaxakRwMD9KJv6Gmw",
+      "e": "AQAB"
+    }
+  ]
+}

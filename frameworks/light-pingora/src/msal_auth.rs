@@ -1,18 +1,20 @@
 use crate::HandlerRejection;
-use crate::security::{
-    JwtExpiryMode, SecurityRuntime, load_security_runtime_from_file, verify_jwt_token,
-};
+use crate::security::SecurityConfig;
 use crate::spa_auth::{
     AUTHORIZATION_HEADER, CookieSameSite, SpaAuthCsrfEndpoint, SpaAuthLegacyEndpoint,
     SpaAuthResponse, SpaCookieConfig, SpaSessionOutcome, bearer_token, delete_cookie_header,
     generate_csrf, record_spa_auth_legacy_get, validate_logout_csrf,
 };
-use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
+use light_runtime::{MaskSpec, ModuleKind, RuntimeConfig, RuntimeError};
 use pingora::prelude::Session;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::warn;
+
+#[path = "msal_verifier.rs"]
+mod verifier;
+use verifier::MsalVerifier;
 
 pub const MSAL_AUTH_FILE: &str = "msal-auth.yml";
 pub const MSAL_AUTH_MODULE_ID: &str = "light-pingora/msal-auth";
@@ -35,6 +37,18 @@ fn method_not_allowed(allow: &'static str) -> HandlerRejection {
 pub struct MsalAuthConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default)]
+    pub tenant_id: String,
+    #[serde(default)]
+    pub issuer: String,
+    #[serde(default)]
+    pub audience: String,
+    #[serde(default)]
+    pub jwks_uri: String,
+    #[serde(default, deserialize_with = "deserialize_policy_list")]
+    pub required_scopes: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_policy_list")]
+    pub allowed_client_ids: Vec<String>,
     #[serde(default = "default_login_path")]
     pub login_path: String,
     #[serde(default = "default_logout_path")]
@@ -57,6 +71,12 @@ impl Default for MsalAuthConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            tenant_id: String::new(),
+            issuer: String::new(),
+            audience: String::new(),
+            jwks_uri: String::new(),
+            required_scopes: Vec::new(),
+            allowed_client_ids: Vec::new(),
             login_path: default_login_path(),
             logout_path: default_logout_path(),
             logout_csrf_enforced: false,
@@ -94,6 +114,134 @@ fn default_session_timeout() -> u64 {
 }
 
 impl MsalAuthConfig {
+    fn validate(&self) -> Result<(), RuntimeError> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let invalid =
+            |field| RuntimeError::Unsupported(format!("msal-auth.{field} is missing or invalid"));
+        let uuid = |value: &str| {
+            uuid::Uuid::parse_str(value)
+                .is_ok_and(|parsed| parsed.to_string() == value && !parsed.is_nil())
+        };
+        if !uuid(&self.tenant_id) {
+            return Err(invalid("tenantId"));
+        }
+        let jwks = url::Url::parse(&self.jwks_uri).map_err(|_| invalid("jwksUri"))?;
+        if jwks.scheme() != "https"
+            || jwks.host_str().is_none()
+            || !jwks.username().is_empty()
+            || jwks.password().is_some()
+            || jwks.fragment().is_some()
+            || self.jwks_uri.trim() != self.jwks_uri
+        {
+            return Err(invalid("jwksUri"));
+        }
+        let issuer = url::Url::parse(&self.issuer).map_err(|_| invalid("issuer"))?;
+        if issuer.scheme() != "https"
+            || issuer.host_str().is_none()
+            || !issuer.username().is_empty()
+            || issuer.password().is_some()
+            || issuer.query().is_some()
+            || issuer.fragment().is_some()
+            || self.issuer.trim() != self.issuer
+            || ![
+                format!("/{}/", self.tenant_id),
+                format!("/{}/v2.0", self.tenant_id),
+            ]
+            .contains(&issuer.path().to_owned())
+        {
+            return Err(invalid("issuer"));
+        }
+        if self.audience.trim().is_empty() || self.audience.trim() != self.audience {
+            return Err(invalid("audience"));
+        }
+        if self.required_scopes.is_empty()
+            || self
+                .required_scopes
+                .iter()
+                .any(|scope| scope.is_empty() || scope.chars().any(char::is_whitespace))
+        {
+            return Err(invalid("requiredScopes"));
+        }
+        if self.allowed_client_ids.is_empty() || self.allowed_client_ids.iter().any(|id| !uuid(id))
+        {
+            return Err(invalid("allowedClientIds"));
+        }
+        Ok(())
+    }
+
+    /// Checks application trust and lifetime after signature verification on every request.
+    fn validate_claims(
+        &self,
+        claims: &serde_json::Value,
+        now: u64,
+        skew: u64,
+    ) -> Result<(), &'static str> {
+        let text = |name| claims.get(name).and_then(serde_json::Value::as_str);
+        if text("iss") != Some(self.issuer.as_str()) {
+            return Err("issuer");
+        }
+        if text("tid") != Some(self.tenant_id.as_str()) {
+            return Err("tenant");
+        }
+        let version = if self.issuer.ends_with("/v2.0") {
+            "2.0"
+        } else {
+            "1.0"
+        };
+        if text("ver") != Some(version) {
+            return Err("version");
+        }
+        let audience_matches = match claims.get("aud") {
+            Some(serde_json::Value::String(value)) => value == &self.audience,
+            Some(serde_json::Value::Array(values)) => {
+                values.len() == 1 && values[0].as_str() == Some(self.audience.as_str())
+            }
+            _ => false,
+        };
+        if !audience_matches {
+            return Err("audience");
+        }
+        let client_claim = if version == "2.0" { "azp" } else { "appid" };
+        if !text(client_claim)
+            .is_some_and(|client| self.allowed_client_ids.iter().any(|id| id == client))
+        {
+            return Err("client");
+        }
+        if !text("sub").is_some_and(|subject| !subject.trim().is_empty())
+            || claims
+                .get("idtyp")
+                .is_some_and(|value| value.as_str() != Some("user"))
+        {
+            return Err("token_purpose");
+        }
+        let scopes = text("scp").ok_or("scopes")?;
+        if self
+            .required_scopes
+            .iter()
+            .any(|required| !scopes.split(' ').any(|scope| scope == required))
+        {
+            return Err("scopes");
+        }
+        let exp = claims
+            .get("exp")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or("expiry")?;
+        if now >= exp.saturating_add(skew) {
+            return Err("expired");
+        }
+        if let Some(nbf) = claims.get("nbf") {
+            if nbf
+                .as_u64()
+                .is_none_or(|nbf| nbf > now.saturating_add(skew))
+            {
+                return Err("not_before");
+            }
+        }
+        Ok(())
+    }
+
     fn cookie_config(&self) -> SpaCookieConfig {
         SpaCookieConfig {
             cookie_domain: self.cookie_domain.clone(),
@@ -111,21 +259,57 @@ impl MsalAuthConfig {
     }
 }
 
+// Match configuration substitution: native lists, JSON/YAML arrays, CSV and empty defaults.
+fn deserialize_policy_list<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Setting {
+        List(Vec<String>),
+        Text(String),
+    }
+    match Setting::deserialize(deserializer)? {
+        Setting::List(values) => Ok(values),
+        Setting::Text(value) => {
+            let value = value.trim();
+            if value.is_empty() {
+                return Ok(Vec::new());
+            }
+            if value.starts_with('[') {
+                serde_yaml::from_str(value).map_err(serde::de::Error::custom)
+            } else {
+                Ok(value
+                    .split(',')
+                    .map(|item| item.trim().to_owned())
+                    .collect())
+            }
+        }
+    }
+}
+
 pub struct MsalAuthRuntime {
     pub config: MsalAuthConfig,
-    pub msal_security: SecurityRuntime,
+    security: SecurityConfig,
+    verifier: MsalVerifier,
 }
 
 impl MsalAuthRuntime {
-    pub fn new(config: MsalAuthConfig, msal_security: SecurityRuntime) -> Self {
-        Self {
+    pub fn new(config: MsalAuthConfig, security: SecurityConfig) -> Result<Self, RuntimeError> {
+        config.validate()?;
+        let verifier = MsalVerifier::new(&config.jwks_uri)?;
+        Ok(Self {
             config,
-            msal_security,
-        }
+            security,
+            verifier,
+        })
     }
 
     pub async fn bootstrap(&self) -> Result<(), HandlerRejection> {
-        self.msal_security.bootstrap().await
+        self.verifier
+            .bootstrap()
+            .await
+            .map_err(msal_verification_error)
     }
 
     pub async fn handle_request(
@@ -176,7 +360,25 @@ impl MsalAuthRuntime {
         if let Some(access_token) = cookies.get(ACCESS_TOKEN_COOKIE) {
             let principal = self
                 .validate_session(session, access_token, &cookies)
-                .await?;
+                .await
+                .map_err(|mut error| {
+                    // Only invalid authentication clears the session; a CSRF failure must not log users out.
+                    if error.status == 401 && error.code == "ERR10000" {
+                        let config = self.config.cookie_config();
+                        error.headers.push(delete_cookie_header(
+                            &config,
+                            ACCESS_TOKEN_COOKIE,
+                            true,
+                        ));
+                        error
+                            .headers
+                            .push(delete_cookie_header(&config, CSRF_COOKIE, false));
+                        error
+                            .headers
+                            .push(("cache-control".into(), "no-store".into()));
+                    }
+                    error
+                })?;
             return Ok(SpaSessionOutcome::Continue {
                 auth: Some(principal),
                 response_headers: Vec::new(),
@@ -197,13 +399,7 @@ impl MsalAuthRuntime {
             HandlerRejection::new(401, "ERR11000", "Microsoft bearer token is missing")
         })?;
 
-        let principal = verify_jwt_token(
-            &self.msal_security,
-            microsoft_token.as_str(),
-            JwtExpiryMode::Enforce,
-        )
-        .await
-        .map_err(|error| HandlerRejection::new(error.status, "ERR10000", error.message))?;
+        let principal = self.verify_microsoft_token(&microsoft_token).await?;
 
         let csrf = generate_csrf();
 
@@ -265,9 +461,7 @@ impl MsalAuthRuntime {
         access_token: &str,
         cookies: &std::collections::BTreeMap<String, String>,
     ) -> Result<crate::AuthPrincipal, HandlerRejection> {
-        let principal = verify_jwt_token(&self.msal_security, access_token, JwtExpiryMode::Enforce)
-            .await
-            .map_err(|error| HandlerRejection::new(error.status, "ERR10000", error.message))?;
+        let principal = self.verify_microsoft_token(access_token).await?;
 
         // Double submit cookie CSRF validation
         let cookie_csrf = cookies
@@ -293,6 +487,64 @@ impl MsalAuthRuntime {
             .map_err(|_| HandlerRejection::new(500, "ERR10001", "invalid Authorization header"))?;
 
         Ok(principal)
+    }
+
+    async fn verify_microsoft_token(
+        &self,
+        token: &str,
+    ) -> Result<crate::AuthPrincipal, HandlerRejection> {
+        let claims = self
+            .verifier
+            .verify(token, self.security.jwt.clock_skew_in_seconds)
+            .await
+            .map_err(msal_verification_error)?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.config
+            .validate_claims(&claims, now, self.security.jwt.clock_skew_in_seconds)
+            .map_err(|reason| {
+                warn!(reason, "Microsoft token validation failed");
+                HandlerRejection::new(401, "ERR10000", "Invalid Microsoft access token")
+            })?;
+        let text = |name| {
+            claims
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        Ok(crate::AuthPrincipal {
+            client_id: text("client_id").or_else(|| text("cid")),
+            user_id: text("user_id")
+                .or_else(|| text("uid"))
+                .or_else(|| text("sub")),
+            issuer: text("iss"),
+            email: text("email").or_else(|| text("eml")),
+            host: text("host"),
+            role: text("role"),
+            claims,
+        })
+    }
+}
+
+fn msal_verification_error(error: HandlerRejection) -> HandlerRejection {
+    if error.status >= 500 {
+        warn!(
+            reason = "key_resolution_unavailable",
+            "Microsoft token verification unavailable"
+        );
+        HandlerRejection::new(
+            error.status,
+            "ERR10056",
+            "Microsoft token verification unavailable",
+        )
+    } else {
+        warn!(
+            reason = "signature_or_standard_claims",
+            "Microsoft token validation failed"
+        );
+        HandlerRejection::new(401, "ERR10000", "Invalid Microsoft access token")
     }
 }
 
@@ -346,6 +598,7 @@ pub fn load_msal_auth_runtime(
     }
 
     let config = load_msal_auth_config(runtime_config)?.unwrap_or_default();
+    config.validate()?;
     runtime_config.module_registry.register_loaded_config(
         MSAL_AUTH_MODULE_ID,
         MSAL_AUTH_CONFIG_NAME,
@@ -361,21 +614,33 @@ pub fn load_msal_auth_runtime(
         return Ok(None);
     }
 
-    let msal_security = match load_security_runtime_from_file(
-        runtime_config,
-        true,
-        SECURITY_MSAL_FILE,
+    // Only load MSAL verifier settings. Never construct the generic verifier or
+    // consult its client.yml key providers, caches, TLS settings or routing.
+    let security = match runtime_config
+        .module_registry
+        .load_config::<SecurityConfig>(runtime_config, SECURITY_MSAL_FILE)
+    {
+        Ok(config) => config,
+        Err(RuntimeError::MissingConfig(_)) => SecurityConfig::default(),
+        Err(error) => return Err(error),
+    };
+    runtime_config.module_registry.register_loaded_config(
         SECURITY_MSAL_MODULE_ID,
         SECURITY_MSAL_CONFIG_NAME,
-    )? {
-        Some(s) => s,
-        None => {
-            return Err(RuntimeError::MissingConfig(SECURITY_MSAL_FILE.to_string()));
-        }
-    };
+        ModuleKind::Framework,
+        &security,
+        [MaskSpec::key("swtClientSecretHeader")],
+        true,
+        Some(true),
+        true,
+    )?;
 
-    Ok(Some(MsalAuthRuntime::new(config, msal_security)))
+    Ok(Some(MsalAuthRuntime::new(config, security)?))
 }
+
+#[cfg(test)]
+#[path = "msal_auth_tests.rs"]
+mod policy_tests;
 
 #[cfg(test)]
 mod tests {
