@@ -53,3 +53,4 @@ uuid = { workspace = true }
 light-security = { path = "../../crates/light-security", features = ["test-support"] }
 rcgen = "0.14"
 tempfile = "3"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

@@ -3,9 +3,10 @@
 ## Status
 
 The Rust implementation in `light-pingora` and `light-gateway` requires an explicit
-MSAL trust policy in addition to signature verification through `security-msal.yml`.
+MSAL trust policy and a dedicated HTTPS `jwksUri` for RS256 signature verification.
 It validates the tenant, issuer, API audience, client, delegated scopes and lifetime
-on both login and cookie requests, including signature-cache hits.
+on both login and cookie requests. Signing trust is independent of generic JWT
+providers, their caches, and `client.yml` routing or TLS settings.
 
 ## Purpose
 
@@ -14,7 +15,7 @@ The `msal-auth` module is an alternative to `msal-exchange` for Microsoft Entra 
 In this flow:
 1. The SPA handles Microsoft authentication, token acquisition, and token refresh directly.
 2. The SPA submits the Entra ID access token to the gateway's `/auth/ms/login` endpoint.
-3. The gateway validates the Entra ID token with `security-msal.yml` and sets the `accessToken` and `csrf` cookies using the double-submit cookie pattern.
+3. The gateway validates the Entra ID access token against the configured MSAL JWKS endpoint and policy and sets the `accessToken` and `csrf` cookies using the double-submit cookie pattern.
 4. On subsequent API calls, the gateway validates the Microsoft JWT with expiry enforcement, compares the CSRF request value to the CSRF cookie, sets the gateway auth principal for later handlers, and forwards the token in the `Authorization: Bearer` header.
 
 This eliminates the need for an internal `light-oauth` token exchange, reducing infrastructure dependencies while maintaining backend API security.
@@ -68,6 +69,7 @@ enabled: ${msal-auth.enabled:true}
 tenantId: ${msal-auth.tenantId:}
 issuer: ${msal-auth.issuer:}
 audience: ${msal-auth.audience:}
+jwksUri: ${msal-auth.jwksUri:}
 requiredScopes: ${msal-auth.requiredScopes:}
 allowedClientIds: ${msal-auth.allowedClientIds:}
 loginPath: ${msal-auth.loginPath:/auth/ms/login}
@@ -90,7 +92,9 @@ An inactive or disabled handler does not require a policy.
 1. Expose delegated scopes on your Entra **API** app registration and grant the
    SPA permission to request them.
 2. Configure the exact tenant-specific issuer from trusted OpenID metadata,
-   the API audience, the required scope names, and the allowed SPA client IDs.
+   the API audience, the required scope names, the allowed SPA client IDs, and
+   `jwksUri` from the same trusted metadata document. The JWKS endpoint must use
+   HTTPS without credentials or a fragment; its TLS certificate is verified.
 3. Have MSAL request the API's scopes (for example
    `api://<api-id>/access_as_user`) and send the resulting **access token** to
    `/auth/ms/login`. Do not send an ID token or a Microsoft Graph access token.
@@ -104,6 +108,7 @@ Example `values.yml` (replace the example UUIDs):
 msal-auth.tenantId: "11111111-1111-1111-1111-111111111111"
 msal-auth.issuer: "https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/v2.0"
 msal-auth.audience: "22222222-2222-2222-2222-222222222222"
+msal-auth.jwksUri: "https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/discovery/v2.0/keys"
 msal-auth.requiredScopes: ["access_as_user"]
 msal-auth.allowedClientIds: ["33333333-3333-3333-3333-333333333333"]
 ```
@@ -126,17 +131,29 @@ One tenant/issuer/version is supported per MSAL runtime:
   tokens cannot substitute for delegated access tokens. If `idtyp` is present,
   it must be `user`; a `typ: JWT` header alone does not identify token purpose.
 - Expiration and optional not-before are enforced with
-  `security-msal.jwt.clockSkewInSeconds`, including cache hits and even when
-  the generic verifier has `ignoreJwtExpiry: true`.
+  `security-msal.jwt.clockSkewInSeconds`, even when the generic verifier has
+  `ignoreJwtExpiry: true`. Generic flags cannot disable MSAL signature or lifetime checks.
 
-The Rust signature cache is owned by each `SecurityRuntime`, so it remains
-available. Application policy and lifetime checks run after every cache lookup.
-Reloading configuration constructs a new security runtime. This differs from the
-Java shared-cache restriction in `light-spa-4j` PR #182.
+Like the final Java implementation in `light-spa-4j` PR #182, direct MSAL
+authentication permits **RS256 only** and has no token/principal cache. Each
+runtime owns its JWKS cache and an independent HTTPS client. Shared providers,
+including providers with the same `kid`, cannot supply MSAL signing keys.
+`client.yml` key routing, provider selection and TLS overrides are not consulted.
+
+JWKS requests have a five-second connect/total timeout and a 1 MiB response
+limit. Redirects are rejected. Keys expire after one hour; unknown keys and
+signature failures can refresh keys, with a 30-second minimum interval between
+fetch attempts, including failed attempts. Concurrent lookups share the refresh
+lock. Reloading creates a fresh verifier bound to the new endpoint. Resolver
+failures remain generic 5xx responses and retain existing session cookies.
 
 ### `security-msal.yml`
 
-`msal-auth` requires `security-msal.yml` when the handler is active and `msal-auth.enabled` is true. The config is loaded independently from the normal `security.yml` runtime.
+`security-msal.yml` supplies `jwt.clockSkewInSeconds` (60 seconds by default).
+Its generic issuer/audience, cache, mock, relaxed-key and verification-disable
+settings do not override the dedicated MSAL trust policy. Missing settings use
+defaults. Other handlers such as `msal-exchange` continue using their existing
+security runtime.
 
 ```yaml
 enableVerifyJwt: ${security-msal.enableVerifyJwt:true}
@@ -150,7 +167,7 @@ jwt:
 
 ## Handlers
 
-- **Login (`/auth/ms/login`)**: Expects an Entra ID token in the `Authorization: Bearer` header. Validates it using the `security-msal` runtime with expiry enforcement. Generates a secure CSRF token and returns both `accessToken` and `csrf` as `Set-Cookie` headers.
+- **Login (`/auth/ms/login`)**: Expects an Entra ID token in the `Authorization: Bearer` header. Validates its RS256 signature using `msal-auth.jwksUri`, then enforces the MSAL policy and lifetime. Generates a secure CSRF token and returns both `accessToken` and `csrf` as `Set-Cookie` headers.
 - **Logout (`POST /auth/ms/logout`)**: Validates logout CSRF when configured,
   clears every cookie the runtime sets (`accessToken` and `csrf`), and returns
   `204 No Content` without a response body or content type.

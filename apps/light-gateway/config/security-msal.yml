@@ -1,3 +1,5 @@
+# Direct msal-auth uses only jwt.clockSkewInSeconds below; its signing trust is
+# msal-auth.jwksUri. Other settings remain available to msal-exchange.
 enableVerifyJwt: ${security-msal.enableVerifyJwt:true}
 ignoreJwtExpiry: ${security-msal.ignoreJwtExpiry:false}
 enableRelaxedKeyValidation: ${security-msal.enableRelaxedKeyValidation:false}

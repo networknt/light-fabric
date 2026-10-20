@@ -6,13 +6,15 @@ use std::{collections::HashMap, io::Cursor, sync::Arc};
 const TENANT: &str = "11111111-1111-1111-1111-111111111111";
 const AUDIENCE: &str = "22222222-2222-2222-2222-222222222222";
 const CLIENT: &str = "33333333-3333-3333-3333-333333333333";
-const KEY: &[u8] = b"local-msal-regression-signing-key-not-a-production-secret";
+const KEY: &[u8] = include_bytes!("../tests/fixtures/msal/signing-key.pem");
+const OTHER_KEY: &[u8] = include_bytes!("../tests/fixtures/msal/other-signing-key.pem");
 
 fn policy() -> MsalAuthConfig {
     MsalAuthConfig {
         tenant_id: TENANT.into(),
         issuer: format!("https://login.microsoftonline.com/{TENANT}/v2.0"),
         audience: AUDIENCE.into(),
+        jwks_uri: "https://login.microsoftonline.com/common/discovery/v2.0/keys".into(),
         required_scopes: vec!["access_as_user".into(), "profile.read".into()],
         allowed_client_ids: vec![CLIENT.into()],
         ..Default::default()
@@ -26,7 +28,7 @@ fn now() -> u64 {
         .as_secs()
 }
 
-fn claims() -> Value {
+pub(super) fn claims() -> Value {
     json!({
         "iss": policy().issuer, "tid": TENANT, "aud": AUDIENCE, "ver": "2.0",
         "azp": CLIENT, "sub": "local-user", "scp": "access_as_user profile.read extra",
@@ -34,50 +36,105 @@ fn claims() -> Value {
     })
 }
 
-fn sign(claims: &Value) -> String {
-    let mut header = Header::new(Algorithm::HS256);
+pub(super) fn sign(claims: &Value) -> String {
+    let mut header = Header::new(Algorithm::RS256);
     header.kid = Some("msal-test".into());
-    encode(&header, claims, &EncodingKey::from_secret(KEY)).unwrap()
+    encode(&header, claims, &EncodingKey::from_rsa_pem(KEY).unwrap()).unwrap()
+}
+
+// Real HTTPS transport with a test CA trusted only by this runtime's test client.
+pub(super) struct JwksServer {
+    pub(super) uri: String,
+    pub(super) client: reqwest::Client,
+    pub(super) requests: Arc<std::sync::atomic::AtomicUsize>,
+    pub(super) body: Arc<tokio::sync::RwLock<String>>,
+}
+
+pub(super) async fn jwks_server(body: &str) -> JwksServer {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![cert.cert.der().clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let uri = format!(
+        "https://localhost:{}/keys",
+        listener.local_addr().unwrap().port()
+    );
+    let client = reqwest::Client::builder()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(5))
+        .add_root_certificate(reqwest::Certificate::from_der(cert.cert.der()).unwrap())
+        .build()
+        .unwrap();
+    let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = requests.clone();
+    let body = Arc::new(tokio::sync::RwLock::new(body.to_owned()));
+    let response_body = body.clone();
+    tokio::spawn(async move {
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+        while let Ok((socket, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            let count = count.clone();
+            let response_body = response_body.clone();
+            tokio::spawn(async move {
+                let Ok(mut socket) = acceptor.accept(socket).await else {
+                    return;
+                };
+                let mut request = [0; 4096];
+                if socket.read(&mut request).await.is_ok() {
+                    count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let body = response_body.read().await;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                }
+            });
+        }
+    });
+    JwksServer {
+        uri,
+        client,
+        requests,
+        body,
+    }
 }
 
 async fn runtime(cache: bool, ignore_expiry: bool) -> MsalAuthRuntime {
-    use base64::Engine;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let keys = json!({"keys": [{
-        "kty": "oct", "kid": "msal-test", "alg": "HS256",
-        "k": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(KEY)
-    }]})
-    .to_string();
-    // Serve the real key-fetch/refresh path, including refresh after a bad signature.
-    tokio::spawn(async move {
-        while let Ok((mut socket, _)) = listener.accept().await {
-            let mut request = [0; 4096];
-            if socket.read(&mut request).await.is_ok() {
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{keys}",
-                    keys.len()
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-            }
-        }
-    });
+    let server = jwks_server(include_str!("../tests/fixtures/msal/signing-key.jwks.json")).await;
     let dir = tempfile::tempdir().unwrap();
+    let mut policy = policy();
+    policy.jwks_uri = server.uri;
     std::fs::write(
         dir.path().join(MSAL_AUTH_FILE),
-        serde_yaml::to_string(&policy()).unwrap(),
+        serde_yaml::to_string(&policy).unwrap(),
     )
     .unwrap();
     std::fs::write(dir.path().join(SECURITY_MSAL_FILE), format!(
-        "enableJwtCache: {cache}\nignoreJwtExpiry: {ignore_expiry}\nbootstrapFromKeyService: true\njwt:\n  clockSkewInSeconds: 60\n"
+        "enableJwtCache: {cache}\nignoreJwtExpiry: {ignore_expiry}\njwt:\n  clockSkewInSeconds: 60\n"
     )).unwrap();
-    let mut config = runtime_config(&dir);
-    config.client = Some(Default::default());
-    let client = config.client.as_mut().unwrap();
-    client.oauth.token.key.server_url = Some(format!("http://{address}"));
-    client.oauth.token.key.uri = "/keys".into();
-    let runtime = load_msal_auth_runtime(&config, true).unwrap().unwrap();
+    // An invalid shared client must never be loaded by direct MSAL authentication.
+    std::fs::write(
+        dir.path().join("client.yml"),
+        "[invalid shared configuration",
+    )
+    .unwrap();
+    let mut runtime = load_msal_auth_runtime(&runtime_config(&dir), true)
+        .unwrap()
+        .unwrap();
+    runtime.verifier.client = server.client;
     runtime.bootstrap().await.unwrap();
     runtime
 }
@@ -132,7 +189,7 @@ async fn assert_rejected(runtime: &MsalAuthRuntime, token: &str) {
 }
 
 #[tokio::test]
-async fn signed_tokens_require_policy_on_login_and_cookie_paths_with_and_without_cache() {
+async fn signed_tokens_require_policy_on_both_paths_regardless_of_generic_cache_setting() {
     for cache in [false, true] {
         let runtime = runtime(cache, false).await;
         let token = sign(&claims());
@@ -202,21 +259,20 @@ async fn signed_tokens_require_policy_on_login_and_cookie_paths_with_and_without
 }
 
 #[tokio::test]
-async fn cached_claims_are_rechecked_against_current_msal_policy() {
+async fn verified_claims_are_rechecked_against_current_msal_policy() {
     let runtime = runtime(true, false).await;
     let mut wrong = claims();
     wrong["aud"] = json!("another-api");
     let token = sign(&wrong);
-    // Deliberately warm the generic cache: it has no issuer/audience policy.
-    verify_jwt_token(&runtime.msal_security, &token, JwtExpiryMode::Enforce)
-        .await
-        .unwrap();
     assert_rejected(&runtime, &token).await;
     let token = sign(&claims());
     runtime.verify_microsoft_token(&token).await.unwrap();
     let mut changed = policy();
     changed.required_scopes.push("new.permission".into());
-    let changed = MsalAuthRuntime::new(changed, runtime.msal_security.clone()).unwrap();
+    let changed = MsalAuthRuntime {
+        config: changed,
+        ..runtime
+    };
     assert_rejected(&changed, &token).await;
 }
 
@@ -232,9 +288,6 @@ async fn ignore_expiry_cannot_bypass_msal_lifetime_checks_even_with_a_warm_cache
             }
         }
         let token = sign(&invalid);
-        verify_jwt_token(&runtime.msal_security, &token, JwtExpiryMode::Enforce)
-            .await
-            .unwrap();
         assert_rejected(&runtime, &token).await;
     }
 }
@@ -296,19 +349,22 @@ async fn csrf_failure_does_not_clear_valid_cookies() {
 #[tokio::test]
 async fn signature_failures_are_rejected_and_v1_client_claim_is_supported_explicitly() {
     let runtime = runtime(false, false).await;
-    let mut header = Header::new(Algorithm::HS256);
+    let mut header = Header::new(Algorithm::RS256);
     header.kid = Some("msal-test".into());
     let wrong_signature = encode(
         &header,
         &claims(),
-        &EncodingKey::from_secret(b"wrong-secret"),
+        &EncodingKey::from_rsa_pem(OTHER_KEY).unwrap(),
     )
     .unwrap();
     assert_rejected(&runtime, &wrong_signature).await;
     assert_rejected(&runtime, "not.a.jwt").await;
     let mut config = policy();
     config.issuer = format!("https://sts.windows.net/{TENANT}/");
-    let runtime = MsalAuthRuntime::new(config.clone(), runtime.msal_security).unwrap();
+    let runtime = MsalAuthRuntime {
+        config: config.clone(),
+        ..runtime
+    };
     let mut token = claims();
     token["iss"] = json!(config.issuer);
     token["ver"] = json!("1.0");
@@ -358,6 +414,7 @@ fn shipped_template_loads_values_and_supports_list_substitution_formats() {
             ("tenantId", json!(TENANT)),
             ("issuer", json!(policy().issuer)),
             ("audience", json!(AUDIENCE)),
+            ("jwksUri", json!(policy().jwks_uri)),
             ("requiredScopes", list),
             ("allowedClientIds", json!(CLIENT)),
         ] {
@@ -390,6 +447,7 @@ fn disabled_and_invalid_policy_configs_fail_at_load_time_without_request_rebuild
         "tenantId",
         "issuer",
         "audience",
+        "jwksUri",
         "requiredScopes",
         "allowedClientIds",
     ] {
@@ -410,4 +468,105 @@ fn disabled_and_invalid_policy_configs_fail_at_load_time_without_request_rebuild
     let mut value = serde_json::to_value(policy()).unwrap();
     value["requiredScopes"] = json!(["scope", 42]);
     assert!(serde_json::from_value::<MsalAuthConfig>(value).is_err());
+}
+
+#[tokio::test]
+async fn msal_signing_trust_is_isolated_for_same_kid_in_both_provider_orders() {
+    let other = jwks_server(include_str!(
+        "../tests/fixtures/msal/other-signing-key.jwks.json"
+    ))
+    .await;
+    let mut other_config = policy();
+    other_config.jwks_uri = other.uri;
+    let mut other_runtime = MsalAuthRuntime::new(other_config, SecurityConfig::default()).unwrap();
+    other_runtime.verifier.client = other.client;
+    let trusted = runtime(true, false).await;
+    let mut header = Header::new(Algorithm::RS256);
+    header.kid = Some("msal-test".into());
+    let other_token = encode(
+        &header,
+        &claims(),
+        &EncodingKey::from_rsa_pem(OTHER_KEY).unwrap(),
+    )
+    .unwrap();
+    let trusted_token = sign(&claims());
+    for other_first in [true, false] {
+        if other_first {
+            other_runtime
+                .verify_microsoft_token(&other_token)
+                .await
+                .unwrap();
+        }
+        trusted
+            .verify_microsoft_token(&trusted_token)
+            .await
+            .unwrap();
+        assert_rejected(&trusted, &other_token).await;
+        other_runtime
+            .verify_microsoft_token(&other_token)
+            .await
+            .unwrap();
+        assert_rejected(&other_runtime, &trusted_token).await;
+    }
+    // Neither a warm shared principal cache nor a permitted generic HMAC key
+    // may establish MSAL signing trust.
+    let secret = b"local-generic-cache-key";
+    let generic = crate::security::SecurityRuntime::with_test_hs256_key("msal-test", secret).await;
+    let mut generic = generic;
+    generic.config.enable_jwt_cache = true;
+    let mut header = Header::new(Algorithm::HS256);
+    header.kid = Some("msal-test".into());
+    let token = encode(&header, &claims(), &EncodingKey::from_secret(secret)).unwrap();
+    for _ in 0..2 {
+        crate::security::verify_jwt_token(
+            &generic,
+            &token,
+            crate::security::JwtExpiryMode::Enforce,
+        )
+        .await
+        .unwrap();
+        assert_rejected(&trusted, &token).await;
+    }
+    // Another RSA signing algorithm is also rejected even with the trusted key.
+    let mut header = Header::new(Algorithm::RS512);
+    header.kid = Some("msal-test".into());
+    assert_rejected(
+        &trusted,
+        &encode(&header, &claims(), &EncodingKey::from_rsa_pem(KEY).unwrap()).unwrap(),
+    )
+    .await;
+}
+
+#[test]
+fn jwks_endpoint_must_be_explicit_https_without_credentials_or_fragment() {
+    for uri in [
+        "",
+        "http://localhost/keys",
+        "https://user:pass@example.com/keys",
+        "https://example.com/keys#fragment",
+        " https://example.com/keys",
+    ] {
+        let mut config = policy();
+        config.jwks_uri = uri.into();
+        assert!(config.validate().is_err(), "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn untrusted_tls_endpoint_fails_closed_without_clearing_session_cookies() {
+    let server = jwks_server(include_str!("../tests/fixtures/msal/signing-key.jwks.json")).await;
+    let mut config = policy();
+    config.jwks_uri = server.uri;
+    // Keep the production client: the fixture CA is intentionally untrusted.
+    let runtime = MsalAuthRuntime::new(config, SecurityConfig::default()).unwrap();
+    let token = sign(&claims());
+    let error = runtime
+        .handle_request(&mut session(&token, true, true).await)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.status, 502);
+    assert_eq!(error.message, "Microsoft token verification unavailable");
+    assert!(!error.headers.iter().any(|(name, _)| name == "set-cookie"));
+    assert_eq!(server.requests.load(std::sync::atomic::Ordering::SeqCst), 0);
 }

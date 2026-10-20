@@ -12535,6 +12535,12 @@ defaultHandlers:
             config_dir.path().join(light_pingora::MSAL_AUTH_FILE),
             r#"
 enabled: true
+tenantId: 11111111-1111-1111-1111-111111111111
+issuer: https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/v2.0
+audience: 22222222-2222-2222-2222-222222222222
+jwksUri: https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/discovery/v2.0/keys
+requiredScopes: [access_as_user]
+allowedClientIds: [33333333-3333-3333-3333-333333333333]
 loginPath: /auth/ms/login
 logoutPath: /auth/ms/logout
 sessionTimeout: 1200
@@ -12650,6 +12656,12 @@ subjectTokenType: urn:ietf:params:oauth:token-type:jwt
             config_dir.path().join(light_pingora::MSAL_AUTH_FILE),
             r#"
 enabled: true
+tenantId: 11111111-1111-1111-1111-111111111111
+issuer: https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/v2.0
+audience: 22222222-2222-2222-2222-222222222222
+jwksUri: https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/discovery/v2.0/keys
+requiredScopes: [access_as_user]
+allowedClientIds: [33333333-3333-3333-3333-333333333333]
 loginPath: /auth/ms/login
 logoutPath: /auth/ms/logout
 sessionTimeout: 1200

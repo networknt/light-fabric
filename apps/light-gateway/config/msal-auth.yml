@@ -2,6 +2,7 @@ enabled: ${msal-auth.enabled:true}
 tenantId: ${msal-auth.tenantId:}
 issuer: ${msal-auth.issuer:}
 audience: ${msal-auth.audience:}
+jwksUri: ${msal-auth.jwksUri:}
 requiredScopes: ${msal-auth.requiredScopes:}
 allowedClientIds: ${msal-auth.allowedClientIds:}
 loginPath: ${msal-auth.loginPath:/auth/ms/login}

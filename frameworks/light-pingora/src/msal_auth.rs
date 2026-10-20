@@ -1,18 +1,20 @@
 use crate::HandlerRejection;
-use crate::security::{
-    JwtExpiryMode, SecurityRuntime, load_security_runtime_from_file, verify_jwt_token,
-};
+use crate::security::SecurityConfig;
 use crate::spa_auth::{
     AUTHORIZATION_HEADER, CookieSameSite, SpaAuthCsrfEndpoint, SpaAuthLegacyEndpoint,
     SpaAuthResponse, SpaCookieConfig, SpaSessionOutcome, bearer_token, delete_cookie_header,
     generate_csrf, record_spa_auth_legacy_get, validate_logout_csrf,
 };
-use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
+use light_runtime::{MaskSpec, ModuleKind, RuntimeConfig, RuntimeError};
 use pingora::prelude::Session;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::warn;
+
+#[path = "msal_verifier.rs"]
+mod verifier;
+use verifier::MsalVerifier;
 
 pub const MSAL_AUTH_FILE: &str = "msal-auth.yml";
 pub const MSAL_AUTH_MODULE_ID: &str = "light-pingora/msal-auth";
@@ -41,6 +43,8 @@ pub struct MsalAuthConfig {
     pub issuer: String,
     #[serde(default)]
     pub audience: String,
+    #[serde(default)]
+    pub jwks_uri: String,
     #[serde(default, deserialize_with = "deserialize_policy_list")]
     pub required_scopes: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_policy_list")]
@@ -70,6 +74,7 @@ impl Default for MsalAuthConfig {
             tenant_id: String::new(),
             issuer: String::new(),
             audience: String::new(),
+            jwks_uri: String::new(),
             required_scopes: Vec::new(),
             allowed_client_ids: Vec::new(),
             login_path: default_login_path(),
@@ -122,6 +127,16 @@ impl MsalAuthConfig {
         if !uuid(&self.tenant_id) {
             return Err(invalid("tenantId"));
         }
+        let jwks = url::Url::parse(&self.jwks_uri).map_err(|_| invalid("jwksUri"))?;
+        if jwks.scheme() != "https"
+            || jwks.host_str().is_none()
+            || !jwks.username().is_empty()
+            || jwks.password().is_some()
+            || jwks.fragment().is_some()
+            || self.jwks_uri.trim() != self.jwks_uri
+        {
+            return Err(invalid("jwksUri"));
+        }
         let issuer = url::Url::parse(&self.issuer).map_err(|_| invalid("issuer"))?;
         if issuer.scheme() != "https"
             || issuer.host_str().is_none()
@@ -156,7 +171,7 @@ impl MsalAuthConfig {
         Ok(())
     }
 
-    /// Checks application trust and lifetime even when signature verification used a cached principal.
+    /// Checks application trust and lifetime after signature verification on every request.
     fn validate_claims(
         &self,
         claims: &serde_json::Value,
@@ -275,23 +290,26 @@ fn deserialize_policy_list<'de, D: serde::Deserializer<'de>>(
 
 pub struct MsalAuthRuntime {
     pub config: MsalAuthConfig,
-    pub msal_security: SecurityRuntime,
+    security: SecurityConfig,
+    verifier: MsalVerifier,
 }
 
 impl MsalAuthRuntime {
-    pub fn new(
-        config: MsalAuthConfig,
-        msal_security: SecurityRuntime,
-    ) -> Result<Self, RuntimeError> {
+    pub fn new(config: MsalAuthConfig, security: SecurityConfig) -> Result<Self, RuntimeError> {
         config.validate()?;
+        let verifier = MsalVerifier::new(&config.jwks_uri)?;
         Ok(Self {
             config,
-            msal_security,
+            security,
+            verifier,
         })
     }
 
     pub async fn bootstrap(&self) -> Result<(), HandlerRejection> {
-        self.msal_security.bootstrap().await
+        self.verifier
+            .bootstrap()
+            .await
+            .map_err(msal_verification_error)
     }
 
     pub async fn handle_request(
@@ -475,9 +493,9 @@ impl MsalAuthRuntime {
         &self,
         token: &str,
     ) -> Result<crate::AuthPrincipal, HandlerRejection> {
-        // Enforce mode retains this runtime's signature cache. The MSAL policy also
-        // checks lifetime because the generic verifier permits ignoreJwtExpiry.
-        let principal = verify_jwt_token(&self.msal_security, token, JwtExpiryMode::Enforce)
+        let claims = self
+            .verifier
+            .verify(token, self.security.jwt.clock_skew_in_seconds)
             .await
             .map_err(msal_verification_error)?;
         let now = SystemTime::now()
@@ -485,16 +503,28 @@ impl MsalAuthRuntime {
             .unwrap_or_default()
             .as_secs();
         self.config
-            .validate_claims(
-                &principal.claims,
-                now,
-                self.msal_security.config.jwt.clock_skew_in_seconds,
-            )
+            .validate_claims(&claims, now, self.security.jwt.clock_skew_in_seconds)
             .map_err(|reason| {
                 warn!(reason, "Microsoft token validation failed");
                 HandlerRejection::new(401, "ERR10000", "Invalid Microsoft access token")
             })?;
-        Ok(principal)
+        let text = |name| {
+            claims
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        Ok(crate::AuthPrincipal {
+            client_id: text("client_id").or_else(|| text("cid")),
+            user_id: text("user_id")
+                .or_else(|| text("uid"))
+                .or_else(|| text("sub")),
+            issuer: text("iss"),
+            email: text("email").or_else(|| text("eml")),
+            host: text("host"),
+            role: text("role"),
+            claims,
+        })
     }
 }
 
@@ -584,20 +614,28 @@ pub fn load_msal_auth_runtime(
         return Ok(None);
     }
 
-    let msal_security = match load_security_runtime_from_file(
-        runtime_config,
-        true,
-        SECURITY_MSAL_FILE,
+    // Only load MSAL verifier settings. Never construct the generic verifier or
+    // consult its client.yml key providers, caches, TLS settings or routing.
+    let security = match runtime_config
+        .module_registry
+        .load_config::<SecurityConfig>(runtime_config, SECURITY_MSAL_FILE)
+    {
+        Ok(config) => config,
+        Err(RuntimeError::MissingConfig(_)) => SecurityConfig::default(),
+        Err(error) => return Err(error),
+    };
+    runtime_config.module_registry.register_loaded_config(
         SECURITY_MSAL_MODULE_ID,
         SECURITY_MSAL_CONFIG_NAME,
-    )? {
-        Some(s) => s,
-        None => {
-            return Err(RuntimeError::MissingConfig(SECURITY_MSAL_FILE.to_string()));
-        }
-    };
+        ModuleKind::Framework,
+        &security,
+        [MaskSpec::key("swtClientSecretHeader")],
+        true,
+        Some(true),
+        true,
+    )?;
 
-    Ok(Some(MsalAuthRuntime::new(config, msal_security)?))
+    Ok(Some(MsalAuthRuntime::new(config, security)?))
 }
 
 #[cfg(test)]
