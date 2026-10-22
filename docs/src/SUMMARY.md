@@ -87,6 +87,7 @@
 
 - [Light-Pingora](framework/light-pingora.md)
   - [MSAL Exchange](framework/light-pingora/msal-exchange.md)
+  - [SPA Token Trust and Renewal](framework/light-pingora/spa-token-trust.md)
 # Product
 
 - [Light-Agent](product/light-agent.md)

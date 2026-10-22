@@ -1,3 +1,9 @@
+mod spa_jwks;
+mod spa_trust;
+pub use spa_trust::{
+    SPA_TOKEN_TRUST_FILE, SPA_TOKEN_TRUST_MODULE_ID, SpaTokenPolicy, SpaTokenTrust,
+    SpaTokenTrustConfig, TokenRole,
+};
 mod csrf_security;
 pub use csrf_security::CsrfKeys;
 mod a2a;

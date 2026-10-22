@@ -1,9 +1,9 @@
-use crate::security::load_security_runtime;
 use crate::spa_auth::{
     SpaAuthCsrfEndpoint, SpaAuthLegacyEndpoint, SpaAuthResponse, SpaCookieConfig,
     SpaSessionOutcome, SpaSessionRuntime, generate_csrf, load_spa_token_client, query_param,
     record_spa_auth_legacy_get, social_scopes,
 };
+use crate::spa_trust::load_spa_trust;
 use light_client::{ClientFactory, EndpointOptions};
 use light_runtime::{MaskSpec, ModuleKind, RuntimeConfig, RuntimeError};
 use pingora::prelude::Session;
@@ -38,6 +38,11 @@ pub struct StatelessAuthConfig {
         deserialize_with = "crate::config_util::deserialize_string_list"
     )]
     pub websocket_origins: Vec<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::config_util::deserialize_string_list"
+    )]
+    pub recovery_origins: Vec<String>,
     #[serde(default = "default_cookie_domain")]
     pub cookie_domain: String,
     #[serde(default = "default_cookie_path")]
@@ -114,6 +119,7 @@ impl Default for StatelessAuthConfig {
             logout_path: default_logout_path(),
             logout_csrf_enforced: true,
             websocket_origins: Vec::new(),
+            recovery_origins: Vec::new(),
             cookie_domain: default_cookie_domain(),
             cookie_path: default_cookie_path(),
             cookie_timeout_uri: default_cookie_timeout_uri(),
@@ -533,6 +539,11 @@ pub fn load_stateless_auth_runtime(
     }
 
     let config = load_stateless_auth_config(runtime_config)?.unwrap_or_default();
+    let trust = if config.enabled {
+        Some(load_spa_trust(runtime_config, true, false, false)?)
+    } else {
+        None
+    };
     runtime_config.module_registry.register_loaded_config(
         STATELESS_AUTH_MODULE_ID,
         STATELESS_AUTH_CONFIG_NAME,
@@ -552,14 +563,16 @@ pub fn load_stateless_auth_runtime(
         return Ok(None);
     }
 
+    let mut trust = trust.expect("enabled SPA trust");
     let token_client = load_spa_token_client(runtime_config)?;
-    let security = load_security_runtime(runtime_config, true)?.ok_or_else(|| {
-        RuntimeError::Unsupported(
-            "security.yml must enable JWT verification for stateless auth".to_string(),
-        )
-    })?;
-    let session = SpaSessionRuntime::new(cookie_config(&config), token_client, security)
-        .with_websocket_origins(config.websocket_origins.clone())?;
+    let session = SpaSessionRuntime::new(
+        cookie_config(&config),
+        token_client,
+        trust.internal.take().expect("enabled internal trust"),
+    )
+    .with_websocket_origins(config.websocket_origins.clone())?
+    .with_recovery_origins(config.recovery_origins.clone())?;
+    trust.register(runtime_config)?;
     Ok(Some(StatelessAuthRuntime::new(config, session)))
 }
 

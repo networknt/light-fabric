@@ -1,5 +1,7 @@
 # MSAL Exchange
 
+> Runtime trust update (#441): see [SPA token trust and renewal](spa-token-trust.md). Enabled handlers now require explicit role policies in `spa-token-trust.yml`; generic `security.yml` / `security-msal.yml` are not signing or claim-policy authorities for these SPA sessions.
+
 The `msal-exchange` handler is a BFF security handler for SPA applications
 that authenticate with Microsoft Authentication Library, MSAL, and need an
 internal light-oauth security profile for gateway authorization.
@@ -79,13 +81,12 @@ guard.
 When the handler is active, the gateway needs these resolved config files:
 
 - `msal-exchange.yml`
-- `security-msal.yml`
-- `security.yml`
+- `spa-token-trust.yml`
 - `client.yml`
 
-`security-msal.yml` validates Azure MSAL tokens. `security.yml` validates the
-light-oauth tokens stored in BFF cookies. `client.yml` provides the
-light-oauth token-exchange client configuration.
+`spa-token-trust.yml` separates Microsoft ID subjects, Microsoft API tokens and
+internal light-oauth sessions. `client.yml` provides OAuth transport/client
+credentials; it cannot choose SPA signing keys.
 
 ## Exchange Flow
 
@@ -97,10 +98,10 @@ POST /auth/ms/exchange
 Authorization: Bearer <azure-msal-id-token>
 
   -> read the Azure MSAL ID token
-  -> verify the ID token with security-msal.yml
+  -> verify the ID token with spa-token-trust.microsoftId
   -> generate a CSRF value
   -> call light-oauth with the token-exchange grant
-  -> verify the returned light-oauth access token with security.yml
+  -> verify the returned light-oauth access token with spa-token-trust.internal
   -> set BFF cookies
   -> return { "scopes": [...] }
 ```
@@ -192,7 +193,7 @@ The handler:
 
 ```text
   -> reads the light-oauth accessToken cookie
-  -> verifies it with security.yml
+  -> verifies it with spa-token-trust.internal
   -> validates CSRF
   -> refreshes the token if it is close to expiry
   -> injects Authorization: Bearer <light-oauth-token>
@@ -222,8 +223,8 @@ POST /auth/ms/exchange
 Authorization: Bearer <azure-msal-id-token>
 X-MSAL-Access-Token: Bearer <azure-msal-access-token>
 
-  -> verify the MSAL ID token with security-msal.yml
-  -> verify the MSAL access token with security-msal.yml
+  -> verify the MSAL ID token with spa-token-trust.microsoftId
+  -> verify the MSAL access token with spa-token-trust.microsoftApi
   -> exchange the ID token for a light-oauth token
   -> store the light-oauth token in accessToken
   -> store the MSAL access token in msalAccessToken
@@ -243,9 +244,9 @@ The handler:
 
 ```text
   -> read the MSAL access token from the msalAccessToken cookie
-  -> verify the MSAL access token with security-msal.yml
+  -> verify the MSAL access token with spa-token-trust.microsoftApi
   -> read the light-oauth accessToken cookie
-  -> verify the light-oauth token with security.yml
+  -> verify the light-oauth token with spa-token-trust.internal
   -> validate CSRF
   -> refresh the light-oauth token if it is close to expiry
   -> inject Authorization: Bearer <azure-msal-access-token>
@@ -293,6 +294,7 @@ refreshSingleFlightCacheMs: ${msal-exchange.refreshSingleFlightCacheMs:3000}
 refreshSingleFlightMaxEntries: ${msal-exchange.refreshSingleFlightMaxEntries:10000}
 cookieSameSite: ${msal-exchange.cookieSameSite:None}
 websocketOrigins: ${msal-exchange.websocketOrigins:}
+recoveryOrigins: ${msal-exchange.recoveryOrigins:}
 cookieTimeoutUri: ${msal-exchange.cookieTimeoutUri:/}
 subjectTokenType: ${msal-exchange.subjectTokenType:}
 authorizationToken: ${msal-exchange.authorizationToken:light-oauth}
@@ -336,32 +338,17 @@ exchange endpoint. `msalAccessTokenHeader` must also be different from
 
 ## Security Configuration
 
-`security-msal.yml` validates Azure MSAL tokens. It is required when the handler
-is active.
+Install and configure `spa-token-trust.yml` as described in
+[SPA token trust and renewal](spa-token-trust.md#configuration-and-startup).
+Exchange requires `internal` and `microsoftId`; azure-msal mode additionally
+requires `microsoftApi`. Each role selects its own issuer, audience and signing
+source. ID/API purpose checks remain separate even with the same source and kid.
+Unused roles are not required by disabled handlers.
 
-Example:
-
-```yaml
-enableVerifyJwt: ${security-msal.enableVerifyJwt:true}
-ignoreJwtExpiry: ${security-msal.ignoreJwtExpiry:false}
-enableRelaxedKeyValidation: ${security-msal.enableRelaxedKeyValidation:false}
-issuer: ${security-msal.issuer:}
-audience: ${security-msal.audience:}
-jwt:
-  clockSkewInSeconds: ${security-msal.jwt.clockSkewInSeconds:60}
-```
-
-Recommended settings:
-
-- Set `issuer` to the Azure tenant issuer when the tenant is known.
-- Set `audience` to the SPA client id or the expected Azure access-token
-  audience.
-- Keep `ignoreJwtExpiry: false` in production.
-- Use the configured Microsoft JWK supported by the gateway security runtime.
-
-`security.yml` remains the normal light-oauth verifier. It validates the
-light-oauth access token stored in the `accessToken` cookie and provides the
-principal used by gateway authorization logic.
+There is no generic `security.yml`, `security-msal.yml` or `client.yml` signing
+fallback. Exact audiences and RS256 are mandatory. Source-specific PEM CA files
+extend the default public roots. See the shared guide for startup validation,
+restart/replacement behavior and emergency revocation trade-offs.
 
 ## SPA Integration
 
@@ -452,7 +439,8 @@ Important error codes:
 | `ERR10039` | Request CSRF and token CSRF do not match. |
 | `ERR10052` | Token response does not contain `expires_in` and the JWT has no usable `exp`. |
 | `ERR10008` | Method is not allowed for the exchange or logout endpoint. |
-| `ERR11649` | Logout CSRF cookie/header validation failed without exposing either value. |
+| `ERR11649` | Legacy logout observation code; enforced logout now verifies the selected signed session binding. |
+| `ERR10056` | Temporary signing-source uncertainty (`503`); preserve session state and follow retry guidance. |
 
 ## Implementation Notes
 
@@ -462,7 +450,7 @@ contract:
 - `authorizationToken: light-oauth` preserves the existing behavior and injects
   the light-oauth token into `Authorization`.
 - `authorizationToken: azure-msal` verifies the exchange request's MSAL ID
-  token and MSAL access token with `security-msal.yml`, stores the MSAL access
+  token and MSAL access token with distinct `microsoftId` / `microsoftApi` policies, stores the MSAL access
   token in `msalAccessToken`, injects it into downstream `Authorization`, and
   injects the light-oauth token into `lightTokenHeader`.
 - `lightTokenHeader` defaults to `X-Light-Token` and must not be
@@ -482,7 +470,7 @@ New issuance uses a 32-byte OS-random nonce and requires cookie/JWT CSRF agreeme
 Previously signed opaque CSRF claims remain valid through session expiry. Ordinary
 renewal preserves the verified claim; the renewal cache is partitioned by refresh
 token and verified CSRF context. Unverified request/cookie values are never promoted
-into new JWTs. Refresh-token-only recovery now fails closed and requires re-login;
+into new JWTs. Refresh-token-only recovery is disabled by default and requires re-login unless the explicit trusted-browser recovery policy is enabled;
 it cannot authorize the original API request without an authenticated CSRF context.
 Enforced logout verifies the application JWT signature and CSRF claim, allowing
 expired-session cleanup without authorizing API access. No-session logout is
@@ -495,3 +483,5 @@ browser WebSocket offers to include the fixed non-secret `light-spa-v1` protocol
 The gateway consumes the `csrf.` protocol and never echoes it. See
 [MSAL Auth CSRF rollout](../../design/msal-auth.md#session-bound-csrf-440) for key lifecycle,
 replica cutover, logging and enforcement guidance.
+
+See [the #441 migration and recovery contract](spa-token-trust.md#migration-and-qualification) before deploying new trust roles or enabling `recoveryOrigins`.
