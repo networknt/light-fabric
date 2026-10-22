@@ -158,8 +158,8 @@ against the `csrf` claim in the light-oauth access token.
 CSRF source order:
 
 1. `X-CSRF-TOKEN` request header.
-2. `Sec-WebSocket-Protocol` value starting with `csrf.` for WebSocket requests.
-3. `csrf` query parameter.
+2. `Sec-WebSocket-Protocol: light-spa-v1, csrf.<value>` on valid WebSocket upgrades with an exact allowlisted Origin (`websocketOrigins`).
+CSRF query parameters are rejected even when a valid header is present.
 
 If the CSRF value is missing or does not match the JWT claim, the request is
 rejected.
@@ -281,7 +281,7 @@ Example default configuration:
 enabled: ${msal-exchange.enabled:true}
 exchangePath: ${msal-exchange.exchangePath:/auth/ms/exchange}
 logoutPath: ${msal-exchange.logoutPath:/auth/ms/logout}
-logoutCsrfEnforced: ${msal-exchange.logoutCsrfEnforced:false}
+logoutCsrfEnforced: ${msal-exchange.logoutCsrfEnforced:true}
 cookieDomain: ${msal-exchange.cookieDomain:localhost}
 cookiePath: ${msal-exchange.cookiePath:/}
 cookieSecure: ${msal-exchange.cookieSecure:false}
@@ -292,6 +292,7 @@ refreshSingleFlightWaitMs: ${msal-exchange.refreshSingleFlightWaitMs:5000}
 refreshSingleFlightCacheMs: ${msal-exchange.refreshSingleFlightCacheMs:3000}
 refreshSingleFlightMaxEntries: ${msal-exchange.refreshSingleFlightMaxEntries:10000}
 cookieSameSite: ${msal-exchange.cookieSameSite:None}
+websocketOrigins: ${msal-exchange.websocketOrigins:}
 cookieTimeoutUri: ${msal-exchange.cookieTimeoutUri:/}
 subjectTokenType: ${msal-exchange.subjectTokenType:}
 authorizationToken: ${msal-exchange.authorizationToken:light-oauth}
@@ -307,7 +308,8 @@ Fields:
 | `enabled` | `true` | Enables or disables the handler once it is active in the chain. |
 | `exchangePath` | `/auth/ms/exchange` | Endpoint that receives the Azure MSAL ID token and creates the BFF session. |
 | `logoutPath` | `/auth/ms/logout` | Endpoint that clears BFF cookies. |
-| `logoutCsrfEnforced` | `false` | Enforces readable `csrf` cookie versus `X-CSRF-TOKEN` validation on logout after environment-specific observe-only qualification. |
+| `logoutCsrfEnforced` | `true` | Verifies the signed application JWT CSRF claim on logout; expiry is ignored only for cleanup. Explicit `false` is unprotected observation-only mode. |
+| `websocketOrigins` | `[]` | Exact canonical SPA Origins; empty denies cookie-authenticated WebSockets. |
 | `cookieDomain` | `localhost` | Cookie domain for session cookies. |
 | `cookiePath` | `/` | Cookie path for session cookies. |
 | `cookieSecure` | `false` | Adds the `Secure` cookie attribute. Use `true` for HTTPS deployments. |
@@ -473,3 +475,23 @@ In `azure-msal` placement, the gateway requires the MSAL access-token cookie
 only when a BFF session cookie is present. Requests without `accessToken` or
 `refreshToken` cookies keep the existing pass-through behavior so public
 endpoints are not forced to authenticate at this handler.
+
+### CSRF migration and renewal (#440)
+
+New issuance uses a 32-byte OS-random nonce and requires cookie/JWT CSRF agreement.
+Previously signed opaque CSRF claims remain valid through session expiry. Ordinary
+renewal preserves the verified claim; the renewal cache is partitioned by refresh
+token and verified CSRF context. Unverified request/cookie values are never promoted
+into new JWTs. Refresh-token-only recovery now fails closed and requires re-login;
+it cannot authorize the original API request without an authenticated CSRF context.
+Enforced logout verifies the application JWT signature and CSRF claim, allowing
+expired-session cleanup without authorizing API access. No-session logout is
+idempotent; partial/refresh-only cookie sets are rejected.
+
+Logout enforcement defaults to `true`; explicitly configured `false` remains
+unprotected observation-only mode. Configure exact `websocketOrigins`, retain the
+router's path-specific Origin allowlist, remove query credentials, and update
+browser WebSocket offers to include the fixed non-secret `light-spa-v1` protocol.
+The gateway consumes the `csrf.` protocol and never echoes it. See
+[MSAL Auth CSRF rollout](../../design/msal-auth.md#session-bound-csrf-440) for key lifecycle,
+replica cutover, logging and enforcement guidance.

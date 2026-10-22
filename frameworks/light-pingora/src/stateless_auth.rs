@@ -2,7 +2,7 @@ use crate::security::load_security_runtime;
 use crate::spa_auth::{
     SpaAuthCsrfEndpoint, SpaAuthLegacyEndpoint, SpaAuthResponse, SpaCookieConfig,
     SpaSessionOutcome, SpaSessionRuntime, generate_csrf, load_spa_token_client, query_param,
-    record_spa_auth_legacy_get, social_scopes, validate_logout_csrf,
+    record_spa_auth_legacy_get, social_scopes,
 };
 use light_client::{ClientFactory, EndpointOptions};
 use light_runtime::{MaskSpec, ModuleKind, RuntimeConfig, RuntimeError};
@@ -31,8 +31,13 @@ pub struct StatelessAuthConfig {
     pub auth_path: String,
     #[serde(default = "default_logout_path")]
     pub logout_path: String,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub logout_csrf_enforced: bool,
+    #[serde(
+        default,
+        deserialize_with = "crate::config_util::deserialize_string_list"
+    )]
+    pub websocket_origins: Vec<String>,
     #[serde(default = "default_cookie_domain")]
     pub cookie_domain: String,
     #[serde(default = "default_cookie_path")]
@@ -107,7 +112,8 @@ impl Default for StatelessAuthConfig {
             enable_http2: false,
             auth_path: default_auth_path(),
             logout_path: default_logout_path(),
-            logout_csrf_enforced: false,
+            logout_csrf_enforced: true,
+            websocket_origins: Vec::new(),
             cookie_domain: default_cookie_domain(),
             cookie_path: default_cookie_path(),
             cookie_timeout_uri: default_cookie_timeout_uri(),
@@ -162,6 +168,8 @@ impl StatelessAuthRuntime {
         session: &mut Session,
         handler_id: &str,
     ) -> Result<StatelessAuthOutcome, crate::HandlerRejection> {
+        crate::spa_auth::reject_csrf_query(session)?;
+        crate::spa_auth::validate_session_cookies(session, &[])?;
         let path = session.req_header().uri.path();
         let endpoint = StatelessEndpoint::classify(handler_id, path, &self.config);
         if endpoint.is_some()
@@ -182,12 +190,14 @@ impl StatelessAuthRuntime {
         match handler_id {
             "stateless" if path == self.config.auth_path => self.handle_login(session).await,
             "stateless" if path == self.config.logout_path => {
-                validate_logout_csrf(
-                    session,
-                    SpaAuthCsrfEndpoint::StatelessLogout,
-                    self.config.logout_csrf_enforced,
-                    &[],
-                )?;
+                self.session
+                    .validate_logout_csrf(
+                        session,
+                        SpaAuthCsrfEndpoint::StatelessLogout,
+                        self.config.logout_csrf_enforced,
+                        &[],
+                    )
+                    .await?;
                 Ok(StatelessAuthOutcome::Respond(
                     self.session.logout_response(),
                 ))
@@ -220,7 +230,7 @@ impl StatelessAuthRuntime {
             crate::HandlerRejection::new(400, "ERR10035", "authorization code is missing")
         })?;
         let state = query_param(session, "state");
-        let csrf = generate_csrf();
+        let csrf = generate_csrf()?;
         let token = self
             .session
             .exchange_authorization_code(code.as_str(), csrf.as_str())
@@ -242,7 +252,7 @@ impl StatelessAuthRuntime {
         provider: SocialProvider,
     ) -> Result<StatelessAuthOutcome, crate::HandlerRejection> {
         let state = query_param(session, "state");
-        let csrf = generate_csrf();
+        let csrf = generate_csrf()?;
         let subject = self.provider_subject(session, provider).await?;
         let token = self
             .session
@@ -548,7 +558,8 @@ pub fn load_stateless_auth_runtime(
             "security.yml must enable JWT verification for stateless auth".to_string(),
         )
     })?;
-    let session = SpaSessionRuntime::new(cookie_config(&config), token_client, security);
+    let session = SpaSessionRuntime::new(cookie_config(&config), token_client, security)
+        .with_websocket_origins(config.websocket_origins.clone())?;
     Ok(Some(StatelessAuthRuntime::new(config, session)))
 }
 
@@ -815,8 +826,8 @@ githubPath: /github
     }
 
     #[test]
-    fn stateless_logout_csrf_defaults_to_observe_only() {
-        assert!(!StatelessAuthConfig::default().logout_csrf_enforced);
+    fn stateless_logout_csrf_defaults_to_enforced() {
+        assert!(StatelessAuthConfig::default().logout_csrf_enforced);
     }
 
     #[test]

@@ -66,7 +66,7 @@ Java config file:
 enabled: ${msal-exchange.enabled:true}
 exchangePath: ${msal-exchange.exchangePath:/auth/ms/exchange}
 logoutPath: ${msal-exchange.logoutPath:/auth/ms/logout}
-logoutCsrfEnforced: ${msal-exchange.logoutCsrfEnforced:false}
+logoutCsrfEnforced: ${msal-exchange.logoutCsrfEnforced:true}
 cookieDomain: ${msal-exchange.cookieDomain:localhost}
 cookiePath: ${msal-exchange.cookiePath:/}
 cookieSecure: ${msal-exchange.cookieSecure:false}
@@ -323,9 +323,9 @@ request
 CSRF source order should be identical to the stateless handler:
 
 1. `X-CSRF-TOKEN` header.
-2. `Sec-WebSocket-Protocol` value starting with `csrf.` when the request has
-   `Sec-WebSocket-Key` and `Sec-WebSocket-Version`.
-3. Query parameter `csrf`.
+2. `Sec-WebSocket-Protocol: light-spa-v1, csrf.<value>` on a valid WebSocket
+   upgrade with an exact administrator-allowlisted Origin (`websocketOrigins`).
+CSRF query parameters are rejected even when a valid header is present.
 
 The MSAL handler must never inject the Microsoft token downstream. The only
 downstream bearer token after login is the internal light-oauth token.
@@ -440,3 +440,23 @@ The gateway consumes only the resolved files:
 - Optional issuer/audience validation through `security-msal.yml`.
 - Unit/runtime-load coverage for subject-token-type precedence and gateway
   wiring.
+
+### CSRF migration and renewal (#440)
+
+New issuance uses a 32-byte OS-random nonce and requires cookie/JWT CSRF agreement.
+Previously signed opaque CSRF claims remain valid through session expiry. Ordinary
+renewal preserves the verified claim; the renewal cache is partitioned by refresh
+token and verified CSRF context. Unverified request/cookie values are never promoted
+into new JWTs. Refresh-token-only recovery now fails closed and requires re-login;
+it cannot authorize the original API request without an authenticated CSRF context.
+Enforced logout verifies the application JWT signature and CSRF claim, allowing
+expired-session cleanup without authorizing API access. No-session logout is
+idempotent; partial/refresh-only cookie sets are rejected.
+
+Logout enforcement defaults to `true`; explicitly configured `false` remains
+unprotected observation-only mode. Configure exact `websocketOrigins`, retain the
+router's path-specific Origin allowlist, remove query credentials, and update
+browser WebSocket offers to include the fixed non-secret `light-spa-v1` protocol.
+The gateway consumes the `csrf.` protocol and never echoes it. See
+[MSAL Auth CSRF rollout](msal-auth.md#session-bound-csrf-440) for key lifecycle,
+replica cutover, logging and enforcement guidance.
