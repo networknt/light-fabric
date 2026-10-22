@@ -6446,7 +6446,10 @@ impl ProxyHttp for GatewayProxy {
             let protocol = handshake
                 .downstream_protocol(upstream_selection)
                 .map_err(|error| Error::explain(ErrorType::InvalidHTTPHeader, error.to_string()))?;
-            upstream_response.insert_header("sec-websocket-protocol", protocol)?;
+            upstream_response.remove_header("sec-websocket-protocol");
+            if let Some(protocol) = protocol {
+                upstream_response.insert_header("sec-websocket-protocol", protocol)?;
+            }
         }
         self.apply_response_headers(upstream_response, ctx)?;
         self.restore_streaming_response_headers(session, upstream_response, ctx)?;
@@ -12535,6 +12538,9 @@ defaultHandlers:
             config_dir.path().join(light_pingora::MSAL_AUTH_FILE),
             r#"
 enabled: true
+csrfActiveKeyId: fixture
+csrfKeys:
+  fixture: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 tenantId: 11111111-1111-1111-1111-111111111111
 issuer: https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/v2.0
 audience: 22222222-2222-2222-2222-222222222222
@@ -12607,6 +12613,60 @@ audience: spa-client
     }
 
     #[tokio::test]
+    async fn invalid_csrf_key_reload_retains_the_active_msal_snapshot() {
+        let config_dir = TempDir::new().unwrap();
+        let external_dir = TempDir::new().unwrap();
+        std::fs::write(
+            config_dir.path().join("handler.yml"),
+            "handlers: [msal-auth]\ndefaultHandlers: [msal-auth]\n",
+        )
+        .unwrap();
+        let valid = r#"
+enabled: true
+csrfActiveKeyId: fixture
+csrfKeys:
+  fixture: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+tenantId: 11111111-1111-1111-1111-111111111111
+issuer: https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/v2.0
+audience: 22222222-2222-2222-2222-222222222222
+jwksUri: https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/discovery/v2.0/keys
+requiredScopes: [access_as_user]
+allowedClientIds: [33333333-3333-3333-3333-333333333333]
+"#;
+        std::fs::write(config_dir.path().join(light_pingora::MSAL_AUTH_FILE), valid).unwrap();
+        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        let proxy = GatewayProxy::from_runtime_config(&config).unwrap();
+        let active = proxy.current_msal_auth();
+        let metadata = config.module_registry.component_configs();
+        for replacement in [
+            valid.replace("csrfActiveKeyId: fixture", "csrfActiveKeyId: missing"),
+            valid.replace(
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "private-invalid-key",
+            ),
+            valid.replace("csrfActiveKeyId: fixture", "csrfActiveKeyId: ''"),
+        ] {
+            std::fs::write(
+                config_dir.path().join(light_pingora::MSAL_AUTH_FILE),
+                replacement,
+            )
+            .unwrap();
+            let result = config
+                .module_registry
+                .reload_modules(
+                    ReloadContext::new(config.clone()),
+                    &[light_pingora::MSAL_AUTH_MODULE_ID.to_owned()],
+                )
+                .await;
+            assert_eq!(result.failed.len(), 1);
+            assert!(result.reloaded.is_empty());
+            assert!(Arc::ptr_eq(&active, &proxy.current_msal_auth()));
+            assert_eq!(metadata, config.module_registry.component_configs());
+            assert!(!format!("{result:?}").contains("private-invalid-key"));
+        }
+    }
+
+    #[tokio::test]
     async fn gateway_uses_canonical_chain_when_msal_runtimes_share_logout_path() {
         let config_dir = TempDir::new().expect("config temp dir");
         let external_dir = TempDir::new().expect("external temp dir");
@@ -12656,6 +12716,9 @@ subjectTokenType: urn:ietf:params:oauth:token-type:jwt
             config_dir.path().join(light_pingora::MSAL_AUTH_FILE),
             r#"
 enabled: true
+csrfActiveKeyId: fixture
+csrfKeys:
+  fixture: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 tenantId: 11111111-1111-1111-1111-111111111111
 issuer: https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/v2.0
 audience: 22222222-2222-2222-2222-222222222222
@@ -13366,7 +13429,7 @@ pathPrefixService:
                 .unwrap();
                 denied.headers_mut().insert(
                     "sec-websocket-protocol",
-                    HeaderValue::from_static("csrf.chat-test"),
+                    HeaderValue::from_static("light-spa-v1, csrf.chat-test"),
                 );
                 denied
                     .headers_mut()
@@ -13394,7 +13457,7 @@ pathPrefixService:
         .into_client_request()
         .expect("websocket client request");
         let offered_protocol = if browser_chat {
-            "csrf.chat-test"
+            "light-spa-v1, csrf.chat-test"
         } else {
             "chat.v1"
         };
@@ -13433,7 +13496,11 @@ pathPrefixService:
                 .headers()
                 .get("sec-websocket-protocol")
                 .and_then(|value| value.to_str().ok()),
-            Some(offered_protocol)
+            Some(if browser_chat {
+                "light-spa-v1"
+            } else {
+                offered_protocol
+            })
         );
 
         let lookup = timeout(TokioDuration::from_secs(5), lookup_rx)

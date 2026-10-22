@@ -1,4 +1,5 @@
 use crate::config_util::deserialize_string_list;
+use crate::csrf_security::{self, bounded, equal, invalid_csrf};
 use crate::direct_registry::direct_registry_match;
 use crate::security::{
     AuthPrincipal, HandlerRejection, JwtExpiryMode, SecurityRuntime, verify_jwt_token,
@@ -9,7 +10,7 @@ use crate::{
     OAuthRefreshTokenConfig, OAuthTokenConfig, OAuthTokenExchangeConfig,
 };
 use base64::Engine as _;
-use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::STANDARD;
 use light_client::{ClientFactory, EndpointOptions};
 use light_runtime::{
     DirectRegistryConfig, DiscoveryNode, DiscoverySubscription, PortalRegistryClient,
@@ -23,7 +24,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
 pub const ACCESS_TOKEN_COOKIE: &str = "accessToken";
 pub const REFRESH_TOKEN_COOKIE: &str = "refreshToken";
@@ -93,6 +93,7 @@ pub struct SpaSessionRuntime {
     token_client: Arc<SpaTokenClient>,
     security: Arc<SecurityRuntime>,
     refresh: Arc<RefreshSingleFlight>,
+    websocket_origins: Vec<String>,
 }
 
 impl SpaSessionRuntime {
@@ -110,7 +111,42 @@ impl SpaSessionRuntime {
             token_client: Arc::new(token_client),
             security: Arc::new(security),
             refresh: Arc::new(refresh),
+            websocket_origins: Vec::new(),
         }
+    }
+
+    pub fn with_websocket_origins(mut self, origins: Vec<String>) -> Result<Self, RuntimeError> {
+        validate_websocket_origins(&origins)?;
+        self.websocket_origins = origins;
+        Ok(self)
+    }
+
+    pub async fn validate_logout_csrf(
+        &self,
+        session: &Session,
+        endpoint: SpaAuthCsrfEndpoint,
+        enforced: bool,
+        additional_session_cookies: &[&str],
+    ) -> Result<(), HandlerRejection> {
+        reject_csrf_query(session)?;
+        validate_session_cookies(session, additional_session_cookies)?;
+        let cookies = request_cookies(session);
+        if !has_logout_session(&cookies, additional_session_cookies) {
+            return Ok(());
+        }
+        let result = async {
+            let token = cookies
+                .get(ACCESS_TOKEN_COOKIE)
+                .filter(|v| !v.is_empty())
+                .ok_or_else(invalid_csrf)?;
+            let principal = verify_jwt_token(self.security.as_ref(), token, JwtExpiryMode::Ignore)
+                .await
+                .map_err(|_| invalid_csrf())?;
+            // Expiry is ignored solely for cleanup. Signature and CSRF binding remain mandatory.
+            validate_csrf(session, &principal.claims, &[])
+        }
+        .await;
+        logout_csrf_result(result, endpoint, enforced)
     }
 
     pub fn cookies(&self) -> &SpaCookieConfig {
@@ -148,10 +184,29 @@ impl SpaSessionRuntime {
         let principal = verify_jwt_token(
             self.security.as_ref(),
             response.access_token.as_str(),
-            JwtExpiryMode::Ignore,
+            JwtExpiryMode::Enforce,
         )
         .await
         .map_err(|error| HandlerRejection::new(error.status, "ERR10000", error.message))?;
+        if token_needs_refresh(&principal.claims, 0) {
+            return Err(HandlerRejection::new(
+                502,
+                "ERR10052",
+                "Token response has no valid lifetime",
+            ));
+        }
+        if !principal
+            .claims
+            .get("csrf")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|claim| equal(claim, csrf))
+        {
+            return Err(HandlerRejection::new(
+                502,
+                "ERR10052",
+                "Token response CSRF binding mismatch",
+            ));
+        }
         let max_age = response
             .expires_in
             .or_else(|| access_token_max_age(&principal.claims))
@@ -180,6 +235,8 @@ impl SpaSessionRuntime {
         session: &mut Session,
         token_header: &str,
     ) -> Result<SpaSessionOutcome, HandlerRejection> {
+        reject_csrf_query(session)?;
+        validate_session_cookies(session, &[])?;
         let cookies = request_cookies(session);
         let access_token = cookies.get(ACCESS_TOKEN_COOKIE).cloned();
         let refresh_token = cookies.get(REFRESH_TOKEN_COOKIE).cloned();
@@ -191,7 +248,7 @@ impl SpaSessionRuntime {
                     .map_err(|error| {
                         HandlerRejection::new(error.status, "ERR10000", error.message)
                     })?;
-            validate_csrf(session, &principal.claims)?;
+            validate_csrf(session, &principal.claims, &self.websocket_origins)?;
             if token_needs_refresh(&principal.claims, self.cookies.renew_before_seconds) {
                 return self
                     .renew_or_expire(
@@ -210,11 +267,14 @@ impl SpaSessionRuntime {
         }
 
         if refresh_token.is_some() {
-            return self
-                .renew_or_expire(session, refresh_token.as_deref(), token_header, None)
-                .await;
+            // Without a signed access JWT there is no authenticated CSRF context.
+            // Re-login is required; refresh-token-only cookies never authorize API dispatch.
+            return Err(invalid_csrf());
         }
 
+        if has_logout_session(&cookies, &[]) {
+            return Err(invalid_csrf());
+        }
         Ok(SpaSessionOutcome::Continue {
             auth: None,
             response_headers: Vec::new(),
@@ -244,17 +304,17 @@ impl SpaSessionRuntime {
             .await
         {
             Ok(result) => {
-                inject_bearer_token(session, token_header, result.response.access_token.as_str())?;
                 let principal = verify_jwt_token(
                     self.security.as_ref(),
                     result.response.access_token.as_str(),
-                    JwtExpiryMode::Ignore,
+                    JwtExpiryMode::Enforce,
                 )
                 .await
                 .map_err(|error| HandlerRejection::new(error.status, "ERR10000", error.message))?;
                 let (_, headers) = self
                     .set_login_cookies(&result.response, &result.csrf)
                     .await?;
+                inject_bearer_token(session, token_header, result.response.access_token.as_str())?;
                 Ok(SpaSessionOutcome::Continue {
                     auth: Some(principal),
                     response_headers: headers,
@@ -368,31 +428,8 @@ pub fn spa_auth_logout_csrf_would_reject_count(endpoint: SpaAuthCsrfEndpoint) ->
     endpoint.counter().load(Ordering::Relaxed)
 }
 
-pub(crate) fn validate_logout_csrf(
-    session: &Session,
-    endpoint: SpaAuthCsrfEndpoint,
-    enforced: bool,
-    additional_session_cookies: &[&str],
-) -> Result<(), HandlerRejection> {
-    let cookies = request_cookies(session);
-    let header_csrf = request_header(session, CSRF_HEADER);
-    validate_logout_csrf_values(
-        &cookies,
-        header_csrf.as_deref(),
-        endpoint,
-        enforced,
-        additional_session_cookies,
-    )
-}
-
-fn validate_logout_csrf_values(
-    cookies: &BTreeMap<String, String>,
-    header_csrf: Option<&str>,
-    endpoint: SpaAuthCsrfEndpoint,
-    enforced: bool,
-    additional_session_cookies: &[&str],
-) -> Result<(), HandlerRejection> {
-    let has_session = [
+pub(crate) fn has_logout_session(cookies: &BTreeMap<String, String>, additional: &[&str]) -> bool {
+    [
         ACCESS_TOKEN_COOKIE,
         REFRESH_TOKEN_COOKIE,
         CSRF_COOKIE,
@@ -404,33 +441,19 @@ fn validate_logout_csrf_values(
         EID_COOKIE,
     ]
     .iter()
-    .chain(additional_session_cookies.iter())
-    .any(|name| cookies.contains_key(*name));
-    if !has_session {
-        return Ok(());
-    }
+    .chain(additional.iter())
+    .any(|name| cookies.contains_key(*name))
+}
 
-    let header_csrf = header_csrf.filter(|value| !value.trim().is_empty());
-    let cookie_csrf = cookies.get(CSRF_COOKIE);
-    let failure = if header_csrf.is_none() {
-        Some((
-            "header_missing",
-            "ERR10036",
-            "X-CSRF-TOKEN header is missing",
-        ))
-    } else if cookie_csrf.map(String::as_str) != header_csrf {
-        Some((
-            "cookie_invalid",
-            "ERR11649",
-            "CSRF cookie/header validation failed for logout.",
-        ))
-    } else {
-        None
-    };
-    let Some((failure, code, message)) = failure else {
+pub(crate) fn logout_csrf_result(
+    result: Result<(), HandlerRejection>,
+    endpoint: SpaAuthCsrfEndpoint,
+    enforced: bool,
+) -> Result<(), HandlerRejection> {
+    let Err(error) = result else {
         return Ok(());
     };
-
+    let failure = "session_binding_invalid";
     let count = endpoint.counter().fetch_add(1, Ordering::Relaxed) + 1;
     let (runtime, endpoint_name) = endpoint.dimensions();
     tracing::info!(
@@ -443,11 +466,11 @@ fn validate_logout_csrf_values(
         count,
         counter_scope = "process",
         reset = "process_restart",
-        "logout request failed double-submit CSRF qualification"
+        "logout request failed session-bound CSRF qualification"
     );
 
     if enforced {
-        Err(HandlerRejection::new(400, code, message).with_header("cache-control", "no-store"))
+        Err(error.with_header("cache-control", "no-store"))
     } else {
         Ok(())
     }
@@ -713,9 +736,10 @@ impl RefreshSingleFlight {
         }
         // Preserve the value validated against the signed access JWT, never an
         // unverified cookie/header. This keeps in-flight headers and WS protocols valid.
-        let csrf = verified_csrf
-            .map(str::to_string)
-            .unwrap_or_else(generate_csrf);
+        let csrf = match verified_csrf {
+            Some(value) => value.to_owned(),
+            None => generate_csrf()?,
+        };
         let response = client.refresh_token(refresh_token, csrf.as_str()).await?;
         let result = RefreshResult {
             response,
@@ -745,8 +769,8 @@ pub fn load_spa_token_client(
     ))
 }
 
-pub fn generate_csrf() -> String {
-    URL_SAFE_NO_PAD.encode(Uuid::new_v4().as_bytes())
+pub fn generate_csrf() -> Result<String, HandlerRejection> {
+    csrf_security::nonce()
 }
 
 pub fn query_param(session: &Session, name: &str) -> Option<String> {
@@ -782,16 +806,23 @@ where
     deserialize_string_list(deserializer)
 }
 
-fn validate_csrf(session: &Session, claims: &JsonValue) -> Result<(), HandlerRejection> {
-    let (header_csrf, source) = request_csrf_with_source(session)
+fn validate_csrf(
+    session: &Session,
+    claims: &JsonValue,
+    origins: &[String],
+) -> Result<(), HandlerRejection> {
+    let (header_csrf, source) = request_csrf_with_source(session, origins)?
         .ok_or_else(|| HandlerRejection::new(401, "ERR10036", "X-CSRF-TOKEN header is missing"))?;
-    let jwt_csrf = claim_string(claims, "csrf").ok_or_else(|| {
-        HandlerRejection::new(401, "ERR10038", "CSRF token is missing in JWT token")
-    })?;
-    if header_csrf != jwt_csrf {
+    let jwt_csrf = claims
+        .get("csrf")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| {
+            HandlerRejection::new(401, "ERR10038", "CSRF token is missing in JWT token")
+        })?;
+    if !equal(&header_csrf, jwt_csrf) {
         // Record relationships only, never credentials or query strings.
         let diagnostics =
-            csrf_cookie_diagnostics(request_cookie_pairs(session), &header_csrf, &jwt_csrf);
+            csrf_cookie_diagnostics(request_cookie_pairs(session), &header_csrf, jwt_csrf);
         let expires_at = claims.get("exp").and_then(JsonValue::as_u64);
         let now = now_seconds();
         let count = CSRF_MISMATCH_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
@@ -831,21 +862,119 @@ fn validate_csrf(session: &Session, claims: &JsonValue) -> Result<(), HandlerRej
             "CSRF token in request does not match JWT CSRF token",
         ));
     }
+    let cookies = request_cookies(session);
+    if !cookies
+        .get(CSRF_COOKIE)
+        .is_some_and(|cookie| equal(cookie, &header_csrf))
+    {
+        return Err(invalid_csrf());
+    }
     Ok(())
 }
 
 static CSRF_MISMATCH_COUNT: AtomicU64 = AtomicU64::new(0);
 
-pub(crate) fn request_csrf(session: &Session) -> Option<String> {
-    request_csrf_with_source(session).map(|(value, _)| value)
+pub(crate) fn request_csrf(
+    session: &Session,
+    origins: &[String],
+) -> Result<String, HandlerRejection> {
+    request_csrf_with_source(session, origins)?
+        .map(|(value, _)| value)
+        .ok_or_else(|| HandlerRejection::new(401, "ERR10036", "X-CSRF-TOKEN header is missing"))
 }
 
-fn request_csrf_with_source(session: &Session) -> Option<(String, &'static str)> {
-    request_header(session, CSRF_HEADER)
-        .filter(|value| !value.trim().is_empty())
+pub(crate) fn reject_csrf_query(session: &Session) -> Result<(), HandlerRejection> {
+    if session.req_header().uri.query().is_some_and(|query| {
+        url::form_urlencoded::parse(query.as_bytes()).any(|(key, _)| {
+            key.eq_ignore_ascii_case("csrf") || key.eq_ignore_ascii_case("X-CSRF-TOKEN")
+        })
+    }) {
+        return Err(invalid_csrf());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_session_cookies(
+    session: &Session,
+    additional: &[&str],
+) -> Result<(), HandlerRejection> {
+    let mut seen = std::collections::BTreeSet::new();
+    for header in session.req_header().headers.get_all("cookie").iter() {
+        let header = header.to_str().map_err(|_| invalid_csrf())?;
+        for part in header.split(';').map(str::trim) {
+            let (name, value) = part
+                .split_once('=')
+                .map(|(n, v)| (n.trim(), Some(v.trim())))
+                .unwrap_or((part, None));
+            if (matches!(
+                name,
+                ACCESS_TOKEN_COOKIE | REFRESH_TOKEN_COOKIE | CSRF_COOKIE
+            ) || additional.contains(&name))
+                && (!seen.insert(name)
+                    || value.is_none_or(|v| v.is_empty() || (name == CSRF_COOKIE && !bounded(v))))
+            {
+                return Err(invalid_csrf());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn canonical_origin(origin: &str) -> bool {
+    url::Url::parse(origin).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && url.host_str().is_some()
+            && url.origin().ascii_serialization() == origin
+    })
+}
+
+pub(crate) fn validate_websocket_origins(origins: &[String]) -> Result<(), RuntimeError> {
+    for origin in origins {
+        if !canonical_origin(origin) {
+            return Err(RuntimeError::Unsupported(
+                "Invalid SPA WebSocket origin allowlist".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn unique_header(session: &Session, name: &str) -> Result<Option<String>, HandlerRejection> {
+    let mut values = session.req_header().headers.get_all(name).iter();
+    let first = values
+        .next()
+        .map(|value| {
+            value
+                .to_str()
+                .map(str::to_owned)
+                .map_err(|_| invalid_csrf())
+        })
+        .transpose()?;
+    if values.next().is_some() {
+        return Err(invalid_csrf());
+    }
+    Ok(first)
+}
+
+fn request_csrf_with_source(
+    session: &Session,
+    origins: &[String],
+) -> Result<Option<(String, &'static str)>, HandlerRejection> {
+    reject_csrf_query(session)?;
+    validate_session_cookies(session, &[])?;
+    let header = unique_header(session, CSRF_HEADER)?;
+    let protocol = websocket_protocol_csrf(session, origins)?;
+    if header.as_deref().is_some_and(|v| !bounded(v)) {
+        return Err(invalid_csrf());
+    }
+    if let (Some(header), Some(protocol)) = (&header, &protocol) {
+        if !equal(header, protocol) {
+            return Err(invalid_csrf());
+        }
+    }
+    Ok(header
         .map(|value| (value, "header"))
-        .or_else(|| websocket_protocol_csrf(session).map(|value| (value, "websocket_protocol")))
-        .or_else(|| query_param(session, CSRF_COOKIE).map(|value| (value, "query")))
+        .or_else(|| protocol.map(|value| (value, "websocket_protocol"))))
 }
 
 #[derive(Default)]
@@ -869,10 +998,10 @@ fn csrf_cookie_diagnostics<'a>(
         match name {
             CSRF_COOKIE => {
                 result.csrf_cookie_count += 1;
-                result.request_matches_selected_cookie = value == request_csrf;
-                result.jwt_matches_selected_cookie = value == jwt_csrf;
-                result.request_matches_any_cookie |= value == request_csrf;
-                result.jwt_matches_any_cookie |= value == jwt_csrf;
+                result.request_matches_selected_cookie = equal(value, request_csrf);
+                result.jwt_matches_selected_cookie = equal(value, jwt_csrf);
+                result.request_matches_any_cookie |= equal(value, request_csrf);
+                result.jwt_matches_any_cookie |= equal(value, jwt_csrf);
             }
             ACCESS_TOKEN_COOKIE => result.access_token_cookie_count += 1,
             REFRESH_TOKEN_COOKIE => result.refresh_token_cookie_count += 1,
@@ -882,21 +1011,53 @@ fn csrf_cookie_diagnostics<'a>(
     result
 }
 
-fn websocket_protocol_csrf(session: &Session) -> Option<String> {
-    if request_header(session, "Sec-WebSocket-Key").is_none()
-        || request_header(session, "Sec-WebSocket-Version").is_none()
+fn websocket_protocol_csrf(
+    session: &Session,
+    origins: &[String],
+) -> Result<Option<String>, HandlerRejection> {
+    let offered = unique_header(session, "sec-websocket-protocol")?;
+    if offered
+        .as_ref()
+        .is_some_and(|value| value.len() > 4096 || value.split(',').count() > 32)
     {
-        return None;
+        return Err(invalid_csrf());
     }
-    request_header(session, "Sec-WebSocket-Protocol").and_then(|value| {
-        value.split(',').find_map(|protocol| {
-            protocol
-                .trim()
-                .strip_prefix(CSRF_PROTOCOL_PREFIX)
-                .map(str::to_string)
-                .filter(|value| !value.trim().is_empty())
+    let upgrade = unique_header(session, "upgrade")?;
+    let key = unique_header(session, "sec-websocket-key")?;
+    let version = unique_header(session, "sec-websocket-version")?;
+    let attempting = upgrade.is_some() || key.is_some() || version.is_some();
+    let mut csrf = None;
+    for protocol in offered.as_deref().unwrap_or("").split(',').map(str::trim) {
+        if let Some(value) = protocol.strip_prefix(CSRF_PROTOCOL_PREFIX) {
+            if csrf.is_some() || !bounded(value) {
+                return Err(invalid_csrf());
+            }
+            csrf = Some(value.to_owned());
+        }
+    }
+    if !attempting {
+        if csrf.is_some() {
+            return Err(invalid_csrf());
+        }
+        return Ok(None);
+    }
+    let connection = unique_header(session, "connection")?;
+    let origin = unique_header(session, "origin")?;
+    if session.req_header().method != http::Method::GET
+        || session.req_header().version != http::Version::HTTP_11
+        || !upgrade.is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
+        || version.as_deref() != Some("13")
+        || !key.is_some_and(|v| STANDARD.decode(v).is_ok_and(|bytes| bytes.len() == 16))
+        || !connection.is_some_and(|v| {
+            v.split(',')
+                .any(|p| p.trim().eq_ignore_ascii_case("upgrade"))
         })
-    })
+        || !origin
+            .is_some_and(|v| canonical_origin(&v) && origins.iter().any(|allowed| allowed == &v))
+    {
+        return Err(invalid_csrf());
+    }
+    Ok(csrf)
 }
 
 fn inject_bearer_token(
@@ -1431,6 +1592,10 @@ fn default_refresh_max_entries() -> usize {
 }
 
 #[cfg(test)]
+#[path = "spa_csrf_tests.rs"]
+mod csrf_tests;
+
+#[cfg(test)]
 mod tests {
     #[tokio::test]
     async fn renewal_preserves_verified_csrf_and_isolates_refresh_only_cache() {
@@ -1664,72 +1829,11 @@ mod tests {
     }
 
     #[test]
-    fn logout_csrf_observation_and_enforcement_matrix_is_value_free() {
+    fn logout_observation_and_enforcement_are_explicit() {
         let endpoint = SpaAuthCsrfEndpoint::MsalExchangeLogout;
-        let before = spa_auth_logout_csrf_would_reject_count(endpoint);
-        let no_session = BTreeMap::new();
-        assert!(
-            validate_logout_csrf_values(&no_session, None, endpoint, true, &[]).is_ok(),
-            "no-session logout remains idempotent"
-        );
-        assert_eq!(spa_auth_logout_csrf_would_reject_count(endpoint), before);
-
-        let azure_session =
-            BTreeMap::from([("customMsalAccessToken".to_string(), "opaque".to_string())]);
-        let azure_missing_header = validate_logout_csrf_values(
-            &azure_session,
-            None,
-            endpoint,
-            true,
-            &["customMsalAccessToken"],
-        )
-        .expect_err("configured MSAL access-token cookie identifies a session");
-        assert_eq!(azure_missing_header.code, "ERR10036");
-        let after_azure = spa_auth_logout_csrf_would_reject_count(endpoint);
-
-        let session = BTreeMap::from([("accessToken".to_string(), "expired".to_string())]);
-        assert!(validate_logout_csrf_values(&session, None, endpoint, false, &[]).is_ok());
-        assert_eq!(
-            spa_auth_logout_csrf_would_reject_count(endpoint),
-            after_azure + 1
-        );
-
-        let missing_header = validate_logout_csrf_values(&session, None, endpoint, true, &[])
-            .expect_err("missing header must reject when enforced");
-        assert_eq!(missing_header.code, "ERR10036");
-
-        let missing_cookie =
-            validate_logout_csrf_values(&session, Some("header-secret"), endpoint, true, &[])
-                .expect_err("missing cookie must reject when enforced");
-        let mismatch_session = BTreeMap::from([
-            ("accessToken".to_string(), "expired".to_string()),
-            ("csrf".to_string(), "cookie-secret".to_string()),
-        ]);
-        let mismatch = validate_logout_csrf_values(
-            &mismatch_session,
-            Some("header-secret"),
-            endpoint,
-            true,
-            &[],
-        )
-        .expect_err("mismatch must reject when enforced");
-        assert_eq!(missing_cookie.code, "ERR11649");
-        assert_eq!(missing_cookie.message, mismatch.message);
-        assert_eq!(
-            mismatch.message,
-            "CSRF cookie/header validation failed for logout."
-        );
-        assert!(!mismatch.message.contains("header-secret"));
-        assert!(!mismatch.message.contains("cookie-secret"));
-
-        let matching = BTreeMap::from([
-            ("accessToken".to_string(), "expired".to_string()),
-            ("csrf".to_string(), "matching".to_string()),
-        ]);
-        assert!(
-            validate_logout_csrf_values(&matching, Some("matching"), endpoint, true, &[]).is_ok(),
-            "matching CSRF permits cleanup without validating the expired access token"
-        );
+        assert!(logout_csrf_result(Err(invalid_csrf()), endpoint, false).is_ok());
+        assert!(logout_csrf_result(Err(invalid_csrf()), endpoint, true).is_err());
+        assert!(!has_logout_session(&BTreeMap::new(), &[]));
     }
 
     #[test]

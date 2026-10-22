@@ -5,7 +5,7 @@ use crate::spa_auth::{
     AUTHORIZATION_HEADER, SpaAuthCsrfEndpoint, SpaAuthLegacyEndpoint, SpaAuthResponse,
     SpaCookieConfig, SpaSessionOutcome, SpaSessionRuntime, bearer_token, bearer_token_from_header,
     delete_cookie_header, delete_cookie_headers, generate_csrf, load_spa_token_client,
-    record_spa_auth_legacy_get, request_cookie, session_cookie_header, validate_logout_csrf,
+    record_spa_auth_legacy_get, request_cookie, session_cookie_header,
 };
 use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
 use pingora::prelude::Session;
@@ -46,8 +46,13 @@ pub struct MsalExchangeConfig {
     pub exchange_path: String,
     #[serde(default = "default_logout_path")]
     pub logout_path: String,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub logout_csrf_enforced: bool,
+    #[serde(
+        default,
+        deserialize_with = "crate::config_util::deserialize_string_list"
+    )]
+    pub websocket_origins: Vec<String>,
     #[serde(default = "default_cookie_domain")]
     pub cookie_domain: String,
     #[serde(default = "default_cookie_path")]
@@ -88,7 +93,8 @@ impl Default for MsalExchangeConfig {
             enabled: true,
             exchange_path: default_exchange_path(),
             logout_path: default_logout_path(),
-            logout_csrf_enforced: false,
+            logout_csrf_enforced: true,
+            websocket_origins: Vec::new(),
             cookie_domain: default_cookie_domain(),
             cookie_path: default_cookie_path(),
             cookie_secure: false,
@@ -141,6 +147,11 @@ impl MsalExchangeRuntime {
         &self,
         session: &mut Session,
     ) -> Result<MsalExchangeOutcome, crate::HandlerRejection> {
+        crate::spa_auth::reject_csrf_query(session)?;
+        crate::spa_auth::validate_session_cookies(
+            session,
+            &[self.config.msal_access_token_cookie.as_str()],
+        )?;
         let path = session.req_header().uri.path();
         if path == self.config.exchange_path {
             if session
@@ -176,12 +187,14 @@ impl MsalExchangeRuntime {
                 session.req_header().method.as_str(),
                 SpaAuthLegacyEndpoint::MsalExchangeLogout,
             )?;
-            validate_logout_csrf(
-                session,
-                SpaAuthCsrfEndpoint::MsalExchangeLogout,
-                self.config.logout_csrf_enforced,
-                &[self.config.msal_access_token_cookie.as_str()],
-            )?;
+            self.session
+                .validate_logout_csrf(
+                    session,
+                    SpaAuthCsrfEndpoint::MsalExchangeLogout,
+                    self.config.logout_csrf_enforced,
+                    &[self.config.msal_access_token_cookie.as_str()],
+                )
+                .await?;
             return Ok(MsalExchangeOutcome::Respond(self.logout_response()));
         }
         if matches!(
@@ -284,7 +297,7 @@ impl MsalExchangeRuntime {
             None
         };
 
-        let csrf = generate_csrf();
+        let csrf = generate_csrf()?;
         let token = self
             .session
             .exchange_subject_token(
@@ -438,7 +451,8 @@ pub fn load_msal_exchange_runtime(
             "security-msal.yml must enable JWT verification for MSAL exchange".to_string(),
         )
     })?;
-    let session = SpaSessionRuntime::new(cookie_config(&config), token_client, security);
+    let session = SpaSessionRuntime::new(cookie_config(&config), token_client, security)
+        .with_websocket_origins(config.websocket_origins.clone())?;
     Ok(Some(MsalExchangeRuntime::new(
         config,
         session,
@@ -637,8 +651,8 @@ subjectTokenType: urn:ietf:params:oauth:token-type:jwt
     }
 
     #[test]
-    fn msal_exchange_logout_csrf_defaults_to_observe_only() {
-        assert!(!MsalExchangeConfig::default().logout_csrf_enforced);
+    fn msal_exchange_logout_csrf_defaults_to_enforced() {
+        assert!(MsalExchangeConfig::default().logout_csrf_enforced);
     }
 
     #[test]

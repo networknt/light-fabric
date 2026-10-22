@@ -514,3 +514,13 @@ Implementation notes:
 ## Open Questions
 
 None.
+
+### SPA credential protocol (#440)
+
+Browser clients offer `light-spa-v1` alongside `csrf.<opaque-value>`. The gateway
+validates the latter against the authenticated session and exact Origin policy,
+strips it before upstream forwarding, and never selects or logs it. It terminates
+`light-spa-v1` locally when upstream selects no application protocol. A legacy
+client offering only `csrf.<value>` must be updated: no credential-bearing fallback
+is echoed. Application protocols configured for the route remain separate from
+this authentication transport. See [CSRF rollout](msal-auth.md#session-bound-csrf-440).

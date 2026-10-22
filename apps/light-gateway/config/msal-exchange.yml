@@ -1,7 +1,7 @@
 enabled: ${msal-exchange.enabled:true}
 exchangePath: ${msal-exchange.exchangePath:/auth/ms/exchange}
 logoutPath: ${msal-exchange.logoutPath:/auth/ms/logout}
-logoutCsrfEnforced: ${msal-exchange.logoutCsrfEnforced:false}
+logoutCsrfEnforced: ${msal-exchange.logoutCsrfEnforced:true}
 cookieDomain: ${msal-exchange.cookieDomain:localhost}
 cookiePath: ${msal-exchange.cookiePath:/}
 cookieSecure: ${msal-exchange.cookieSecure:false}
@@ -18,3 +18,4 @@ authorizationToken: ${msal-exchange.authorizationToken:light-oauth}
 lightTokenHeader: ${msal-exchange.lightTokenHeader:X-Light-Token}
 msalAccessTokenHeader: ${msal-exchange.msalAccessTokenHeader:X-MSAL-Access-Token}
 msalAccessTokenCookie: ${msal-exchange.msalAccessTokenCookie:msalAccessToken}
+websocketOrigins: ${msal-exchange.websocketOrigins:}

@@ -11,6 +11,11 @@ const OTHER_KEY: &[u8] = include_bytes!("../tests/fixtures/msal/other-signing-ke
 
 fn policy() -> MsalAuthConfig {
     MsalAuthConfig {
+        csrf_active_key_id: "test".into(),
+        csrf_keys: CsrfKeys(std::collections::BTreeMap::from([(
+            "test".into(),
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+        )])),
         tenant_id: TENANT.into(),
         issuer: format!("https://login.microsoftonline.com/{TENANT}/v2.0"),
         audience: AUDIENCE.into(),
@@ -141,12 +146,17 @@ async fn runtime(cache: bool, ignore_expiry: bool) -> MsalAuthRuntime {
 
 async fn session(token: &str, cookie: bool, csrf: bool) -> Session {
     let request = if cookie {
+        let config = policy();
+        let value = CsrfSigner::new(&config.csrf_active_key_id, &config.csrf_keys)
+            .unwrap()
+            .sign(token)
+            .unwrap();
         format!(
-            "GET /api HTTP/1.1\r\nHost: localhost\r\nCookie: accessToken={token}; csrf=local-csrf\r\n{}\r\n",
+            "GET /api HTTP/1.1\r\nHost: localhost\r\nCookie: accessToken={token}; csrf={value}\r\n{}\r\n",
             if csrf {
-                "X-CSRF-TOKEN: local-csrf\r\n"
+                format!("X-CSRF-TOKEN: {value}\r\n")
             } else {
-                ""
+                String::new()
             }
         )
     } else {
@@ -347,6 +357,161 @@ async fn csrf_failure_does_not_clear_valid_cookies() {
 }
 
 #[tokio::test]
+async fn attacker_chosen_matching_csrf_pair_is_not_a_session_binding() {
+    let runtime = runtime(true, false).await;
+    let token = sign(&claims());
+    let mut request = session(&token, true, true).await;
+    request
+        .req_header_mut()
+        .insert_header("cookie", format!("accessToken={token}; csrf=attacker"))
+        .unwrap();
+    request
+        .req_header_mut()
+        .insert_header("X-CSRF-TOKEN", "attacker")
+        .unwrap();
+    let rejection = runtime
+        .handle_request(&mut request)
+        .await
+        .err()
+        .expect("unsigned attacker-chosen cookie/header must be rejected");
+    assert_eq!(rejection.code, "ERR10039");
+    assert!(request.req_header().headers.get("authorization").is_none());
+}
+
+#[tokio::test]
+async fn session_bound_csrf_rejects_cross_token_tampering_queries_and_partial_cookies() {
+    let runtime = runtime(true, false).await;
+    let token = sign(&claims());
+    let value = runtime.csrf_signer.sign(&token).unwrap();
+    let mut other_claims = claims();
+    other_claims["sub"] = json!("other-session");
+    let other = sign(&other_claims);
+    for (path, access, csrf) in [
+        ("/api", other.as_str(), value.as_str()),
+        ("/api?csrf=leaked", token.as_str(), value.as_str()),
+        ("/api?%63srf=", token.as_str(), value.as_str()),
+        ("/api", token.as_str(), "v2.invalid.invalid.invalid"),
+    ] {
+        let mut session = session(access, true, true).await;
+        session.req_header_mut().set_uri(path.parse().unwrap());
+        session
+            .req_header_mut()
+            .insert_header("cookie", format!("accessToken={access}; csrf={csrf}"))
+            .unwrap();
+        session
+            .req_header_mut()
+            .insert_header("X-CSRF-TOKEN", csrf)
+            .unwrap();
+        assert!(runtime.handle_request(&mut session).await.is_err());
+        assert!(!session.req_header().headers.contains_key("authorization"));
+    }
+    let mut partial = session(&token, true, true).await;
+    partial
+        .req_header_mut()
+        .insert_header("cookie", "csrf=attacker")
+        .unwrap();
+    assert!(runtime.handle_request(&mut partial).await.is_err());
+}
+
+#[tokio::test]
+async fn enforced_msal_logout_verifies_mac_binding_even_for_expired_sessions() {
+    let runtime = runtime(true, false).await;
+    let mut expired = claims();
+    expired["exp"] = json!(now() - 3600);
+    let expired = sign(&expired);
+    let value = runtime.csrf_signer.sign(&expired).unwrap();
+    for (token, csrf, accepted) in [
+        (expired.as_str(), value.as_str(), true),
+        (expired.as_str(), "attacker", false),
+        ("modified-token", value.as_str(), false),
+    ] {
+        let raw = format!(
+            "POST /auth/ms/logout HTTP/1.1\r\nHost: localhost\r\nCookie: accessToken={token}; csrf={csrf}\r\nX-CSRF-TOKEN: {csrf}\r\n\r\n"
+        );
+        let mut session = Session::new_h1(Box::new(Cursor::new(raw.into_bytes())));
+        assert!(session.as_downstream_mut().read_request().await.unwrap());
+        let result = runtime.handle_request(&mut session).await;
+        assert_eq!(result.is_ok(), accepted);
+        if let Ok(SpaSessionOutcome::Respond(response)) = result {
+            assert_eq!(response.status, 204);
+        }
+    }
+    let mut api = session(&expired, true, true).await;
+    assert_eq!(
+        runtime.handle_request(&mut api).await.err().unwrap().code,
+        "ERR10000"
+    );
+    for cookie in [
+        "",
+        "Cookie: csrf=attacker\r\n",
+        "Cookie: refreshToken=opaque\r\n",
+    ] {
+        let raw = format!("POST /auth/ms/logout HTTP/1.1\r\nHost: localhost\r\n{cookie}\r\n");
+        let mut session = Session::new_h1(Box::new(Cursor::new(raw.into_bytes())));
+        assert!(session.as_downstream_mut().read_request().await.unwrap());
+        assert_eq!(
+            runtime.handle_request(&mut session).await.is_ok(),
+            cookie.is_empty()
+        );
+    }
+}
+
+#[tokio::test]
+async fn msal_websocket_uses_the_same_binding_and_origin_policy() {
+    let mut runtime = runtime(true, false).await;
+    runtime.config.websocket_origins = vec!["https://portal.example".into()];
+    let token = sign(&claims());
+    let csrf = runtime.csrf_signer.sign(&token).unwrap();
+    for (origin, value, accepted) in [
+        ("https://portal.example", csrf.as_str(), true),
+        ("null", csrf.as_str(), false),
+        ("https://attacker.example", csrf.as_str(), false),
+        ("https://portal.example", "attacker", false),
+    ] {
+        let raw = format!(
+            "GET /chat HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nOrigin: {origin}\r\nCookie: accessToken={token}; csrf={value}\r\nSec-WebSocket-Protocol: light-spa-v1, csrf.{value}\r\n\r\n"
+        );
+        let mut session = Session::new_h1(Box::new(Cursor::new(raw.into_bytes())));
+        assert!(session.as_downstream_mut().read_request().await.unwrap());
+        assert_eq!(runtime.handle_request(&mut session).await.is_ok(), accepted);
+        assert_eq!(
+            session.req_header().headers.contains_key("authorization"),
+            accepted
+        );
+    }
+}
+
+#[test]
+fn csrf_signing_configuration_is_required_and_diagnostics_are_redacted() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = runtime_config(&dir);
+    config.module_registry.set_mask_config_properties(false);
+    let valid = policy();
+    let secret = valid.csrf_keys.0["test"].clone();
+    assert!(!format!("{valid:?}").contains(&secret));
+    std::fs::write(
+        dir.path().join(MSAL_AUTH_FILE),
+        serde_yaml::to_string(&valid).unwrap(),
+    )
+    .unwrap();
+    load_msal_auth_runtime(&config, true).unwrap();
+    assert!(!format!("{:?}", config.module_registry.component_configs()).contains(&secret));
+    let metadata = config.module_registry.component_configs();
+    for field in ["csrfActiveKeyId", "csrfKeys"] {
+        let mut value = serde_json::to_value(&valid).unwrap();
+        value.as_object_mut().unwrap().remove(field);
+        std::fs::write(
+            dir.path().join(MSAL_AUTH_FILE),
+            serde_yaml::to_string(&value).unwrap(),
+        )
+        .unwrap();
+        let error = load_msal_auth_runtime(&config, true).err().unwrap();
+        assert!(!error.to_string().contains(&secret));
+        assert_eq!(metadata, config.module_registry.component_configs());
+    }
+}
+
+#[tokio::test]
 async fn signature_failures_are_rejected_and_v1_client_claim_is_supported_explicitly() {
     let runtime = runtime(false, false).await;
     let mut header = Header::new(Algorithm::RS256);
@@ -411,6 +576,8 @@ fn shipped_template_loads_values_and_supports_list_substitution_formats() {
     ] {
         let mut config = runtime_config(&dir);
         for (name, value) in [
+            ("csrfActiveKeyId", json!("test")),
+            ("csrfKeys", json!(policy().csrf_keys)),
             ("tenantId", json!(TENANT)),
             ("issuer", json!(policy().issuer)),
             ("audience", json!(AUDIENCE)),

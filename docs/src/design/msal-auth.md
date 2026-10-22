@@ -15,8 +15,8 @@ The `msal-auth` module is an alternative to `msal-exchange` for Microsoft Entra 
 In this flow:
 1. The SPA handles Microsoft authentication, token acquisition, and token refresh directly.
 2. The SPA submits the Entra ID access token to the gateway's `/auth/ms/login` endpoint.
-3. The gateway validates the Entra ID access token against the configured MSAL JWKS endpoint and policy and sets the `accessToken` and `csrf` cookies using the double-submit cookie pattern.
-4. On subsequent API calls, the gateway validates the Microsoft JWT with expiry enforcement, compares the CSRF request value to the CSRF cookie, sets the gateway auth principal for later handlers, and forwards the token in the `Authorization: Bearer` header.
+3. The gateway validates the Entra ID access token against the configured MSAL JWKS endpoint and policy and sets the `accessToken` and `csrf` cookies using a signed CSRF value bound to that exact access token.
+4. On subsequent API calls, the gateway validates the Microsoft JWT with expiry enforcement, verifies cookie/request agreement and the access-token-bound CSRF HMAC, sets the gateway auth principal for later handlers, and forwards the token in the `Authorization: Bearer` header.
 
 This eliminates the need for an internal `light-oauth` token exchange, reducing infrastructure dependencies while maintaining backend API security.
 
@@ -74,12 +74,15 @@ requiredScopes: ${msal-auth.requiredScopes:}
 allowedClientIds: ${msal-auth.allowedClientIds:}
 loginPath: ${msal-auth.loginPath:/auth/ms/login}
 logoutPath: ${msal-auth.logoutPath:/auth/ms/logout}
-logoutCsrfEnforced: ${msal-auth.logoutCsrfEnforced:false}
+logoutCsrfEnforced: ${msal-auth.logoutCsrfEnforced:true}
 cookieDomain: ${msal-auth.cookieDomain:localhost}
 cookiePath: ${msal-auth.cookiePath:/}
 cookieSecure: ${msal-auth.cookieSecure:false}
 sessionTimeout: ${msal-auth.sessionTimeout:3600}
 cookieSameSite: ${msal-auth.cookieSameSite:None}
+csrfActiveKeyId: ${msal-auth.csrfActiveKeyId:}
+csrfKeys: ${msal-auth.csrfKeys:}
+websocketOrigins: ${msal-auth.websocketOrigins:}
 ```
 
 ### Migration and trust policy (#438)
@@ -171,7 +174,7 @@ jwt:
 - **Logout (`POST /auth/ms/logout`)**: Validates logout CSRF when configured,
   clears every cookie the runtime sets (`accessToken` and `csrf`), and returns
   `204 No Content` without a response body or content type.
-- **Session Validation (any path with cookies)**: Reads the `accessToken` cookie. Validates the JWT with expiry enforcement. Checks that the CSRF request value matches the CSRF cookie. If valid, it sets the gateway auth principal and forwards the `accessToken` downstream in the `Authorization: Bearer` header.
+- **Session Validation (any path with cookies)**: Reads the `accessToken` cookie. Validates the JWT with expiry enforcement. Checks cookie/request agreement and the signed CSRF binding to those exact access-token bytes. If valid, it sets the gateway auth principal and forwards the `accessToken` downstream in the `Authorization: Bearer` header.
 
 ## Frontend Integration
 
@@ -314,7 +317,7 @@ function connectWebSocket(path) {
   // Note: Depending on your WebSocket server, you may also need to pass 
   // the actual subprotocol you intend to use (e.g., 'wamp', 'graphql-ws')
   // alongside the csrf protocol.
-  const ws = new WebSocket(`wss://api.example.com${path}`, [csrfProtocol]);
+  const ws = new WebSocket(`wss://api.example.com${path}`, ['light-spa-v1', csrfProtocol]);
 
   ws.onopen = () => {
     console.log('WebSocket connected securely');
@@ -328,16 +331,91 @@ function connectWebSocket(path) {
 }
 ```
 
-## Double Submit Cookie CSRF
+## Session-bound CSRF (#440)
 
-Because an Entra ID token cannot be minted with a custom CSRF claim by this gateway, `msal-auth` enforces CSRF protections using the double-submit cookie pattern. The SPA reads the generated `csrf` cookie and submits it back.
+`msal-auth` signs `v1.<key-id>.<nonce>.<tag>` using HMAC-SHA-256. The nonce
+contains 32 OS-random bytes. The MAC covers a domain label, length-delimited
+version/key/nonce metadata, and the SHA-256 digest of the exact Microsoft access
+token bytes. Both cookie/request agreement and a valid MAC are required. Microsoft
+signature, trust policy and lifetime verification still precede API authorization.
+Two logins with identical access-token bytes share the same binding boundary.
+Unsigned legacy values, unknown key IDs, tampering and cross-token substitution
+are rejected. A replacement access token requires a newly issued CSRF value.
 
-The CSRF value is accepted from the following sources, in order of precedence:
-1. `X-CSRF-TOKEN` header.
-2. `Sec-WebSocket-Protocol` value starting with `csrf.` (when the request has `Sec-WebSocket-Key` and `Sec-WebSocket-Version`). This provides specialized CSRF support for Websocket upgrades since browser WebSockets cannot send custom HTTP headers.
-3. Query parameter `csrf`.
+HTTP requests, including logout, require `X-CSRF-TOKEN`. Any `csrf` or
+`X-CSRF-TOKEN` query parameter is rejected, including an empty value or a request
+with a valid header. Clients must stop placing credentials in URLs; rejection
+cannot erase URLs already recorded by an upstream proxy.
 
-The gateway compares the value from one of these sources against the `csrf` cookie. If they match, the session is validated.
+For actual HTTP/1.1 WebSocket upgrades, clients offer
+`['light-spa-v1', 'csrf.' + csrf]`. The fixed `light-spa-v1` protocol is terminated
+at the gateway and can be selected without echoing the credential. The CSRF
+protocol is stripped before upstream forwarding and is never selected in the
+response. Configured application protocols may still be negotiated normally.
+Duplicate CSRF offers/headers/cookies, conflicting header/protocol values, invalid
+upgrades and absent, `null`, malformed or untrusted Origins fail closed.
+
+Set `websocketOrigins` to exact canonical origins, such as
+`["https://localhost:3000"]`, for each SPA auth handler and retain the
+`websocket-router.yml` path-specific `originAllowlist`. Both policies must allow
+the Portal. Empty auth origin lists deny cookie-authenticated WebSockets. Neither
+policy is derived from Host or forwarding headers.
+
+### Key provisioning and rotation
+
+Enabled `msal-auth` requires `csrfActiveKeyId` and `csrfKeys`. The latter is a
+map of key IDs to unpadded Base64URL-encoded keys (32–128 decoded bytes per key).
+IDs contain 1–32 ASCII letters, digits, underscores or hyphens. A native map or
+JSON/YAML map string can be supplied through the existing values and secret
+substitution/decryption pipeline. Typed Debug and module diagnostics redact keys.
+There is no development default or per-process generated signing key.
+
+Generate each key with an OS-backed tool in your secret-provisioning environment:
+
+```sh
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n'
+```
+
+Store the result in your deployment secret source, with the logical shape below;
+the placeholder is deliberately not a valid deployable key:
+
+```yaml
+msal-auth.csrfActiveKeyId: key-2026-10
+msal-auth.csrfKeys:
+  key-2026-10: <secret-source-value>
+msal-auth.websocketOrigins: ["https://localhost:3000"]
+```
+
+Provision the same key ring on all replicas. To rotate, first distribute the new
+key to all replicas while the old key remains active; then switch the active ID.
+Accept the previous key only for the explicitly planned session/rollback window,
+then remove it everywhere. Removal invalidates sessions signed by that key.
+Startup rejects missing/invalid keys. Reload constructs and validates a complete
+replacement runtime before swapping its Arc snapshot; an invalid candidate returns
+an error and leaves the active keys and runtime installed. Concurrent requests use
+one complete runtime snapshot. Explicitly disabling a handler remains an
+administrator action, not an invalid-config fallback.
+
+### Enforcement and rollout
+
+Logout enforcement now defaults to `true` across `msal-auth`, `msal-exchange` and
+`stateless-auth`, including gateway templates. Explicit existing `false` values
+remain observation-only and **do not provide logout CSRF protection**. Provision
+keys, exact Origins, header-based logout clients and the Portal `light-spa-v1`
+WebSocket offer before switching traffic. Existing unsigned direct-MSAL sessions
+must log in again. Coordinate all replicas and remove explicit observation-only
+values at cutover. Secure cookie flags and host/path/domain scope remain deployment
+requirements; cookie names (`csrf`, `accessToken`) have not changed.
+
+Enforced direct-MSAL logout requires cookie/request agreement plus a valid MAC
+bound to the accompanying access-token bytes. This allows cleanup of expired
+sessions without granting API access. No-session logout is idempotent; malformed
+and partial cookie sets fail closed. JWT-backed logout verifies the application
+JWT signature and CSRF claim, ignoring expiry only in the cleanup path.
+Refresh-token-only sessions cannot prove CSRF binding and must log in again for
+API access or enforced logout. Administrators can clear expired browser cookies
+through the browser's site-data controls when no authenticated logout context
+remains.
 
 ## Refresh Flow
 

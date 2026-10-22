@@ -333,10 +333,20 @@ pub struct WebSocketConnectionPermit {
     state: Arc<WebSocketRuntimeState>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WebSocketHandshake {
     csrf_protocol: String,
+    spa_protocol_offered: bool,
     application_protocols: Vec<String>,
+}
+
+impl fmt::Debug for WebSocketHandshake {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WebSocketHandshake")
+            .field("csrf_protocol", &"[REDACTED]")
+            .field("application_protocols", &self.application_protocols)
+            .finish()
+    }
 }
 
 impl WebSocketHandshake {
@@ -351,9 +361,11 @@ impl WebSocketHandshake {
     pub fn downstream_protocol(
         &self,
         upstream_selection: Option<&str>,
-    ) -> Result<String, WebSocketRouteError> {
+    ) -> Result<Option<String>, WebSocketRouteError> {
         let Some(selection) = upstream_selection else {
-            return Ok(self.csrf_protocol.clone());
+            return Ok(self
+                .spa_protocol_offered
+                .then(|| "light-spa-v1".to_string()));
         };
         let selection = selection.trim();
         if !is_http_token(selection)
@@ -364,7 +376,7 @@ impl WebSocketHandshake {
         {
             return Err(WebSocketRouteError::UnofferedUpstreamProtocol);
         }
-        Ok(selection.to_string())
+        Ok(Some(selection.to_string()))
     }
 }
 
@@ -552,6 +564,7 @@ impl WebSocketRouterRuntime {
             .map(Vec::as_slice)
             .unwrap_or_default();
         let mut csrf_protocol = None;
+        let mut spa_protocol_offered = false;
         let mut application_protocols = Vec::new();
         for raw in offered.split(',') {
             let token = raw.trim();
@@ -559,10 +572,15 @@ impl WebSocketRouterRuntime {
                 return Err(WebSocketRouteError::InvalidProtocolOffer);
             }
             if let Some(csrf) = token.strip_prefix(CSRF_PROTOCOL_PREFIX) {
-                if csrf_protocol.is_some() || csrf != expected_csrf {
+                if csrf_protocol.is_some() || !crate::csrf_security::equal(csrf, expected_csrf) {
                     return Err(WebSocketRouteError::InvalidCsrfProtocol);
                 }
                 csrf_protocol = Some(token.to_string());
+            } else if token == "light-spa-v1" {
+                if spa_protocol_offered {
+                    return Err(WebSocketRouteError::InvalidProtocolOffer);
+                }
+                spa_protocol_offered = true;
             } else if permitted.iter().any(|allowed| allowed == token)
                 && !application_protocols.iter().any(|offered| offered == token)
             {
@@ -574,6 +592,7 @@ impl WebSocketRouterRuntime {
         let csrf_protocol = csrf_protocol.ok_or(WebSocketRouteError::InvalidCsrfProtocol)?;
         Ok(Some(WebSocketHandshake {
             csrf_protocol,
+            spa_protocol_offered,
             application_protocols,
         }))
     }
@@ -2535,10 +2554,7 @@ maxConnectionDurationMs: 900000
             )
             .expect("valid chat offer")
             .expect("browser chat handshake");
-        assert_eq!(
-            handshake.downstream_protocol(None).unwrap(),
-            "csrf.chat-csrf"
-        );
+        assert_eq!(handshake.downstream_protocol(None).unwrap(), None);
         let mut request = RequestHeader::build("GET", b"/chat", Some(8)).unwrap();
         request
             .insert_header("cookie", "csrf=chat-csrf; accessToken=browser-secret")
@@ -2735,14 +2751,37 @@ maxConnectionDurationMs: 900000
             Some("light-mcp-json-v1")
         );
         assert_eq!(
-            handshake.downstream_protocol(None).expect("fallback"),
-            "csrf.sentinel-csrf"
+            handshake.downstream_protocol(None).expect("no selection"),
+            None
         );
         assert_eq!(
             handshake
                 .downstream_protocol(Some("light-mcp-json-v1"))
                 .expect("offered selection"),
-            "light-mcp-json-v1"
+            Some("light-mcp-json-v1".to_string())
+        );
+        assert!(!format!("{handshake:?}").contains("sentinel-csrf"));
+        let handshake = runtime
+            .prepare_handshake(
+                "/ctrl/mcp",
+                Some("https://portal.example.com"),
+                Some("sentinel-csrf"),
+                Some("light-spa-v1, csrf.sentinel-csrf, light-mcp-json-v1"),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            handshake.downstream_protocol(None).unwrap(),
+            Some("light-spa-v1".into())
+        );
+        assert_eq!(
+            handshake.upstream_protocol_header().as_deref(),
+            Some("light-mcp-json-v1")
+        );
+        assert!(
+            handshake
+                .downstream_protocol(Some("csrf.sentinel-csrf"))
+                .is_err()
         );
     }
 

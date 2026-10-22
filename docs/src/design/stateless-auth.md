@@ -78,7 +78,7 @@ denyUri: ${statelessAuth.denyUri:https://localhost:3000/#/app/dashboard}
 enableHttp2: ${statelessAuth.enableHttp2:false}
 authPath: ${statelessAuth.authPath:/authorization}
 logoutPath: ${statelessAuth.logoutPath:/logout}
-logoutCsrfEnforced: ${statelessAuth.logoutCsrfEnforced:false}
+logoutCsrfEnforced: ${statelessAuth.logoutCsrfEnforced:true}
 cookieDomain: ${statelessAuth.cookieDomain:localhost}
 cookiePath: ${statelessAuth.cookiePath:/}
 cookieTimeoutUri: ${statelessAuth.cookieTimeoutUri:/}
@@ -357,7 +357,7 @@ request
   -> read accessToken cookie
   -> verify/parse internal JWT with security.yml rules
   -> extract csrf claim
-  -> find request CSRF from X-CSRF-TOKEN, WebSocket subprotocol, or query
+  -> find request CSRF from X-CSRF-TOKEN or an Origin-allowlisted WebSocket subprotocol
   -> compare csrf values
   -> refresh token if exp is inside renew window
   -> inject Authorization: Bearer <access-token>
@@ -367,9 +367,9 @@ request
 CSRF source order should match Java:
 
 1. `X-CSRF-TOKEN` header.
-2. `Sec-WebSocket-Protocol` value starting with `csrf.` when the request has
-   `Sec-WebSocket-Key` and `Sec-WebSocket-Version`.
-3. Query parameter `csrf`.
+2. `Sec-WebSocket-Protocol: light-spa-v1, csrf.<value>` on a valid WebSocket
+   upgrade with an exact administrator-allowlisted Origin (`websocketOrigins`).
+CSRF query parameters are rejected even when a valid header is present.
 
 The WebSocket subprotocol behavior is important for browser WebSocket clients
 that cannot set arbitrary headers. The auth handler should run before the
@@ -590,3 +590,23 @@ light-portal overrides.
 - Structured session-expired response using `cookieTimeoutUri`.
 - Unit/runtime-load coverage for config parsing, cookie attributes, provider
   subject-token selection, active-handler loading, and gateway wiring.
+
+### CSRF migration and renewal (#440)
+
+New issuance uses a 32-byte OS-random nonce and requires cookie/JWT CSRF agreement.
+Previously signed opaque CSRF claims remain valid through session expiry. Ordinary
+renewal preserves the verified claim; the renewal cache is partitioned by refresh
+token and verified CSRF context. Unverified request/cookie values are never promoted
+into new JWTs. Refresh-token-only recovery now fails closed and requires re-login;
+it cannot authorize the original API request without an authenticated CSRF context.
+Enforced logout verifies the application JWT signature and CSRF claim, allowing
+expired-session cleanup without authorizing API access. No-session logout is
+idempotent; partial/refresh-only cookie sets are rejected.
+
+Logout enforcement defaults to `true`; explicitly configured `false` remains
+unprotected observation-only mode. Configure exact `websocketOrigins`, retain the
+router's path-specific Origin allowlist, remove query credentials, and update
+browser WebSocket offers to include the fixed non-secret `light-spa-v1` protocol.
+The gateway consumes the `csrf.` protocol and never echoes it. See
+[MSAL Auth CSRF rollout](msal-auth.md#session-bound-csrf-440) for key lifecycle,
+replica cutover, logging and enforcement guidance.

@@ -4,7 +4,7 @@ denyUri: ${statelessAuth.denyUri:https://localhost:3000/#/app/dashboard}
 enableHttp2: ${statelessAuth.enableHttp2:false}
 authPath: ${statelessAuth.authPath:/authorization}
 logoutPath: ${statelessAuth.logoutPath:/logout}
-logoutCsrfEnforced: ${statelessAuth.logoutCsrfEnforced:false}
+logoutCsrfEnforced: ${statelessAuth.logoutCsrfEnforced:true}
 cookieDomain: ${statelessAuth.cookieDomain:localhost}
 cookiePath: ${statelessAuth.cookiePath:/}
 cookieTimeoutUri: ${statelessAuth.cookieTimeoutUri:/}
@@ -35,3 +35,4 @@ githubClientSecret: ${statelessAuth.githubClientSecret:}
 githubRedirectUri: ${statelessAuth.githubRedirectUri:}
 githubScope: ${statelessAuth.githubScope:}
 githubTokenEndpoint: ${statelessAuth.githubTokenEndpoint:https://github.com/login/oauth/access_token}
+websocketOrigins: ${statelessAuth.websocketOrigins:}

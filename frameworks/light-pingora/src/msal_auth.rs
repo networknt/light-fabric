@@ -1,9 +1,11 @@
 use crate::HandlerRejection;
+use crate::csrf_security::{CsrfKeys, CsrfSigner, equal, invalid_csrf};
 use crate::security::SecurityConfig;
 use crate::spa_auth::{
     AUTHORIZATION_HEADER, CookieSameSite, SpaAuthCsrfEndpoint, SpaAuthLegacyEndpoint,
     SpaAuthResponse, SpaCookieConfig, SpaSessionOutcome, bearer_token, delete_cookie_header,
-    generate_csrf, record_spa_auth_legacy_get, validate_logout_csrf,
+    has_logout_session, logout_csrf_result, record_spa_auth_legacy_get, reject_csrf_query,
+    validate_websocket_origins,
 };
 use light_runtime::{MaskSpec, ModuleKind, RuntimeConfig, RuntimeError};
 use pingora::prelude::Session;
@@ -53,8 +55,14 @@ pub struct MsalAuthConfig {
     pub login_path: String,
     #[serde(default = "default_logout_path")]
     pub logout_path: String,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub logout_csrf_enforced: bool,
+    #[serde(default)]
+    pub csrf_active_key_id: String,
+    #[serde(default)]
+    pub csrf_keys: CsrfKeys,
+    #[serde(default, deserialize_with = "deserialize_policy_list")]
+    pub websocket_origins: Vec<String>,
     #[serde(default = "default_cookie_domain")]
     pub cookie_domain: String,
     #[serde(default = "default_cookie_path")]
@@ -79,7 +87,10 @@ impl Default for MsalAuthConfig {
             allowed_client_ids: Vec::new(),
             login_path: default_login_path(),
             logout_path: default_logout_path(),
-            logout_csrf_enforced: false,
+            logout_csrf_enforced: true,
+            csrf_active_key_id: String::new(),
+            csrf_keys: CsrfKeys::default(),
+            websocket_origins: Vec::new(),
             cookie_domain: default_cookie_domain(),
             cookie_path: default_cookie_path(),
             cookie_secure: false,
@@ -118,6 +129,9 @@ impl MsalAuthConfig {
         if !self.enabled {
             return Ok(());
         }
+        CsrfSigner::new(&self.csrf_active_key_id, &self.csrf_keys)
+            .map_err(|message| RuntimeError::Unsupported(message.into()))?;
+        validate_websocket_origins(&self.websocket_origins)?;
         let invalid =
             |field| RuntimeError::Unsupported(format!("msal-auth.{field} is missing or invalid"));
         let uuid = |value: &str| {
@@ -292,16 +306,20 @@ pub struct MsalAuthRuntime {
     pub config: MsalAuthConfig,
     security: SecurityConfig,
     verifier: MsalVerifier,
+    csrf_signer: CsrfSigner,
 }
 
 impl MsalAuthRuntime {
     pub fn new(config: MsalAuthConfig, security: SecurityConfig) -> Result<Self, RuntimeError> {
         config.validate()?;
+        let csrf_signer = CsrfSigner::new(&config.csrf_active_key_id, &config.csrf_keys)
+            .map_err(|message| RuntimeError::Unsupported(message.into()))?;
         let verifier = MsalVerifier::new(&config.jwks_uri)?;
         Ok(Self {
             config,
             security,
             verifier,
+            csrf_signer,
         })
     }
 
@@ -323,6 +341,8 @@ impl MsalAuthRuntime {
             });
         }
 
+        reject_csrf_query(session)?;
+        crate::spa_auth::validate_session_cookies(session, &[])?;
         let path = session.req_header().uri.path();
         if path == self.config.login_path {
             if session
@@ -385,6 +405,9 @@ impl MsalAuthRuntime {
             });
         }
 
+        if has_logout_session(&cookies, &[]) {
+            return Err(invalid_csrf());
+        }
         Ok(SpaSessionOutcome::Continue {
             auth: None,
             response_headers: Vec::new(),
@@ -401,7 +424,7 @@ impl MsalAuthRuntime {
 
         let principal = self.verify_microsoft_token(&microsoft_token).await?;
 
-        let csrf = generate_csrf();
+        let csrf = self.csrf_signer.sign(&microsoft_token)?;
 
         let expires_in = if let Some(exp) = principal.claims.get("exp").and_then(|v| v.as_u64()) {
             let now = SystemTime::now()
@@ -444,12 +467,26 @@ impl MsalAuthRuntime {
         &self,
         session: &mut Session,
     ) -> Result<SpaSessionOutcome, HandlerRejection> {
-        validate_logout_csrf(
-            session,
-            SpaAuthCsrfEndpoint::MsalAuthLogout,
-            self.config.logout_csrf_enforced,
-            &[],
-        )?;
+        reject_csrf_query(session)?;
+        let cookies = crate::spa_auth::request_cookies(session);
+        if has_logout_session(&cookies, &[]) {
+            let result = (|| {
+                let access = cookies.get(ACCESS_TOKEN_COOKIE).ok_or_else(invalid_csrf)?;
+                let request = crate::spa_auth::request_csrf(session, &[])?;
+                let cookie = cookies.get(CSRF_COOKIE).ok_or_else(invalid_csrf)?;
+                if !equal(cookie, &request) {
+                    return Err(invalid_csrf());
+                }
+                // A valid MAC proves the exact access token was verified at issuance.
+                // Expired sessions may be cleaned up, but never authorize API access.
+                self.csrf_signer.verify(&request, access)
+            })();
+            logout_csrf_result(
+                result,
+                SpaAuthCsrfEndpoint::MsalAuthLogout,
+                self.config.logout_csrf_enforced,
+            )?;
+        }
         Ok(SpaSessionOutcome::Respond(msal_auth_logout_response(
             &self.config,
         )))
@@ -468,17 +505,11 @@ impl MsalAuthRuntime {
             .get(CSRF_COOKIE)
             .ok_or_else(|| HandlerRejection::new(401, "ERR10036", "Missing CSRF cookie"))?;
 
-        let header_csrf = crate::spa_auth::request_csrf(session)
-            .ok_or_else(|| HandlerRejection::new(401, "ERR10036", "Missing CSRF header"))?;
-
-        if cookie_csrf != &header_csrf {
-            warn!("CSRF validation failed");
-            return Err(HandlerRejection::new(
-                401,
-                "ERR10039",
-                "CSRF header does not match cookie",
-            ));
+        let header_csrf = crate::spa_auth::request_csrf(session, &self.config.websocket_origins)?;
+        if !equal(cookie_csrf, &header_csrf) {
+            return Err(invalid_csrf());
         }
+        self.csrf_signer.verify(&header_csrf, access_token)?;
 
         // Inject downstream Authorization header
         session
@@ -599,12 +630,16 @@ pub fn load_msal_auth_runtime(
 
     let config = load_msal_auth_config(runtime_config)?.unwrap_or_default();
     config.validate()?;
+    // Signing material is never a diagnostic value, even when generic config
+    // masking has been disabled by the administrator.
+    let mut diagnostics = serde_json::to_value(&config)?;
+    diagnostics["csrfKeys"] = json!("[REDACTED]");
     runtime_config.module_registry.register_loaded_config(
         MSAL_AUTH_MODULE_ID,
         MSAL_AUTH_CONFIG_NAME,
         ModuleKind::Framework,
-        &config,
-        [],
+        &diagnostics,
+        [MaskSpec::key("csrfKeys")],
         config.enabled,
         Some(config.enabled),
         false,
@@ -677,8 +712,8 @@ mod tests {
     }
 
     #[test]
-    fn msal_auth_logout_csrf_defaults_to_observe_only() {
-        assert!(!MsalAuthConfig::default().logout_csrf_enforced);
+    fn msal_auth_logout_csrf_defaults_to_enforced() {
+        assert!(MsalAuthConfig::default().logout_csrf_enforced);
     }
 
     #[test]
