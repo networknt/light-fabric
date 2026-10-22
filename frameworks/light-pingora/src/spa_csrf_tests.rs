@@ -9,12 +9,12 @@ async fn request(path: &str, headers: &str, method: &str) -> Session {
 }
 
 fn jwt(csrf: &str, exp: u64) -> String {
-    let mut header = Header::new(Algorithm::HS256);
-    header.kid = Some("csrf-tests".into());
+    let mut header = Header::new(Algorithm::RS256);
+    header.kid = Some("msal-test".into());
     encode(
         &header,
-        &json!({"sub":"fixture", "csrf":csrf, "exp":exp}),
-        &EncodingKey::from_secret(b"csrf-test-signing-key"),
+        &json!({"iss":"https://internal.example", "aud":"portal", "sub":"fixture", "csrf":csrf, "exp":exp}),
+        &EncodingKey::from_rsa_pem(include_bytes!("../tests/fixtures/msal/signing-key.pem")).unwrap(),
     )
     .unwrap()
 }
@@ -36,7 +36,7 @@ async fn runtime() -> SpaSessionRuntime {
     SpaSessionRuntime::new(
         cookies,
         SpaTokenClient::new(ClientTokenConfig::default(), None),
-        SecurityRuntime::with_test_hs256_key("csrf-tests", b"csrf-test-signing-key").await,
+        SpaTokenTrust::test_internal(),
     )
     .with_websocket_origins(vec!["https://portal.example".into()])
     .unwrap()
@@ -323,7 +323,8 @@ async fn exchange_and_stateless_handlers_apply_the_shared_binding_and_logout_pol
     let exchange = MsalExchangeRuntime::new(
         MsalExchangeConfig::default(),
         runtime().await,
-        SecurityRuntime::with_test_hs256_key("csrf-tests", b"unused-msal-key").await,
+        SpaTokenTrust::test_internal(),
+        None,
     );
     let stateless = StatelessAuthRuntime::new(StatelessAuthConfig::default(), runtime().await);
     let token = jwt("verified", now_seconds() + 3600);

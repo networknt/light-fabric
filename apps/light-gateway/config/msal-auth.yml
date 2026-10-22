@@ -16,3 +16,4 @@ cookieSameSite: ${msal-auth.cookieSameSite:None}
 websocketOrigins: ${msal-auth.websocketOrigins:}
 csrfActiveKeyId: ${msal-auth.csrfActiveKeyId:}
 csrfKeys: ${msal-auth.csrfKeys:}
+jwksCaPaths: ${msal-auth.jwksCaPaths:}

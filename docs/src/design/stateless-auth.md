@@ -1,5 +1,12 @@
 # Stateless Auth Handler
 
+> Runtime trust update (#441): see [SPA token trust and renewal](../framework/light-pingora/spa-token-trust.md). Enabled handlers now require explicit role policies in `spa-token-trust.yml`; generic `security.yml` / `security-msal.yml` are not signing or claim-policy authorities for these SPA sessions.
+
+> The older design sketches and Java correspondence below are retained as
+> historical context. Generic `SecurityRuntime` examples are superseded by the
+> explicit Rust role policies in the linked #441 runtime guide; do not copy
+> legacy generic trust settings into a new SPA deployment.
+
 ## Status
 
 Initial Rust implementation is complete in `light-pingora` and
@@ -355,7 +362,7 @@ For requests that are not login/logout:
 ```text
 request
   -> read accessToken cookie
-  -> verify/parse internal JWT with security.yml rules
+  -> verify internal JWT with the selected spa-token-trust.yml internal role
   -> extract csrf claim
   -> find request CSRF from X-CSRF-TOKEN or an Origin-allowlisted WebSocket subprotocol
   -> compare csrf values
@@ -402,36 +409,13 @@ string.
 
 ### Internal JWT Verification
 
-The shared SPA runtime should not call the existing `verify_jwt_request`
-function directly. That function is designed for API requests with an
-`Authorization` header, path skips, pass-through claims, and normal security
-handler behavior.
-
-The SPA auth runtime needs a lower-level token verifier that can:
-
-- verify the access-token signature using the same certificates and algorithms
-  as `security.yml`;
-- parse claims from a token stored in a cookie;
-- optionally ignore expiration while deciding whether the token can be
-  refreshed;
-- fail hard on invalid signature, invalid algorithm, malformed JWT, and missing
-  key;
-- return an `AuthPrincipal` and raw claims for CSRF, cookie metadata, and
-  optional request-context propagation.
-
-This can be implemented by extracting a reusable helper from `security.rs`,
-for example:
-
-```rust
-verify_jwt_token(
-    runtime: &SecurityRuntime,
-    token: &str,
-    expiry_mode: JwtExpiryMode,
-) -> Result<AuthPrincipal, HandlerRejection>
-```
-
-The normal `security` handler can keep its current request-level wrapper, while
-SPA auth uses the token-level helper for cookie tokens.
+The current shared SPA runtime uses the `internal` role in
+`spa-token-trust.yml`, independently of generic security request handlers,
+certificate routing and principal caches. It verifies RS256, exact issuer and
+application audience, lifetime, user identity and signed CSRF before accepting
+returned identity or setting cookies. Only renewal/logout context verification
+may ignore expiry; downstream dispatch still requires a valid token. See
+[SPA token trust](../framework/light-pingora/spa-token-trust.md).
 
 ### Social Provider Login
 
@@ -597,7 +581,7 @@ New issuance uses a 32-byte OS-random nonce and requires cookie/JWT CSRF agreeme
 Previously signed opaque CSRF claims remain valid through session expiry. Ordinary
 renewal preserves the verified claim; the renewal cache is partitioned by refresh
 token and verified CSRF context. Unverified request/cookie values are never promoted
-into new JWTs. Refresh-token-only recovery now fails closed and requires re-login;
+into new JWTs. Refresh-token-only recovery is disabled by default and requires re-login unless the explicit trusted-browser recovery policy is enabled;
 it cannot authorize the original API request without an authenticated CSRF context.
 Enforced logout verifies the application JWT signature and CSRF claim, allowing
 expired-session cleanup without authorizing API access. No-session logout is
@@ -610,3 +594,5 @@ browser WebSocket offers to include the fixed non-secret `light-spa-v1` protocol
 The gateway consumes the `csrf.` protocol and never echoes it. See
 [MSAL Auth CSRF rollout](msal-auth.md#session-bound-csrf-440) for key lifecycle,
 replica cutover, logging and enforcement guidance.
+
+See [the #441 migration and recovery contract](../framework/light-pingora/spa-token-trust.md#migration-and-qualification) before deploying new trust roles or enabling `recoveryOrigins`.

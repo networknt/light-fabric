@@ -12112,6 +12112,24 @@ request:
         );
     }
 
+    fn write_spa_trust_fixture(dir: &TempDir) {
+        std::fs::write(
+            dir.path().join(light_pingora::SPA_TOKEN_TRUST_FILE),
+            r#"
+internal:
+  issuer: https://internal.example
+  audience: portal
+  jwksUri: https://internal.example/keys
+microsoftId:
+  issuer: https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/v2.0
+  audience: 33333333-3333-3333-3333-333333333333
+  tenantId: 11111111-1111-1111-1111-111111111111
+  jwksUri: https://login.microsoftonline.com/common/discovery/v2.0/keys
+"#,
+        )
+        .unwrap();
+    }
+
     #[test]
     fn gateway_loads_stateless_auth_when_stateless_handler_is_active() {
         let config_dir = TempDir::new().expect("config temp dir");
@@ -12173,6 +12191,7 @@ oauth:
 "#,
         )
         .expect("write client config");
+        write_spa_trust_fixture(&config_dir);
         let config = runtime_config(&config_dir, &external_dir, HashMap::new());
 
         let proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
@@ -12382,6 +12401,7 @@ oauth:
 "#,
         )
         .expect("write client config");
+        write_spa_trust_fixture(&config_dir);
         let config = runtime_config(&config_dir, &external_dir, HashMap::new());
 
         let proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
@@ -12645,6 +12665,7 @@ allowedClientIds: [33333333-3333-3333-3333-333333333333]
                 "private-invalid-key",
             ),
             valid.replace("csrfActiveKeyId: fixture", "csrfActiveKeyId: ''"),
+            format!("{valid}\njwksCaPaths: [/missing/spa-test-ca.pem]\n"),
         ] {
             std::fs::write(
                 config_dir.path().join(light_pingora::MSAL_AUTH_FILE),
@@ -12771,6 +12792,7 @@ allowedMethods:
 "#,
         )
         .expect("write CORS config");
+        write_spa_trust_fixture(&config_dir);
         let config = runtime_config(&config_dir, &external_dir, HashMap::new());
         let proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
         let active = proxy.active_handlers.load();

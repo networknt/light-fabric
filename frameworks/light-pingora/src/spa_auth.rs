@@ -1,9 +1,8 @@
 use crate::config_util::deserialize_string_list;
 use crate::csrf_security::{self, bounded, equal, invalid_csrf};
 use crate::direct_registry::direct_registry_match;
-use crate::security::{
-    AuthPrincipal, HandlerRejection, JwtExpiryMode, SecurityRuntime, verify_jwt_token,
-};
+use crate::security::{AuthPrincipal, HandlerRejection};
+use crate::spa_trust::{SpaTokenTrust, TokenRole};
 use crate::token::load_client_config;
 use crate::{
     ClientRequestConfig, ClientTlsConfig, ClientTokenConfig, OAuthAuthorizationCodeConfig,
@@ -91,16 +90,17 @@ pub struct SpaCookieConfig {
 pub struct SpaSessionRuntime {
     cookies: SpaCookieConfig,
     token_client: Arc<SpaTokenClient>,
-    security: Arc<SecurityRuntime>,
+    trust: Arc<SpaTokenTrust>,
     refresh: Arc<RefreshSingleFlight>,
     websocket_origins: Vec<String>,
+    recovery_origins: Vec<String>,
 }
 
 impl SpaSessionRuntime {
     pub fn new(
         cookies: SpaCookieConfig,
         token_client: SpaTokenClient,
-        security: SecurityRuntime,
+        trust: SpaTokenTrust,
     ) -> Self {
         let refresh = RefreshSingleFlight::new(
             cookies.refresh_single_flight_cache_ms,
@@ -109,9 +109,10 @@ impl SpaSessionRuntime {
         Self {
             cookies,
             token_client: Arc::new(token_client),
-            security: Arc::new(security),
+            trust: Arc::new(trust),
             refresh: Arc::new(refresh),
             websocket_origins: Vec::new(),
+            recovery_origins: Vec::new(),
         }
     }
 
@@ -119,6 +120,37 @@ impl SpaSessionRuntime {
         validate_websocket_origins(&origins)?;
         self.websocket_origins = origins;
         Ok(self)
+    }
+
+    pub fn with_recovery_origins(mut self, origins: Vec<String>) -> Result<Self, RuntimeError> {
+        validate_websocket_origins(&origins)?;
+        self.recovery_origins = origins;
+        Ok(self)
+    }
+
+    fn retain_pending_refresh(
+        &self,
+        response: &TokenGrantResponse,
+        mut error: HandlerRejection,
+    ) -> HandlerRejection {
+        if error.status == 503
+            && let Some(refresh) = response
+                .refresh_token
+                .as_deref()
+                .filter(|value| valid_refresh_credential(value))
+        {
+            error.headers.push(session_cookie_header(
+                &self.cookies,
+                REFRESH_TOKEN_COOKIE,
+                refresh,
+                // No unverified remember flag may extend browser persistence.
+                self.cookies
+                    .session_timeout
+                    .min(self.cookies.remember_me_timeout),
+                true,
+            ));
+        }
+        error
     }
 
     pub async fn validate_logout_csrf(
@@ -139,9 +171,10 @@ impl SpaSessionRuntime {
                 .get(ACCESS_TOKEN_COOKIE)
                 .filter(|v| !v.is_empty())
                 .ok_or_else(invalid_csrf)?;
-            let principal = verify_jwt_token(self.security.as_ref(), token, JwtExpiryMode::Ignore)
-                .await
-                .map_err(|_| invalid_csrf())?;
+            let principal = self
+                .trust
+                .verify_for(TokenRole::Internal, token, true)
+                .await?;
             // Expiry is ignored solely for cleanup. Signature and CSRF binding remain mandatory.
             validate_csrf(session, &principal.claims, &[])
         }
@@ -181,17 +214,15 @@ impl SpaSessionRuntime {
         response: &TokenGrantResponse,
         csrf: &str,
     ) -> Result<(Vec<String>, Vec<(String, String)>), HandlerRejection> {
-        let principal = verify_jwt_token(
-            self.security.as_ref(),
-            response.access_token.as_str(),
-            JwtExpiryMode::Enforce,
-        )
-        .await
-        .map_err(|error| HandlerRejection::new(error.status, "ERR10000", error.message))?;
+        let principal = self
+            .trust
+            .verify_for(TokenRole::Internal, response.access_token.as_str(), false)
+            .await
+            .map_err(|error| self.retain_pending_refresh(response, error))?;
         if token_needs_refresh(&principal.claims, 0) {
             return Err(HandlerRejection::new(
-                502,
-                "ERR10052",
+                401,
+                "ERR10000",
                 "Token response has no valid lifetime",
             ));
         }
@@ -202,8 +233,8 @@ impl SpaSessionRuntime {
             .is_some_and(|claim| equal(claim, csrf))
         {
             return Err(HandlerRejection::new(
-                502,
-                "ERR10052",
+                401,
+                "ERR10000",
                 "Token response CSRF binding mismatch",
             ));
         }
@@ -242,12 +273,10 @@ impl SpaSessionRuntime {
         let refresh_token = cookies.get(REFRESH_TOKEN_COOKIE).cloned();
 
         if let Some(access_token) = access_token.as_deref() {
-            let principal =
-                verify_jwt_token(self.security.as_ref(), access_token, JwtExpiryMode::Ignore)
-                    .await
-                    .map_err(|error| {
-                        HandlerRejection::new(error.status, "ERR10000", error.message)
-                    })?;
+            let principal = self
+                .trust
+                .verify_for(TokenRole::Internal, access_token, true)
+                .await?;
             validate_csrf(session, &principal.claims, &self.websocket_origins)?;
             if token_needs_refresh(&principal.claims, self.cookies.renew_before_seconds) {
                 return self
@@ -255,7 +284,7 @@ impl SpaSessionRuntime {
                         session,
                         refresh_token.as_deref(),
                         token_header,
-                        claim_string(&principal.claims, "csrf").as_deref(),
+                        Some((access_token, &principal)),
                     )
                     .await;
             }
@@ -267,9 +296,25 @@ impl SpaSessionRuntime {
         }
 
         if refresh_token.is_some() {
-            // Without a signed access JWT there is no authenticated CSRF context.
-            // Re-login is required; refresh-token-only cookies never authorize API dispatch.
-            return Err(invalid_csrf());
+            // Equality is not session authentication. Recovery is a separate,
+            // opt-in trusted-browser operation and never forwards this request.
+            let origin = unique_header(session, "origin")?.ok_or_else(invalid_csrf)?;
+            let csrf = request_csrf(session, &[])?;
+            if session.req_header().method != http::Method::POST
+                || !canonical_origin(&origin)
+                || !self
+                    .recovery_origins
+                    .iter()
+                    .any(|allowed| allowed == &origin)
+                || !cookies
+                    .get(CSRF_COOKIE)
+                    .is_some_and(|cookie| equal(cookie, &csrf))
+            {
+                return Err(invalid_csrf());
+            }
+            return self
+                .renew_or_expire(session, refresh_token.as_deref(), token_header, None)
+                .await;
         }
 
         if has_logout_session(&cookies, &[]) {
@@ -291,39 +336,87 @@ impl SpaSessionRuntime {
         session: &mut Session,
         refresh_token: Option<&str>,
         token_header: &str,
-        verified_csrf: Option<&str>,
+        original: Option<(&str, &AuthPrincipal)>,
     ) -> Result<SpaSessionOutcome, HandlerRejection> {
-        let Some(refresh_token) = refresh_token.filter(|value| !value.trim().is_empty()) else {
+        let verified_csrf = original
+            .and_then(|(_, principal)| principal.claims.get("csrf").and_then(JsonValue::as_str));
+        let Some(refresh_token) = refresh_token.filter(|value| valid_refresh_credential(value))
+        else {
+            if let Some((token, principal)) =
+                original.filter(|(_, principal)| principal_valid_now(principal))
+            {
+                inject_bearer_token(session, token_header, token)?;
+                return Ok(SpaSessionOutcome::Continue {
+                    auth: Some(principal.clone()),
+                    response_headers: Vec::new(),
+                });
+            }
             return Ok(SpaSessionOutcome::Respond(session_expired_response(
                 &self.cookies,
             )));
         };
-        match self
+        let result = self
             .refresh
             .renew(self.token_client.as_ref(), refresh_token, verified_csrf)
-            .await
-        {
-            Ok(result) => {
-                let principal = verify_jwt_token(
-                    self.security.as_ref(),
-                    result.response.access_token.as_str(),
-                    JwtExpiryMode::Enforce,
-                )
+            .await;
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => return self.renewal_uncertainty(session, token_header, original, error),
+        };
+        let verification = async {
+            let (_, headers) = self
+                .set_login_cookies(&result.response, &result.csrf)
+                .await?;
+            let principal = self
+                .trust
+                .verify_for(TokenRole::Internal, &result.response.access_token, false)
                 .await
-                .map_err(|error| HandlerRejection::new(error.status, "ERR10000", error.message))?;
-                let (_, headers) = self
-                    .set_login_cookies(&result.response, &result.csrf)
-                    .await?;
-                inject_bearer_token(session, token_header, result.response.access_token.as_str())?;
-                Ok(SpaSessionOutcome::Continue {
-                    auth: Some(principal),
-                    response_headers: headers,
-                })
+                .map_err(|error| self.retain_pending_refresh(&result.response, error))?;
+            if !principal_valid_now(&principal) {
+                return Err(crate::spa_jwks::invalid());
             }
-            Err(_) => Ok(SpaSessionOutcome::Respond(session_expired_response(
-                &self.cookies,
-            ))),
+            Ok((principal, headers))
         }
+        .await;
+        let (principal, headers) = match verification {
+            Ok(verified) => verified,
+            Err(error) => return self.renewal_uncertainty(session, token_header, original, error),
+        };
+        if original.is_none() {
+            return Ok(SpaSessionOutcome::Respond(SpaAuthResponse::json(409,
+                json!({"code":"SPA_SESSION_RECOVERED", "message":"Session recovered; retry the request explicitly. The original request was not executed."}), headers).with_no_store()));
+        }
+        inject_bearer_token(session, token_header, &result.response.access_token)?;
+        Ok(SpaSessionOutcome::Continue {
+            auth: Some(principal),
+            response_headers: headers,
+        })
+    }
+
+    fn renewal_uncertainty(
+        &self,
+        session: &mut Session,
+        header: &str,
+        original: Option<(&str, &AuthPrincipal)>,
+        error: HandlerRejection,
+    ) -> Result<SpaSessionOutcome, HandlerRejection> {
+        if error.status != 503 {
+            return Err(error);
+        }
+        if let Some((token, principal)) =
+            original.filter(|(_, principal)| principal_valid_now(principal))
+        {
+            inject_bearer_token(session, header, token)?;
+            return Ok(SpaSessionOutcome::Continue {
+                auth: Some(principal.clone()),
+                response_headers: error
+                    .headers
+                    .into_iter()
+                    .filter(|(name, _)| name.eq_ignore_ascii_case("set-cookie"))
+                    .collect(),
+            });
+        }
+        Err(error)
     }
 
     pub fn logout_response(&self) -> SpaAuthResponse {
@@ -649,35 +742,23 @@ impl SpaTokenClient {
             .form(&form)
             .send()
             .await
-            .map_err(|error| {
-                HandlerRejection::new(
-                    502,
-                    "ERR10052",
-                    format!("failed to request {grant_label} token: {error}"),
-                )
-            })?;
+            .map_err(|_| crate::spa_jwks::unavailable())?;
         let status = response.status();
-        let body = response.json::<JsonValue>().await.map_err(|error| {
-            HandlerRejection::new(
-                502,
-                "ERR10052",
-                format!("failed to parse token response: {error}"),
-            )
-        })?;
         if !status.is_success() {
-            return Err(HandlerRejection::new(
-                502,
-                "ERR10052",
-                format!("token endpoint returned {status}: {}", error_message(&body)),
-            ));
+            return Err(
+                if status.is_client_error() && status.as_u16() != 429 && status.as_u16() != 408 {
+                    crate::spa_jwks::invalid()
+                } else {
+                    crate::spa_jwks::unavailable()
+                },
+            );
         }
-        serde_json::from_value::<TokenGrantResponse>(body).map_err(|error| {
-            HandlerRejection::new(
-                502,
-                "ERR10052",
-                format!("invalid token response shape: {error}"),
-            )
-        })
+        let body = response
+            .json::<JsonValue>()
+            .await
+            .map_err(|_| crate::spa_jwks::unavailable())?;
+        serde_json::from_value::<TokenGrantResponse>(body)
+            .map_err(|_| crate::spa_jwks::unavailable())
     }
 }
 
@@ -732,6 +813,19 @@ impl RefreshSingleFlight {
         // Do not let its cached result rotate CSRF for a verified session.
         let cache_key = (refresh_token.to_string(), verified_csrf.map(str::to_string));
         if let Some(result) = entries.get(&cache_key) {
+            return Ok(result.clone());
+        }
+        // Store one entry per grant: its rotated credential is an alias in the
+        // same authenticated context, not another slot that can evict the original.
+        // Both names therefore expire and are evicted together.
+        if let Some((_, result)) = entries.iter().find(|((_, context), result)| {
+            context == &cache_key.1
+                && result
+                    .response
+                    .refresh_token
+                    .as_deref()
+                    .is_some_and(|alias| valid_refresh_credential(alias) && alias == refresh_token)
+        }) {
             return Ok(result.clone());
         }
         // Preserve the value validated against the signed access JWT, never an
@@ -1497,6 +1591,22 @@ fn basic_authorization(client_id: &str, client_secret: &str) -> String {
     )
 }
 
+fn principal_valid_now(principal: &AuthPrincipal) -> bool {
+    principal
+        .claims
+        .get("exp")
+        .and_then(JsonValue::as_u64)
+        .is_some_and(|exp| now_seconds() < exp)
+}
+
+fn valid_refresh_credential(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 16384
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_graphic() && !matches!(b, b';' | b',' | b'"' | b'\\'))
+}
+
 fn token_needs_refresh(claims: &JsonValue, renew_before_seconds: u64) -> bool {
     let exp = claims.get("exp").and_then(JsonValue::as_u64).unwrap_or(0);
     exp.saturating_sub(renew_before_seconds) <= now_seconds()
@@ -1538,20 +1648,6 @@ fn join_scope(scope: &[String]) -> Option<String> {
         .collect::<Vec<_>>()
         .join(" ");
     (!scope.is_empty()).then_some(scope)
-}
-
-fn error_message(body: &JsonValue) -> String {
-    [
-        "message",
-        "description",
-        "error_description",
-        "error",
-        "code",
-    ]
-    .into_iter()
-    .find_map(|key| body.get(key).and_then(JsonValue::as_str))
-    .unwrap_or("unknown token endpoint error")
-    .to_string()
 }
 
 fn now_seconds() -> u64 {
@@ -1605,7 +1701,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let mut forms = Vec::new();
-            for _ in 0..3 {
+            for _ in 0..2 {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -1674,8 +1770,9 @@ mod tests {
             Some("verified-csrf")
         );
         assert_eq!(
-            forms[2].get("csrf").map(String::as_str),
-            Some("verified-csrf")
+            forms.len(),
+            2,
+            "rotated credential reuses the verified pending result"
         );
     }
 
@@ -1891,3 +1988,7 @@ mod tests {
         assert_eq!(form["scope"], "a b");
     }
 }
+
+#[cfg(test)]
+#[path = "spa_recovery_tests.rs"]
+pub(crate) mod recovery_tests;

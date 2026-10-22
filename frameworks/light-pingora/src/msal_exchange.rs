@@ -1,12 +1,10 @@
-use crate::security::{
-    JwtExpiryMode, load_security_runtime, load_security_runtime_from_file, verify_jwt_token,
-};
 use crate::spa_auth::{
     AUTHORIZATION_HEADER, SpaAuthCsrfEndpoint, SpaAuthLegacyEndpoint, SpaAuthResponse,
     SpaCookieConfig, SpaSessionOutcome, SpaSessionRuntime, bearer_token, bearer_token_from_header,
     delete_cookie_header, delete_cookie_headers, generate_csrf, load_spa_token_client,
     record_spa_auth_legacy_get, request_cookie, session_cookie_header,
 };
+use crate::spa_trust::{SpaTokenTrust, TokenRole, load_spa_trust};
 use light_runtime::{ModuleKind, RuntimeConfig, RuntimeError};
 use pingora::prelude::Session;
 use serde::{Deserialize, Serialize};
@@ -53,6 +51,11 @@ pub struct MsalExchangeConfig {
         deserialize_with = "crate::config_util::deserialize_string_list"
     )]
     pub websocket_origins: Vec<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::config_util::deserialize_string_list"
+    )]
+    pub recovery_origins: Vec<String>,
     #[serde(default = "default_cookie_domain")]
     pub cookie_domain: String,
     #[serde(default = "default_cookie_path")]
@@ -95,6 +98,7 @@ impl Default for MsalExchangeConfig {
             logout_path: default_logout_path(),
             logout_csrf_enforced: true,
             websocket_origins: Vec::new(),
+            recovery_origins: Vec::new(),
             cookie_domain: default_cookie_domain(),
             cookie_path: default_cookie_path(),
             cookie_secure: false,
@@ -119,24 +123,31 @@ impl Default for MsalExchangeConfig {
 pub struct MsalExchangeRuntime {
     config: MsalExchangeConfig,
     session: SpaSessionRuntime,
-    msal_security: crate::SecurityRuntime,
+    id_trust: SpaTokenTrust,
+    api_trust: Option<SpaTokenTrust>,
 }
 
 impl MsalExchangeRuntime {
     pub fn new(
         config: MsalExchangeConfig,
         session: SpaSessionRuntime,
-        msal_security: crate::SecurityRuntime,
+        id_trust: SpaTokenTrust,
+        api_trust: Option<SpaTokenTrust>,
     ) -> Self {
         Self {
             config,
             session,
-            msal_security,
+            id_trust,
+            api_trust,
         }
     }
 
     pub async fn bootstrap(&self) -> Result<(), crate::HandlerRejection> {
-        self.msal_security.bootstrap().await
+        self.id_trust.bootstrap().await?;
+        if let Some(api) = &self.api_trust {
+            api.bootstrap().await?;
+        }
+        Ok(())
     }
 
     pub fn config(&self) -> &MsalExchangeConfig {
@@ -228,9 +239,20 @@ impl MsalExchangeRuntime {
         &self,
         token: &str,
     ) -> Result<crate::AuthPrincipal, crate::HandlerRejection> {
-        verify_jwt_token(&self.msal_security, token, JwtExpiryMode::Enforce)
+        self.id_trust
+            .verify_for(TokenRole::MicrosoftId, token, false)
             .await
-            .map_err(|error| crate::HandlerRejection::new(error.status, "ERR10000", error.message))
+    }
+
+    async fn verify_api_token(
+        &self,
+        token: &str,
+    ) -> Result<crate::AuthPrincipal, crate::HandlerRejection> {
+        self.api_trust
+            .as_ref()
+            .ok_or_else(crate::spa_jwks::invalid)?
+            .verify_for(TokenRole::MicrosoftApi, token, false)
+            .await
     }
 
     async fn msal_access_token_from_cookie(
@@ -241,7 +263,7 @@ impl MsalExchangeRuntime {
             .ok_or_else(|| {
                 crate::HandlerRejection::new(401, "ERR11647", "Microsoft access token is missing")
             })?;
-        self.verify_msal_token(token.as_str()).await?;
+        self.verify_api_token(token.as_str()).await?;
         Ok(token)
     }
 
@@ -288,7 +310,7 @@ impl MsalExchangeRuntime {
                             "Microsoft access token is missing",
                         )
                     })?;
-            let principal = self.verify_msal_token(access_token.as_str()).await?;
+            let principal = self.verify_api_token(access_token.as_str()).await?;
             Some((
                 access_token,
                 msal_access_cookie_max_age(&principal, self.config.session_timeout),
@@ -306,8 +328,9 @@ impl MsalExchangeRuntime {
                 csrf.as_str(),
             )
             .await
-            .map_err(|error| {
-                crate::HandlerRejection::new(error.status, "ERR11648", error.message)
+            .map_err(|mut error| {
+                error.code = "ERR11648".to_owned();
+                error
             })?;
         let (scopes, headers) = self
             .session
@@ -352,7 +375,9 @@ impl MsalExchangeRuntime {
         if matches!(
             self.config.authorization_token,
             MsalAuthorizationToken::AzureMsal
-        ) {
+        ) && response.headers.iter().any(|(name, value)| {
+            name == "set-cookie" && value.starts_with("accessToken=") && value.contains("Max-Age=0")
+        }) {
             response.headers.push(delete_cookie_header(
                 self.session.cookies(),
                 self.config.msal_access_token_cookie.as_str(),
@@ -411,6 +436,19 @@ pub fn load_msal_exchange_runtime(
 
     let config = load_msal_exchange_config(runtime_config)?.unwrap_or_default();
     validate_msal_exchange_config(&config)?;
+    let trust = if config.enabled {
+        Some(load_spa_trust(
+            runtime_config,
+            true,
+            true,
+            matches!(
+                config.authorization_token,
+                MsalAuthorizationToken::AzureMsal
+            ),
+        )?)
+    } else {
+        None
+    };
     runtime_config.module_registry.register_loaded_config(
         MSAL_EXCHANGE_MODULE_ID,
         MSAL_EXCHANGE_CONFIG_NAME,
@@ -425,39 +463,23 @@ pub fn load_msal_exchange_runtime(
         return Ok(None);
     }
 
+    let mut trust = trust.expect("enabled SPA trust");
     let token_client = load_spa_token_client(runtime_config)?;
-    let security = load_security_runtime(runtime_config, true)?.ok_or_else(|| {
-        RuntimeError::Unsupported(
-            "security.yml must enable JWT verification for MSAL exchange".to_string(),
-        )
-    })?;
-    if !runtime_config.config_dir.join(SECURITY_MSAL_FILE).exists()
-        && !runtime_config
-            .external_config_dir
-            .join(SECURITY_MSAL_FILE)
-            .exists()
-    {
-        return Err(RuntimeError::MissingConfig(SECURITY_MSAL_FILE.to_string()));
-    }
-    let msal_security = load_security_runtime_from_file(
-        runtime_config,
-        true,
-        SECURITY_MSAL_FILE,
-        SECURITY_MSAL_MODULE_ID,
-        SECURITY_MSAL_CONFIG_NAME,
-    )?
-    .ok_or_else(|| {
-        RuntimeError::Unsupported(
-            "security-msal.yml must enable JWT verification for MSAL exchange".to_string(),
-        )
-    })?;
-    let session = SpaSessionRuntime::new(cookie_config(&config), token_client, security)
-        .with_websocket_origins(config.websocket_origins.clone())?;
-    Ok(Some(MsalExchangeRuntime::new(
+    let session = SpaSessionRuntime::new(
+        cookie_config(&config),
+        token_client,
+        trust.internal.take().expect("selected internal trust"),
+    )
+    .with_websocket_origins(config.websocket_origins.clone())?
+    .with_recovery_origins(config.recovery_origins.clone())?;
+    let runtime = MsalExchangeRuntime::new(
         config,
         session,
-        msal_security,
-    )))
+        trust.id.take().expect("selected Microsoft ID trust"),
+        trust.api.take(),
+    );
+    trust.register(runtime_config)?;
+    Ok(Some(runtime))
 }
 
 fn load_msal_exchange_config(
@@ -619,6 +641,114 @@ fn default_refresh_max_entries() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn exchange_handler_enforces_distinct_subject_and_api_roles_before_token_exchange() {
+        use crate::msal_auth::policy_tests::{claims, jwks_server, sign};
+        use crate::spa_auth::recovery_tests::{Mode, oauth, runtime};
+        use crate::spa_trust::SpaTokenPolicy;
+        use std::sync::atomic::Ordering;
+        const TENANT: &str = "11111111-1111-1111-1111-111111111111";
+        const CLIENT: &str = "33333333-3333-3333-3333-333333333333";
+        let keys = jwks_server(include_str!("../tests/fixtures/msal/signing-key.jwks.json")).await;
+        let oauth = oauth(Mode::Valid).await;
+        let session_runtime = runtime(&keys.uri, keys.client.clone(), &oauth).await;
+        let policy = |audience: &str| SpaTokenPolicy {
+            issuer: format!("https://login.microsoftonline.com/{TENANT}/v2.0"),
+            audience: audience.into(),
+            jwks_uri: keys.uri.clone(),
+            tenant_id: TENANT.into(),
+            required_scopes: vec!["access_as_user".into()],
+            allowed_client_ids: vec![CLIENT.into()],
+            ..Default::default()
+        };
+        let id = SpaTokenTrust::new(policy(CLIENT), TokenRole::MicrosoftId).unwrap();
+        id.source
+            .seed_test_keys(include_str!("../tests/fixtures/msal/signing-key.jwks.json"));
+        let api = SpaTokenTrust::new(
+            policy("22222222-2222-2222-2222-222222222222"),
+            TokenRole::MicrosoftApi,
+        )
+        .unwrap();
+        api.source
+            .seed_test_keys(include_str!("../tests/fixtures/msal/signing-key.jwks.json"));
+        let config = MsalExchangeConfig {
+            authorization_token: MsalAuthorizationToken::AzureMsal,
+            ..Default::default()
+        };
+        let runtime = MsalExchangeRuntime::new(config, session_runtime, id, Some(api));
+        let api = sign(&claims());
+        let mut id_claims = claims();
+        id_claims["aud"] = json!(CLIENT);
+        id_claims["nonce"] = json!("client-generated-nonce");
+        id_claims.as_object_mut().unwrap().remove("scp");
+        let id = sign(&id_claims);
+        async fn request(subject: &str, api: &str) -> Session {
+            let raw = format!(
+                "POST /auth/ms/exchange HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {subject}\r\nX-MSAL-Access-Token: Bearer {api}\r\nContent-Length: 0\r\n\r\n"
+            );
+            let mut session = Session::new_h1(Box::new(std::io::Cursor::new(raw.into_bytes())));
+            assert!(session.as_downstream_mut().read_request().await.unwrap());
+            session
+        }
+        for (subject, access) in [(&api, &api), (&id, &id)] {
+            assert_eq!(
+                runtime
+                    .handle_request(&mut request(subject, access).await)
+                    .await
+                    .err()
+                    .unwrap()
+                    .status,
+                401
+            );
+        }
+        assert_eq!(oauth.requests.load(Ordering::SeqCst), 0);
+        let MsalExchangeOutcome::Respond(response) = runtime
+            .handle_request(&mut request(&id, &api).await)
+            .await
+            .unwrap()
+        else {
+            panic!("exchange response")
+        };
+        assert_eq!(response.status, 200);
+        assert_eq!(oauth.requests.load(Ordering::SeqCst), 1);
+        let cookie = |name: &str| {
+            response
+                .headers
+                .iter()
+                .find_map(|(header, value)| {
+                    (header == "set-cookie")
+                        .then(|| value.strip_prefix(&format!("{name}=")))
+                        .flatten()
+                        .and_then(|v| v.split(';').next())
+                })
+                .unwrap()
+        };
+        let issued = cookie("accessToken");
+        let csrf = cookie("csrf");
+        let principal = SpaTokenTrust::test_internal()
+            .verify_for(TokenRole::Internal, issued, false)
+            .await
+            .unwrap();
+        assert!(principal.claims["csrf"].as_str() == Some(csrf));
+        assert!(cookie("msalAccessToken") == api);
+        // API-cookie validation also uses the API role on subsequent requests.
+        let raw = format!(
+            "GET /api HTTP/1.1\r\nHost: localhost\r\nCookie: accessToken={issued}; csrf={csrf}; msalAccessToken={id}\r\nX-CSRF-TOKEN: {csrf}\r\n\r\n"
+        );
+        let mut session = Session::new_h1(Box::new(std::io::Cursor::new(raw.into_bytes())));
+        assert!(session.as_downstream_mut().read_request().await.unwrap());
+        assert_eq!(
+            runtime
+                .handle_request(&mut session)
+                .await
+                .err()
+                .unwrap()
+                .status,
+            401
+        );
+        assert!(!session.req_header().headers.contains_key("authorization"));
+    }
 
     #[test]
     fn msal_exchange_config_accepts_subject_token_override() {

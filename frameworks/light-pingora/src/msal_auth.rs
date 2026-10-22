@@ -48,6 +48,8 @@ pub struct MsalAuthConfig {
     #[serde(default)]
     pub jwks_uri: String,
     #[serde(default, deserialize_with = "deserialize_policy_list")]
+    pub jwks_ca_paths: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_policy_list")]
     pub required_scopes: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_policy_list")]
     pub allowed_client_ids: Vec<String>,
@@ -83,6 +85,7 @@ impl Default for MsalAuthConfig {
             issuer: String::new(),
             audience: String::new(),
             jwks_uri: String::new(),
+            jwks_ca_paths: Vec::new(),
             required_scopes: Vec::new(),
             allowed_client_ids: Vec::new(),
             login_path: default_login_path(),
@@ -167,7 +170,10 @@ impl MsalAuthConfig {
         {
             return Err(invalid("issuer"));
         }
-        if self.audience.trim().is_empty() || self.audience.trim() != self.audience {
+        if self.audience.trim().is_empty()
+            || self.audience.trim() != self.audience
+            || (self.issuer.ends_with("/v2.0") && !uuid(&self.audience))
+        {
             return Err(invalid("audience"));
         }
         if self.required_scopes.is_empty()
@@ -227,6 +233,12 @@ impl MsalAuthConfig {
             || claims
                 .get("idtyp")
                 .is_some_and(|value| value.as_str() != Some("user"))
+        {
+            return Err("token_purpose");
+        }
+        if claims
+            .get("token_use")
+            .is_some_and(|value| !matches!(value.as_str(), Some("access" | "access_token")))
         {
             return Err("token_purpose");
         }
@@ -314,7 +326,7 @@ impl MsalAuthRuntime {
         config.validate()?;
         let csrf_signer = CsrfSigner::new(&config.csrf_active_key_id, &config.csrf_keys)
             .map_err(|message| RuntimeError::Unsupported(message.into()))?;
-        let verifier = MsalVerifier::new(&config.jwks_uri)?;
+        let verifier = MsalVerifier::with_roots(&config.jwks_uri, &config.jwks_ca_paths)?;
         Ok(Self {
             config,
             security,
@@ -565,11 +577,17 @@ fn msal_verification_error(error: HandlerRejection) -> HandlerRejection {
             reason = "key_resolution_unavailable",
             "Microsoft token verification unavailable"
         );
-        HandlerRejection::new(
+        let mut rejection = HandlerRejection::new(
             error.status,
             "ERR10056",
             "Microsoft token verification unavailable",
-        )
+        );
+        if error.status == 503 {
+            rejection = rejection
+                .with_header("retry-after", "1")
+                .with_header("cache-control", "no-store");
+        }
+        rejection
     } else {
         warn!(
             reason = "signature_or_standard_claims",
@@ -630,8 +648,23 @@ pub fn load_msal_auth_runtime(
 
     let config = load_msal_auth_config(runtime_config)?.unwrap_or_default();
     config.validate()?;
-    // Signing material is never a diagnostic value, even when generic config
-    // masking has been disabled by the administrator.
+    let runtime = if config.enabled {
+        // Dedicated policy/source only. The generic verifier and client.yml key
+        // routing, principal caches and TLS settings are never consulted.
+        let security = match runtime_config
+            .module_registry
+            .load_config::<SecurityConfig>(runtime_config, SECURITY_MSAL_FILE)
+        {
+            Ok(config) => config,
+            Err(RuntimeError::MissingConfig(_)) => SecurityConfig::default(),
+            Err(error) => return Err(error),
+        };
+        Some(MsalAuthRuntime::new(config.clone(), security)?)
+    } else {
+        None
+    };
+    // Publish diagnostics only after the complete replacement validates,
+    // including its source-specific CA material. Keys are always redacted.
     let mut diagnostics = serde_json::to_value(&config)?;
     diagnostics["csrfKeys"] = json!("[REDACTED]");
     runtime_config.module_registry.register_loaded_config(
@@ -644,38 +677,24 @@ pub fn load_msal_auth_runtime(
         Some(config.enabled),
         false,
     )?;
-
-    if !config.enabled {
-        return Ok(None);
+    if let Some(runtime) = &runtime {
+        runtime_config.module_registry.register_loaded_config(
+            SECURITY_MSAL_MODULE_ID,
+            SECURITY_MSAL_CONFIG_NAME,
+            ModuleKind::Framework,
+            &runtime.security,
+            [MaskSpec::key("swtClientSecretHeader")],
+            true,
+            Some(true),
+            true,
+        )?;
     }
-
-    // Only load MSAL verifier settings. Never construct the generic verifier or
-    // consult its client.yml key providers, caches, TLS settings or routing.
-    let security = match runtime_config
-        .module_registry
-        .load_config::<SecurityConfig>(runtime_config, SECURITY_MSAL_FILE)
-    {
-        Ok(config) => config,
-        Err(RuntimeError::MissingConfig(_)) => SecurityConfig::default(),
-        Err(error) => return Err(error),
-    };
-    runtime_config.module_registry.register_loaded_config(
-        SECURITY_MSAL_MODULE_ID,
-        SECURITY_MSAL_CONFIG_NAME,
-        ModuleKind::Framework,
-        &security,
-        [MaskSpec::key("swtClientSecretHeader")],
-        true,
-        Some(true),
-        true,
-    )?;
-
-    Ok(Some(MsalAuthRuntime::new(config, security)?))
+    Ok(runtime)
 }
 
 #[cfg(test)]
 #[path = "msal_auth_tests.rs"]
-mod policy_tests;
+pub(crate) mod policy_tests;
 
 #[cfg(test)]
 mod tests {

@@ -33,7 +33,7 @@ fn now() -> u64 {
         .as_secs()
 }
 
-pub(super) fn claims() -> Value {
+pub(crate) fn claims() -> Value {
     json!({
         "iss": policy().issuer, "tid": TENANT, "aud": AUDIENCE, "ver": "2.0",
         "azp": CLIENT, "sub": "local-user", "scp": "access_as_user profile.read extra",
@@ -41,21 +41,24 @@ pub(super) fn claims() -> Value {
     })
 }
 
-pub(super) fn sign(claims: &Value) -> String {
+pub(crate) fn sign(claims: &Value) -> String {
     let mut header = Header::new(Algorithm::RS256);
     header.kid = Some("msal-test".into());
     encode(&header, claims, &EncodingKey::from_rsa_pem(KEY).unwrap()).unwrap()
 }
 
 // Real HTTPS transport with a test CA trusted only by this runtime's test client.
-pub(super) struct JwksServer {
-    pub(super) uri: String,
-    pub(super) client: reqwest::Client,
-    pub(super) requests: Arc<std::sync::atomic::AtomicUsize>,
-    pub(super) body: Arc<tokio::sync::RwLock<String>>,
+pub(crate) struct JwksServer {
+    pub(crate) uri: String,
+    pub(crate) client: reqwest::Client,
+    pub(crate) requests: Arc<std::sync::atomic::AtomicUsize>,
+    pub(crate) body: Arc<tokio::sync::RwLock<String>>,
+    pub(crate) cache_control: Arc<tokio::sync::RwLock<String>>,
+    pub(crate) delay_ms: Arc<std::sync::atomic::AtomicU64>,
+    pub(crate) ca_pem: String,
 }
 
-pub(super) async fn jwks_server(body: &str) -> JwksServer {
+pub(crate) async fn jwks_server(body: &str) -> JwksServer {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
@@ -85,12 +88,19 @@ pub(super) async fn jwks_server(body: &str) -> JwksServer {
     let count = requests.clone();
     let body = Arc::new(tokio::sync::RwLock::new(body.to_owned()));
     let response_body = body.clone();
+    let cache_control = Arc::new(tokio::sync::RwLock::new("max-age=300".to_string()));
+    let response_cache = cache_control.clone();
+    let delay_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let response_delay = delay_ms.clone();
+    let ca_pem = cert.cert.pem();
     tokio::spawn(async move {
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
         while let Ok((socket, _)) = listener.accept().await {
             let acceptor = acceptor.clone();
             let count = count.clone();
             let response_body = response_body.clone();
+            let response_cache = response_cache.clone();
+            let response_delay = response_delay.clone();
             tokio::spawn(async move {
                 let Ok(mut socket) = acceptor.accept(socket).await else {
                     return;
@@ -98,9 +108,14 @@ pub(super) async fn jwks_server(body: &str) -> JwksServer {
                 let mut request = [0; 4096];
                 if socket.read(&mut request).await.is_ok() {
                     count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        response_delay.load(std::sync::atomic::Ordering::SeqCst),
+                    ))
+                    .await;
                     let body = response_body.read().await;
+                    let cache = response_cache.read().await;
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        "HTTP/1.1 200 OK\r\nCache-Control: {cache}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         body.len(),
                         body
                     );
@@ -114,6 +129,9 @@ pub(super) async fn jwks_server(body: &str) -> JwksServer {
         client,
         requests,
         body,
+        cache_control,
+        delay_ms,
+        ca_pem,
     }
 }
 
@@ -732,7 +750,7 @@ async fn untrusted_tls_endpoint_fails_closed_without_clearing_session_cookies() 
         .await
         .err()
         .unwrap();
-    assert_eq!(error.status, 502);
+    assert_eq!(error.status, 503);
     assert_eq!(error.message, "Microsoft token verification unavailable");
     assert!(!error.headers.iter().any(|(name, _)| name == "set-cookie"));
     assert_eq!(server.requests.load(std::sync::atomic::Ordering::SeqCst), 0);

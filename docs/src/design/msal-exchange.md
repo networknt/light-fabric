@@ -1,10 +1,17 @@
 # MSAL Exchange Handler
 
+> Runtime trust update (#441): see [SPA token trust and renewal](../framework/light-pingora/spa-token-trust.md). Enabled handlers now require explicit role policies in `spa-token-trust.yml`; generic `security.yml` / `security-msal.yml` are not signing or claim-policy authorities for these SPA sessions.
+
+> The older design sketches and Java correspondence below are retained as
+> historical context. Generic `SecurityRuntime` examples are superseded by the
+> explicit Rust role policies in the linked #441 runtime guide; do not copy
+> legacy generic trust settings into a new SPA deployment.
+
 ## Status
 
 Initial Rust implementation is complete in `light-pingora` and
-`light-gateway`. It includes config loading, named `security-msal.yml`
-validation support, token-exchange handling, shared SPA session/cookie/CSRF
+`light-gateway`. It now includes isolated `spa-token-trust.yml` role
+validation, token-exchange handling, shared SPA session/cookie/CSRF
 logic, logout, refresh-token renewal, handler wiring, config stubs, and
 runtime-load tests.
 
@@ -313,7 +320,7 @@ flow:
 ```text
 request
   -> read accessToken cookie
-  -> verify/parse internal JWT with security.yml
+  -> verify internal JWT with the selected spa-token-trust.yml internal role
   -> validate CSRF from request against JWT csrf claim
   -> refresh internal token when it is inside the renew window
   -> inject Authorization: Bearer <internal-access-token>
@@ -447,7 +454,7 @@ New issuance uses a 32-byte OS-random nonce and requires cookie/JWT CSRF agreeme
 Previously signed opaque CSRF claims remain valid through session expiry. Ordinary
 renewal preserves the verified claim; the renewal cache is partitioned by refresh
 token and verified CSRF context. Unverified request/cookie values are never promoted
-into new JWTs. Refresh-token-only recovery now fails closed and requires re-login;
+into new JWTs. Refresh-token-only recovery is disabled by default and requires re-login unless the explicit trusted-browser recovery policy is enabled;
 it cannot authorize the original API request without an authenticated CSRF context.
 Enforced logout verifies the application JWT signature and CSRF claim, allowing
 expired-session cleanup without authorizing API access. No-session logout is
@@ -460,3 +467,5 @@ browser WebSocket offers to include the fixed non-secret `light-spa-v1` protocol
 The gateway consumes the `csrf.` protocol and never echoes it. See
 [MSAL Auth CSRF rollout](msal-auth.md#session-bound-csrf-440) for key lifecycle,
 replica cutover, logging and enforcement guidance.
+
+See [the #441 migration and recovery contract](../framework/light-pingora/spa-token-trust.md#migration-and-qualification) before deploying new trust roles or enabling `recoveryOrigins`.

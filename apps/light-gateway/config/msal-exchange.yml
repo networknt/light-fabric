@@ -19,3 +19,4 @@ lightTokenHeader: ${msal-exchange.lightTokenHeader:X-Light-Token}
 msalAccessTokenHeader: ${msal-exchange.msalAccessTokenHeader:X-MSAL-Access-Token}
 msalAccessTokenCookie: ${msal-exchange.msalAccessTokenCookie:msalAccessToken}
 websocketOrigins: ${msal-exchange.websocketOrigins:}
+recoveryOrigins: ${msal-exchange.recoveryOrigins:}

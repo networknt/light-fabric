@@ -1,0 +1,23 @@
+# Configuration-owned RS256 authorities; configure only the roles in use.
+internal:
+  issuer: ${spa-token-trust.internal.issuer:}
+  audience: ${spa-token-trust.internal.audience:}
+  jwksUri: ${spa-token-trust.internal.jwksUri:}
+  jwksCaPaths: ${spa-token-trust.internal.jwksCaPaths:}
+  clockSkewSeconds: ${spa-token-trust.internal.clockSkewSeconds:60}
+microsoftId:
+  issuer: ${spa-token-trust.microsoftId.issuer:}
+  audience: ${spa-token-trust.microsoftId.audience:}
+  jwksUri: ${spa-token-trust.microsoftId.jwksUri:}
+  jwksCaPaths: ${spa-token-trust.microsoftId.jwksCaPaths:}
+  tenantId: ${spa-token-trust.microsoftId.tenantId:}
+  clockSkewSeconds: ${spa-token-trust.microsoftId.clockSkewSeconds:60}
+microsoftApi:
+  issuer: ${spa-token-trust.microsoftApi.issuer:}
+  audience: ${spa-token-trust.microsoftApi.audience:}
+  jwksUri: ${spa-token-trust.microsoftApi.jwksUri:}
+  jwksCaPaths: ${spa-token-trust.microsoftApi.jwksCaPaths:}
+  tenantId: ${spa-token-trust.microsoftApi.tenantId:}
+  requiredScopes: ${spa-token-trust.microsoftApi.requiredScopes:}
+  allowedClientIds: ${spa-token-trust.microsoftApi.allowedClientIds:}
+  clockSkewSeconds: ${spa-token-trust.microsoftApi.clockSkewSeconds:60}

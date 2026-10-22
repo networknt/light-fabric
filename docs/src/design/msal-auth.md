@@ -80,6 +80,7 @@ cookiePath: ${msal-auth.cookiePath:/}
 cookieSecure: ${msal-auth.cookieSecure:false}
 sessionTimeout: ${msal-auth.sessionTimeout:3600}
 cookieSameSite: ${msal-auth.cookieSameSite:None}
+jwksCaPaths: ${msal-auth.jwksCaPaths:}
 csrfActiveKeyId: ${msal-auth.csrfActiveKeyId:}
 csrfKeys: ${msal-auth.csrfKeys:}
 websocketOrigins: ${msal-auth.websocketOrigins:}
@@ -413,7 +414,7 @@ sessions without granting API access. No-session logout is idempotent; malformed
 and partial cookie sets fail closed. JWT-backed logout verifies the application
 JWT signature and CSRF claim, ignoring expiry only in the cleanup path.
 Refresh-token-only sessions cannot prove CSRF binding and must log in again for
-API access or enforced logout. Administrators can clear expired browser cookies
+API access or enforced logout by default. The optional #441 trusted-browser recovery flow is a separate non-forwarding operation; see [SPA token trust and renewal](../framework/light-pingora/spa-token-trust.md#issuance-renewal-and-recovery). Administrators can clear expired browser cookies
 through the browser's site-data controls when no authenticated logout context
 remains.
 
@@ -424,3 +425,13 @@ Unlike `msal-exchange` or `stateless-auth`, `msal-auth` does not issue or manage
 ## Reload Behavior
 
 The gateway reloads `msal-auth` when `handler.yml`, `msal-auth.yml`, or `security-msal.yml` changes. Reloading `security-msal.yml` refreshes both `msal-auth` and `msal-exchange` because both handlers validate Microsoft tokens with that security runtime.
+
+## Bounded signing-source availability (#441)
+
+Direct MSAL retains its dedicated API claim policy and #440 CSRF binding. Its
+signing source now uses bounded freshness/stale retention, non-blocking known-key
+lookups, single-flight refresh, confirmed-miss provenance and endpoint-specific
+CA extension. See [SPA token trust and renewal](../framework/light-pingora/spa-token-trust.md)
+for exact timing bounds, revocation trade-offs, root configuration and migration.
+The exchange handler now uses separate ID/API role policies; `security-msal.yml`
+no longer supplies exchange signing or claim trust.
