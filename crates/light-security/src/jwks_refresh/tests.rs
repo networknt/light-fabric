@@ -315,24 +315,3 @@ async fn timeout_completion_clears_active_and_allows_post_cooldown_recovery() {
     inactive_recorded(&runtime);
     assert_eq!(server.requests(), 2);
 }
-
-// Paused Tokio time must not auto-advance while real loopback I/O is pending.
-// The runnable yield branch holds it fixed; the original 5 s setup bound stays
-// a wall-clock watchdog. No retries, enlarged client budget or production hook.
-async fn drive_loopback_without_advancing_time<T>(
-    future: impl std::future::Future<Output = T>,
-) -> T {
-    let wall_start = std::time::Instant::now();
-    tokio::pin!(future);
-    loop {
-        tokio::select! {
-            biased;
-            result = &mut future => return result,
-            _ = tokio::task::yield_now() => {}
-        }
-        assert!(
-            wall_start.elapsed() < Duration::from_secs(5),
-            "loopback I/O watchdog"
-        );
-    }
-}

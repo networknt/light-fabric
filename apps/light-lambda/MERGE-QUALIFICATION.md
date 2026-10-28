@@ -163,3 +163,24 @@ preserved. JWT claim time, production security code, fixture contracts and other
 tests are unchanged. The 75 ms scheduling control remains in the repaired test.
 All 62 security library/integration tests passed locally. This repair does not
 resolve the separate retained D-08e wall-clock fixture finding.
+
+## JWKS deadline-family setup repair
+
+Run 40681312915 passed the repaired 48-test security library group, then failed
+caller_and_joiner_deadlines_do_not_cancel_later_success in the 14-test integration
+group (13 passed, one failed). The assertion was `verification must be waiting`.
+D-08e was again not reached. Four other CI jobs passed. A local 75 ms setup delay
+reproduced the exact joiner assertion against the old test.
+
+Both remaining short-deadline JWKS integration tests now start their Tokio clock
+paused and use the existing bounded real-I/O driver during setup/recovery. This
+includes the analogous shared-fetch timeout setup hazard. The helper is shared
+through test support with cfg(test), excluded from the conformance-worker build.
+All original 50 ms deadlines, 51 ms advancement, 150 ms virtual-time assertion,
+errors, continued long-waiter success, expired-caller rejection and exact request
+counts remain. The assertions measure controlled caller/refresh timers, not
+wall-clock network latency. The 75 ms scheduling controls remain enabled.
+All 62 security tests passed. No production code, fixture, expectation, dependency,
+retry, serialization or deadline expansion was introduced. The separate D-08e
+wall-clock contract remains unresolved. Existing strict security Clippy findings
+in unchanged dual_identity.rs and token_purpose.rs remain recorded without waiver.

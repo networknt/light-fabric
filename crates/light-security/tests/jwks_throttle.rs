@@ -229,7 +229,7 @@ async fn dropped_starter_and_twenty_dropped_callers_leave_ten_joiners_usable() {
     assert_eq!(server.requests(), 2);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn caller_and_joiner_deadlines_do_not_cancel_later_success() {
     let server = Server::new("new", true).await;
     let runtime = runtime(&server, SecurityConfig::default(), 2000);
@@ -243,7 +243,9 @@ async fn caller_and_joiner_deadlines_do_not_cancel_later_success() {
         Some(start + Duration::from_millis(50)),
     ));
     pending(&mut starter).await;
-    server.request_started().await;
+    drive_loopback_without_advancing_time(server.request_started()).await;
+    // Model setup descheduling beyond the unchanged short caller deadline.
+    std::thread::sleep(Duration::from_millis(75));
     let mut short = Box::pin(verify_jwt_token_for_services_with_deadline(
         &runtime,
         &token,
@@ -260,16 +262,15 @@ async fn caller_and_joiner_deadlines_do_not_cancel_later_success() {
         Some(start + Duration::from_secs(1)),
     ));
     pending(&mut long).await;
-    // Network start is established. Virtual time controls deadlines, not JWT wall time.
-    tokio::time::pause();
+    // Caller timers start from the same paused clock as the established I/O.
+    // JWT claim validation continues to use wall time.
     tokio::time::advance(Duration::from_millis(51)).await;
     for error in [starter.await.unwrap_err(), short.await.unwrap_err()] {
         assert_eq!((error.status, error.code.as_str()), (504, "ERR14017"));
     }
     assert!(Instant::now() - start < Duration::from_millis(150));
-    tokio::time::resume();
     server.release(1);
-    assert!(long.await.is_ok());
+    assert!(drive_loopback_without_advancing_time(long).await.is_ok());
     assert_eq!(server.requests(), 1);
     assert!(verify(&runtime, &token).await.is_ok());
     let expired = verify_jwt_token_for_services_with_deadline(
@@ -285,14 +286,17 @@ async fn caller_and_joiner_deadlines_do_not_cancel_later_success() {
     assert_eq!(server.requests(), 1);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn shared_fetch_timeout_is_finite_without_a_caller_deadline() {
     let server = Server::new("new", true).await;
     let runtime = runtime(&server, SecurityConfig::default(), 50);
     let token = valid("new");
     let mut f = Box::pin(verify(&runtime, &token));
     pending(&mut f).await;
-    server.request_started().await;
+    tokio::task::yield_now().await;
+    std::thread::sleep(Duration::from_millis(75));
+    drive_loopback_without_advancing_time(server.request_started()).await;
+    tokio::time::advance(Duration::from_millis(50)).await;
     assert_eq!(f.await.unwrap_err().status, 502);
     // Permit completion cleanup to run; a second waiter observes that same attempt if active.
     let error = verify(&runtime, &token).await.unwrap_err();
