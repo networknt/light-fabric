@@ -1,0 +1,147 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Isolated supported-only Light Lambda petstore trial; no business deployment
+Parameters:
+  ArtifactBucket: {Type: String}
+  BootstrapKey: {Type: String}
+  LayerKey: {Type: String}
+  AllowedClientCidr: {Type: String, AllowedPattern: '([0-9]{1,3}\.){3}[0-9]{1,3}/32'}
+  CertificateArn: {Type: String, AllowedPattern: 'arn:aws:acm:us-east-2:964637446810:certificate/.+'}
+  PetsGetArn: {Type: String}
+  PetsPostArn: {Type: String}
+  PetGetArn: {Type: String}
+  PetDeleteArn: {Type: String}
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.42.0.0/16
+      Tags: [{Key: project, Value: light-lambda-l3}]
+  Igw: {Type: 'AWS::EC2::InternetGateway'}
+  Attach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: {VpcId: !Ref Vpc, InternetGatewayId: !Ref Igw}
+  Routes:
+    Type: AWS::EC2::RouteTable
+    Properties: {VpcId: !Ref Vpc}
+  InternetRoute:
+    Type: AWS::EC2::Route
+    DependsOn: Attach
+    Properties: {RouteTableId: !Ref Routes, DestinationCidrBlock: 0.0.0.0/0, GatewayId: !Ref Igw}
+  Subnet0:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.42.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+  Associate0:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref Subnet0, RouteTableId: !Ref Routes}
+  Subnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.42.1.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+  Associate1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref Subnet1, RouteTableId: !Ref Routes}
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Trial HTTPS from explicitly selected single client IP
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: !Ref AllowedClientCidr}
+      SecurityGroupEgress:
+        - {IpProtocol: '-1', CidrIp: 0.0.0.0/0}
+  Logs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-gateway'
+      RetentionInDays: 7
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ExactBackendInvokeAndLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: [!Ref PetsGetArn, !Ref PetsPostArn, !Ref PetGetArn, !Ref PetDeleteArn]
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt Logs.Arn
+  Layer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleRuntimes: [provided.al2023]
+      CompatibleArchitectures: [x86_64]
+      Content: {S3Bucket: !Ref ArtifactBucket, S3Key: !Ref LayerKey}
+  Gateway:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-gateway'
+      Runtime: provided.al2023
+      Handler: bootstrap
+      Architectures: [x86_64]
+      Role: !GetAtt Role.Arn
+      Code: {S3Bucket: !Ref ArtifactBucket, S3Key: !Ref BootstrapKey}
+      Layers: [!Ref Layer]
+      MemorySize: 512
+      Timeout: 20
+      ReservedConcurrentExecutions: 2
+      Environment:
+        Variables:
+          LIGHT_LAMBDA_CONFIG_DIR: /opt
+          RUST_LOG: INFO
+          LIGHT_LAMBDA_GATEWAY_ARN: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-gateway'
+  Version:
+    Type: AWS::Lambda::Version
+    Properties: {FunctionName: !Ref Gateway}
+  Alias:
+    Type: AWS::Lambda::Alias
+    Properties: {FunctionName: !Ref Gateway, FunctionVersion: !GetAtt Version.Version, Name: trial}
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      TargetType: lambda
+      HealthCheckEnabled: false
+      TargetGroupAttributes:
+        - {Key: lambda.multi_value_headers.enabled, Value: 'true'}
+  Permission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref Alias
+      Principal: elasticloadbalancing.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Ref TargetGroup
+  Alb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: InternetRoute
+    Properties:
+      Scheme: internet-facing
+      Subnets: [!Ref Subnet0, !Ref Subnet1]
+      SecurityGroups: [!Ref SecurityGroup]
+      LoadBalancerAttributes:
+        - {Key: idle_timeout.timeout_seconds, Value: '30'}
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref Alb
+      Port: 443
+      Protocol: HTTPS
+      Certificates: [{CertificateArn: !Ref CertificateArn}]
+      DefaultActions: [{Type: forward, TargetGroupArn: !Ref TargetGroup}]
+Outputs:
+  AliasArn: {Value: !Ref Alias}
+  TargetGroupArn: {Value: !Ref TargetGroup}
+  AlbDns: {Value: !GetAtt Alb.DNSName}

@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "auditOnError": false,
+  "mask": true,
+  "statusCode": true,
+  "responseTime": false,
+  "headers": [
+    "x-test-mask"
+  ],
+  "audit": [
+    "serviceId"
+  ],
+  "timestampFormat": "'synthetic-time'"
+}

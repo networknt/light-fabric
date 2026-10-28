@@ -1,0 +1,222 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "T-02-request-header-input-selected-plugin-init-v1",
+  "title": "T-02-request-header-input exact Java rule behavior and explicit Rust selected-plugin rejection",
+  "ledger": [
+    "T-01",
+    "T-02",
+    "T-03",
+    "CFG-04"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "request-transformer": {
+        "enabled": true,
+        "appliedPathPrefixes": [
+          "/x"
+        ]
+      },
+      "response-transformer": {
+        "enabled": true,
+        "appliedPathPrefixes": [
+          "/x"
+        ]
+      },
+      "service": {
+        "singletons": [
+          {
+            "com.networknt.rule.RuleExecutor": [
+              "com.networknt.rule.MultiThreadRuleExecutor"
+            ]
+          }
+        ]
+      },
+      "rule": {
+        "endpointRules": {
+          "/x@post": {
+            "req-tra": [
+              "request"
+            ],
+            "res-tra": [
+              "response"
+            ]
+          }
+        },
+        "ruleBodies": {
+          "request": {
+            "ruleId": "request",
+            "ruleType": "req-tra",
+            "common": "Y",
+            "ruleName": "test-only-request",
+            "conditions": [],
+            "actions": [
+              {
+                "actionId": "request",
+                "actionClassName": "com.networknt.aws.lambda.characterization.TransformerTest$RequestAction"
+              }
+            ]
+          },
+          "response": {
+            "ruleId": "response",
+            "ruleType": "res-tra",
+            "common": "Y",
+            "ruleName": "test-only-response",
+            "conditions": [],
+            "actions": [
+              {
+                "actionId": "response",
+                "actionClassName": "com.networknt.aws.lambda.characterization.TransformerTest$ResponseAction"
+              }
+            ]
+          }
+        }
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.transformer.RequestTransformerMiddleware@h0",
+          "com.networknt.aws.lambda.handler.middleware.transformer.ResponseTransformerMiddleware@response0"
+        ],
+        "chains": {
+          "request": [
+            "h0"
+          ],
+          "response": [
+            "response0"
+          ]
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "No virtual deadline or elapsed-time equality; exact observed rule result is asserted."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "expectRustInit": {
+    "outcome": "initError",
+    "code": "InvalidConfiguration",
+    "backendCalls": [],
+    "jwksFetches": 0
+  },
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls",
+    "header:content-type",
+    "header:x-backend"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "x-input": "request-value"
+        },
+        "queryStringParameters": {},
+        "body": "original",
+        "isBase64Encoded": false
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "response-transformed",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "POST",
+              "headers": {
+                "x-input": "request-value"
+              },
+              "queryStringParameters": {},
+              "requestContext": {},
+              "body": "request-transformed",
+              "isBase64Encoded": false
+            },
+            "eventExact": {
+              "headers": {
+                "x-input": "request-value"
+              },
+              "queryStringParameters": {},
+              "requestContext": {}
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "expect": {
+        "outcome": "notExecuted",
+        "reason": "initError",
+        "backendCalls": [],
+        "jwksFetches": 0
+      }
+    }
+  ]
+}

@@ -1,0 +1,153 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "C-10-endpoint-source-configured-v1",
+  "title": "C-10-endpoint-source exact configured Java pipeline",
+  "ledger": [
+    "C-10",
+    "C-01"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "handler": {
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.characterization.EndpointSourceTest$Selected@selected"
+        ],
+        "chains": {
+          "terminal": [
+            "selected",
+            "proxy"
+          ]
+        },
+        "paths": [
+          {
+            "source": "com.networknt.aws.lambda.characterization.EndpointSourceTest$Sources",
+            "exec": [
+              "terminal"
+            ]
+          }
+        ],
+        "defaultHandlers": [
+          "proxy"
+        ]
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "No virtual limiter clock. Exact duration-string RateLimit-Reset is not a timestamp."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls",
+    "header:content-type",
+    "header:x-backend",
+    "header:ratelimit-limit",
+    "header:ratelimit-remaining",
+    "header:ratelimit-reset"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {},
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "headers": {
+                "x-source": "source-selected"
+              },
+              "queryStringParameters": {},
+              "requestContext": {},
+              "isBase64Encoded": false
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "expect": {
+        "outcome": "notExecuted",
+        "reason": "initError",
+        "backendCalls": [],
+        "jwksFetches": 0
+      }
+    }
+  ],
+  "expectRustInit": {
+    "outcome": "initError",
+    "code": "InvalidConfiguration",
+    "backendCalls": [],
+    "jwksFetches": 0
+  }
+}

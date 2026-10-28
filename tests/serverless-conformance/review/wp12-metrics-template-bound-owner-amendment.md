@@ -1,0 +1,9 @@
+
+
+### WP12 owner amendment — trusted Metrics template byte limit (2026-10-13)
+
+Owner approved a maximum of 1,024 UTF-8 bytes for each trusted route template that can feed a selectable chain containing active Metrics after alias expansion and disabled-handler removal, including early-exit fallback matching. Exclude disabled/unselected Metrics, unreachable definitions and unrelated routing. Overflow must reject Init with redacted InvalidConfiguration before execution/immutable publication. Admitted Route is the exact template or <unmatched>; no runtime truncation marker or captured caller values. Preserve matching/method precedence, forwarding, existing compiler validation, the 64-occurrence bound and completion semantics. This bounds bytes, not elapsed time or delivery.
+
+ExecutionPlan::compile GitNexus LOW0 and source-reviewed HIGH are accepted separately for this purpose. Owner authorizes changing the oversized-template regression to Init rejection/zero execution, preserving identity/original failure, and requires accepted-boundary exact output/once-only coverage plus UTF-8, route-source, default/path, early-exit and exclusion qualification. No implementation/test/fixture outcome change is recorded yet: admission of privately held Metrics fallback routes needs a new RequestHandler trait accessor scope. Fresh exact-trait GitNexus MEDIUM8/zero processes is separate from source-reviewed HIGH (21 implementations/18 files). That new trait scope is awaiting disposition; the compiler approval is not reopened. Runtime truncation remains until every construction path is protected.
+
+Evidence: /home/steve/artifacts/implementation/light-lambda/WP12/template-accessor-20261013T162328Z/template-accessor-impact-stop.md. WP12 remains incomplete; prior failures/Java expectations/approvals are preserved. WP5 open; WP13/WP14 and operational qualification remain separate. Existing lint exceptions remain scoped, not clean inclusive Clippy claims.

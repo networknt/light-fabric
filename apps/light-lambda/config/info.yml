@@ -1,0 +1,7 @@
+# Opt-in redacted local terminal; protected access requires verified OAuth/JWT.
+# Preserve the disabled application default; bind the terminal explicitly.
+enableServerInfo: ${info.enableServerInfo:false}
+keysToNotSort: ${info.keysToNotSort:["admin","default","defaultHandlers","request","response"]}
+downstreamEnabled: ${info.downstreamEnabled:false}
+downstreamHost: ${info.downstreamHost:http://localhost:8081}
+downstreamPath: ${info.downstreamPath:/adm/server/info}

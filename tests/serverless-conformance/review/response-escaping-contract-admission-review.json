@@ -1,0 +1,18 @@
+[
+  {
+    "fixture": "D-09-escaping-limit-multi-contract-v1",
+    "source": "Plan 5.4 serialized response envelope limit and Appendix C ERR14016",
+    "javaBehaviorAsserted": [
+      "D-09"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-09"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Exactly 524288 quote characters fit decoded body limit, but JSON escaping alone produces 1048576 bytes before envelope overhead. Java actual body is asserted byte-exact. Authored Rust minimal 502 error after exactly one backend call establishes serialized-byte rather than raw-body size accounting.",
+    "remainingContractAssertions": [
+      "Response-policy header boundary draft is not admitted; base64 boundary and replacement recheck remain open."
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T033648.464815Z"
+  }
+]

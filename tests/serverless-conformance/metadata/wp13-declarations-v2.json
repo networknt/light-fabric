@@ -1,0 +1,1082 @@
+{
+  "schema": "light-lambda-declaration-review/v1",
+  "scope": "15 original closure reviews plus1 metadata conflict exposed by the fixed Init assertion adapter; expectations unchanged",
+  "reviews": [
+    {
+      "id": "D-01-typed-sdk-1-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/d/D-01-typed-sdk-1-v1.json",
+      "fixtureDigest": "f50b5dec143812101f43f5024715a1d13948ee729f63518706870fac0e2ae267",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "backendCalls"
+      ],
+      "remove": [
+        "bodyBase64",
+        "header:content-type",
+        "outcome"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "bodyBase64",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": false,
+              "rustExpected": false,
+              "javaOutcome": "response",
+              "rustOutcome": "response",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ],
+              "javaOutcome": "response",
+              "rustOutcome": "response",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "outcome",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": "response",
+              "rustExpected": "response",
+              "javaOutcome": "response",
+              "rustOutcome": "response",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "D-01",
+        "D-05",
+        "D-06",
+        "E-13"
+      ],
+      "authority": "Existing CP1 per-runner expectations; fresh native Java matches its preserved expectation. No behavioral expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-closure-20261018T135359Z/native-java-01/results/D-01-typed-sdk-1-v1.json",
+      "javaSha256": "bc4186b6075c207e54d97fb2aa00198406a60953c137a03f3da892d41454f238",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-failures-declarations-20261018T132733Z/inventory-rust-final-02/D-01-typed-sdk-1-v1.json",
+      "rustSha256": "8ce9e6a0c3e1c398b050e1807bade10c092ced64d0081cca35cbb1a2496a66d3",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "D-01-typed-sdk-2-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/d/D-01-typed-sdk-2-v1.json",
+      "fixtureDigest": "b028c16bc7f6f5f224d609b4efce21a4b0c5ffcc0dff9d022669cf2851a89f68",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "backendCalls"
+      ],
+      "remove": [
+        "bodyBase64",
+        "header:content-type",
+        "outcome"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "bodyBase64",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": false,
+              "rustExpected": false,
+              "javaOutcome": "response",
+              "rustOutcome": "response",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ],
+              "javaOutcome": "response",
+              "rustOutcome": "response",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "outcome",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": "response",
+              "rustExpected": "response",
+              "javaOutcome": "response",
+              "rustOutcome": "response",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "D-01",
+        "D-05",
+        "D-06",
+        "E-13"
+      ],
+      "authority": "Existing CP1 per-runner expectations; fresh native Java matches its preserved expectation. No behavioral expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-closure-20261018T135359Z/native-java-01/results/D-01-typed-sdk-2-v1.json",
+      "javaSha256": "c090d58e4c77422a1ac7f1559a1b183bffb4c0c79fb415dd9f4ae87bd48c8ac3",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-failures-declarations-20261018T132733Z/inventory-rust-final-02/D-01-typed-sdk-2-v1.json",
+      "rustSha256": "87588c77ffa3c07de80c6f3546161bce349427153be5287c2bf771055ebbbbea",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "D-01-typed-sdk-3-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/d/D-01-typed-sdk-3-v1.json",
+      "fixtureDigest": "a28971156ae0fbe51ecf87bc44eb66eb9cf7f9293d344c323c2f144eb99f7e06",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "backendCalls"
+      ],
+      "remove": [
+        "bodyBase64",
+        "header:content-type",
+        "outcome"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "bodyBase64",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": false,
+              "rustExpected": false,
+              "javaOutcome": "response",
+              "rustOutcome": "response",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ],
+              "javaOutcome": "response",
+              "rustOutcome": "response",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "outcome",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": "response",
+              "rustExpected": "response",
+              "javaOutcome": "response",
+              "rustOutcome": "response",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "D-01",
+        "D-05",
+        "D-06",
+        "E-13"
+      ],
+      "authority": "Existing CP1 per-runner expectations; fresh native Java matches its preserved expectation. No behavioral expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-closure-20261018T135359Z/native-java-01/results/D-01-typed-sdk-3-v1.json",
+      "javaSha256": "410d9dbdf43c3ba09b2c1ec0044cb986585d2eb3faa2bae20a8c71a486124f36",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-failures-declarations-20261018T132733Z/inventory-rust-final-02/D-01-typed-sdk-3-v1.json",
+      "rustSha256": "5040fd2ffdc64a40ab1b0473ac4e179cce23c2c9b6d9e685033445ea63efd52b",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "D-06-typed-sdk-1-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/d/D-06-typed-sdk-1-multi-contract-v1.json",
+      "fixtureDigest": "f96f20ff7509a1ab39181bd39bc4b589bcc7358dd44da5c33c00681b2ad6c29c",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ],
+              "javaOutcome": "response",
+              "rustOutcome": "response",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "D-05",
+        "D-06",
+        "E-10",
+        "D-04"
+      ],
+      "authority": "Existing CP1 per-runner expectations; fresh native Java matches its preserved expectation. No behavioral expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-closure-20261018T135359Z/native-java-01/results/D-06-typed-sdk-1-multi-contract-v1.json",
+      "javaSha256": "4d8530e3d30ee60c4ae0fceb38c49bdfec662ad064e67abb4b622ad47f71b9df",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-failures-declarations-20261018T132733Z/inventory-rust-final-02/D-06-typed-sdk-1-multi-contract-v1.json",
+      "rustSha256": "8464151c6ed7e55186ec60f8f9d58e0b22b2c9403084842240d0ff71b0138c40",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "R-01-literal-duplicate-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/r/R-01-literal-duplicate-v1.json",
+      "fixtureDigest": "74fc9a86b32cac8d971af92436145a79431873b275f1e4ac2701f373365a512e",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "bodyBase64",
+        "header:x-backend",
+        "outcome",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "javaOutcome": "response",
+              "rustOutcome": "initError",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "R-01",
+        "R-02",
+        "R-06",
+        "R-05"
+      ],
+      "authority": "Existing CP1 per-runner expectations; fresh native Java matches its preserved expectation. No behavioral expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-closure-20261018T135359Z/native-java-01/results/R-01-literal-duplicate-v1.json",
+      "javaSha256": "8f917e4d6f87bb8bb8e6901dafe2e9a69a59b935644b9f60efd72cc80b41c011",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-failures-declarations-20261018T132733Z/inventory-rust-final-02/R-01-literal-duplicate-v1.json",
+      "rustSha256": "2813aaf1ca33891016d25cb89e8d3839b305dddc95772b1177540710d38d65ef",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "R-03-query-overwrite-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/r/R-03-query-overwrite-v1.json",
+      "fixtureDigest": "b202d646956147064d097e7ce3c314b41a8ce13886a754328847134473c43551",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "bodyBase64",
+        "header:x-backend",
+        "outcome",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "javaOutcome": "response",
+              "rustOutcome": "initError",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "R-03",
+        "E-05",
+        "R-05",
+        "R-06"
+      ],
+      "authority": "Existing CP1 per-runner expectations; fresh native Java matches its preserved expectation. No behavioral expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-closure-20261018T135359Z/native-java-01/results/R-03-query-overwrite-v1.json",
+      "javaSha256": "e5b0b59c2d18706eeb588ea1d6291c693a5a1d8297d1494591994269c3e29cf0",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-failures-declarations-20261018T132733Z/inventory-rust-final-02/R-03-query-overwrite-v1.json",
+      "rustSha256": "75c2a881273bfb7ba0ec001afa1a74b9b1fb537d792339372c4b2e4f60618bb5",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "R-05-missing-route-0-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/r/R-05-missing-route-0-v1.json",
+      "fixtureDigest": "6be5edd58d195955a0e52bafd06519c7b1d64e94222ed180f6d90fb9819aba83",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:x-backend"
+      ],
+      "observed": [
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "outcome",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": [],
+              "javaOutcome": "response",
+              "rustOutcome": "initError",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:x-backend",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "javaOutcome": "response",
+              "rustOutcome": "initError",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "R-02",
+        "R-05",
+        "D-01",
+        "R-06"
+      ],
+      "authority": "Existing CP1 per-runner expectations; fresh native Java matches its preserved expectation. No behavioral expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-closure-20261018T135359Z/native-java-01/results/R-05-missing-route-0-v1.json",
+      "javaSha256": "396d9993405414bcfd2df791c190272dddd879cb56b941aad869568f02834094",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-failures-declarations-20261018T132733Z/inventory-rust-final-02/R-05-missing-route-0-v1.json",
+      "rustSha256": "d7bf0fe268a87de682e0241baca7cb0a93fc101fe02882b0040f73533550c8b7",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "R-05-missing-route-1-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/r/R-05-missing-route-1-v1.json",
+      "fixtureDigest": "20f769225a39ff90a5e24af74e9cf77258b3a5222fc4892f7f15f2f033b49b4a",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:x-backend"
+      ],
+      "observed": [
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "outcome",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": [],
+              "javaOutcome": "response",
+              "rustOutcome": "initError",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:x-backend",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "javaOutcome": "response",
+              "rustOutcome": "initError",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "R-02",
+        "R-05",
+        "D-01",
+        "R-06"
+      ],
+      "authority": "Existing CP1 per-runner expectations; fresh native Java matches its preserved expectation. No behavioral expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-closure-20261018T135359Z/native-java-01/results/R-05-missing-route-1-v1.json",
+      "javaSha256": "d880b8b5d2e8a1e36003b6e3ead94902865f266a245f5cb77f18eed3443c84e4",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-failures-declarations-20261018T132733Z/inventory-rust-final-02/R-05-missing-route-1-v1.json",
+      "rustSha256": "00ee633de8679c9e24a984b32a90f25bf062915cf49e1ea6eafa126eb340c0c4",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "R-05-missing-route-2-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/r/R-05-missing-route-2-v1.json",
+      "fixtureDigest": "dd05a435c1903921e194cfb896d10504188c3e4bb70568eea0e3ca903674c736",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:x-backend"
+      ],
+      "observed": [
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "outcome",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": [],
+              "javaOutcome": "response",
+              "rustOutcome": "initError",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:x-backend",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "javaOutcome": "response",
+              "rustOutcome": "initError",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "R-02",
+        "R-05",
+        "D-01",
+        "R-06"
+      ],
+      "authority": "Existing CP1 per-runner expectations; fresh native Java matches its preserved expectation. No behavioral expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-closure-20261018T135359Z/native-java-01/results/R-05-missing-route-2-v1.json",
+      "javaSha256": "9ccb238c00f92419d6a6446af3b9e8edc8f2cec623a13f9061ef0f7f75c1bcd0",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-failures-declarations-20261018T132733Z/inventory-rust-final-02/R-05-missing-route-2-v1.json",
+      "rustSha256": "8f23a06a6f46aa73efccdc3f733bfbdfd844d3f85117551418d85b9ea1f484c4",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-12-alias-apikey-init-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-12-alias-apikey-init-v1.json",
+      "fixtureDigest": "1a1227a256e30d053bd2d1e44a681a47b15f0acde56d7cc23a94f6843430bded",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:x-backend"
+      ],
+      "observed": [
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "outcome",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": [],
+              "javaOutcome": "response",
+              "rustOutcome": "initError",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:x-backend",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "javaOutcome": "response",
+              "rustOutcome": "initError",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-12",
+        "C-10",
+        "C-04"
+      ],
+      "authority": "Existing CP1 per-runner expectations; fresh native Java matches its preserved expectation. No behavioral expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-closure-20261018T135359Z/native-java-01/results/S-12-alias-apikey-init-v1.json",
+      "javaSha256": "671f7eff4ba20c0e9f08a1358925cc98dfda4c814a638dbd2401e65e7830aab5",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-failures-declarations-20261018T132733Z/inventory-rust-final-02/S-12-alias-apikey-init-v1.json",
+      "rustSha256": "2ebda76d19ed7a0a9640e9dfa964abdff8250697c52d7973021cc2c11d3640a2",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-12-alias-basic-init-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-12-alias-basic-init-v1.json",
+      "fixtureDigest": "85e2df2f2ceb32a0448a2fee24b27302df4d1fd2a5056a1e1c81c94933901751",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "bodyBase64",
+        "header:x-backend",
+        "outcome",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "javaOutcome": "response",
+              "rustOutcome": "initError",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-12",
+        "C-10",
+        "C-04"
+      ],
+      "authority": "Existing CP1 per-runner expectations; fresh native Java matches its preserved expectation. No behavioral expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-closure-20261018T135359Z/native-java-01/results/S-12-alias-basic-init-v1.json",
+      "javaSha256": "8c52cd72eef197b4a347285279610e5e51eafb81829491de7ff872b2ce878d59",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-failures-declarations-20261018T132733Z/inventory-rust-final-02/S-12-alias-basic-init-v1.json",
+      "rustSha256": "f6ab9320248f159b4f45ac37da4ec6cf00813730830df1ca160456f26a4d7bd4",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-12-alias-jwt-init-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-12-alias-jwt-init-v1.json",
+      "fixtureDigest": "715e95d718186a647b68d65ff49aa7f47c976892773e7e18731398d7de181632",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:x-backend"
+      ],
+      "observed": [
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "outcome",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": [],
+              "javaOutcome": "response",
+              "rustOutcome": "initError",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:x-backend",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "javaOutcome": "response",
+              "rustOutcome": "initError",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-12",
+        "C-10",
+        "C-04"
+      ],
+      "authority": "Existing CP1 per-runner expectations; fresh native Java matches its preserved expectation. No behavioral expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-closure-20261018T135359Z/native-java-01/results/S-12-alias-jwt-init-v1.json",
+      "javaSha256": "4353b7d92145633a7eb7d28f900d40a5ec9a0cbefbad97c66b2ba65d4b8b72bb",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-failures-declarations-20261018T132733Z/inventory-rust-final-02/S-12-alias-jwt-init-v1.json",
+      "rustSha256": "c311f89d6b8f6ffd4c4d4f9729ca46391c10516946264c90a31d05dbf783b348",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-12-alias-swt-init-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-12-alias-swt-init-v1.json",
+      "fixtureDigest": "8747cd2141d0846c457e1b3a3344d7403992cc74d831507bed876e626915d8ee",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:x-backend"
+      ],
+      "observed": [
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "outcome",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": [],
+              "javaOutcome": "response",
+              "rustOutcome": "initError",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:x-backend",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "javaOutcome": "response",
+              "rustOutcome": "initError",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-12",
+        "C-10",
+        "C-04"
+      ],
+      "authority": "Existing CP1 per-runner expectations; fresh native Java matches its preserved expectation. No behavioral expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-closure-20261018T135359Z/native-java-01/results/S-12-alias-swt-init-v1.json",
+      "javaSha256": "015cf37fae0c7f63549d4515467ae624c031ef937a36607de36ce1d9e48fe556",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-failures-declarations-20261018T132733Z/inventory-rust-final-02/S-12-alias-swt-init-v1.json",
+      "rustSha256": "abf052a90f8fc4226f09eb7c1ea9004b20eaffecf85e1cffef71810b881675ff",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-12-unified-apikey-valid-denied-warm-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-12-unified-apikey-valid-denied-warm-multi-contract-v1.json",
+      "fixtureDigest": "45a7abf065334a85f67bbb28c41afac3ca45d6d11204bf4064c59ccb27a20393",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "javaOutcome": "response",
+              "rustOutcome": "response",
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ],
+              "javaOutcome": "response",
+              "rustOutcome": "response",
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ],
+              "javaOutcome": "response",
+              "rustOutcome": "response",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:x-backend",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "synthetic"
+              ],
+              "rustExpected": [
+                "synthetic"
+              ],
+              "javaOutcome": "response",
+              "rustOutcome": "response",
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": null,
+              "rustExpected": null,
+              "javaOutcome": "response",
+              "rustOutcome": "response",
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": null,
+              "rustExpected": null,
+              "javaOutcome": "response",
+              "rustOutcome": "response",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-12",
+        "S-11",
+        "E-10",
+        "E-06a",
+        "E-02"
+      ],
+      "authority": "Existing CP1 per-runner expectations; fresh native Java matches its preserved expectation. No behavioral expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-closure-20261018T135359Z/native-java-01/results/S-12-unified-apikey-valid-denied-warm-multi-contract-v1.json",
+      "javaSha256": "66d0ac9a6b23f6910eebd04e34dd2f6c274d99acb7ff58a5f17637b39add5df9",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-failures-declarations-20261018T132733Z/inventory-rust-final-02/S-12-unified-apikey-valid-denied-warm-multi-contract-v1.json",
+      "rustSha256": "ec47fc019ec7d8f6054d609aa83af0b1f5e57b025c244ac18bc067fc95a7340c",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "X-01-local-health-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/x/X-01-local-health-multi-contract-v1.json",
+      "fixtureDigest": "ffefad1b6710302248e4d026a49efdd0e0a0f426dd2855067f5dae816ecef27e",
+      "originalDeclared": [
+        "header:content-type"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "observed": [],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "text/plain; charset=utf-8"
+              ],
+              "rustExpected": [
+                "text/plain; charset=utf-8"
+              ],
+              "javaOutcome": "response",
+              "rustOutcome": "response",
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "text/plain; charset=utf-8"
+              ],
+              "rustExpected": [
+                "text/plain; charset=utf-8"
+              ],
+              "javaOutcome": "response",
+              "rustOutcome": "response",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "X-01",
+        "E-06a"
+      ],
+      "authority": "Existing CP1 per-runner expectations; fresh native Java matches its preserved expectation. No behavioral expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-closure-20261018T135359Z/native-java-01/results/X-01-local-health-multi-contract-v1.json",
+      "javaSha256": "bf8e34ead707cda5d52d3af36faf5f24b6730e40e5b7d9e9684907d4ab54d760",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-failures-declarations-20261018T132733Z/inventory-rust-final-02/X-01-local-health-multi-contract-v1.json",
+      "rustSha256": "44d3a68fd25293c92f443137676f76aa735bb95b2ccf435001e8234d6fd16598",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "H-04-loopback-test-slow-represented-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/h/H-04-loopback-test-slow-represented-v1.json",
+      "fixtureDigest": "e71c485253279aecca0634acb9f36e800a408af616b8132663cacfd2c97db837",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "header:date",
+        "header:content-length",
+        "httpCalls"
+      ],
+      "remove": [
+        "header:content-length",
+        "header:date"
+      ],
+      "proof": [
+        {
+          "field": "header:content-length",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "javaOutcome": "response",
+              "rustOutcome": "initError",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:date",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "javaOutcome": "response",
+              "rustOutcome": "initError",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "H-04",
+        "H-03",
+        "CFG-02",
+        "CFG-04"
+      ],
+      "authority": "Existing original per-runner expectations; fresh native Java error has neither header; Rust Init result has no HTTP envelope. Real outcome/status/httpCalls differences retained.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-closure-20261018T135359Z/native-java-01/results/H-04-loopback-test-slow-represented-v1.json",
+      "javaSha256": "463c9727106fef9b7b94de5cef2af73efdd207ce01b51c11074eb3b5e13fbd02",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-closure-20261018T135359Z/rust-inventory-final-02/H-04-loopback-test-slow-represented-v1.json",
+      "rustSha256": "2d3e7b93391c0a0e7b7057366b8f840546cba45b5f957f6cc56b25ea7cba4a69",
+      "decision": "correct-metadata-newly-visible-after-adapter-fix"
+    }
+  ]
+}

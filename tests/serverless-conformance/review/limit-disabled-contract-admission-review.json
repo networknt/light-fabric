@@ -1,0 +1,69 @@
+[
+  {
+    "fixture": "S-12-disabled-selected-basic-multi-contract-v1",
+    "javaRun": "20261011T133834.440747Z",
+    "javaBehaviorAsserted": [
+      "S-12"
+    ],
+    "proposedRustBehaviorReached": [],
+    "review": "Supersedes incorrect runtime-reach claim preserved in review/failed-drafts/disabled-basic-premature-rust-reach-credit-20261011. Java exact disabled-handler dispatch remains asserted. Required enabled Basic/API-key bindings are absent; approved C-10 Rust Init rejection is asserted and cannot count downstream S-12 execution. Disabled/missing source observations remain represented by this approved compiler contrast.",
+    "rustExecutionEvidence": null,
+    "source": "Approved ledger and reviewed source behavior",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T133834.440747Z",
+    "remainingAssertionsByLedger": {}
+  },
+  {
+    "fixture": "L-02-remote-address-explicit-identity-xff-multi-contract-v1",
+    "javaRun": "20261011T131740.835516Z",
+    "javaBehaviorAsserted": [
+      "L-01",
+      "L-02",
+      "E-11"
+    ],
+    "proposedRustBehaviorReached": [
+      "L-01",
+      "L-02",
+      "E-11"
+    ],
+    "review": "Shared raw ALB includes explicit Java identity.sourceIp and matching trusted XFF. Built-in remote resolver reaches direct address counter: first success, second exact 429 and zero dispatch. Rust uses approved XFF-derived source identity. This does not cover Akamai response-map behavior or all identity resolvers.",
+    "rustExecutionEvidence": null,
+    "source": "Approved ledger and reviewed source behavior",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T131740.835516Z"
+  },
+  {
+    "fixture": "L-02-verified-client-counter-multi-contract-v1",
+    "javaRun": "20261011T131840.693313Z",
+    "javaBehaviorAsserted": [
+      "L-01",
+      "L-02",
+      "C-08"
+    ],
+    "proposedRustBehaviorReached": [
+      "L-01",
+      "L-02",
+      "C-08"
+    ],
+    "review": "JWT verification precedes built-in client resolver. Token carries configured client_id; direct-key warm counter first dispatches then exact 429 with zero dispatch. Actual Init JWKS and zero request fetches asserted; no cache prepopulation or verification bypass.",
+    "rustExecutionEvidence": null,
+    "source": "Approved ledger and reviewed source behavior",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T131840.693313Z"
+  },
+  {
+    "fixture": "L-02-verified-user-counter-multi-contract-v1",
+    "javaRun": "20261011T131840.693313Z",
+    "javaBehaviorAsserted": [
+      "L-01",
+      "L-02",
+      "C-08"
+    ],
+    "proposedRustBehaviorReached": [
+      "L-01",
+      "L-02",
+      "C-08"
+    ],
+    "review": "JWT verification precedes built-in user resolver. Token carries configured user_id; direct-key warm counter first dispatches then exact 429 with zero dispatch. Actual Init JWKS and zero request fetches asserted; no unverified identity coverage claimed.",
+    "rustExecutionEvidence": null,
+    "source": "Approved ledger and reviewed source behavior",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T131840.693313Z"
+  }
+]

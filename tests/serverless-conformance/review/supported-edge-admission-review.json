@@ -1,0 +1,61 @@
+[
+  {
+    "fixture": "T-01-missing-executor-supported-edge-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/T-01-missing-executor-cp1-e02-accepted.json",
+    "sourceSha256": "739d570a3eebf1e63586a2e4c545b0456f8a8f6e2f17c4c70a2c6ddf95beed62",
+    "javaBehaviorAsserted": [
+      "T-01",
+      "T-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-13"
+    ],
+    "review": "Transformer source-configured missing executor/request rejection or response fail-open/no endpoint rule outcomes retained exactly. Supported no-plugin configurations reach only single-value E-13 ingress rejection in proposed Rust, never transformer coverage. Selected class action/test resolver Probe rejects Rust Init. ResolverTest public Probe includes hard assertions (null identity without attachment; exact unverified attachment identity; Akamai response-state exception); failed assertions propagate as Error and fail fixture, so this internal test observation is explicitly exercised rather than inferred from forwarded headers.",
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "T-02-missing-executor-supported-edge-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/T-02-missing-executor-cp1-e02-accepted.json",
+    "sourceSha256": "e5a00f859cf0ed1b83fbf11e0076d5debd9ca826393ed1e121c0c51ad38ed819",
+    "javaBehaviorAsserted": [
+      "T-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-13"
+    ],
+    "review": "Transformer source-configured missing executor/request rejection or response fail-open/no endpoint rule outcomes retained exactly. Supported no-plugin configurations reach only single-value E-13 ingress rejection in proposed Rust, never transformer coverage. Selected class action/test resolver Probe rejects Rust Init. ResolverTest public Probe includes hard assertions (null identity without attachment; exact unverified attachment identity; Akamai response-state exception); failed assertions propagate as Error and fail fixture, so this internal test observation is explicitly exercised rather than inferred from forwarded headers.",
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "T-02-no-endpoint-rule-supported-edge-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/T-02-no-endpoint-rule-cp1-e02-accepted.json",
+    "sourceSha256": "b0a703cc2fad08a99f6b596076098db4bf2dd8c27b9f395d99aa16db41aac574",
+    "javaBehaviorAsserted": [
+      "T-01",
+      "T-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "review": "Transformer source-configured missing executor/request rejection or response fail-open/no endpoint rule outcomes retained exactly. Supported no-plugin configurations reach only single-value E-13 ingress rejection in proposed Rust, never transformer coverage. Selected class action/test resolver Probe rejects Rust Init. ResolverTest public Probe includes hard assertions (null identity without attachment; exact unverified attachment identity; Akamai response-state exception); failed assertions propagate as Error and fail fixture, so this internal test observation is explicitly exercised rather than inferred from forwarded headers.",
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "L-02-resolver-observation-supported-edge-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/L-02-resolver-observation-cp1-e02-accepted.json",
+    "sourceSha256": "2c2e70a3b52ee7c3bb60a04f820e7232a3bfecb83a381e56fcdab4173e03a931",
+    "javaBehaviorAsserted": [
+      "L-02",
+      "C-08"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "review": "Transformer source-configured missing executor/request rejection or response fail-open/no endpoint rule outcomes retained exactly. Supported no-plugin configurations reach only single-value E-13 ingress rejection in proposed Rust, never transformer coverage. Selected class action/test resolver Probe rejects Rust Init. ResolverTest public Probe includes hard assertions (null identity without attachment; exact unverified attachment identity; Akamai response-state exception); failed assertions propagate as Error and fail fixture, so this internal test observation is explicitly exercised rather than inferred from forwarded headers.",
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  }
+]

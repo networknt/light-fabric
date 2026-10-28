@@ -1,0 +1,23 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "lambda:InvokeFunction",
+      "Resource": [
+        "arn:aws:lambda:us-east-2:964637446810:function:PetsGetFunction",
+        "arn:aws:lambda:us-east-2:964637446810:function:PetsPostFunction",
+        "arn:aws:lambda:us-east-2:964637446810:function:PetsPetIdGetFunction",
+        "arn:aws:lambda:us-east-2:964637446810:function:PetsPetIdDeleteFunction"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:us-east-2:964637446810:log-group:/aws/lambda/light-lambda-rust-direct-trial-gateway:*"
+    }
+  ]
+}

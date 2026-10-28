@@ -1,0 +1,4663 @@
+{
+  "schema": "light-lambda-declaration-review/v1",
+  "scope": "declaration metadata only; original fixture expectations and files immutable",
+  "reviews": [
+    {
+      "id": "B-02-denied-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/b/B-02-denied-cp1-e02-accepted.json",
+      "fixtureDigest": "fdda7c703196e49dd2a09b7ab6a8d055abed266102589be42ae36d0b17dda376",
+      "fixtureBytesSha256": "3475199cd93f4073526fef2082e198377da58fb384c36515bc34a6c16de8811a",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "observed": [
+        "body",
+        "status"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:content-type",
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "B-02",
+        "C-09",
+        "E-13",
+        "E-01"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/B-02-denied-cp1-e02-accepted.json",
+      "javaSha256": "b093cdd074182c39a5576e70dcad4ba3324b9a672fb1c2434f2522b693ceb390",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/B-02-denied-cp1-e02-accepted.json",
+      "rustSha256": "fa132c90e25736ef3eb49fb944fb8a01ee51a5431528a111b40270b6c0280fcc",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "B-02-preflight-dispatch-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/b/B-02-preflight-dispatch-cp1-e02-accepted.json",
+      "fixtureDigest": "5c0d020f703f16ddcc1ac8d90a5880a38fe2a1d0323dd6e078091460bd8f5e64",
+      "fixtureBytesSha256": "f453bdf1da494be01d43cd5d835800cced5e1ac6a17af37e393ca685d0204293",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:access-control-allow-credentials",
+        "header:access-control-allow-headers",
+        "header:access-control-allow-methods",
+        "header:access-control-allow-origin",
+        "header:access-control-max-age",
+        "header:vary"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:access-control-allow-credentials",
+        "header:access-control-allow-headers",
+        "header:access-control-allow-methods",
+        "header:access-control-allow-origin",
+        "header:access-control-max-age",
+        "header:content-type",
+        "header:vary",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "B-02",
+        "C-04",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/B-02-preflight-dispatch-cp1-e02-accepted.json",
+      "javaSha256": "05c786c98e24e7babb08506f0474363ceaafa61980db850b7579747a2c2dbff0",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/B-02-preflight-dispatch-cp1-e02-accepted.json",
+      "rustSha256": "38eed23a43c5b51fd5bd0310459e0ff1ac58b3cbc6b0fa1dc2167996646fcc89",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "B-02a-allowed-multi-policy-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/b/B-02a-allowed-multi-policy-v1.json",
+      "fixtureDigest": "8ed9b7fa8c963fb89f9417a61df0967bfb7fc768715efd72853bee8e1ec398ad",
+      "fixtureBytesSha256": "76bf8a1294e46e08c66dc2fc085235862d4beb9ed6cafe0dcbc73d37f7afb036",
+      "originalDeclared": [
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:access-control-allow-origin"
+      ],
+      "observed": [
+        "backendCalls",
+        "header:access-control-allow-origin"
+      ],
+      "remove": [
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "body",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": "ok",
+              "rustExpected": "ok",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "bodyBase64",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": false,
+              "rustExpected": false,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "status",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 200,
+              "rustExpected": 200,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "B-02",
+        "B-02a",
+        "B-03",
+        "B-03a",
+        "E-10"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/B-02a-allowed-multi-policy-v1.json",
+      "javaSha256": "b1c37e49624c18bbae28babe2d724873a7b999cd5c1526d71acf6ac277ba9652",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/B-02a-allowed-multi-policy-v1.json",
+      "rustSha256": "179abc6f338ea3c58e29b8f07600fe6cc9fb2aa670c14cc1bb69b01f769ce05f",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "B-02a-denied-multi-policy-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/b/B-02a-denied-multi-policy-v1.json",
+      "fixtureDigest": "29fd742982f7036724fc552007ee7c516cee127b455298fc88ec0d11f3335c38",
+      "fixtureBytesSha256": "411364ab1b13909490c9766d2310844d9fb7f601fca47c86af854bad42a02dad",
+      "originalDeclared": [
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:access-control-allow-origin"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "status"
+      ],
+      "remove": [
+        "bodyBase64",
+        "header:access-control-allow-origin"
+      ],
+      "proof": [
+        {
+          "field": "bodyBase64",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": false,
+              "rustExpected": false,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:access-control-allow-origin",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "B-02",
+        "B-02a",
+        "B-03",
+        "B-03a",
+        "E-10"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/B-02a-denied-multi-policy-v1.json",
+      "javaSha256": "90f75d80b69df6a871820e1a0436c89a948e005b92c06d430cfd6e6a136bfa38",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/B-02a-denied-multi-policy-v1.json",
+      "rustSha256": "52ec0a4257a42cee27cdf53a941ef90696aaa0f99f0db0d471024ce48db99343",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "B-03-exact-origin-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/b/B-03-exact-origin-cp1-e02-accepted.json",
+      "fixtureDigest": "0530dc91f8fdc7e47b8a1216553bb94d9bba1344ef65bb23f9bcb0bdd8c954f1",
+      "fixtureBytesSha256": "68a702f3e0cefef741a2a7f90d6aa7b2b1b1253afc3e4e4fdf73722c146ef077",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:access-control-allow-origin",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:access-control-allow-origin",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "B-03",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/B-03-exact-origin-cp1-e02-accepted.json",
+      "javaSha256": "536d5d569a22517bc17e491d2f299492f016639a339f9808526db7081f777689",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/B-03-exact-origin-cp1-e02-accepted.json",
+      "rustSha256": "348ea2b9752e2927972b9bd7939805a7c53a33713a1dd9966476ed326cfe4cc7",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "B-03-lowercase-origin-represented-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/b/B-03-lowercase-origin-represented-v1.json",
+      "fixtureDigest": "e8f440eef256df86c465742d9a2c466af9e8d90942944cd67364804075c696f0",
+      "fixtureBytesSha256": "5a1eaf9c699ace79e100a55aff9be3b175a5f876de705bdc0d607252d82dc6a9",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "httpCalls",
+        "header:x-backend",
+        "header:content-type",
+        "header:access-control-allow-origin"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:access-control-allow-origin",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "bodyBase64",
+        "httpCalls",
+        "jwksFetches",
+        "outcome"
+      ],
+      "proof": [
+        {
+          "field": "bodyBase64",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": false,
+              "rustExpected": false,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "httpCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "outcome",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": "response",
+              "rustExpected": "response",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "B-03",
+        "E-06",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/B-03-lowercase-origin-represented-v1.json",
+      "javaSha256": "c1d4d336aa0300a595bcc09dfd4015307b9ecbc6bf89c8383f86a7b309cde645",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/B-03-lowercase-origin-represented-v1.json",
+      "rustSha256": "7ec308836c795594f73cbe3b307b1f5c6f47f2c0f186aa88822e9a15581e998b",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "B-04-header-prefix-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/b/B-04-header-prefix-cp1-e02-accepted.json",
+      "fixtureDigest": "25b6b290f63532afbc90dbb403c7445124f426cab9ca2f982c9a632290c406cf",
+      "fixtureBytesSha256": "88ef44c519c770ec713e305b6203bd701037e3c5039c36c7b91c89cc589616b9",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-added"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-added",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "B-04",
+        "B-05",
+        "Q-01",
+        "Q-02",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/B-04-header-prefix-cp1-e02-accepted.json",
+      "javaSha256": "a38247b799b9ebf68e656b48c81358c2dc2b168b7673c4a4ff7fe55447c4a95e",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/B-04-header-prefix-cp1-e02-accepted.json",
+      "rustSha256": "ff1420a865c9ec5e41d0ec3e308698dc7c9c1963ed728dd85e9676a7f907e11e",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "C-01-isolation-a-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/c/C-01-isolation-a-cp1-e02-accepted.json",
+      "fixtureDigest": "65202d26814e692685d524f7de1160714ab2ac7927d88dcdae72e161d3e5874c",
+      "fixtureBytesSha256": "9e8cbe9c7489cae1d2054a405d393cf65c392245fc454aa25532bd3aebd3794a",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "C-01",
+        "CFG-05",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/C-01-isolation-a-cp1-e02-accepted.json",
+      "javaSha256": "c0e319ad957de77074cfa6eb22fd1ecee5a989d0a111be4e6999352e453bb81b",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/C-01-isolation-a-cp1-e02-accepted.json",
+      "rustSha256": "89ec63633d98f9c8fb460a93dc5701ba3a8e3173882e58832e549ea4a1fd1937",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "C-01-isolation-b-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/c/C-01-isolation-b-cp1-e02-accepted.json",
+      "fixtureDigest": "662cf0e8cd39f41c93fb63e882d4abc4f93714afd25ba660693d1914f91b6f1f",
+      "fixtureBytesSha256": "a740f80277e3ed1fa71986b7f56a31b95b7afd643d85c0c8b63340119fdaa52f",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "C-01",
+        "CFG-05",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/C-01-isolation-b-cp1-e02-accepted.json",
+      "javaSha256": "4a7ddbbb05ec5243cceee67f16376fc371acc8d472a175052f9bc50a90ff0d66",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/C-01-isolation-b-cp1-e02-accepted.json",
+      "rustSha256": "751ec7296dc7909aef1c8fa1762fa013d349cfd490d5565b1a533184e339fba2",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "C-06-body-on-0-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/c/C-06-body-on-0-cp1-e02-accepted.json",
+      "fixtureDigest": "4e534b6b3883fa896d771fd013fc7f6f4598b4a864aed71e85cbbec6b5ecc951",
+      "fixtureBytesSha256": "a83854731e36cd019568605a6674892809095d3aa585d9efc51a7557c2af1e46",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "C-06",
+        "E-03",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/C-06-body-on-0-cp1-e02-accepted.json",
+      "javaSha256": "5c3e657f99b26b908b6b1b360c859525d18b814dc42c309119e749dcfac3d85d",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/C-06-body-on-0-cp1-e02-accepted.json",
+      "rustSha256": "a0f6b2370ff72c927d173359911857d32b2d2135fcfc59bc01172a1acf4c0884",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "C-06-body-on-1-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/c/C-06-body-on-1-v1.json",
+      "fixtureDigest": "afc978c2ee09a82669da6861c241ea4b0946f3de5914642299d1a18621fd5d00",
+      "fixtureBytesSha256": "f673054ef6d42cb8ea2b249b23b58c246bf09c3cb65ef637160d2c9733e0c39a",
+      "originalDeclared": [
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "C-06",
+        "E-03",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/C-06-body-on-1-v1.json",
+      "javaSha256": "ef83f5077ba12ca78e2a26a507384bf5450e37d9c6d24d62b8b70ae04b12a797",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/C-06-body-on-1-v1.json",
+      "rustSha256": "effedab60f2a851bd3df45f2044b5873db3b8e91317a4e73641711cbbd47d9e6",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "C-06-body-on-2-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/c/C-06-body-on-2-v1.json",
+      "fixtureDigest": "39864ef97b4576fe5030894a43d8241ade63076620fd0f2119cc6c9d99d0004f",
+      "fixtureBytesSha256": "2c1b0fd4d506bf47f67356bf76239d85df08fe02f89fba65a2d0c91e87490ec5",
+      "originalDeclared": [
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "C-06",
+        "E-03",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/C-06-body-on-2-v1.json",
+      "javaSha256": "59b28e4640776e5dae5c677a20799947d4a5753d563355ef4fb02366c8580824",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/C-06-body-on-2-v1.json",
+      "rustSha256": "a0afdc984cc4fd487f1449acd1a06964b971d8a41590874d6c16b122ae4dd8cd",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "C-06-body-on-3-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/c/C-06-body-on-3-v1.json",
+      "fixtureDigest": "cb81294ef4c8dcbc6e8044f479b7cb046ddce65a17a996e1da675925300be67b",
+      "fixtureBytesSha256": "2ddbf708e9c93cde37c82f4be4353ccdde61cc1adc4715355e015fdad7aef19b",
+      "originalDeclared": [
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "C-06",
+        "E-03",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/C-06-body-on-3-v1.json",
+      "javaSha256": "86a7999b3311c1dc483f554bf257c1d12a925cfce1cf6cafdb935f0a6827e641",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/C-06-body-on-3-v1.json",
+      "rustSha256": "9d259ebfae3e2e4397e0ac476bc8827c2cfbac241cdb060c687648f74a3c7933",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "C-06-body-on-4-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/c/C-06-body-on-4-v1.json",
+      "fixtureDigest": "97f3039e99ca6f380bac724f9fed9189dc7da447b6a09ce07c596b284b9a46cb",
+      "fixtureBytesSha256": "5ab3f2e1595fd3e252c9fde92f57e10cdd3236148cf49123efe1a6f6dcda07f9",
+      "originalDeclared": [
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "C-06",
+        "E-03",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/C-06-body-on-4-v1.json",
+      "javaSha256": "709f25ad41f3558cc49b8240f0483cd2e7a6eb407ab395094efb7d6c7182bd1f",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/C-06-body-on-4-v1.json",
+      "rustSha256": "bcbeb27a3d3bb997b59465ddd2b413b5bdbc42ef16c279fddf18576700cf568f",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-08-basic-denial-0-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/c/S-08-basic-denial-0-cp1-e02-accepted.json",
+      "fixtureDigest": "0ce51f0d7cdcb0309add974884c6e348c11308ed34763f0aae24234a11f64723",
+      "fixtureBytesSha256": "cfd8f9e3574d2d83b436000b72a537d94d73c59e475f933e4b112579e8485736",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:www-authenticate"
+      ],
+      "observed": [
+        "body",
+        "header:content-type",
+        "header:www-authenticate",
+        "status"
+      ],
+      "remove": [
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "C-02",
+        "C-05",
+        "C-09",
+        "S-07",
+        "S-08",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/S-08-basic-denial-0-cp1-e02-accepted.json",
+      "javaSha256": "f426283d6247d1666864d938cd022d9d09ec5ef6096084b90e27480ccdf948f5",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/S-08-basic-denial-0-cp1-e02-accepted.json",
+      "rustSha256": "902107f77e1520d9a9f81725fd96e684257d13db84a860d30061724696b15412",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-08-basic-denial-1-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/c/S-08-basic-denial-1-cp1-e02-accepted.json",
+      "fixtureDigest": "628242ea223ddb36bdaca2c58edb0d77ccb8f0161dac9995e29abc976dbc6e70",
+      "fixtureBytesSha256": "7cee53216a439961a34ce1796db9b08e73787a3934a1f1786759d32622b77e78",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:www-authenticate"
+      ],
+      "observed": [
+        "body",
+        "header:content-type",
+        "header:www-authenticate",
+        "status"
+      ],
+      "remove": [
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "C-02",
+        "C-05",
+        "C-09",
+        "S-07",
+        "S-08",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/S-08-basic-denial-1-cp1-e02-accepted.json",
+      "javaSha256": "84f90df29ff3e90f290e906b5e54447457edcd9a10ac25410b5bc5a4d75f0a4a",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/S-08-basic-denial-1-cp1-e02-accepted.json",
+      "rustSha256": "670c33dbf5d82649b99e6472dead89f51aa08b5ac6e8db23f576d0b090616650",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-08-basic-denial-2-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/c/S-08-basic-denial-2-cp1-e02-accepted.json",
+      "fixtureDigest": "05cedccb362475c99a2d5b8e623fcebe190a5a30050832e2c6105a2ade869369",
+      "fixtureBytesSha256": "cd2d2582914d13cb7b8b6c7c625efb79b0dc9d3b51586562bc41fae55c3defd3",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:www-authenticate"
+      ],
+      "observed": [
+        "body",
+        "header:content-type",
+        "header:www-authenticate",
+        "status"
+      ],
+      "remove": [
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "C-02",
+        "C-05",
+        "C-09",
+        "S-07",
+        "S-08",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/S-08-basic-denial-2-cp1-e02-accepted.json",
+      "javaSha256": "cb1bd38f305086ce5db85bb17c159be5033d0abb0b1c39a53656cf9ce221b35b",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/S-08-basic-denial-2-cp1-e02-accepted.json",
+      "rustSha256": "4f95628806906e4f5617f68a9834cc619a06190f81f5052c96b397064f2f2e32",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-08-basic-denial-3-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/c/S-08-basic-denial-3-cp1-e02-accepted.json",
+      "fixtureDigest": "bde09127692b5260429a7bf094327b3282c32a45acbd0742a2fa61e5fa97025b",
+      "fixtureBytesSha256": "54668f6b4c01f396aeecd2450dfe4cc25b834fdb950f7f18620ae6abb94fe23e",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:www-authenticate"
+      ],
+      "observed": [
+        "body",
+        "header:content-type",
+        "header:www-authenticate",
+        "status"
+      ],
+      "remove": [
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 3,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 3,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "C-02",
+        "C-05",
+        "C-09",
+        "S-07",
+        "S-08",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/S-08-basic-denial-3-cp1-e02-accepted.json",
+      "javaSha256": "337267b962d5bceb470cfb1921d99a410d0e8048de48cdacfa38d9dc22168d0c",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/S-08-basic-denial-3-cp1-e02-accepted.json",
+      "rustSha256": "fc9f66e6ce9c2b317179c48b38e42ba2b8c6419610e68f48dabe2061882c94d5",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-08-basic-denial-4-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/c/S-08-basic-denial-4-cp1-e02-accepted.json",
+      "fixtureDigest": "16367f359f4a17eef8dadc91522a9ef2cc9fe4874a602d9c06dbf1f23ae0ce9d",
+      "fixtureBytesSha256": "a5ee5deb1fac36a9d308b1e6afcaa98d71889d519ba6a47bc06ded5616c1e8b6",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:www-authenticate"
+      ],
+      "observed": [
+        "body",
+        "header:content-type",
+        "header:www-authenticate",
+        "status"
+      ],
+      "remove": [
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 3,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 4,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 3,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 4,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "C-02",
+        "C-05",
+        "C-09",
+        "S-07",
+        "S-08",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/S-08-basic-denial-4-cp1-e02-accepted.json",
+      "javaSha256": "2df4968d3f3cd994b97d0bbc69ff53d493978f1b44d7deba064d8957208a59be",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/S-08-basic-denial-4-cp1-e02-accepted.json",
+      "rustSha256": "57eea7af983355c5034cf1000e2838ed7b30aa17c721ff19bcab6c836f3cf779",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-08-basic-denial-5-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/c/S-08-basic-denial-5-cp1-e02-accepted.json",
+      "fixtureDigest": "1c92fcd88ba3d3d08dddf2db3edb3d2fc7052b479e85ba85f78ac6b52c3bd22f",
+      "fixtureBytesSha256": "ea1ed13e917476974f40de34048577371a42faba8efe48552a0067af6fb83ab7",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:www-authenticate"
+      ],
+      "observed": [
+        "body",
+        "header:content-type",
+        "header:www-authenticate",
+        "status"
+      ],
+      "remove": [
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 3,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 4,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 5,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 3,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 4,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 5,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "C-02",
+        "C-05",
+        "C-09",
+        "S-07",
+        "S-08",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/S-08-basic-denial-5-cp1-e02-accepted.json",
+      "javaSha256": "ba4cee8b3800da7d7732334748b26a7ef701025ba22f3252796a0d1bd2b7fb7f",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/S-08-basic-denial-5-cp1-e02-accepted.json",
+      "rustSha256": "ed35c0b713acd697408af71ba2ba9d014dc171f840c55ef0af20dc57d1cb0efe",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-08-basic-denial-6-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/c/S-08-basic-denial-6-cp1-e02-accepted.json",
+      "fixtureDigest": "41b560f1f1a12ac0a7cd8a7f4e9943139df7f04c3315362295cac160895f85b0",
+      "fixtureBytesSha256": "75c1465a4ecee023da245e3651457dab59447e66608e7872ba875880831d9380",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:www-authenticate"
+      ],
+      "observed": [
+        "body",
+        "header:content-type",
+        "header:www-authenticate",
+        "status"
+      ],
+      "remove": [
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 3,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 4,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 5,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            },
+            {
+              "step": 6,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 3,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 4,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 5,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 6,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "C-02",
+        "C-05",
+        "C-09",
+        "S-07",
+        "S-08",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/S-08-basic-denial-6-cp1-e02-accepted.json",
+      "javaSha256": "1e62adbf57925e455a6178d0fe35acab94fbf7705e16de63758304c114788cd6",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/S-08-basic-denial-6-cp1-e02-accepted.json",
+      "rustSha256": "872229022211107042d0efb53174d7702997f060daad5ac23415ba54b262b887",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "D-01-missing-target-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/d/D-01-missing-target-multi-contract-v1.json",
+      "fixtureDigest": "2c2e149f5465e9b0864da3b5ed2a3a948c479c0ce4dc0407a38a8e7b19db777e",
+      "fixtureBytesSha256": "2fe1f18268a5cc266d0118849c6c39222cba76dce6142f267fcf46dd2775c007",
+      "originalDeclared": [
+        "header:content-type"
+      ],
+      "observed": [],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "D-01",
+        "E-01",
+        "R-05",
+        "C-02",
+        "C-05",
+        "E-06a"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/D-01-missing-target-multi-contract-v1.json",
+      "javaSha256": "72c9b1a15028be1ea0e0fef402357f4f614327b237efd22d8b03688312075f90",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/D-01-missing-target-multi-contract-v1.json",
+      "rustSha256": "07c418e300c79a81b6d2d351db9cc7f81323c578d9d430d26730e8c8abdbba13",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "D-03-handled-proxy-payload-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/d/D-03-handled-proxy-payload-cp1-e02-accepted.json",
+      "fixtureDigest": "db0371095a3beb9da3b292d3a6b528a35abd945e1684d10bae252e011d6f92ad",
+      "fixtureBytesSha256": "c3ac2e927d499631567177d850640459a3ad8dd33960cf1910ef257d47fd0b73",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "D-03",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/D-03-handled-proxy-payload-cp1-e02-accepted.json",
+      "javaSha256": "b158837dbe347d185f52b5ce8c129e92a3676f329a345f8dd58a695f45be48e0",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/D-03-handled-proxy-payload-cp1-e02-accepted.json",
+      "rustSha256": "c3ea91d07cfa661f016d1c3a55c59150c8a3d0627c3ddc5a4e0753f7902538fb",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "D-06-coerced-response-fields-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/d/D-06-coerced-response-fields-cp1-e02-accepted.json",
+      "fixtureDigest": "ea3e2212b6d745d974375b2c29676b515582f2d73064ba0c36afa7ad78b62203",
+      "fixtureBytesSha256": "6bc1cf9c37e25742204a5654b886113deb63302fea5ea1d0e7ac90936eafce4c",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "D-06",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/D-06-coerced-response-fields-cp1-e02-accepted.json",
+      "javaSha256": "507d0d688e9e950735aa16ad79f7950510456f273e01b9f354da034499e9d764",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/D-06-coerced-response-fields-cp1-e02-accepted.json",
+      "rustSha256": "d4468884a466c346e33167beeb702947976d2c715b998ac77277c248b2c86f73",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "D-06-status-out-of-range-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/d/D-06-status-out-of-range-v1.json",
+      "fixtureDigest": "519b577335482145ca56b23b7e4a153461f7ab64b0fcaf2990606236d876e700",
+      "fixtureBytesSha256": "20236f47922edf4b9b14888fed294829bbe0c98c86d6f881db693ce79d869632",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "backendCalls"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "status"
+      ],
+      "remove": [
+        "bodyBase64",
+        "outcome"
+      ],
+      "proof": [
+        {
+          "field": "bodyBase64",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": false,
+              "rustExpected": false,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "outcome",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": "response",
+              "rustExpected": "response",
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "D-06",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/D-06-status-out-of-range-v1.json",
+      "javaSha256": "cdab78a46967cf6b9bcc7f2fb39fc9d23cbaea739e038bbe1171b565c0603d73",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/D-06-status-out-of-range-v1.json",
+      "rustSha256": "44edeac262487f972ce1cd0a774d48e6acea398fe91f62f0b603aae016b9bedb",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "D-09-oversize-response-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/d/D-09-oversize-response-cp1-e02-accepted.json",
+      "fixtureDigest": "5c3219d901f44fcf545e6db9629de129b496e3652c5493cd014d274d1db15b38",
+      "fixtureBytesSha256": "a771a7594fcaf7631e7cb219d560598e17193d4247605048322d4d233b8699d1",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "D-09",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/D-09-oversize-response-cp1-e02-accepted.json",
+      "javaSha256": "8a3e022c0ec63b7f24e441d7e756b13be31e11bc50db0c11cc955cda84284eb7",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/D-09-oversize-response-cp1-e02-accepted.json",
+      "rustSha256": "385e95be76e82d376b131d62c8e6816578e2377fa73aa5e3b00d83dad995f558",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-02-nonoverlap-multi-fidelity-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-02-nonoverlap-multi-fidelity-v1.json",
+      "fixtureDigest": "67c86b6ff274d33d95658508c4f86271e8c2567a969b16fbfaed94f2441f90e9",
+      "fixtureBytesSha256": "da2215d51d74b7c14b774cb8127cc7f369cf0597ab04a26f7e04584d01b3c161",
+      "originalDeclared": [
+        "header:x-single",
+        "header:x-repeated",
+        "backendCalls"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:x-repeated",
+        "header:x-single"
+      ],
+      "proof": [
+        {
+          "field": "header:x-repeated",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "first",
+                "second"
+              ],
+              "rustExpected": [
+                "first",
+                "second"
+              ],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:x-single",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "one"
+              ],
+              "rustExpected": [
+                "one"
+              ],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-02",
+        "E-02a",
+        "E-04"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-02-nonoverlap-multi-fidelity-v1.json",
+      "javaSha256": "43c5b76085f85acb24853ae5e6713278dc056cd6acd680704e1a52acc7bb1d3b",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-02-nonoverlap-multi-fidelity-v1.json",
+      "rustSha256": "8704824b4b2b6d4626b1606d0ce4d16930b431173007066c9cf0f8ddbd7ae9f4",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-02-response-cookies-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-02-response-cookies-v1.json",
+      "fixtureDigest": "f548d72798b04b16e6417396a7c7617042dcbc3feac13b38f53e88b35106f10e",
+      "fixtureBytesSha256": "a8623c42aff1112dcaf7243041175584a8c010441bed96dcfd09223e2249570e",
+      "originalDeclared": [
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:set-cookie",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "header:set-cookie",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-02",
+        "E-12",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-02-response-cookies-v1.json",
+      "javaSha256": "85747803cb7907faaaeae08c329f477ff37087914d057155fd94dad7eee02215",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-02-response-cookies-v1.json",
+      "rustSha256": "49c7ae399518ca5ceb8126517691cdc3524c5adea553d3dcbce1c183b61efeec",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-03-response-off-0-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-03-response-off-0-cp1-e02-accepted.json",
+      "fixtureDigest": "e31395f970cd58dbef7ed52053001237da4ee699f04bba242a5903a97dfc4e9d",
+      "fixtureBytesSha256": "0cd4f4b703c5ddfc0d0f1556a3c6797f93c046cf1fbef246153023e7dbbbc80f",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-03",
+        "E-12",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-03-response-off-0-cp1-e02-accepted.json",
+      "javaSha256": "b02d3b928276a93de31abe3238b9c1491d788b2e66debd57acab4b585a830a30",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-03-response-off-0-cp1-e02-accepted.json",
+      "rustSha256": "74da2d3ef3fb532158a63361cde91477f60670014b551dd6f35e673af392fe4f",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-03-response-off-1-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-03-response-off-1-cp1-e02-accepted.json",
+      "fixtureDigest": "e00b7a11f247d8527e952242c27e13606afb4e19db9af31714b167c6a4d36941",
+      "fixtureBytesSha256": "d6165c5b18d375659d10884096065581fcda19702887621bdc6b87ba0bc018d5",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-03",
+        "E-12",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-03-response-off-1-cp1-e02-accepted.json",
+      "javaSha256": "27ff9bf0c665d65c19e4d2297635fd67dac3c63de2b21b16ca539ee4773d0449",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-03-response-off-1-cp1-e02-accepted.json",
+      "rustSha256": "93d0c4487f19da2b098457258b446127089b56ba4dfe3320d907237a7dfab362",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-03-response-off-2-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-03-response-off-2-cp1-e02-accepted.json",
+      "fixtureDigest": "421ec5e4476ca2efb9ace9bf6a737b6063fd33304390d71486a11844fc4bff15",
+      "fixtureBytesSha256": "e0ee88eba3779ee5bf510de49a189a32c81698546de5820400120fe9b28bb0be",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-03",
+        "E-12",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-03-response-off-2-cp1-e02-accepted.json",
+      "javaSha256": "e0a062b84f011309b896c1bf4008a961084ce4012d8de6edf072826dea9da522",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-03-response-off-2-cp1-e02-accepted.json",
+      "rustSha256": "02663ba74bb05108306354e2a48b98162d07817144b92aafa9983f03983d5467",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-03-response-off-3-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-03-response-off-3-cp1-e02-accepted.json",
+      "fixtureDigest": "e2d3ee97109f165d897bf3fdf78cf918e8a07e3d51bc29bc5eedbc217bf1af43",
+      "fixtureBytesSha256": "2f589bd37e432a96ebd81446f6baafaf1eac90a92c268e868d864aee68ac046c",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-03",
+        "E-12",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-03-response-off-3-cp1-e02-accepted.json",
+      "javaSha256": "bc6b027d2c3cb7226cf2ce23f5b6a9d3561774f48973bcd9cd2cc41bab637ace",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-03-response-off-3-cp1-e02-accepted.json",
+      "rustSha256": "76ce32bfde30f8c71bdb86c95a0980b476b75f38b24de3ce280483253dd2f53f",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-03-response-off-4-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-03-response-off-4-v1.json",
+      "fixtureDigest": "46d4384066a73094621e132882c04e3484a4782a3df25d53b0f59881df2259ea",
+      "fixtureBytesSha256": "b265a969606997c109374d37ee11b6bd69042712dbbfef8e116ff6363f034e7f",
+      "originalDeclared": [
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-03",
+        "E-12",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-03-response-off-4-v1.json",
+      "javaSha256": "8bf90580a1a9b5bc3ee18568f5bc2c0b9b96823bdccd8f20976536efccae9606",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-03-response-off-4-v1.json",
+      "rustSha256": "70ce7726a699993bf6468d6bbf27021f601433321947e5cfbfc1ba38b34bb294",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-05-bad-percent-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-05-bad-percent-multi-contract-v1.json",
+      "fixtureDigest": "d18f010e691cdeb2ac71cf1c470d908f3c83a07526994fe02c4e646066eebe6f",
+      "fixtureBytesSha256": "b860ff527437514cfaf3cdf53a38dc4344c3c8fa7a511eec04cc1b5593b333ac",
+      "originalDeclared": [
+        "body",
+        "header:content-type"
+      ],
+      "observed": [
+        "body"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-05",
+        "D-01"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-05-bad-percent-multi-contract-v1.json",
+      "javaSha256": "072a5d8a67d86475c1d7b0061a6676f512d3f20bf6e92f41f26fe56c3dab6a34",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-05-bad-percent-multi-contract-v1.json",
+      "rustSha256": "d1644a0886ed82201c1e95b090d1001413c6d676d419f19045ca586ca37d2e52",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-05-bad-utf8-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-05-bad-utf8-multi-contract-v1.json",
+      "fixtureDigest": "04adefc7fbfe5520b705cfb5d022037879393dbb6c59b18109c98ec76d0b465f",
+      "fixtureBytesSha256": "a891c79d60803e372c790a1e098a8f4140a837f8bcfae5649a6591f4d3dcf1d2",
+      "originalDeclared": [
+        "body",
+        "header:content-type"
+      ],
+      "observed": [
+        "body"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-05",
+        "D-01"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-05-bad-utf8-multi-contract-v1.json",
+      "javaSha256": "d35793c979539a7e4bd2f099c78f393c40afdfe687d0640021dcb60d98faeb0a",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-05-bad-utf8-multi-contract-v1.json",
+      "rustSha256": "0ae1a74b59afc9fef9a4335960bd92491a0d2a145ff63b05d100d19a3d314149",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-05-raw-path-0-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-05-raw-path-0-cp1-e02-accepted.json",
+      "fixtureDigest": "e3d2e7bf1ab01b399aaa55f9a15a2ab163a0c9db37082e1bc27ed31101dc269c",
+      "fixtureBytesSha256": "77bc386452dcfb5a5ae6e9da91332ff942c2fb6836d8672f55deceafc5c570f0",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-05",
+        "E-04",
+        "R-03",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-05-raw-path-0-cp1-e02-accepted.json",
+      "javaSha256": "5e6f0d34923267cac01b6223c1a63790c88c5c62544c9f50f518b862d072c4a2",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-05-raw-path-0-cp1-e02-accepted.json",
+      "rustSha256": "5ced5c3a125226a64ab23ab3b516a56722ed165ce572c118beb83c6b1490c13a",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-05-raw-path-1-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-05-raw-path-1-cp1-e02-accepted.json",
+      "fixtureDigest": "5adf561c3b4d7b7ef11dbd5391e0d0acc0c4f7f04b3f736602ff9643891b4123",
+      "fixtureBytesSha256": "cd626376b2aa0dfd5f380cca09f84b9e35dfaacf946411cbf0d1f4f3df54f482",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-05",
+        "E-04",
+        "R-03",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-05-raw-path-1-cp1-e02-accepted.json",
+      "javaSha256": "3ba9d17c9226b26224d133610e4f37d9e12a35321eed0ad1f0142cc58c2a0323",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-05-raw-path-1-cp1-e02-accepted.json",
+      "rustSha256": "ae0d33ad094020906003add542451e0a65ca1c31cadfba609a48890d25599ecb",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-05-raw-path-2-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-05-raw-path-2-cp1-e02-accepted.json",
+      "fixtureDigest": "ce975792c2eb733c7f213f28596cfa3ecdba8d06faf04fe453756135d43dc4f0",
+      "fixtureBytesSha256": "82d493c4796be10666ab7c02c6f183f024ce431fd413bae48301c2939f2d2a5c",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-05",
+        "E-04",
+        "R-03",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-05-raw-path-2-cp1-e02-accepted.json",
+      "javaSha256": "5c80b2490bdde9b356900efeec221b479bb41f2c09e17dc5b2bc57a6ea3e625c",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-05-raw-path-2-cp1-e02-accepted.json",
+      "rustSha256": "ff7335452fe9afb694ef6d80fa68102c1cbb02e498954ba66096fb24fca13f12",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-05-raw-path-3-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-05-raw-path-3-cp1-e02-accepted.json",
+      "fixtureDigest": "875f1f6dc1c84802c01cb0f630cbdfea3bf00e8fe024eee518a16bff0c504d32",
+      "fixtureBytesSha256": "f461c903c8c2b713ac6ca7a955d01cdbd0f87f25ae9a0acd9b368bdd7287e001",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-05",
+        "E-04",
+        "R-03",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-05-raw-path-3-cp1-e02-accepted.json",
+      "javaSha256": "5f8a1eb8651e4ca640a2fa0ef70344a5f69e07103ffe698eaddd6f69641c0607",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-05-raw-path-3-cp1-e02-accepted.json",
+      "rustSha256": "68f636bac55bc3cb13a7197594f94cbcdfca3f566061785c1c7ee2dd7dd31501",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-10-mapped-metadata-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-10-mapped-metadata-cp1-e02-accepted.json",
+      "fixtureDigest": "f05fb2a799e77370000f385d54b38cc54a6926ce5c1906919c05ce5cdff9cf21",
+      "fixtureBytesSha256": "6ae634ef3293cc2c9f18ad3ea260781b574ec94f67571faca7281ac3135de8df",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-07",
+        "E-09",
+        "E-10",
+        "E-10a",
+        "E-10b",
+        "E-10c",
+        "E-10d",
+        "E-10e",
+        "E-10f",
+        "E-10g",
+        "E-10h",
+        "E-11",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-10-mapped-metadata-cp1-e02-accepted.json",
+      "javaSha256": "e84e9e121575008d5c08dfa972e5bdc0596b17babc7c7fea05a7d1a0099c8fa9",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-10-mapped-metadata-cp1-e02-accepted.json",
+      "rustSha256": "69fc1efc9ab0fbac7f1c40cd988fdb6d6b74f9944834b578a0f3f4794722c741",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-12-body-absent-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-12-body-absent-cp1-e02-accepted.json",
+      "fixtureDigest": "337f7435c86519fc7bac899e2b1fee3bd6a58b2b44deeab310cd01a0bc76a224",
+      "fixtureBytesSha256": "4f27821a02d54975dfad7f35b0ec62f29503ab39fadc48419153d6af4f70c516",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-12",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-12-body-absent-cp1-e02-accepted.json",
+      "javaSha256": "2c3dc0e8661e8a1bf7ec806d8fa3f9366e594cba0911214f116e7a54bdb98570",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-12-body-absent-cp1-e02-accepted.json",
+      "rustSha256": "306271dfbb217e73ab55d620868d994b2426dd325c4b2dbc35c11a772b112757",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-12-response-body-absent-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-12-response-body-absent-cp1-e02-accepted.json",
+      "fixtureDigest": "7f7b827878c742489196ceb8a413a09d86201e153b2c22aa29f77768cb6b917d",
+      "fixtureBytesSha256": "1da6853267750e4869f881b9e63ea50c9e2e69107f6cb2d62dd9fe7ab1737e19",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-12",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-12-response-body-absent-cp1-e02-accepted.json",
+      "javaSha256": "f97ccd5e9107e23713b2809b3756732474ff259a5f862d9cc220fdf0eeba66fa",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-12-response-body-absent-cp1-e02-accepted.json",
+      "rustSha256": "9b6531b0407fdf1602f1a0a0e824298764a6ba9060c3766a2b9154332f50c740",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-14-decoded-utf8-over-cap-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-14-decoded-utf8-over-cap-multi-contract-v1.json",
+      "fixtureDigest": "da66bd9fd4bbdafafdc39ae8a63d10b306d1e174503d23663a3ab7074d2cea87",
+      "fixtureBytesSha256": "0a525e4dadf9b159d3198cbd80c4f7ad1109d50341e4294b62a14178932e7d43",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-14",
+        "E-10",
+        "E-03"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-14-decoded-utf8-over-cap-multi-contract-v1.json",
+      "javaSha256": "b8cd60a79f01c43bf87d9102ef0c17183a43b33c949368076e72fc33f016fc28",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-14-decoded-utf8-over-cap-multi-contract-v1.json",
+      "rustSha256": "6ef73f541e1ca16506a07ce7df7e174efb0c8458ee58058a5b634e132caef66c",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-14-invalid-base64-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-14-invalid-base64-cp1-e02-accepted.json",
+      "fixtureDigest": "75eee09d17ea7835048b02bbea6b90c7b49921bb791f970884bad7609c6cec34",
+      "fixtureBytesSha256": "580dd0875b9f61be377805d7e2c225913ff30357b3222c9ecf8a4658aed68863",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-14",
+        "E-03",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-14-invalid-base64-cp1-e02-accepted.json",
+      "javaSha256": "4afc83d7cdb765e14d17b220af55f28877631c321ffec93435f7096a7b4ac91f",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-14-invalid-base64-cp1-e02-accepted.json",
+      "rustSha256": "3753bf0e508c16f79bf1790134fb758a9139a747a223edbed63d08296329b5b2",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-14-invalid-base64-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-14-invalid-base64-multi-contract-v1.json",
+      "fixtureDigest": "3be70ac07284686377fdb8492b3e22d65ce7c07ca49d56022cc21f51e5ec83e8",
+      "fixtureBytesSha256": "91e7cc1c6c561af6e72d0191f41fe6005e9e144de39bf9a0529df446eda93459",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-14",
+        "E-03",
+        "E-06a"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-14-invalid-base64-multi-contract-v1.json",
+      "javaSha256": "b0df260bce54e366e803baaa56521a0fb8072365c33a80ab7c238a23c13349f2",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-14-invalid-base64-multi-contract-v1.json",
+      "rustSha256": "c9af90daf58927d5920875018df668d2f968a131be26afe464f1382914cfc6d8",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-14-invoke-envelope-over-cap-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-14-invoke-envelope-over-cap-multi-contract-v1.json",
+      "fixtureDigest": "7ed79b1f2db4ff5b5f1cc50493a10fa502f2f3167825b4694ea44ea09d332575",
+      "fixtureBytesSha256": "bd337391dee7e636298602b9e8660a3033b2588454bb81a4b17025765f3ce592",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-14",
+        "E-10",
+        "E-03"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-14-invoke-envelope-over-cap-multi-contract-v1.json",
+      "javaSha256": "e30594f2ab9def95e532bd138365c997277c602a6bab6a775843ed1a3bd29472",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-14-invoke-envelope-over-cap-multi-contract-v1.json",
+      "rustSha256": "08fee39c7a4ab8cdc92f612100f7b5010a058f56ab97825393b102ca45e6c102",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "E-14-non-alb-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/e/E-14-non-alb-multi-contract-v1.json",
+      "fixtureDigest": "e59e753516dd952d4334ab480ab3fa8790117dd6d1d1482b0021fe66f042a44b",
+      "fixtureBytesSha256": "54a97869dc071228c71fb3aa7ce828294d12be287b7a80efbd4a6d1fac1edc69",
+      "originalDeclared": [
+        "status",
+        "body",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "status"
+      ],
+      "remove": [
+        "header:x-backend"
+      ],
+      "proof": [
+        {
+          "field": "header:x-backend",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "E-07",
+        "E-14"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/E-14-non-alb-multi-contract-v1.json",
+      "javaSha256": "a836026bbcefd56b67f279fc807f2534e2755524cf6a270b028977a3407f6f6b",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/E-14-non-alb-multi-contract-v1.json",
+      "rustSha256": "665d8a2d246d92a0146e568910e69fae32dcd9574c6bf945ad55d7e26328795e",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "L-01-seconds-reset-multi-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/l/L-01-seconds-reset-multi-v1.json",
+      "fixtureDigest": "b3c5f59913b20b8a13e8a187bac222201898ab7bcd0e05b5fb6b66fd3f89dd98",
+      "fixtureBytesSha256": "052f944cb28567c6c5ca78067fe8ed6b7ecee4e0a3d0fa017b0129353082b32f",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type",
+        "header:ratelimit-limit",
+        "header:ratelimit-remaining",
+        "header:ratelimit-reset"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type",
+        "header:ratelimit-limit",
+        "header:ratelimit-remaining",
+        "header:ratelimit-reset"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ],
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:ratelimit-limit",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "1/SECONDS"
+              ],
+              "rustExpected": [
+                "1/SECONDS"
+              ],
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:ratelimit-remaining",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "0"
+              ],
+              "rustExpected": [
+                "0"
+              ],
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:ratelimit-reset",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "1s"
+              ],
+              "rustExpected": [
+                "1s"
+              ],
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "L-01",
+        "L-03",
+        "L-04",
+        "E-10"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/L-01-seconds-reset-multi-v1.json",
+      "javaSha256": "60efbe3f9482f3bf68ef6de7190ee4430c02188ddfac10de3fa9b4e25d940366",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/L-01-seconds-reset-multi-v1.json",
+      "rustSha256": "a65403428492890cd3d2e071a9ffbb48d2f045d3280a1f6781abeaa25edfc1be",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "L-01-server-exhaustion-multi-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/l/L-01-server-exhaustion-multi-v1.json",
+      "fixtureDigest": "4e36fbe036f9cc443e1f7e43144ed807573dd866d1f044f3c960b759dd90142b",
+      "fixtureBytesSha256": "b6aa9cd6a7cd408f0f0848bf42761bc4d6044e831460b653f966f99a1d6f6c0f",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type",
+        "header:ratelimit-limit",
+        "header:ratelimit-remaining",
+        "header:ratelimit-reset"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type",
+        "header:ratelimit-limit",
+        "header:ratelimit-remaining",
+        "header:ratelimit-reset"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 3,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 4,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 5,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 6,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 7,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 8,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 9,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 10,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:ratelimit-limit",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 3,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 4,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 5,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 6,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 7,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 8,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 9,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 10,
+              "javaExpected": [
+                "10/MINUTES"
+              ],
+              "rustExpected": [
+                "10/MINUTES"
+              ],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:ratelimit-remaining",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 3,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 4,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 5,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 6,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 7,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 8,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 9,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 10,
+              "javaExpected": [
+                "0"
+              ],
+              "rustExpected": [
+                "0"
+              ],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:ratelimit-reset",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 3,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 4,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 5,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 6,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 7,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 8,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 9,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            },
+            {
+              "step": 10,
+              "javaExpected": [
+                "60s"
+              ],
+              "rustExpected": [
+                "60s"
+              ],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "L-01",
+        "L-03",
+        "L-04",
+        "E-10"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/L-01-server-exhaustion-multi-v1.json",
+      "javaSha256": "0fb3defab42d4a971425b296492c3bc890f6cf6b8ab40aa3f89c56b927270ca3",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/L-01-server-exhaustion-multi-v1.json",
+      "rustSha256": "a30b5ff662e5a20ef4e933790f5b35e7cd39a8811bd3835068df3d18a2adf561",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "L-02-alb-address-fail-open-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/l/L-02-alb-address-fail-open-cp1-e02-accepted.json",
+      "fixtureDigest": "9015a1ac58353041d6cae71558f4a5a6de5c8275c73d65fb08e9bb1cffb30385",
+      "fixtureBytesSha256": "9a5433ce056b46f97f85fd094f5486acc6fba3d36ee96fb6414e49ed7ddd06c6",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "L-02",
+        "E-11",
+        "C-04",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/L-02-alb-address-fail-open-cp1-e02-accepted.json",
+      "javaSha256": "7033adc786effef613bbe6879dac4c0b02b208f0a710218c56549823f5bc24be",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/L-02-alb-address-fail-open-cp1-e02-accepted.json",
+      "rustSha256": "b0ea292968b3a914fe3f1ec760339dc03ddda3e8a865b82b18dd435635dc02b2",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "R-02-invalid-method-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/r/R-02-invalid-method-multi-contract-v1.json",
+      "fixtureDigest": "f77ad706c6ee562058dfa119d40c12bf169861bb00ea15b6c8c7a5652ae1b75a",
+      "fixtureBytesSha256": "305c9767436457b40b4aefe4159389bf660ecfd01b1d444a3c6f804f973fb23d",
+      "originalDeclared": [
+        "header:content-type",
+        "body"
+      ],
+      "observed": [
+        "body"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "R-02",
+        "E-14",
+        "E-06a"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/R-02-invalid-method-multi-contract-v1.json",
+      "javaSha256": "4bba79b806662246f94f5c9f5fbcc2111102e50bcf31a59563dff97abf73d976",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/R-02-invalid-method-multi-contract-v1.json",
+      "rustSha256": "f774c5c5e5af1320780632ac64f558099069cce3f30dafc348b445bc318ac2df",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-07-basic-success-0-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-07-basic-success-0-cp1-e02-accepted.json",
+      "fixtureDigest": "09cc03df8024566a371b7eef59eedc8f75bfc9da8cea978e76632bd7dc5d0b21",
+      "fixtureBytesSha256": "a9a932e4c3b50d81f98f13dbfe572461a80791bd286c5c3be4a29292c25dd356",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend",
+        "header:x-response-policy"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "header:x-response-policy",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-07",
+        "E-06",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/S-07-basic-success-0-cp1-e02-accepted.json",
+      "javaSha256": "0fb6c42b169b7c9cf6d2a9ecbb19c5b383a1d168c807e7001f5484775dade978",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/S-07-basic-success-0-cp1-e02-accepted.json",
+      "rustSha256": "ab51e82621db8d7478c982f4f866fc65232c07e2d24425d2ded00e9437052c2c",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-07-basic-success-1-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-07-basic-success-1-cp1-e02-accepted.json",
+      "fixtureDigest": "4fee24a647543e80dfa5ffe061eb8fb34c15e092dc37580dcc86a06e9d1d5243",
+      "fixtureBytesSha256": "72223036637fc461f61742a49217791d0c32503f9c49ec6d443d0231b7de900b",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend",
+        "header:x-response-policy"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "header:x-response-policy",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-07",
+        "E-06",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/S-07-basic-success-1-cp1-e02-accepted.json",
+      "javaSha256": "933f74dc73acca3ee81996a9ab9d090530c745d9445b2c75b1d32e3ed3ccdf10",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/S-07-basic-success-1-cp1-e02-accepted.json",
+      "rustSha256": "b6b92c8a85f064d7a82a72c73e4db18c9dbc764e26769604f27c8742fafab5c9",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-09-anonymous-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-09-anonymous-cp1-e02-accepted.json",
+      "fixtureDigest": "a97192c0d2f2f768b8acb70723a3c11426ae07fb2fbf0d661b86461cbe15bbb1",
+      "fixtureBytesSha256": "f2a5555826b2f16242e3300f0569325a4e21b55106a8822229302305c6542c20",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-09",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/S-09-anonymous-cp1-e02-accepted.json",
+      "javaSha256": "91aa11a363e633bccb4280df4f8698b59bcbb173d825bcc5ea2e1bbf2b9a446b",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/S-09-anonymous-cp1-e02-accepted.json",
+      "rustSha256": "cd6fa8e1dc2d108746692a4f921e86be8e05ed9c4423b0cbdcf4f5edc283a901",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-09-anonymous-denied-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-09-anonymous-denied-cp1-e02-accepted.json",
+      "fixtureDigest": "df1cbdc74d0d83abb9b8c1454f822fc88f157ca921a245e2b8dde97c204ff44f",
+      "fixtureBytesSha256": "e73eeb9e51907963e7ce19f1dcdcd9422ad07187a3e38dc37585554e02111e98",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend",
+        "header:www-authenticate"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:www-authenticate",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-09",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/S-09-anonymous-denied-cp1-e02-accepted.json",
+      "javaSha256": "f86e16b5e766bee978893f3d493c43c7386a362fc547d7794f04f679c61f1d0f",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/S-09-anonymous-denied-cp1-e02-accepted.json",
+      "rustSha256": "a10ebab65bfe3b8a9598b39efd6bb2c7507dac6d1de380d455a6c2d6570abc38",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-10-bearer-policy-only-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-10-bearer-policy-only-cp1-e02-accepted.json",
+      "fixtureDigest": "5e90a0d032a8b26ee0418fe691afb1385dc3c9567fe3a7f733b2a4268c93d2d3",
+      "fixtureBytesSha256": "9840591f3369a54c6d34fb34bd0a67d1000dba59fe3a4bd9f3c5ec9e327dad43",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend",
+        "header:x-response-policy"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "header:x-response-policy",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-10",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/S-10-bearer-policy-only-cp1-e02-accepted.json",
+      "javaSha256": "5cd3e5e42e63cda38e03d265756d47170c7f2c7431fa8db8a75b992010fb89cf",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/S-10-bearer-policy-only-cp1-e02-accepted.json",
+      "rustSha256": "4f71c8e7c051ca0f6c9a22eaa5ae19ba3771ded0bcb21b78d220019c14336ffe",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-11-key-0-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-11-key-0-cp1-e02-accepted.json",
+      "fixtureDigest": "5f293deb8ff1795820aa98e58fc63bc61b9c76c68c227dba96f244a986cbb8e6",
+      "fixtureBytesSha256": "597687d954fff0cbecba60a82c6ded74a9ee1d9f0d5e9f1d78072f926ab7fe86",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-11",
+        "E-06",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/S-11-key-0-cp1-e02-accepted.json",
+      "javaSha256": "eac791f9084278896734d63b57b529f8dad7343f397ffd3a9db38d7f8956009e",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/S-11-key-0-cp1-e02-accepted.json",
+      "rustSha256": "357828fb51c99f23b5efb2dc7793034ec6077074eefba28ee9a99660bafbb08e",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-11-key-1-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-11-key-1-cp1-e02-accepted.json",
+      "fixtureDigest": "bba3dc871ce0cec3203f2802995808c8610191d7c6390d90f11751bac660b3cd",
+      "fixtureBytesSha256": "d376c0e87561826c6546cf1c8141a7fe478ab8f2ffb203038ecccc1264c768a2",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-11",
+        "E-06",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/S-11-key-1-cp1-e02-accepted.json",
+      "javaSha256": "c999fa5362a55ff4794f2ea9cb729184b67f852e11cde124de7472d1651cfa17",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/S-11-key-1-cp1-e02-accepted.json",
+      "rustSha256": "e542eca9b30fa00c04e0c622a1c96053d4e2b5d2d84c115a2a347a678ed1221e",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-11-key-2-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-11-key-2-cp1-e02-accepted.json",
+      "fixtureDigest": "a412ee0de76d2db2934c9c2b805a446647f07700585f89a8b141a60eab2dd565",
+      "fixtureBytesSha256": "d5a05ace306332a5b33bfb1af84f0ebbe914ada92210d73769724c7789fe407b",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-11",
+        "E-06",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/S-11-key-2-cp1-e02-accepted.json",
+      "javaSha256": "b3a0fd62fd1bfe32e8d0a3beb03aaeb355ff7f87aa2d6298e870513399c59bc0",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/S-11-key-2-cp1-e02-accepted.json",
+      "rustSha256": "bd2e635aef9a561b8f48c8c9dbca4911643867b98a349752bfa43420beb40a3f",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-11-unmatched-prefix-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-11-unmatched-prefix-cp1-e02-accepted.json",
+      "fixtureDigest": "03d614320ff5bf5147113e488e286471ca05f7d0dd8c8560c5d3ccef09a95052",
+      "fixtureBytesSha256": "507d8be2f5c2117879eb73d8e64f445ff88e9a138b02a4f205ae4f833314e4e8",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 3,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-11",
+        "E-13",
+        "E-01"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/S-11-unmatched-prefix-cp1-e02-accepted.json",
+      "javaSha256": "a030ed0e27608251ada79e9e60c2e4f00ac91fa97a2c191d7d86bd4b4818f1f9",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/S-11-unmatched-prefix-cp1-e02-accepted.json",
+      "rustSha256": "fa84233f1d039399c1da48754c30c7b4cc1141d2584f6222d869452aa7c5c078",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "V-03-array-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/v/V-03-array-multi-contract-v1.json",
+      "fixtureDigest": "0478af6d94cc6bffe6de3643b42a286fb53648a94f6201fcfc41d577e7ccc383",
+      "fixtureBytesSha256": "d2b2e7d9b6f76c5054f0add2145fff15ae05b74de92565f091a7150b75c95f1b",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "V-03",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/V-03-array-multi-contract-v1.json",
+      "javaSha256": "115a58430bc197bc3754dc17cb857a1b850c2d17e0914beabaedd511bdeba424",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/V-03-array-multi-contract-v1.json",
+      "rustSha256": "6a4cd003d391a76f5d0cdf00baaf38590161e1aee8eb22fd683439d225e4f360",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "V-03-body-edge-0-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/v/V-03-body-edge-0-cp1-e02-accepted.json",
+      "fixtureDigest": "a084d977b86c50f35c8822bd57ed1f44099c5c7d1f06211166faf45657697b87",
+      "fixtureBytesSha256": "63ba6bd7188ffdea05009f8cb3387018d7dad998dd14095a32c8c4d6e8c5f178",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "observed": [
+        "body",
+        "status"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:content-type",
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "V-03",
+        "E-03",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/V-03-body-edge-0-cp1-e02-accepted.json",
+      "javaSha256": "90b0dffa3c43c8a00db978d92c179011912bb21d6900e6afe8e4af2a33b75670",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/V-03-body-edge-0-cp1-e02-accepted.json",
+      "rustSha256": "7607a65b104ab66c83275166ab5a97986220b8e2bed93a0c03f36de36ea9a7c0",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "V-03-body-edge-1-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/v/V-03-body-edge-1-cp1-e02-accepted.json",
+      "fixtureDigest": "80eff7cc66134c26ebeb3ffeb4bfdc8964ebe907983a207a2d16384c2edd06eb",
+      "fixtureBytesSha256": "726166e2c9e7039ef2523f5a5cc67050f4a44e904492e214da46c90214b65dd5",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "V-03",
+        "E-03",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/V-03-body-edge-1-cp1-e02-accepted.json",
+      "javaSha256": "70661517576b7f95a6a16ef4ee5855f58cace1977f8a422fab81f9a83a0e0280",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/V-03-body-edge-1-cp1-e02-accepted.json",
+      "rustSha256": "0800e442c6a440fc5c4da8abaca900ce60c4523993451c5a004332b4cfe0a35c",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "V-03-body-edge-2-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/v/V-03-body-edge-2-cp1-e02-accepted.json",
+      "fixtureDigest": "c3c712a5c6674d371793f649750647ec8451d37a8fc23cd027f560255d471617",
+      "fixtureBytesSha256": "bac80b8c762f7fce6b9c2b0279a540a867e68269577dc8e19f5ac3229e687f7e",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 1,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            },
+            {
+              "step": 2,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "V-03",
+        "E-03",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/V-03-body-edge-2-cp1-e02-accepted.json",
+      "javaSha256": "9ee645a9c5d65d07397dd83a1b2e18cb26477e4db0aaf3db1f187c6de7109dac",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/V-03-body-edge-2-cp1-e02-accepted.json",
+      "rustSha256": "a923d7e605e1c1c6466f01fa15e2c1ed877d8704271fe1da5fd2ba487d97c733",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "V-03-get-body-bypass-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/v/V-03-get-body-bypass-multi-contract-v1.json",
+      "fixtureDigest": "ff81efd728b5b351967ef2e4868d50200fe25f65bd98907be03d62bcb3079421",
+      "fixtureBytesSha256": "37dbabfb104bb6b8dd9b450ba4f05519479ab0c9fdcc7e95fa9f70fe48f09db4",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "V-03",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/V-03-get-body-bypass-multi-contract-v1.json",
+      "javaSha256": "3fb485f0f55dde1bf93f22f127fea75afb385075d406c169510465a4820b170b",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/V-03-get-body-bypass-multi-contract-v1.json",
+      "rustSha256": "c555db0ab80553ef19006f9ebd3bd5187bbd20b26ee93c07c59b48f4ebfb8fdf",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "V-03-html-content-encoder-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/v/V-03-html-content-encoder-multi-contract-v1.json",
+      "fixtureDigest": "de387f0eae069302276c1b2627403cdb914cf58d4f2b1ebbd707ce0d50f57ebd",
+      "fixtureBytesSha256": "91fe00e8320e04ef050e71d48c881e7a0b54f83345e85bb1551b676044dad804",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "V-03",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/V-03-html-content-encoder-multi-contract-v1.json",
+      "javaSha256": "70b5cb2735ae58ff62b0821bf359d82144917a227363f3b2ffa1e1c02799832e",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/V-03-html-content-encoder-multi-contract-v1.json",
+      "rustSha256": "c3acb390125926e6a639644b435d51a13bbbfd4c63f522b03f238d03a054b240",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "V-03-ignore-beats-explicit-encode-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/v/V-03-ignore-beats-explicit-encode-multi-contract-v1.json",
+      "fixtureDigest": "1e0da186aa55660a85263c64d27a674abd513a585ee1251367cfa6c4592bf9ca",
+      "fixtureBytesSha256": "1537c6bb89ad6ea921d622775b648b746f17a35ff6427f90bdc4971beffb93b4",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "V-03",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/V-03-ignore-beats-explicit-encode-multi-contract-v1.json",
+      "javaSha256": "c539ff465dfffcdd5bc1715b30a839d3c728f8345dd015ff1128823d9272108c",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/V-03-ignore-beats-explicit-encode-multi-contract-v1.json",
+      "rustSha256": "928ca31a485ae0bc01761964c7dad1cc11259b31d3121fb679178d4ccb74ee72",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "V-03-json-object-cp1-e02-accepted",
+      "fixture": "tests/serverless-conformance/fixtures/v1/v/V-03-json-object-cp1-e02-accepted.json",
+      "fixtureDigest": "ce48a23b5d9dce813f465b6e5d8e1fbf822064bc3739223d64b79c6be95b3c3f",
+      "fixtureBytesSha256": "c69c43732c5993922332dfe6ef361beeff09ca07e05cc5fb18f7a262f2b81d5a",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "V-03",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/V-03-json-object-cp1-e02-accepted.json",
+      "javaSha256": "605bc6437ef1fcf0e4789fa354dd2e8062512bd3a84cc52de99c566e0f7753fb",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/V-03-json-object-cp1-e02-accepted.json",
+      "rustSha256": "c6d10d0661ad6f436542da96c6c8005c4a163588ce0fbb095cd0bc2172c0f3d5",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "V-03-json-object-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/v/V-03-json-object-multi-contract-v1.json",
+      "fixtureDigest": "8f4d2837c0ed75d7cc0d295098332762d195f8bbf807a875e2849b4855a280b0",
+      "fixtureBytesSha256": "3b975caadbb8a16e47aeca572e7bfb9401a514773047e3eb3e9359e5019a91af",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "V-03",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/V-03-json-object-multi-contract-v1.json",
+      "javaSha256": "261de84fe3d83ec8a06bfd0df8397765c89a59b65e3f5b76639718fdb7ee40e7",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/V-03-json-object-multi-contract-v1.json",
+      "rustSha256": "a17a0ce9c963b8fb122a44c9795667618b7a7e8dd6661b915a2c2f49a9c46712",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "V-03-malformed-json-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/v/V-03-malformed-json-multi-contract-v1.json",
+      "fixtureDigest": "5e304da8a97d7a9c093a07f26e168a773824c9e2f79fba9c09e814eaf44d7059",
+      "fixtureBytesSha256": "16bd41c00bad19c67a6a8fcaf5f38a8beabd329a86cf51e83ce2f2d83ef8789b",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [],
+      "remove": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": [],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        },
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ],
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "V-03",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/V-03-malformed-json-multi-contract-v1.json",
+      "javaSha256": "e93b0e7cc1839817f2e17b6c6d326b6e908857a0f214b9322cdce83d8f32d81b",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/V-03-malformed-json-multi-contract-v1.json",
+      "rustSha256": "2012c005eae3a4f88205292870439aaf95089825d49455e557a8007d37ac9d45",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "V-03-non-json-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/v/V-03-non-json-multi-contract-v1.json",
+      "fixtureDigest": "1f6f445d29f2bc314efc4904023d1e3daf328082564b5874951ff1b13683eb73",
+      "fixtureBytesSha256": "b0333f022cbfd067bd60107112e023285ba6219be78e2121d20c79bfe4fd6617",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "V-03",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/V-03-non-json-multi-contract-v1.json",
+      "javaSha256": "b35ef4551c6bf105a5237a83863ef0e0a8f324c96afe9749a544ad9cf257da10",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/V-03-non-json-multi-contract-v1.json",
+      "rustSha256": "4c7192fe5eac0f72942f72aed9c1f397b44f9639a3aae60e89e1bb518aace997",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "V-03-patch-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/v/V-03-patch-multi-contract-v1.json",
+      "fixtureDigest": "18b35b1e6999a60e1e5d54b20c851bde9c602f98c36fd27c77b1a118c943f362",
+      "fixtureBytesSha256": "d27c0ec4b64de20ba30b892f12784753f7522753c57a86515a40c6252d524f4e",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "V-03",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/V-03-patch-multi-contract-v1.json",
+      "javaSha256": "30166b6a7f16af8e87d69a8176b1f7108892fe989e7b3d4683c7335f57dae5f8",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/V-03-patch-multi-contract-v1.json",
+      "rustSha256": "ad39c7de65f8f28f6c8ffd4e6bde0809fec294ccbf7da012d98ac2c9dcb4cdbc",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "V-03-put-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/v/V-03-put-multi-contract-v1.json",
+      "fixtureDigest": "49d2f85e77338eaf845059a8a1ad8539a31075ebd497205151fa7ca04cd25433",
+      "fixtureBytesSha256": "f8bbf170276d33ee010c49b6b047bf91e8dff0a633e7d28f0f93c4beafd6ad73",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "V-03",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/V-03-put-multi-contract-v1.json",
+      "javaSha256": "23fc3fb816fa24738dc7f122764e0aa75843dc03bfc94695daf853b10f3b00fb",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/V-03-put-multi-contract-v1.json",
+      "rustSha256": "568cea0ee72badcb6639a6e3bbea12edc03d66df2e661d16f68278bc4d231a1b",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "V-03-xml-content-encoder-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/v/V-03-xml-content-encoder-multi-contract-v1.json",
+      "fixtureDigest": "120197d68ef7c28a8b2e9a5833c414a4df0e250776ff1b17da07555616b16f41",
+      "fixtureBytesSha256": "40ec7d6e0b50a893bfe6345d5496e98efdb9e2c62e162b501300bd5e5dd40b27",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "V-03",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/V-03-xml-content-encoder-multi-contract-v1.json",
+      "javaSha256": "6babfd0b89f5b3177173d2dcfaf1ba3ca131686f242ac8fc386c5cd42c7b0f8a",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/V-03-xml-content-encoder-multi-contract-v1.json",
+      "rustSha256": "1f075e87ad106b80b5342739fae1ced2dfa5313e14f90b372f5b59c3355ee346",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "V-03-xml-encoder-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/v/V-03-xml-encoder-multi-contract-v1.json",
+      "fixtureDigest": "d9455f4da14210b0bbc1d24bd056155c09a574db3689054a17585300b903c2a5",
+      "fixtureBytesSha256": "037c52a297e67a43cd00e8f6835d6fd6b8e5523c24a84b401689b25867deaa2a",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "V-03",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/V-03-xml-encoder-multi-contract-v1.json",
+      "javaSha256": "881e1dc15585750800501752f3154b6490744f6b90a23d7f7e4779f7cba8d91b",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/V-03-xml-encoder-multi-contract-v1.json",
+      "rustSha256": "344ecc22f787952a2422704ee1ee659dff0e669df57f9bd2a5d62a319fc504ee",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "V-03a-base64-json-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/v/V-03a-base64-json-multi-contract-v1.json",
+      "fixtureDigest": "4366ad491990b72c774e5ff5691a997be974b27c5a3a518c08e548e5fdd4d4e6",
+      "fixtureBytesSha256": "11b86ed519e1671424d46d2a1e0cd28a1830d92250dd9353fe44319f3b9e3566",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null,
+              "equal": true
+            }
+          ],
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "V-03a",
+        "V-03",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "E-13"
+      ],
+      "authority": "CP1 ledger approval; preserved per-runner expectations and successful digest-matched executions. Metadata equality only; no behavior or expectation amendment.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/java-combined-01/V-03a-base64-json-multi-contract-v1.json",
+      "javaSha256": "5de6a0befd8f870e856a8d59e413a3036a801dea69069a33a56b9f07ddbf6d96",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-registered-adapters-20261018T115851Z/registered-rust-final-01/V-03a-base64-json-multi-contract-v1.json",
+      "rustSha256": "81b7d7714e50298fc7b438d63ec3afa1cc86995600e9d2c26462398515552993",
+      "decision": "correct-metadata"
+    }
+  ]
+}

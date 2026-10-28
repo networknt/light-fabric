@@ -1,0 +1,73 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Owner-directed direct Invoke trial; new Rust gateway only; no network resources
+Parameters:
+  ArtifactBucket: {Type: String, Description: Existing us-east-2 bucket for this IaC workflow only}
+  BootstrapKey: {Type: String}
+  LayerKey: {Type: String}
+Rules:
+  TargetAccountAndRegion:
+    Assertions:
+      - Assert: !Equals [!Ref 'AWS::AccountId', '964637446810']
+        AssertDescription: Deploy only into account 964637446810
+      - Assert: !Equals [!Ref 'AWS::Region', us-east-2]
+        AssertDescription: Deploy only into us-east-2
+Resources:
+  Logs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-gateway'
+      RetentionInDays: 7
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ExactBackendInvokeAndLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - arn:aws:lambda:us-east-2:964637446810:function:PetsGetFunction
+                  - arn:aws:lambda:us-east-2:964637446810:function:PetsPostFunction
+                  - arn:aws:lambda:us-east-2:964637446810:function:PetsPetIdGetFunction
+                  - arn:aws:lambda:us-east-2:964637446810:function:PetsPetIdDeleteFunction
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt Logs.Arn
+  Layer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleRuntimes: [provided.al2023]
+      CompatibleArchitectures: [x86_64]
+      Content: {S3Bucket: !Ref ArtifactBucket, S3Key: !Ref LayerKey}
+  Gateway:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-gateway'
+      Runtime: provided.al2023
+      Handler: bootstrap
+      Architectures: [x86_64]
+      Role: !GetAtt Role.Arn
+      Code: {S3Bucket: !Ref ArtifactBucket, S3Key: !Ref BootstrapKey}
+      Layers: [!Ref Layer]
+      MemorySize: 512
+      Timeout: 20
+      ReservedConcurrentExecutions: 2
+      Environment:
+        Variables:
+          LIGHT_LAMBDA_CONFIG_DIR: /opt
+          RUST_LOG: INFO
+          LIGHT_LAMBDA_GATEWAY_ARN: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${AWS::StackName}-gateway'
+Outputs:
+  GatewayName: {Value: !Ref Gateway}
+  GatewayArn: {Value: !GetAtt Gateway.Arn}
+  ExecutionRoleArn: {Value: !GetAtt Role.Arn}
+  LayerVersionArn: {Value: !Ref Layer}
+  LogGroupName: {Value: !Ref Logs}

@@ -1,0 +1,371 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "B-01-cache-only-prerequisite-diagnostic-unadmitted-v1",
+  "title": "Unadmitted independent prerequisite diagnostic: cache-only",
+  "ledger": [
+    "B-01",
+    "CFG-02",
+    "CFG-04"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "token": {
+        "enabled": true,
+        "appliedPathPrefixes": [
+          "/x"
+        ]
+      },
+      "service": {
+        "singletons": [
+          {
+            "com.networknt.cache.CacheManager": [
+              "com.networknt.cache.CaffeineCacheManager"
+            ]
+          }
+        ]
+      },
+      "cache": {
+        "caches": [
+          {
+            "cacheName": "token",
+            "expiryInMinutes": 15,
+            "maxSize": 100
+          }
+        ]
+      },
+      "client": {
+        "request": {
+          "connectTimeout": 1000,
+          "timeout": 1000,
+          "maxRequestRetry": 1
+        },
+        "oauth": {
+          "multipleAuthServers": false,
+          "token": {
+            "server_url": "${dependency:http}",
+            "enableHttp2": false,
+            "tokenRenewBeforeExpired": 0,
+            "client_credentials": {
+              "uri": "/token",
+              "client_id": "test-only-client",
+              "client_secret": "test-only-secret",
+              "scope": [
+                "test"
+              ]
+            }
+          }
+        }
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.token.TokenMiddleware@h0"
+        ],
+        "chains": {
+          "request": [
+            "h0"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Runtime generated token recipes, synthetic loopback HTTP dependencies and fixed dependency response Date; no virtual verifier clock."
+  },
+  "keys": {
+    "oauth-key": {
+      "alg": "RS256"
+    }
+  },
+  "tokens": {
+    "oauth-token": {
+      "kid": "oauth-key",
+      "claims": {
+        "sub": "test-user",
+        "iss": "test-issuer",
+        "aud": "test-audience",
+        "jti": "oauth-token",
+        "client_id": "test-client",
+        "user_id": "test-user"
+      },
+      "issuedOffsetSec": -10,
+      "expOffsetSec": 3600,
+      "nbfOffsetSec": 0
+    }
+  },
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls",
+    "jwksFetches",
+    "httpCalls",
+    "header:x-backend",
+    "header:content-type",
+    "header:access-control-allow-origin"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {
+          "service_id": "test-service"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {
+          "service_id": [
+            "test-service"
+          ]
+        },
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "headers": {
+                "service_id": "test-service",
+                "Authorization": "Bearer ${token:oauth-token}"
+              },
+              "queryStringParameters": {},
+              "requestContext": {},
+              "isBase64Encoded": false,
+              "multiValueHeaders": {
+                "service_id": [
+                  "test-service"
+                ]
+              },
+              "multiValueQueryStringParameters": {}
+            },
+            "eventExact": {
+              "headers": {
+                "service_id": "test-service",
+                "Authorization": "Bearer ${token:oauth-token}"
+              }
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response",
+        "httpCalls": [
+          {
+            "target": "${dependency:http}/token",
+            "method": "POST",
+            "uri": "/token",
+            "body": "grant_type=client_credentials&scope=test",
+            "serviceId": null
+          }
+        ]
+      },
+      "headerMode": "multi",
+      "expect": {
+        "outcome": "notExecuted",
+        "reason": "initError",
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "httpCalls": []
+      }
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {
+          "service_id": "test-service",
+          "Authorization": "Bearer test-only-user-token"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {
+          "service_id": [
+            "test-service"
+          ],
+          "authorization": [
+            "Bearer test-only-user-token"
+          ]
+        },
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "headers": {
+                "service_id": "test-service",
+                "Authorization": "Bearer test-only-user-token",
+                "X-Scope-Token": "Bearer ${token:oauth-token}"
+              },
+              "queryStringParameters": {},
+              "requestContext": {},
+              "isBase64Encoded": false,
+              "multiValueHeaders": {
+                "service_id": [
+                  "test-service"
+                ],
+                "authorization": [
+                  "Bearer test-only-user-token"
+                ]
+              },
+              "multiValueQueryStringParameters": {}
+            },
+            "eventExact": {
+              "headers": {
+                "service_id": "test-service",
+                "Authorization": "Bearer test-only-user-token",
+                "X-Scope-Token": "Bearer ${token:oauth-token}"
+              }
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response",
+        "httpCalls": []
+      },
+      "headerMode": "multi",
+      "expect": {
+        "outcome": "notExecuted",
+        "reason": "initError",
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "httpCalls": []
+      }
+    }
+  ],
+  "expectRustInit": {
+    "outcome": "initError",
+    "code": "InvalidConfiguration",
+    "backendCalls": [],
+    "jwksFetches": 0
+  },
+  "dependencies": {
+    "http": {
+      "responses": [
+        {
+          "method": "POST",
+          "uri": "/token",
+          "status": 200,
+          "headers": [
+            [
+              "Content-Type",
+              "application/json"
+            ],
+            [
+              "Date",
+              "Thu, 01 Jan 1970 00:00:00 GMT"
+            ]
+          ],
+          "body": "{\"access_token\":\"${token:oauth-token}\",\"token_type\":\"Bearer\",\"expires_in\":3600}"
+        }
+      ]
+    }
+  }
+}

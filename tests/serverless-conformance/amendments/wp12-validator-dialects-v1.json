@@ -1,0 +1,113 @@
+{
+  "schema": "wp12-owner-semantic-amendment/v1",
+  "productionAdmission": false,
+  "ownerDisposition": "2026-10-16 current continuation",
+  "originalFixturesUnchanged": true,
+  "exactViolationBytesQualified": false,
+  "cases": [
+    {
+      "observationId": "synthetic-3.0.3-exclusive-4",
+      "originalJava": {
+        "id": "synthetic-3.0.3-exclusive-4",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - exclusiveMinimum value is not a number\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "approvedRustSchemaValid": false,
+      "approvedRustDispatches": 0,
+      "intentionalChange": "OAS3.0 boolean exclusive bounds interpreted by dialect",
+      "exactRustViolationBody": null
+    },
+    {
+      "observationId": "synthetic-3.0.3-exclusive-5",
+      "originalJava": {
+        "id": "synthetic-3.0.3-exclusive-5",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - exclusiveMinimum value is not a number\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "approvedRustSchemaValid": false,
+      "approvedRustDispatches": 0,
+      "intentionalChange": "OAS3.0 boolean exclusive bounds interpreted by dialect",
+      "exactRustViolationBody": null
+    },
+    {
+      "observationId": "synthetic-3.0.3-exclusive-6",
+      "originalJava": {
+        "id": "synthetic-3.0.3-exclusive-6",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - exclusiveMinimum value is not a number\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "approvedRustSchemaValid": true,
+      "approvedRustDispatches": 1,
+      "intentionalChange": "OAS3.0 boolean exclusive bounds interpreted by dialect",
+      "exactRustViolationBody": null
+    },
+    {
+      "observationId": "synthetic-3.0.3-ref-sibling",
+      "originalJava": {
+        "id": "synthetic-3.0.3-ref-sibling",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "approvedRustSchemaValid": true,
+      "approvedRustDispatches": 1,
+      "intentionalChange": null,
+      "exactRustViolationBody": null
+    },
+    {
+      "observationId": "synthetic-3.1.0-exclusive-4",
+      "originalJava": {
+        "id": "synthetic-3.1.0-exclusive-4",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "approvedRustSchemaValid": false,
+      "approvedRustDispatches": 0,
+      "intentionalChange": "OAS3.1 numeric exclusive bound retained",
+      "exactRustViolationBody": null
+    },
+    {
+      "observationId": "synthetic-3.1.0-exclusive-5",
+      "originalJava": {
+        "id": "synthetic-3.1.0-exclusive-5",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "approvedRustSchemaValid": false,
+      "approvedRustDispatches": 0,
+      "intentionalChange": "OAS3.1 numeric exclusive bound retained",
+      "exactRustViolationBody": null
+    },
+    {
+      "observationId": "synthetic-3.1.0-exclusive-6",
+      "originalJava": {
+        "id": "synthetic-3.1.0-exclusive-6",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "approvedRustSchemaValid": true,
+      "approvedRustDispatches": 1,
+      "intentionalChange": "OAS3.1 numeric exclusive bound retained",
+      "exactRustViolationBody": null
+    },
+    {
+      "observationId": "synthetic-3.1.0-ref-sibling",
+      "originalJava": {
+        "id": "synthetic-3.1.0-ref-sibling",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "approvedRustSchemaValid": false,
+      "approvedRustDispatches": 0,
+      "intentionalChange": "OAS3.1 Schema Object ref siblings evaluated",
+      "exactRustViolationBody": null
+    }
+  ]
+}

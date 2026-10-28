@@ -1,0 +1,18 @@
+[
+  {
+    "fixture": "D-08-zero-remaining-multi-contract-v1",
+    "source": "Approved plan 5.5: remaining zero returns 504 ERR14017 without backend call; Java LambdaProxy blocks on its client future and ignores invocation context deadline; approved controlled 5000ms SDK observation",
+    "javaBehaviorAsserted": [
+      "D-08"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-08"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Valid shared ALB multimap, supported handlers only, declared zero Lambda remaining time. Java keeps exact four SDK attempts and ERR10086 under controlled legacy read timeout; removing the Java-only test listener intentionally removes only its synthetic x-finalized header. Rust must return exact 504 ERR14017 with zero attempts. No nondeterministic call allowance or output-derived expectation.",
+    "remainingContractAssertions": [
+      "Nonzero hard-limit minima, response/post reserve subtraction once and per-await absolute budget constraints remain individual WP3 obligations."
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T030928.883428Z"
+  }
+]

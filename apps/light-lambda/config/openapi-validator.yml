@@ -1,0 +1,8 @@
+# Unavailable in Phase 1; enabling this policy fails Init.
+enabled: ${openapi-validator.enabled:false}
+logError: ${openapi-validator.logError:true}
+legacyPathType: ${openapi-validator.legacyPathType:false}
+skipBodyValidation: ${openapi-validator.skipBodyValidation:false}
+validateResponse: ${openapi-validator.validateResponse:false}
+handleNullableField: ${openapi-validator.handleNullableField:true}
+skipPathPrefixes: ${openapi-validator.skipPathPrefixes:}

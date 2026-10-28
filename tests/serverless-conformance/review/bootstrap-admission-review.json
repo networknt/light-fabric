@@ -1,0 +1,26 @@
+[
+  {
+    "fixture": "P-01a-java-bootstrap-component-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/P-01-bootstrap-delegation-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "P-01a",
+      "CFG-01"
+    ],
+    "proposedRustBehaviorReached": [],
+    "rustExecutionEvidence": null,
+    "review": "Owner-approved P-01a closed Java-only component records actual original bootstrap source/exit/stdout and logback-resource source presence. Exact flags reviewed against BootstrapExecutionTest; executable is runner-owned fake, not native binary qualification. P-01 deployment-family equivalence remains WP15 under explicit owner amendment; no invented equivalent Rust executable details.",
+    "validation": "passed focused separate-JVM workflow 20261011T010200.499444Z; result schema exit 0; isolation passed"
+  },
+  {
+    "fixture": "P-01a-java-bootstrap-component-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/P-01-bootstrap-source-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "P-01a",
+      "CFG-01"
+    ],
+    "proposedRustBehaviorReached": [],
+    "rustExecutionEvidence": null,
+    "review": "Owner-approved P-01a closed Java-only component records actual original bootstrap source/exit/stdout and logback-resource source presence. Exact flags reviewed against BootstrapExecutionTest; executable is runner-owned fake, not native binary qualification. P-01 deployment-family equivalence remains WP15 under explicit owner amendment; no invented equivalent Rust executable details.",
+    "validation": "passed focused separate-JVM workflow 20261011T010200.499444Z; result schema exit 0; isolation passed"
+  }
+]

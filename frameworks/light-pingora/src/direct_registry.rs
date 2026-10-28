@@ -3,33 +3,7 @@ use crate::router::parse_router_target;
 use light_runtime::{DirectRegistryConfig, RuntimeError};
 use url::Url;
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct DirectRegistryMatch<'a> {
-    pub key: &'a str,
-    pub url: &'a str,
-}
-
-pub(crate) fn direct_registry_match<'a>(
-    config: &'a DirectRegistryConfig,
-    service_id: &str,
-    env_tag: Option<&str>,
-) -> Option<DirectRegistryMatch<'a>> {
-    env_tag
-        .filter(|value| !value.trim().is_empty())
-        .and_then(|env_tag| {
-            let key = format!("{service_id}|{env_tag}");
-            config
-                .direct_urls
-                .get_key_value(key.as_str())
-                .map(|(key, url)| DirectRegistryMatch { key, url })
-        })
-        .or_else(|| {
-            config
-                .direct_urls
-                .get_key_value(service_id)
-                .map(|(key, url)| DirectRegistryMatch { key, url })
-        })
-}
+pub(crate) use gateway_policy::direct_registry::{DirectRegistryMatch, direct_registry_match};
 
 pub(crate) fn validate_direct_registry_protocol(
     matched: DirectRegistryMatch<'_>,

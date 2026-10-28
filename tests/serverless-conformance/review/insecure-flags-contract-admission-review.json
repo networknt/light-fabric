@@ -1,0 +1,50 @@
+[
+  {
+    "fixture": "S-14-ignoreJwtExpiry-init-contract-v1",
+    "source": "Approved S14 secure Init flags and closed JWKS/cache prerequisites",
+    "javaBehaviorAsserted": [
+      "S-14"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-14"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Isolated enabled ignoreJwtExpiry with valid multimap, supported target and cache/JWKS test prerequisites. Java accepts Init and forwards token-free request exactly; authored Rust InvalidConfiguration at Init, zero dispatch/fetches. Does not claim Java JWT verification on token-free input. No token input for logJwtToken case; no secret logging assertion is inferred. Other insecure flags false; explicit insecure-test override absent. Init/bootstrap fetches now asserted separately from per-request fetches. Failed-refresh cooldown fixture explicitly disables bootstrap so first request establishes the failed attempt, rather than inheriting Init cooldown. Prior revisions retained.",
+    "remainingContractAssertions": [
+      "Explicit insecure-test override and no-secret logging across failure/verification outcomes"
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T043042.345473Z"
+  },
+  {
+    "fixture": "S-14-enableMockJwt-init-contract-v1",
+    "source": "Approved S14 secure Init flags and closed JWKS/cache prerequisites",
+    "javaBehaviorAsserted": [
+      "S-14"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-14"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Isolated enabled enableMockJwt with valid multimap, supported target and cache/JWKS test prerequisites. Java accepts Init and forwards token-free request exactly; authored Rust InvalidConfiguration at Init, zero dispatch/fetches. Does not claim Java JWT verification on token-free input. No token input for logJwtToken case; no secret logging assertion is inferred. Other insecure flags false; explicit insecure-test override absent. Init/bootstrap fetches now asserted separately from per-request fetches. Failed-refresh cooldown fixture explicitly disables bootstrap so first request establishes the failed attempt, rather than inheriting Init cooldown. Prior revisions retained.",
+    "remainingContractAssertions": [
+      "Explicit insecure-test override and no-secret logging across failure/verification outcomes"
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T043042.345473Z"
+  },
+  {
+    "fixture": "S-14-logJwtToken-init-contract-v1",
+    "source": "Approved S14 secure Init flags and closed JWKS/cache prerequisites",
+    "javaBehaviorAsserted": [
+      "S-14"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-14"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Isolated enabled logJwtToken with valid multimap, supported target and cache/JWKS test prerequisites. Java accepts Init and forwards token-free request exactly; authored Rust InvalidConfiguration at Init, zero dispatch/fetches. Does not claim Java JWT verification on token-free input. No token input for logJwtToken case; no secret logging assertion is inferred. Other insecure flags false; explicit insecure-test override absent. Init/bootstrap fetches now asserted separately from per-request fetches. Failed-refresh cooldown fixture explicitly disables bootstrap so first request establishes the failed attempt, rather than inheriting Init cooldown. Prior revisions retained.",
+    "remainingContractAssertions": [
+      "Explicit insecure-test override and no-secret logging across failure/verification outcomes"
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T043042.345473Z"
+  }
+]

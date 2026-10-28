@@ -1,0 +1,893 @@
+{
+  "schema": "light-lambda-declaration-review/v1",
+  "reviews": [
+    {
+      "id": "B-01-fetch-cache-secondary-represented-v1",
+      "fixtureDigest": "c93352f08964abf6101b220bbad27b33eb38c52eb0906f160fb0a63f2a52838a",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "httpCalls",
+        "header:x-backend",
+        "header:content-type",
+        "header:access-control-allow-origin"
+      ],
+      "remove": [
+        "header:access-control-allow-origin",
+        "header:content-type",
+        "jwksFetches"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/B-01-fetch-cache-secondary-represented-v1.json",
+      "nativeSha256": "b961a384329212a72d7e20a8c163e045792110b2a8ae9fcf46e52062e838649a"
+    },
+    {
+      "id": "B-01-malformed-oauth-error-represented-v1",
+      "fixtureDigest": "92bdcb873f9f7aa9ea98c9a2f9d00b243a0e93fdaa6060f9994c260a350a35b4",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "httpCalls",
+        "header:x-backend",
+        "header:content-type",
+        "header:access-control-allow-origin"
+      ],
+      "remove": [
+        "header:access-control-allow-origin",
+        "header:content-type",
+        "jwksFetches"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/B-01-malformed-oauth-error-represented-v1.json",
+      "nativeSha256": "c5d64b5667d3919fafd038255250449b16ac44a060d3ed06a7b185df744261d8"
+    },
+    {
+      "id": "B-01-no-service-represented-v1",
+      "fixtureDigest": "47af3922152a4acc6bc0167eb960c78c864a0d49af82a110fb04cfd76bbb5e18",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "httpCalls",
+        "header:x-backend",
+        "header:content-type",
+        "header:access-control-allow-origin"
+      ],
+      "remove": [
+        "header:access-control-allow-origin",
+        "header:content-type",
+        "httpCalls",
+        "jwksFetches"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/B-01-no-service-represented-v1.json",
+      "nativeSha256": "fb6a0a5273efbeec649db0f51f24608cdbb0512f07b0c5e0c4beb380d7c1198d"
+    },
+    {
+      "id": "B-01-oauth-denial-represented-v1",
+      "fixtureDigest": "8573b0c85dd69659e321c7a9decacc2a53ec1bf8c8f6bc6824789b47bc7991da",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "httpCalls",
+        "header:x-backend",
+        "header:content-type",
+        "header:access-control-allow-origin"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:access-control-allow-origin",
+        "header:x-backend",
+        "jwksFetches"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/B-01-oauth-denial-represented-v1.json",
+      "nativeSha256": "9563f852bd7f9a98e74affea44c88afd83c774f010d829d61af01bf8f6775ff7"
+    },
+    {
+      "id": "B-05-null-response-headers-cp1-e02-accepted",
+      "fixtureDigest": "8fb9894fd634cc08c41873637dbd5c32729640d3507cad74788955a52d59876a",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/B-05-null-response-headers-cp1-e02-accepted.json",
+      "nativeSha256": "19697ba63aca6cb2623f4ab248694858f05ecfa5adc79ff10dd09991fa104854"
+    },
+    {
+      "id": "C-08-unverified-client-before-security-configured-v1",
+      "fixtureDigest": "213508777ab095a4f9312584bc69254c5823ff7cdd360ced05ce21399f0e69a2",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend",
+        "header:ratelimit-limit",
+        "header:ratelimit-remaining",
+        "header:ratelimit-reset",
+        "header:www-authenticate"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:x-backend"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/C-08-unverified-client-before-security-configured-v1.json",
+      "nativeSha256": "1d83bc6ec70796b87ebfeb4026f90e5f4ab96086ac1f91ecd30037aaef9ce3c4"
+    },
+    {
+      "id": "C-10-no-terminal-configured-v1",
+      "fixtureDigest": "15a68565025a128cd83200b1c664b6775e0f4d137f41f7517acedf1e0454c564",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend",
+        "header:ratelimit-limit",
+        "header:ratelimit-remaining",
+        "header:ratelimit-reset"
+      ],
+      "remove": [
+        "backendCalls",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "header:ratelimit-limit",
+        "header:ratelimit-remaining",
+        "header:ratelimit-reset",
+        "header:x-backend",
+        "status"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/C-10-no-terminal-configured-v1.json",
+      "nativeSha256": "8515e1e9d4a6b0965d11ecd5060c2065c2192035cda621d1deceb7fb2a55bba9"
+    },
+    {
+      "id": "D-01-typed-sdk-0-v1",
+      "fixtureDigest": "e6c32d0663d89ac692923314f0ff68f7666a00c895ddc4dd4ac7ab7604510c3e",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "backendCalls"
+      ],
+      "remove": [
+        "bodyBase64",
+        "header:content-type",
+        "outcome"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/D-01-typed-sdk-0-v1.json",
+      "nativeSha256": "1aad2906ab375aee792476f48ebc55b0c81dba1c40bcdc8a8dcd8679e187b415"
+    },
+    {
+      "id": "E-13-multi-auth-invisible-represented-v1",
+      "fixtureDigest": "115ec0f24ea1a4bc40b3350bbb7b6f10842e6250b0f5afd71ad16413d457f47f",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "httpCalls",
+        "header:x-backend",
+        "header:content-type",
+        "header:access-control-allow-origin"
+      ],
+      "remove": [
+        "header:access-control-allow-origin",
+        "header:content-type",
+        "httpCalls"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/E-13-multi-auth-invisible-represented-v1.json",
+      "nativeSha256": "2e0db25d931c787c4539fa38741d2b20d6de931f66aab898507b94ebd86a7746"
+    },
+    {
+      "id": "Q-02-generated-null-map-cp1-e02-accepted",
+      "fixtureDigest": "5649f07d96205c392289c86f72c9cf3868b3d6dd90478009970da76d889bbbc4",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-added"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/Q-02-generated-null-map-cp1-e02-accepted.json",
+      "nativeSha256": "b96ada0dc26ad60c1d36a3e49684ce76752d75fd0917a02dfaffa51968b84787"
+    },
+    {
+      "id": "S-02-ignore-expiry-warm-warm-jks-init-v1",
+      "fixtureDigest": "6edf10e2aecb96b5b2b6113383e5032355c6fff75b1d2abd0f8e87f96927a3c9",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend",
+        "header:content-type"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-02-ignore-expiry-warm-warm-jks-init-v1.json",
+      "nativeSha256": "388f643b292089fa4519e9c18ea1b2ce2f2b073b7b5e80c878409f24c73469e5"
+    },
+    {
+      "id": "S-02-skew-0-warm-jks-init-v1",
+      "fixtureDigest": "e11eceb87aefa6e5e2cec08da56bf5480e79666ea37c6a9064a5d91c1a80eaf3",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend",
+        "header:content-type"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-02-skew-0-warm-jks-init-v1.json",
+      "nativeSha256": "8e9b5ef024abd14466be3eb99acadd5e2c2dc93df9504da105857700bedefd40"
+    },
+    {
+      "id": "S-04-provider-explicit-warm-jks-init-v1",
+      "fixtureDigest": "dbdc25ba1c9922197cace28e0e59fa8e750bc4023aead6bf84bc43cadda49448",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend",
+        "header:content-type"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-04-provider-explicit-warm-jks-init-v1.json",
+      "nativeSha256": "786ddbd1e68fed595b1ca2bc2dc2b387b3ba0cedd9b987e222e74a56a18c74b2"
+    },
+    {
+      "id": "S-04-provider-path-0-warm-jks-init-v1",
+      "fixtureDigest": "2f6c90ddcea5f0dc2639bc3fd2a62bdc1ee986a8a95184b8a3652d89968dbb3d",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend",
+        "header:content-type"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-04-provider-path-0-warm-jks-init-v1.json",
+      "nativeSha256": "073874d2678a5fe8218fcd30a4868a27cf68d436a0dc54f92e063c9c136a53fc"
+    },
+    {
+      "id": "S-04-provider-path-1-warm-jks-init-v1",
+      "fixtureDigest": "0f5aeeda74df88516ba6ed99f3a6716584d68c3f883c3cfd1cd266a488db8ebc",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend",
+        "header:content-type"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-04-provider-path-1-warm-jks-init-v1.json",
+      "nativeSha256": "7c3055646a27075553f1c6373ec10d0d10537b20b2fd21cb6e7549f44edcf746"
+    },
+    {
+      "id": "S-04-provider-path-2-warm-jks-init-v1",
+      "fixtureDigest": "284aa159b630a01a8cc762b560c44674edd781550421dc280ce46b97f402234c",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend",
+        "header:content-type"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:x-backend"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-04-provider-path-2-warm-jks-init-v1.json",
+      "nativeSha256": "178bc5b2a4c96f21a79ea4c295f73a8d07298e282e2dba4a11bf96f48c9ff095"
+    },
+    {
+      "id": "S-05-primary-0-warm-jks-init-v1",
+      "fixtureDigest": "fa333f5e6db4745a3002421d8df2c84ff368111d8757d4494a241a58a76e5dbb",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend",
+        "header:content-type"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-05-primary-0-warm-jks-init-v1.json",
+      "nativeSha256": "711d5687788c092ef767d7b5da123f45fd4e091c8615e966d9c292f7a85a30d0"
+    },
+    {
+      "id": "S-05-primary-1-warm-jks-init-v1",
+      "fixtureDigest": "ad8aafd61a22ff6579a8cbd54a7a01c01b71bf4ad5814606a4634fe33dec1132",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend",
+        "header:content-type"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-05-primary-1-warm-jks-init-v1.json",
+      "nativeSha256": "1ff0a95257dc1e1683ffe0f7ef4ad706854b4610c969695292bf7b213bf208b4"
+    },
+    {
+      "id": "S-06-secondary-0-warm-jks-init-v1",
+      "fixtureDigest": "07cca1bb6a5ddfca4c6692fc1cbc173dd35cf994e0c535fc3cc6a7f6e063c317",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend",
+        "header:content-type"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-06-secondary-0-warm-jks-init-v1.json",
+      "nativeSha256": "d6ca6db55b46f2368320727dc50d75506dceaa8a9ca0f93453043b33803e0dfd"
+    },
+    {
+      "id": "S-06-secondary-invalid-0-warm-jks-init-v1",
+      "fixtureDigest": "4a27037e13f70b73e4a429335203fbf5572d915fb333e3ff9eb6c66ba6e34eed",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend",
+        "header:content-type"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:x-backend"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-06-secondary-invalid-0-warm-jks-init-v1.json",
+      "nativeSha256": "e07ee9f56798f34541221e58981593119ec3e35356e8b24e2c7945afef7e07df"
+    },
+    {
+      "id": "S-06-secondary-invalid-1-warm-jks-init-v1",
+      "fixtureDigest": "50e2a7a1ab14484382077bd4e44ab6fa567cc749c1ad71a80d55ad9a652ea6b6",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend",
+        "header:content-type"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:x-backend"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-06-secondary-invalid-1-warm-jks-init-v1.json",
+      "nativeSha256": "0ef20cdf7dc9a64988af7bca326efb6bf7088dbff341f73f4d648ef515b02f5b"
+    },
+    {
+      "id": "S-12-anonymous-prefix-warm-init-v1",
+      "fixtureDigest": "4f5829e2d02a20ed2165072c7c1651b9828577a83f2d0c096fad3a8a468c24ed",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:x-backend",
+        "header:content-type",
+        "header:www-authenticate"
+      ],
+      "remove": [
+        "header:content-type",
+        "header:www-authenticate"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-12-anonymous-prefix-warm-init-v1.json",
+      "nativeSha256": "40685a374dbf0654614f239ff46ce122c426ba8096ec12f9a50518062ece8b35"
+    },
+    {
+      "id": "S-12-basic-before-apikey-warm-init-v1",
+      "fixtureDigest": "392477e9a72e5f152060c11b2748d74e0c3f638e8a4a4cd2311bfde04603e4b4",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:x-backend",
+        "header:content-type",
+        "header:www-authenticate"
+      ],
+      "remove": [
+        "header:content-type",
+        "header:www-authenticate"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-12-basic-before-apikey-warm-init-v1.json",
+      "nativeSha256": "0242ea0187920b961169a64b4018977ee96b88ba6dfd660b12856cc73c9cc2cf"
+    },
+    {
+      "id": "S-12-denied-unknown-warm-init-v1",
+      "fixtureDigest": "1ac6c7680484c34743bd65bb56becadcd14c1940e70b6d3c00b28e7605731bf5",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:x-backend",
+        "header:content-type",
+        "header:www-authenticate"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:x-backend"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-12-denied-unknown-warm-init-v1.json",
+      "nativeSha256": "825fa0c50ca7afb6e4e29083f94e21d6387c3d555884ddeb3583fd549a269bac"
+    },
+    {
+      "id": "S-12-denied-x-warm-init-v1",
+      "fixtureDigest": "bebddf7d2b8d488c878e0c708f066d4aaa7520f606ab7426b90b18bef9ed0f53",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:x-backend",
+        "header:content-type",
+        "header:www-authenticate"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-12-denied-x-warm-init-v1.json",
+      "nativeSha256": "2b29e57437a01949153c718b0581f6456f5380ba80d2beedbefe15e20574f3ce"
+    },
+    {
+      "id": "S-12-disabled-selected-basic-warm-init-v1",
+      "fixtureDigest": "610de2eb950decd8b1ac13f997a07c426bb0df6d31b17daa2213400f4f58b685",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:x-backend",
+        "header:content-type",
+        "header:www-authenticate"
+      ],
+      "remove": [
+        "header:content-type",
+        "header:www-authenticate"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-12-disabled-selected-basic-warm-init-v1.json",
+      "nativeSha256": "60b85d91a003ab6e9f5e3249df28e60fcc82411a8563fc69ced56b19cccff198"
+    },
+    {
+      "id": "S-12-missing-basic-alias-warm-init-v1",
+      "fixtureDigest": "8a1f95622f89547a3fb38430a98c167825df98d45fa8bcc7a4dc61027990ede8",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:x-backend",
+        "header:content-type",
+        "header:www-authenticate"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:www-authenticate",
+        "header:x-backend"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-12-missing-basic-alias-warm-init-v1.json",
+      "nativeSha256": "c4654bc25005c8210bdedd1cc8bc8166557cdb744ad73449a9b5bb47ae35d799"
+    },
+    {
+      "id": "S-13a-java-no-cooldown-represented-v1",
+      "fixtureDigest": "0e45ef88ee51abfc693f288c5efd80cac0f0e3d430bb5134c04b71c632760823",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "header:x-backend",
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:x-backend"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-13a-java-no-cooldown-represented-v1.json",
+      "nativeSha256": "98bc7ca93e81bb97171e82be40b056b5a3ef3824fbeff2b1f6af4080fe9b48e6"
+    },
+    {
+      "id": "S-16-before-bind-0-deferred-init-v1",
+      "fixtureDigest": "6cc74e1bec0068901c8d88c0a5fa7b86e619eb637cac61f5034590ac60103c39",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "httpCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:x-backend",
+        "httpCalls"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-16-before-bind-0-deferred-init-v1.json",
+      "nativeSha256": "6121fbf2abd6b30e90b3fc927d6d6bf562289042d8db0d2434913aacb802b9ee"
+    },
+    {
+      "id": "S-16-before-bind-1-deferred-init-v1",
+      "fixtureDigest": "aeb77ca23d23fe98b98a5767c56978f2b3411a54033d4acd23115298d7d73cd0",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "httpCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:x-backend",
+        "httpCalls"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-16-before-bind-1-deferred-init-v1.json",
+      "nativeSha256": "d67ff4999196f671cedd5a6f8d49969ecd4b2302ca76bb6ab9b90034da55d889"
+    },
+    {
+      "id": "S-16-before-bind-2-deferred-init-v1",
+      "fixtureDigest": "9aa500d1b57b1f86ea27ad3fd49519feebc2a08b079811a358a8d6957ca7c915",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "httpCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:x-backend",
+        "httpCalls"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-16-before-bind-2-deferred-init-v1.json",
+      "nativeSha256": "cd7a482f83155e7df534ac77f9bc891c5f5e441d7597ba038b9872981e15f38c"
+    },
+    {
+      "id": "S-17-cold-and-cached-nbf-warm-jks-init-v1",
+      "fixtureDigest": "cd1453c60114ea17327574619357900de1012d20e2c9e082058db14806a105e1",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend",
+        "header:content-type"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-17-cold-and-cached-nbf-warm-jks-init-v1.json",
+      "nativeSha256": "9a032965bf18c6b186d9d5f8529cf3abd4b01ac778318b8215b766296f3578ba"
+    },
+    {
+      "id": "S-17-ignore-exp-absent-nbf-multi-contract-v1",
+      "fixtureDigest": "042c59b8d35dbef78b0a3008f692165d61f53b882922d89f9a9e85ed32326079",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "backendCalls"
+      ],
+      "remove": [
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-17-ignore-exp-absent-nbf-multi-contract-v1.json",
+      "nativeSha256": "58c536e9d5e72c442f5295e4a13f4b614382762269ebc6481a437bf08873f31b"
+    },
+    {
+      "id": "S-18-removed-key-warm-warm-jks-init-v1",
+      "fixtureDigest": "381066c2f5da981654b7b2eff4c19149dddc8fdddfc17a90e836ddb966184450",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend",
+        "header:content-type"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/S-18-removed-key-warm-warm-jks-init-v1.json",
+      "nativeSha256": "48cf0f97a144e4ca4bb374e96325f6d0341b3c3ca821ee2724040e43f2b92ef9"
+    },
+    {
+      "id": "T-01-local-response-dispatch-selected-plugin-init-v1",
+      "fixtureDigest": "0e1e07c218846b20c71a9cf6da9750de2ade7ebbcd729dd908d3a7795301b03d",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "header:x-backend"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/T-01-local-response-dispatch-selected-plugin-init-v1.json",
+      "nativeSha256": "cfd25faa6d769f7f77682024308e691cb247604c062ca2970453aeda3997f397"
+    },
+    {
+      "id": "T-01-metadata-mutations-selected-plugin-init-v1",
+      "fixtureDigest": "9d01297724de66775aae463df49c0346141c317458d4d0055397b998f14f0e75",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/T-01-metadata-mutations-selected-plugin-init-v1.json",
+      "nativeSha256": "34feee7bb35c01ad058b153be9e9e7ca938d4dc07a5380b4911f4832c704415a"
+    },
+    {
+      "id": "T-01-validation-error-selected-plugin-init-v1",
+      "fixtureDigest": "f13d4db95689225f50c8a39ec1e323ad2c1bbc935fc54833c02b8b6433cd1451",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:x-backend"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/T-01-validation-error-selected-plugin-init-v1.json",
+      "nativeSha256": "d08c012900da421b50bfa16739b2397a881bfca463fab67a5f3b7b3aaf7e82ba"
+    },
+    {
+      "id": "T-02-no-endpoint-rule-supported-edge-v1",
+      "fixtureDigest": "7a604c067560feff833e61b73b21dca0ef75fd7eb7389a5bad8a3899a6067ccc",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/T-02-no-endpoint-rule-supported-edge-v1.json",
+      "nativeSha256": "2f425089c07772ed05eaecff8cf1e3a64c08b5e3769d0e144d7eb50aee4e1059"
+    },
+    {
+      "id": "T-02-request-header-input-selected-plugin-init-v1",
+      "fixtureDigest": "46d5d7856461ce6768834a238fd130e291549702b70cb562b117aa139237d66c",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/T-02-request-header-input-selected-plugin-init-v1.json",
+      "nativeSha256": "c119fe20dee17b5d67cdb5238c081e8a6914a5335d83d2fe718abf340c037380"
+    },
+    {
+      "id": "T-02-response-rule-exception-selected-plugin-init-v1",
+      "fixtureDigest": "4d546b25a652406e2e695622e4259a6f64f0052c3d17465ca51b049abc7f6972",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/T-02-response-rule-exception-selected-plugin-init-v1.json",
+      "nativeSha256": "4e3812f6f364451012a3907c3e8884e684ec2c640d0e75f4783293f1df512814"
+    },
+    {
+      "id": "T-04-slow-response-rule-selected-plugin-init-v1",
+      "fixtureDigest": "c946a0b3ee7938050c314dcac51ecaff3532c30ca954418154b8ba46e0f69a86",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:content-type",
+        "header:x-backend"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Exact original per-runner expectation equality under existing comparison rules; native result independently passed. No observation-based behavior waiver.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/T-04-slow-response-rule-selected-plugin-init-v1.json",
+      "nativeSha256": "a9d66f83f3e329136ffc6bc2f3e74fe28d1e8d9be8f458fb9148461ab7d8c5fd"
+    },
+    {
+      "id": "A-01-response-body-finalization-exception-sink-v1",
+      "fixtureDigest": "d242514ac67718dd236c1d7744a103184510d5cd554c77d227b748804888ed1c",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "auditRecords",
+        "header:x-backend",
+        "header:content-type"
+      ],
+      "remove": [
+        "auditRecords",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "reason": "Fresh native Init/invocation exception and original Rust rejection expectations have equal absent ALB envelope fields and empty audit records. Different outcome and actual dispatch remain declared.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-admission-adapters-20261018T194048Z/java-current/A-01-response-body-finalization-exception-sink-v1.json",
+      "nativeSha256": "a8201ffeebbd883fdcb2061b552214e195a4f75d2695b5555fab5bea53f6d148"
+    }
+  ]
+}

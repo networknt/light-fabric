@@ -1,0 +1,18 @@
+[
+  {
+    "fixture": "D-09-minimum-cap-replacement-recheck-multi-contract-v1",
+    "javaRun": "20261011T151340.640100Z",
+    "javaBehaviorAsserted": [
+      "D-09",
+      "C-09"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-09",
+      "C-09"
+    ],
+    "review": "Owner-approved minimum4096 cap permits Init; response-policy header creates oversize. Exact Rust502 replacement description uses configured4096; no large header remains, response entry/completion/finalization counts1/1/1. Fixed replacement envelope is within minimum bound and rechecked; no second policy pass. Java preserves exact large header/response and actual counters. Replacement-recheck is authored contract, not executed Rust behavior.",
+    "source": "Approved minimum4096 and D09 replacement/resizing contracts; actual focused Java evidence",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T151340.640100Z"
+  }
+]

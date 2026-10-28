@@ -1,0 +1,313 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "A-01-mask-error-parameters-sink-init-v1",
+  "title": "Error-only audit masks fields without altering backend inputs",
+  "ledger": [
+    "A-01",
+    "A-02",
+    "C-10"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "audit": {
+        "enabled": true,
+        "statusCode": true,
+        "responseTime": false,
+        "auditOnError": true,
+        "auditStackTrace": false,
+        "mask": true,
+        "requestBodyMaxSize": 1000,
+        "audit": [
+          "requestBody",
+          "queryParameters",
+          "pathParameters"
+        ],
+        "headers": [
+          "x-test-mask"
+        ],
+        "timestampFormat": "'synthetic-time'"
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.characterization.AuditMaskErrorTest$Parameters@parameters",
+          "com.networknt.aws.lambda.handler.middleware.audit.AuditMiddleware@audit"
+        ],
+        "chains": {
+          "request": [
+            "parameters",
+            "audit"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      },
+      "mask": {
+        "regex": {
+          "requestHeader": {
+            "x-test-mask": "(.*)"
+          },
+          "queryParameters": {
+            "q": "(.*)"
+          },
+          "pathParameters": {
+            "id": "(.*)"
+          }
+        },
+        "json": {
+          "requestBody": {
+            "$.password": "(.*)"
+          }
+        }
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Explicit synthetic literal audit.timestampFormat avoids variable log metadata; actual record and message are preserved. No virtual clock."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "expectRustInit": {
+    "outcome": "initError",
+    "code": "InvalidConfiguration",
+    "backendCalls": [],
+    "jwksFetches": 0
+  },
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls",
+    "auditRecords",
+    "header:x-backend"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "content-type": "application/json",
+          "x-test-mask": "secret"
+        },
+        "queryStringParameters": {
+          "q": "test"
+        },
+        "body": "{\"password\":\"synthetic\"}",
+        "isBase64Encoded": false
+      },
+      "observeAudit": true,
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "outcome": "response",
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "POST",
+              "headers": {
+                "content-type": "application/json",
+                "x-test-mask": "secret"
+              },
+              "queryStringParameters": {
+                "q": "test"
+              },
+              "requestContext": {},
+              "pathParameters": {
+                "id": "test"
+              },
+              "body": "{\"password\":\"synthetic\"}",
+              "isBase64Encoded": false
+            },
+            "eventExact": {
+              "headers": {
+                "content-type": "application/json",
+                "x-test-mask": "secret"
+              },
+              "queryStringParameters": {
+                "q": "test"
+              },
+              "requestContext": {},
+              "pathParameters": {
+                "id": "test"
+              }
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "auditRecords": []
+      },
+      "expect": {
+        "outcome": "notExecuted",
+        "reason": "initError",
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "auditRecords": []
+      }
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "content-type": "application/json",
+          "x-test-mask": "secret"
+        },
+        "queryStringParameters": {
+          "q": "test"
+        },
+        "body": "{\"password\":\"synthetic\"}",
+        "isBase64Encoded": false
+      },
+      "observeAudit": true,
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 503,
+              "headers": {},
+              "body": "backend-denied",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "outcome": "response",
+        "status": 503,
+        "headers": [],
+        "headersAbsent": [],
+        "body": "backend-denied",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "POST",
+              "headers": {
+                "content-type": "application/json",
+                "x-test-mask": "secret"
+              },
+              "queryStringParameters": {
+                "q": "test"
+              },
+              "requestContext": {},
+              "pathParameters": {
+                "id": "test"
+              },
+              "body": "{\"password\":\"synthetic\"}",
+              "isBase64Encoded": false
+            },
+            "eventExact": {
+              "headers": {
+                "content-type": "application/json",
+                "x-test-mask": "secret"
+              },
+              "queryStringParameters": {
+                "q": "test"
+              },
+              "requestContext": {},
+              "pathParameters": {
+                "id": "test"
+              }
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "auditRecords": [
+          {
+            "data": {
+              "timestamp": "synthetic-time",
+              "x-test-mask": "******",
+              "requestBody": "{\"password\":\"*********\"}",
+              "queryParameters": "{q=****}",
+              "pathParameters": "{id=****}",
+              "statusCode": 503
+            }
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "notExecuted",
+        "reason": "initError",
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "auditRecords": []
+      }
+    }
+  ]
+}

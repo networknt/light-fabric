@@ -1,0 +1,53 @@
+[
+  {
+    "fixture": "V-03-json-object-multi-contract-v1",
+    "source": "Preserved WP2-reviewed conformance fixture and approved contract rows",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared valid multimap requests reach sanitizer: exact HTML body/header encoding and attribute ignore precedence, malformed JSON ERR10015 zero dispatch, and non-JSON pass-through. Java raw multimap remains unmodified while its single map is encoded; the Rust business envelope reflects unified policy headers under E-10. Authored expectations reuse reviewed source assertions, not current runner output. Earlier E-13 fixtures are preserved. Base64 draft remains unadmitted pending V-03a decision.",
+    "remainingContractAssertions": [
+      "Additional supported encoders/methods/JSON arrays and ordering need individual coverage; base64 decoded-body conflict awaits owner decision."
+    ],
+    "javaRun": "20261011T044537.225601Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T044537.225601Z"
+  },
+  {
+    "fixture": "V-03-malformed-json-multi-contract-v1",
+    "source": "Preserved WP2-reviewed conformance fixture and approved contract rows",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared valid multimap requests reach sanitizer: exact HTML body/header encoding and attribute ignore precedence, malformed JSON ERR10015 zero dispatch, and non-JSON pass-through. Java raw multimap remains unmodified while its single map is encoded; the Rust business envelope reflects unified policy headers under E-10. Authored expectations reuse reviewed source assertions, not current runner output. Earlier E-13 fixtures are preserved. Base64 draft remains unadmitted pending V-03a decision.",
+    "remainingContractAssertions": [
+      "Additional supported encoders/methods/JSON arrays and ordering need individual coverage; base64 decoded-body conflict awaits owner decision."
+    ],
+    "javaRun": "20261011T044537.225601Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T044537.225601Z"
+  },
+  {
+    "fixture": "V-03-non-json-multi-contract-v1",
+    "source": "Preserved WP2-reviewed conformance fixture and approved contract rows",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared valid multimap requests reach sanitizer: exact HTML body/header encoding and attribute ignore precedence, malformed JSON ERR10015 zero dispatch, and non-JSON pass-through. Java raw multimap remains unmodified while its single map is encoded; the Rust business envelope reflects unified policy headers under E-10. Authored expectations reuse reviewed source assertions, not current runner output. Earlier E-13 fixtures are preserved. Base64 draft remains unadmitted pending V-03a decision.",
+    "remainingContractAssertions": [
+      "Additional supported encoders/methods/JSON arrays and ordering need individual coverage; base64 decoded-body conflict awaits owner decision."
+    ],
+    "javaRun": "20261011T044537.225601Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T044537.225601Z"
+  }
+]

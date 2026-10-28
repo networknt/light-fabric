@@ -1,0 +1,20 @@
+[
+  {
+    "fixture": "S-08-missing-basic-multi-contract-v1",
+    "source": "Approved S-08 missing credential challenge and E-06a casing",
+    "javaBehaviorAsserted": [
+      "S-08",
+      "E-06a"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-08",
+      "E-06a"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Identical empty single and multi maps permit valid Rust ingress. Both contracts assert exact missing-token 401 body, exact Basic realm challenge and zero backend calls; only approved challenge header-name casing differs.",
+    "remainingContractAssertions": [
+      "Other malformed and challenge outcomes remain to be reviewed/admitted."
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T032126.412327Z"
+  }
+]

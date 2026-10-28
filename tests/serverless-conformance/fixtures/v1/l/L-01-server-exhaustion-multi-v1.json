@@ -1,0 +1,1279 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "L-01-server-exhaustion-multi-v1",
+  "title": "Shared multi ALB L-01-server-exhaustion",
+  "ledger": [
+    "L-01",
+    "L-03",
+    "L-04",
+    "E-10"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "limit": {
+        "enabled": true,
+        "key": "server",
+        "rateLimit": "10/m 1/d",
+        "errorCode": 503
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.limit.LimitMiddleware@h0"
+        ],
+        "chains": {
+          "request": [
+            "h0"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Bounded real-time warm-step wait; no deterministic clock control. Reset headers are exact duration strings."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "backendCalls",
+    "header:content-type",
+    "header:ratelimit-limit",
+    "header:ratelimit-remaining",
+    "header:ratelimit-reset"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {},
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {},
+              "isBase64Encoded": false,
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {}
+            },
+            "eventAbsent": [
+              "/body",
+              "/headers",
+              "/queryStringParameters",
+              "/pathParameters",
+              "/requestContext/stage"
+            ],
+            "eventExact": {
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {},
+              "requestContext": {}
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi",
+      "expect": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {
+                "stage": "test-only"
+              },
+              "isBase64Encoded": false,
+              "multiValueHeaders": null,
+              "multiValueQueryStringParameters": null,
+              "body": null,
+              "headers": null,
+              "queryStringParameters": null,
+              "pathParameters": null
+            },
+            "eventExact": {
+              "headers": null,
+              "multiValueHeaders": null,
+              "queryStringParameters": null,
+              "multiValueQueryStringParameters": null,
+              "pathParameters": null
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      }
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {},
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {},
+              "isBase64Encoded": false,
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {}
+            },
+            "eventAbsent": [
+              "/body",
+              "/headers",
+              "/queryStringParameters",
+              "/pathParameters",
+              "/requestContext/stage"
+            ],
+            "eventExact": {
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {},
+              "requestContext": {}
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi",
+      "expect": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {
+                "stage": "test-only"
+              },
+              "isBase64Encoded": false,
+              "multiValueHeaders": null,
+              "multiValueQueryStringParameters": null,
+              "body": null,
+              "headers": null,
+              "queryStringParameters": null,
+              "pathParameters": null
+            },
+            "eventExact": {
+              "headers": null,
+              "multiValueHeaders": null,
+              "queryStringParameters": null,
+              "multiValueQueryStringParameters": null,
+              "pathParameters": null
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      }
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {},
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {},
+              "isBase64Encoded": false,
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {}
+            },
+            "eventAbsent": [
+              "/body",
+              "/headers",
+              "/queryStringParameters",
+              "/pathParameters",
+              "/requestContext/stage"
+            ],
+            "eventExact": {
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {},
+              "requestContext": {}
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi",
+      "expect": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {
+                "stage": "test-only"
+              },
+              "isBase64Encoded": false,
+              "multiValueHeaders": null,
+              "multiValueQueryStringParameters": null,
+              "body": null,
+              "headers": null,
+              "queryStringParameters": null,
+              "pathParameters": null
+            },
+            "eventExact": {
+              "headers": null,
+              "multiValueHeaders": null,
+              "queryStringParameters": null,
+              "multiValueQueryStringParameters": null,
+              "pathParameters": null
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      }
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {},
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {},
+              "isBase64Encoded": false,
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {}
+            },
+            "eventAbsent": [
+              "/body",
+              "/headers",
+              "/queryStringParameters",
+              "/pathParameters",
+              "/requestContext/stage"
+            ],
+            "eventExact": {
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {},
+              "requestContext": {}
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi",
+      "expect": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {
+                "stage": "test-only"
+              },
+              "isBase64Encoded": false,
+              "multiValueHeaders": null,
+              "multiValueQueryStringParameters": null,
+              "body": null,
+              "headers": null,
+              "queryStringParameters": null,
+              "pathParameters": null
+            },
+            "eventExact": {
+              "headers": null,
+              "multiValueHeaders": null,
+              "queryStringParameters": null,
+              "multiValueQueryStringParameters": null,
+              "pathParameters": null
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      }
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {},
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {},
+              "isBase64Encoded": false,
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {}
+            },
+            "eventAbsent": [
+              "/body",
+              "/headers",
+              "/queryStringParameters",
+              "/pathParameters",
+              "/requestContext/stage"
+            ],
+            "eventExact": {
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {},
+              "requestContext": {}
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi",
+      "expect": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {
+                "stage": "test-only"
+              },
+              "isBase64Encoded": false,
+              "multiValueHeaders": null,
+              "multiValueQueryStringParameters": null,
+              "body": null,
+              "headers": null,
+              "queryStringParameters": null,
+              "pathParameters": null
+            },
+            "eventExact": {
+              "headers": null,
+              "multiValueHeaders": null,
+              "queryStringParameters": null,
+              "multiValueQueryStringParameters": null,
+              "pathParameters": null
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      }
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {},
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {},
+              "isBase64Encoded": false,
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {}
+            },
+            "eventAbsent": [
+              "/body",
+              "/headers",
+              "/queryStringParameters",
+              "/pathParameters",
+              "/requestContext/stage"
+            ],
+            "eventExact": {
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {},
+              "requestContext": {}
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi",
+      "expect": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {
+                "stage": "test-only"
+              },
+              "isBase64Encoded": false,
+              "multiValueHeaders": null,
+              "multiValueQueryStringParameters": null,
+              "body": null,
+              "headers": null,
+              "queryStringParameters": null,
+              "pathParameters": null
+            },
+            "eventExact": {
+              "headers": null,
+              "multiValueHeaders": null,
+              "queryStringParameters": null,
+              "multiValueQueryStringParameters": null,
+              "pathParameters": null
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      }
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {},
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {},
+              "isBase64Encoded": false,
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {}
+            },
+            "eventAbsent": [
+              "/body",
+              "/headers",
+              "/queryStringParameters",
+              "/pathParameters",
+              "/requestContext/stage"
+            ],
+            "eventExact": {
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {},
+              "requestContext": {}
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi",
+      "expect": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {
+                "stage": "test-only"
+              },
+              "isBase64Encoded": false,
+              "multiValueHeaders": null,
+              "multiValueQueryStringParameters": null,
+              "body": null,
+              "headers": null,
+              "queryStringParameters": null,
+              "pathParameters": null
+            },
+            "eventExact": {
+              "headers": null,
+              "multiValueHeaders": null,
+              "queryStringParameters": null,
+              "multiValueQueryStringParameters": null,
+              "pathParameters": null
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      }
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {},
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {},
+              "isBase64Encoded": false,
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {}
+            },
+            "eventAbsent": [
+              "/body",
+              "/headers",
+              "/queryStringParameters",
+              "/pathParameters",
+              "/requestContext/stage"
+            ],
+            "eventExact": {
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {},
+              "requestContext": {}
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi",
+      "expect": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {
+                "stage": "test-only"
+              },
+              "isBase64Encoded": false,
+              "multiValueHeaders": null,
+              "multiValueQueryStringParameters": null,
+              "body": null,
+              "headers": null,
+              "queryStringParameters": null,
+              "pathParameters": null
+            },
+            "eventExact": {
+              "headers": null,
+              "multiValueHeaders": null,
+              "queryStringParameters": null,
+              "multiValueQueryStringParameters": null,
+              "pathParameters": null
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      }
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {},
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {},
+              "isBase64Encoded": false,
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {}
+            },
+            "eventAbsent": [
+              "/body",
+              "/headers",
+              "/queryStringParameters",
+              "/pathParameters",
+              "/requestContext/stage"
+            ],
+            "eventExact": {
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {},
+              "requestContext": {}
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi",
+      "expect": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {
+                "stage": "test-only"
+              },
+              "isBase64Encoded": false,
+              "multiValueHeaders": null,
+              "multiValueQueryStringParameters": null,
+              "body": null,
+              "headers": null,
+              "queryStringParameters": null,
+              "pathParameters": null
+            },
+            "eventExact": {
+              "headers": null,
+              "multiValueHeaders": null,
+              "queryStringParameters": null,
+              "multiValueQueryStringParameters": null,
+              "pathParameters": null
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      }
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {},
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {},
+              "isBase64Encoded": false,
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {}
+            },
+            "eventAbsent": [
+              "/body",
+              "/headers",
+              "/queryStringParameters",
+              "/pathParameters",
+              "/requestContext/stage"
+            ],
+            "eventExact": {
+              "multiValueHeaders": {},
+              "multiValueQueryStringParameters": {},
+              "requestContext": {}
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi",
+      "expect": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "requestContext": {
+                "stage": "test-only"
+              },
+              "isBase64Encoded": false,
+              "multiValueHeaders": null,
+              "multiValueQueryStringParameters": null,
+              "body": null,
+              "headers": null,
+              "queryStringParameters": null,
+              "pathParameters": null
+            },
+            "eventExact": {
+              "headers": null,
+              "multiValueHeaders": null,
+              "queryStringParameters": null,
+              "multiValueQueryStringParameters": null,
+              "pathParameters": null
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      }
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {},
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [],
+      "expectJava": {
+        "status": 503,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "RateLimit-Limit",
+            "10/MINUTES"
+          ],
+          [
+            "RateLimit-Remaining",
+            "0"
+          ],
+          [
+            "RateLimit-Reset",
+            "60s"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":429,\"code\":\"ERR10088\",\"message\":\"RATE_LIMIT_EXCEEDED\",\"description\":\"Rate limit exceeded.\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi",
+      "expect": {
+        "status": 503,
+        "headers": [
+          [
+            "content-type",
+            "application/json"
+          ],
+          [
+            "ratelimit-limit",
+            "10/MINUTES"
+          ],
+          [
+            "ratelimit-remaining",
+            "0"
+          ],
+          [
+            "ratelimit-reset",
+            "60s"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":429,\"code\":\"ERR10088\",\"message\":\"RATE_LIMIT_EXCEEDED\",\"description\":\"Rate limit exceeded.\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      }
+    }
+  ]
+}

@@ -1,0 +1,229 @@
+{
+  "runtime-api-unset-v1": {
+    "probe": {
+      "fault": "runtime-api-unset-v1",
+      "reportingTimeoutMs": 2000,
+      "schedulingToleranceMs": 1000,
+      "trigger": "missing-stage-v1"
+    },
+    "expect": {
+      "outcome": "initReportTransportFailure",
+      "code": "InvalidConfiguration",
+      "backendCalls": [],
+      "jwksFetches": 0,
+      "reporting": {
+        "attempts": 0,
+        "receivedPosts": 0,
+        "retries": 0,
+        "invocationPolls": 0,
+        "endpoint": "/2018-06-01/runtime/init/error",
+        "header": {
+          "Lambda-Runtime-Function-Error-Type": "Runtime.InitError"
+        },
+        "body": {
+          "errorType": "InvalidConfiguration",
+          "errorMessage": "configuration: missing light-lambda.stage"
+        },
+        "maxBodyBytes": 1024
+      },
+      "processExit": {
+        "code": 1,
+        "maxAfterInitFailureMs": 3000
+      },
+      "diagnosticContract": {
+        "requiredMessage": "configuration: missing light-lambda.stage",
+        "requiredLevel": "error",
+        "transportDiagnostic": "runtime-api-unset-v1",
+        "forbiddenValues": [
+          "test-only-secret-sentinel",
+          "test-only-password-sentinel"
+        ],
+        "forbidConfigurationValues": true
+      }
+    }
+  },
+  "loopback-connection-refused-v1": {
+    "probe": {
+      "fault": "loopback-connection-refused-v1",
+      "reportingTimeoutMs": 2000,
+      "schedulingToleranceMs": 1000,
+      "trigger": "missing-stage-v1"
+    },
+    "expect": {
+      "outcome": "initReportTransportFailure",
+      "code": "InvalidConfiguration",
+      "backendCalls": [],
+      "jwksFetches": 0,
+      "reporting": {
+        "attempts": 1,
+        "receivedPosts": 0,
+        "retries": 0,
+        "invocationPolls": 0,
+        "endpoint": "/2018-06-01/runtime/init/error",
+        "header": {
+          "Lambda-Runtime-Function-Error-Type": "Runtime.InitError"
+        },
+        "body": {
+          "errorType": "InvalidConfiguration",
+          "errorMessage": "configuration: missing light-lambda.stage"
+        },
+        "maxBodyBytes": 1024
+      },
+      "processExit": {
+        "code": 1,
+        "maxAfterInitFailureMs": 3000
+      },
+      "diagnosticContract": {
+        "requiredMessage": "configuration: missing light-lambda.stage",
+        "requiredLevel": "error",
+        "transportDiagnostic": "loopback-connection-refused-v1",
+        "forbiddenValues": [
+          "test-only-secret-sentinel",
+          "test-only-password-sentinel"
+        ],
+        "forbidConfigurationValues": true
+      }
+    }
+  },
+  "loopback-http-503-v1": {
+    "probe": {
+      "fault": "loopback-http-503-v1",
+      "reportingTimeoutMs": 2000,
+      "schedulingToleranceMs": 1000,
+      "trigger": "missing-stage-v1"
+    },
+    "expect": {
+      "outcome": "initReportTransportFailure",
+      "code": "InvalidConfiguration",
+      "backendCalls": [],
+      "jwksFetches": 0,
+      "reporting": {
+        "attempts": 1,
+        "receivedPosts": 1,
+        "retries": 0,
+        "invocationPolls": 0,
+        "endpoint": "/2018-06-01/runtime/init/error",
+        "header": {
+          "Lambda-Runtime-Function-Error-Type": "Runtime.InitError"
+        },
+        "body": {
+          "errorType": "InvalidConfiguration",
+          "errorMessage": "configuration: missing light-lambda.stage"
+        },
+        "maxBodyBytes": 1024
+      },
+      "processExit": {
+        "code": 1,
+        "maxAfterInitFailureMs": 3000
+      },
+      "diagnosticContract": {
+        "requiredMessage": "configuration: missing light-lambda.stage",
+        "requiredLevel": "error",
+        "transportDiagnostic": "loopback-http-503-v1",
+        "forbiddenValues": [
+          "test-only-secret-sentinel",
+          "test-only-password-sentinel"
+        ],
+        "forbidConfigurationValues": true
+      }
+    }
+  },
+  "loopback-response-withheld-v1": {
+    "probe": {
+      "fault": "loopback-response-withheld-v1",
+      "reportingTimeoutMs": 2000,
+      "schedulingToleranceMs": 1000,
+      "trigger": "missing-stage-v1"
+    },
+    "expect": {
+      "outcome": "initReportTransportFailure",
+      "code": "InvalidConfiguration",
+      "backendCalls": [],
+      "jwksFetches": 0,
+      "reporting": {
+        "attempts": 1,
+        "receivedPosts": 1,
+        "retries": 0,
+        "invocationPolls": 0,
+        "endpoint": "/2018-06-01/runtime/init/error",
+        "header": {
+          "Lambda-Runtime-Function-Error-Type": "Runtime.InitError"
+        },
+        "body": {
+          "errorType": "InvalidConfiguration",
+          "errorMessage": "configuration: missing light-lambda.stage"
+        },
+        "maxBodyBytes": 1024
+      },
+      "processExit": {
+        "code": 1,
+        "maxAfterInitFailureMs": 3000
+      },
+      "diagnosticContract": {
+        "requiredMessage": "configuration: missing light-lambda.stage",
+        "requiredLevel": "error",
+        "transportDiagnostic": "loopback-response-withheld-v1",
+        "forbiddenValues": [
+          "test-only-secret-sentinel",
+          "test-only-password-sentinel"
+        ],
+        "forbidConfigurationValues": true
+      }
+    }
+  },
+  "shared-fetch-panic": {
+    "probe": {
+      "mode": "task-boundary-before-io-v1",
+      "serviceIds": [
+        "test-provider"
+      ],
+      "token": "gate-parallel",
+      "callerCount": 3,
+      "callerBudgetMs": 1000,
+      "barrierWaitMaxMs": 1000,
+      "sequence": [
+        "attempt-recorded-active-published",
+        "two-joiners-attached",
+        "release-panic",
+        "all-waiters-settled",
+        "cooldown-elapsed",
+        "release-recovery"
+      ]
+    },
+    "expect": {
+      "outcome": "jwksGatePanicRecovery",
+      "prerequisiteReady": true,
+      "backendCalls": [],
+      "jwksFetches": 1,
+      "jwksCalls": [
+        {
+          "target": "jwks",
+          "method": "GET",
+          "uri": "/jwks"
+        }
+      ],
+      "failure": {
+        "taskStarts": 1,
+        "joinersAttached": 2,
+        "networkRequests": 0,
+        "waitersTerminated": 3,
+        "verifiedPrincipals": 0,
+        "attemptRecordedBeforeTask": true,
+        "activePublishedBeforePanic": true,
+        "activeAfterCleanup": false,
+        "cooldownRetained": true,
+        "callerBudgetMs": 1000,
+        "publicErrorMapping": "unspecified-by-approved-contract"
+      },
+      "recovery": {
+        "afterCooldown": true,
+        "taskStarts": 1,
+        "joinersAttached": 0,
+        "networkRequests": 1,
+        "verifiedPrincipals": 1,
+        "cachePublished": true,
+        "activeAfterCompletion": false
+      }
+    }
+  }
+}

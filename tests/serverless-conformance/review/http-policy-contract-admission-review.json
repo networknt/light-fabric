@@ -1,0 +1,87 @@
+[
+  {
+    "fixture": "H-03-get-multi-contract-v1",
+    "source": "Retained H-03-http-0 reviewed GET body/status/header/query-omission observation; approved H-01/H-02/H-03 and plan 5.2/5.4 ALB multi-value mode",
+    "javaBehaviorAsserted": [
+      "H-01",
+      "H-02",
+      "H-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "H-01",
+      "H-02",
+      "H-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared raw event keeps original single SERVICE_ID and adds matching lower-case multimap service_id/x-forward and query. Configured direct URL is the only target; trigger header removed (serviceId null), x-forward exact, rewrite /x to /rewritten, query a=1 omitted in both approved HTTP subset expectations. GET HTTP body is exactly ''. Backend repeated Set-Cookie still collapses to first a=1 per approved H-03; Rust must not silently restore HTTP multiplicity. Exact separate response maps retain Java single map and declare Rust ALB multi-mode shape under E-13; field values/multiplicity/status/body are unchanged. E-13 is contextual authorization of envelope mode, not an early-rejection downstream coverage credit.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T031323.325777Z"
+  },
+  {
+    "fixture": "H-03-post-multi-contract-v1",
+    "source": "Retained H-03-http-1 reviewed POST body/status/header/query-omission observation; approved H-01/H-02/H-03 and plan 5.2/5.4 ALB multi-value mode",
+    "javaBehaviorAsserted": [
+      "H-01",
+      "H-02",
+      "H-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "H-01",
+      "H-02",
+      "H-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared raw event keeps original single SERVICE_ID and adds matching lower-case multimap service_id/x-forward and query. Configured direct URL is the only target; trigger header removed (serviceId null), x-forward exact, rewrite /x to /rewritten, query a=1 omitted in both approved HTTP subset expectations. POST HTTP body is exactly 'synthetic-body'. Backend repeated Set-Cookie still collapses to first a=1 per approved H-03; Rust must not silently restore HTTP multiplicity. Exact separate response maps retain Java single map and declare Rust ALB multi-mode shape under E-13; field values/multiplicity/status/body are unchanged. E-13 is contextual authorization of envelope mode, not an early-rejection downstream coverage credit.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T031323.325777Z"
+  },
+  {
+    "fixture": "H-03-delete-multi-contract-v1",
+    "source": "Retained H-03-http-2 reviewed DELETE body/status/header/query-omission observation; approved H-01/H-02/H-03 and plan 5.2/5.4 ALB multi-value mode",
+    "javaBehaviorAsserted": [
+      "H-01",
+      "H-02",
+      "H-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "H-01",
+      "H-02",
+      "H-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared raw event keeps original single SERVICE_ID and adds matching lower-case multimap service_id/x-forward and query. Configured direct URL is the only target; trigger header removed (serviceId null), x-forward exact, rewrite /x to /rewritten, query a=1 omitted in both approved HTTP subset expectations. DELETE HTTP body is exactly ''. Backend repeated Set-Cookie still collapses to first a=1 per approved H-03; Rust must not silently restore HTTP multiplicity. Exact separate response maps retain Java single map and declare Rust ALB multi-mode shape under E-13; field values/multiplicity/status/body are unchanged. E-13 is contextual authorization of envelope mode, not an early-rejection downstream coverage credit.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T031323.325777Z"
+  },
+  {
+    "fixture": "H-03-put-multi-contract-v1",
+    "source": "Retained H-03-http-3 reviewed PUT body/status/header/query-omission observation; approved H-01/H-02/H-03 and plan 5.2/5.4 ALB multi-value mode",
+    "javaBehaviorAsserted": [
+      "H-01",
+      "H-02",
+      "H-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "H-01",
+      "H-02",
+      "H-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared raw event keeps original single SERVICE_ID and adds matching lower-case multimap service_id/x-forward and query. Configured direct URL is the only target; trigger header removed (serviceId null), x-forward exact, rewrite /x to /rewritten, query a=1 omitted in both approved HTTP subset expectations. PUT HTTP body is exactly 'synthetic-body'. Backend repeated Set-Cookie still collapses to first a=1 per approved H-03; Rust must not silently restore HTTP multiplicity. Exact separate response maps retain Java single map and declare Rust ALB multi-mode shape under E-13; field values/multiplicity/status/body are unchanged. E-13 is contextual authorization of envelope mode, not an early-rejection downstream coverage credit.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T031323.325777Z"
+  },
+  {
+    "fixture": "H-03-patch-multi-contract-v1",
+    "source": "Retained H-03-http-4 reviewed PATCH body/status/header/query-omission observation; approved H-01/H-02/H-03 and plan 5.2/5.4 ALB multi-value mode",
+    "javaBehaviorAsserted": [
+      "H-01",
+      "H-02",
+      "H-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "H-01",
+      "H-02",
+      "H-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared raw event keeps original single SERVICE_ID and adds matching lower-case multimap service_id/x-forward and query. Configured direct URL is the only target; trigger header removed (serviceId null), x-forward exact, rewrite /x to /rewritten, query a=1 omitted in both approved HTTP subset expectations. PATCH HTTP body is exactly 'synthetic-body'. Backend repeated Set-Cookie still collapses to first a=1 per approved H-03; Rust must not silently restore HTTP multiplicity. Exact separate response maps retain Java single map and declare Rust ALB multi-mode shape under E-13; field values/multiplicity/status/body are unchanged. E-13 is contextual authorization of envelope mode, not an early-rejection downstream coverage credit.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T031323.325777Z"
+  }
+]

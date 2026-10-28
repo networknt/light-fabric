@@ -1,0 +1,10 @@
+{
+  "id" : "E-01-status-metadata-escaping-cp1-e02-accepted",
+  "ledger" : [ "E-01" ],
+  "observation" : {
+    "exactStatusBytesUtf8" : "{\"statusCode\":418,\"code\":\"TEST_ONLY\",\"message\":\"quoted \"value\"\",\"description\":\"snow雪\nnewline\",\"metadata\":{\"quoted\":\"a\\\"b\",\"nullValue\":null},\"severity\":\"ERROR\"}",
+    "parsesAsJson" : false
+  },
+  "tokens" : { },
+  "schemaGap" : "Component serializer outcome is invalid JSON; do not invent a valid HTTP JSON body expectation"
+}

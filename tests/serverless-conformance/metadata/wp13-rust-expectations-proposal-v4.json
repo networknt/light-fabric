@@ -1,0 +1,356 @@
+{
+  "schema": "light-lambda-rust-expectations-proposal/v4",
+  "proposals": [
+    {
+      "id": "D-03-handled-multi-contract-v1",
+      "originalFixtureDigest": "b98bf2a9eab95f67eebf15ea6a49d9395806a4629bbf13e6ba2bb9c1ff50b0a2",
+      "originalExpected": [
+        {
+          "outcome": "response",
+          "status": 502,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":502,\"code\":\"ERR14014\",\"message\":\"BACKEND_FUNCTION_ERROR\",\"description\":\"Backend function FnX failed.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [
+            {
+              "target": "FnX",
+              "event": {
+                "path": "/x",
+                "httpMethod": "GET",
+                "body": null,
+                "isBase64Encoded": false,
+                "requestContext": {
+                  "stage": "test-only"
+                },
+                "queryStringParameters": null,
+                "pathParameters": null,
+                "multiValueQueryStringParameters": null
+              },
+              "eventExact": {
+                "headers": null,
+                "multiValueHeaders": null,
+                "queryStringParameters": null,
+                "pathParameters": null,
+                "multiValueQueryStringParameters": null
+              }
+            }
+          ],
+          "jwksFetches": 0,
+          "backendDiagnostics": {
+            "kind": "rustFunctionErrorSafeMetadata",
+            "metadata": {
+              "requestId": "test-only-request",
+              "targetAlias": "FnX",
+              "functionError": "Handled",
+              "executedVersion": null,
+              "payloadBytes": 186,
+              "errorType": "TestOnly.Error"
+            }
+          }
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "outcome": "response",
+          "status": 502,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":502,\"code\":\"ERR14014\",\"message\":\"BACKEND_FUNCTION_ERROR\",\"description\":\"Backend function function0 failed.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [
+            {
+              "target": "FnX",
+              "event": {
+                "path": "/x",
+                "httpMethod": "GET",
+                "body": null,
+                "isBase64Encoded": false,
+                "requestContext": {
+                  "stage": "test-only"
+                },
+                "queryStringParameters": null,
+                "pathParameters": null,
+                "multiValueQueryStringParameters": null
+              },
+              "eventExact": {
+                "headers": null,
+                "multiValueHeaders": null,
+                "queryStringParameters": null,
+                "pathParameters": null,
+                "multiValueQueryStringParameters": null
+              }
+            }
+          ],
+          "jwksFetches": 0,
+          "backendDiagnostics": {
+            "kind": "rustFunctionErrorSafeMetadata",
+            "metadata": {
+              "requestId": "test-only-request",
+              "targetAlias": "function0",
+              "functionError": "Handled",
+              "executedVersion": null,
+              "payloadBytes": 186,
+              "errorType": "TestOnly.Error"
+            }
+          }
+        }
+      ],
+      "approvedExpectationDifferenceFields": [
+        "backendCalls",
+        "backendDiagnostics",
+        "body",
+        "header:content-type",
+        "status"
+      ],
+      "authority": "Owner extended indexed-alias policy to these exact D-03 fixtures; absent executedVersion remains null by approved production repair",
+      "status": "approved-active-v4"
+    },
+    {
+      "id": "D-03-unhandled-multi-contract-v1",
+      "originalFixtureDigest": "f7e022eb9ae96eb48d0e7228d6ce72572a2cd2fb38a4631255dcc9fbd5849f09",
+      "originalExpected": [
+        {
+          "outcome": "response",
+          "status": 502,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":502,\"code\":\"ERR14014\",\"message\":\"BACKEND_FUNCTION_ERROR\",\"description\":\"Backend function FnX failed.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [
+            {
+              "target": "FnX",
+              "event": {
+                "path": "/x",
+                "httpMethod": "GET",
+                "body": null,
+                "isBase64Encoded": false,
+                "requestContext": {
+                  "stage": "test-only"
+                },
+                "queryStringParameters": null,
+                "pathParameters": null,
+                "multiValueQueryStringParameters": null
+              },
+              "eventExact": {
+                "headers": null,
+                "multiValueHeaders": null,
+                "queryStringParameters": null,
+                "pathParameters": null,
+                "multiValueQueryStringParameters": null
+              }
+            }
+          ],
+          "jwksFetches": 0,
+          "backendDiagnostics": {
+            "kind": "rustFunctionErrorSafeMetadata",
+            "metadata": {
+              "requestId": "test-only-request",
+              "targetAlias": "FnX",
+              "functionError": "Unhandled",
+              "executedVersion": null,
+              "payloadBytes": 186,
+              "errorType": "TestOnly.Error"
+            }
+          }
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "outcome": "response",
+          "status": 502,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":502,\"code\":\"ERR14014\",\"message\":\"BACKEND_FUNCTION_ERROR\",\"description\":\"Backend function function0 failed.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [
+            {
+              "target": "FnX",
+              "event": {
+                "path": "/x",
+                "httpMethod": "GET",
+                "body": null,
+                "isBase64Encoded": false,
+                "requestContext": {
+                  "stage": "test-only"
+                },
+                "queryStringParameters": null,
+                "pathParameters": null,
+                "multiValueQueryStringParameters": null
+              },
+              "eventExact": {
+                "headers": null,
+                "multiValueHeaders": null,
+                "queryStringParameters": null,
+                "pathParameters": null,
+                "multiValueQueryStringParameters": null
+              }
+            }
+          ],
+          "jwksFetches": 0,
+          "backendDiagnostics": {
+            "kind": "rustFunctionErrorSafeMetadata",
+            "metadata": {
+              "requestId": "test-only-request",
+              "targetAlias": "function0",
+              "functionError": "Unhandled",
+              "executedVersion": null,
+              "payloadBytes": 186,
+              "errorType": "TestOnly.Error"
+            }
+          }
+        }
+      ],
+      "approvedExpectationDifferenceFields": [
+        "backendCalls",
+        "backendDiagnostics",
+        "body",
+        "header:content-type",
+        "status"
+      ],
+      "authority": "Owner extended indexed-alias policy to these exact D-03 fixtures; absent executedVersion remains null by approved production repair",
+      "status": "approved-active-v4"
+    },
+    {
+      "id": "D-03-D-04-safe-metadata-no-log-tail-multi-contract-v1",
+      "originalFixtureDigest": "62daf56be26e06207b6f9c9e437bceb106a9db5f690801af670f45649f0dc49a",
+      "originalExpected": [
+        {
+          "outcome": "response",
+          "status": 502,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":502,\"code\":\"ERR14014\",\"message\":\"BACKEND_FUNCTION_ERROR\",\"description\":\"Backend function FnX failed.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [
+            {
+              "target": "FnX",
+              "event": {
+                "path": "/x",
+                "httpMethod": "GET",
+                "body": null,
+                "isBase64Encoded": false,
+                "requestContext": {
+                  "stage": "test-only"
+                },
+                "queryStringParameters": null,
+                "pathParameters": null,
+                "multiValueQueryStringParameters": null
+              },
+              "eventExact": {
+                "headers": null,
+                "multiValueHeaders": null,
+                "queryStringParameters": null,
+                "pathParameters": null,
+                "multiValueQueryStringParameters": null
+              },
+              "invoke": {
+                "logType": "None"
+              }
+            }
+          ],
+          "jwksFetches": 0,
+          "backendDiagnostics": {
+            "kind": "rustFunctionErrorSafeMetadata",
+            "metadata": {
+              "requestId": "test-only-request",
+              "targetAlias": "FnX",
+              "functionError": "Unhandled",
+              "executedVersion": null,
+              "payloadBytes": 186,
+              "errorType": "TestOnly.Error"
+            }
+          }
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "outcome": "response",
+          "status": 502,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":502,\"code\":\"ERR14014\",\"message\":\"BACKEND_FUNCTION_ERROR\",\"description\":\"Backend function function0 failed.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [
+            {
+              "target": "FnX",
+              "event": {
+                "path": "/x",
+                "httpMethod": "GET",
+                "body": null,
+                "isBase64Encoded": false,
+                "requestContext": {
+                  "stage": "test-only"
+                },
+                "queryStringParameters": null,
+                "pathParameters": null,
+                "multiValueQueryStringParameters": null
+              },
+              "eventExact": {
+                "headers": null,
+                "multiValueHeaders": null,
+                "queryStringParameters": null,
+                "pathParameters": null,
+                "multiValueQueryStringParameters": null
+              },
+              "invoke": {
+                "logType": "None"
+              }
+            }
+          ],
+          "jwksFetches": 0,
+          "backendDiagnostics": {
+            "kind": "rustFunctionErrorSafeMetadata",
+            "metadata": {
+              "requestId": "test-only-request",
+              "targetAlias": "function0",
+              "functionError": "Unhandled",
+              "executedVersion": null,
+              "payloadBytes": 186,
+              "errorType": "TestOnly.Error"
+            }
+          }
+        }
+      ],
+      "approvedExpectationDifferenceFields": [
+        "backendCalls",
+        "backendDiagnostics",
+        "body",
+        "header:content-type",
+        "status"
+      ],
+      "authority": "Owner extended indexed-alias policy to these exact D-03 fixtures; absent executedVersion remains null by approved production repair",
+      "status": "approved-active-v4"
+    }
+  ]
+}

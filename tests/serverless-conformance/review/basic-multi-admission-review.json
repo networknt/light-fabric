@@ -1,0 +1,30 @@
+[
+  {
+    "fixture": "S-07-valid-multi-policy-0-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "E-10"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-07",
+      "E-10"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Separately authored shared raw multi input, no per-runner transformation. BasicAuthMiddleware reads only getHeaders; MapUtil iterates null map, ChainExecutor preserves fail-open dispatch. Java does not establish Basic credential checking on this input. Reviewed target contract S-07 supports the same local plain/base64 credentials and path-prefix authorization; Rust reaches Basic and dispatches FnX. Exact Java forwarded multimap and absent single map asserted. Backend event follows approved E-10 conversion. C-04 is contextual only; no recorded chain exception assertion is claimed.",
+    "validation": "passed focused separate-JVM workflow 20261011T011500.080088Z; result schema exit 0; isolation passed"
+  },
+  {
+    "fixture": "S-07-valid-multi-policy-1-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "E-10"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-07",
+      "E-10"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Separately authored shared raw multi input, no per-runner transformation. BasicAuthMiddleware reads only getHeaders; MapUtil iterates null map, ChainExecutor preserves fail-open dispatch. Java does not establish Basic credential checking on this input. Reviewed target contract S-07 supports the same local plain/base64 credentials and path-prefix authorization; Rust reaches Basic and dispatches FnX. Exact Java forwarded multimap and absent single map asserted. Backend event follows approved E-10 conversion. C-04 is contextual only; no recorded chain exception assertion is claimed.",
+    "validation": "passed focused separate-JVM workflow 20261011T011500.080088Z; result schema exit 0; isolation passed"
+  }
+]

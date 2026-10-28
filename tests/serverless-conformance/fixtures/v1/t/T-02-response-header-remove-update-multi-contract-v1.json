@@ -1,0 +1,294 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "T-02-response-header-remove-update-multi-contract-v1",
+  "title": "Response rule removes and updates real backend headers",
+  "ledger": [
+    "T-01",
+    "T-02",
+    "E-10"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "response-transformer": {
+        "enabled": true,
+        "appliedPathPrefixes": [
+          "/x"
+        ]
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.transformer.ResponseTransformerMiddleware@response0"
+        ],
+        "chains": {
+          "request": [],
+          "response": [
+            "response0"
+          ]
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "No virtual deadline or elapsed-time equality; exact observed rule result is asserted."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "backendCalls"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {
+          "test-rule": "throw"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {
+          "test-rule": [
+            "throw"
+          ]
+        },
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-remove": "old",
+                "x-keep": "keep"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-added",
+            "after"
+          ],
+          [
+            "x-keep",
+            "keep"
+          ]
+        ],
+        "headersAbsent": [
+          "x-remove",
+          "X-Remove"
+        ],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "headers": {
+                "test-rule": "throw"
+              },
+              "queryStringParameters": {},
+              "requestContext": {},
+              "isBase64Encoded": false,
+              "multiValueHeaders": {
+                "test-rule": [
+                  "throw"
+                ]
+              },
+              "multiValueQueryStringParameters": {}
+            },
+            "eventExact": {
+              "headers": {
+                "test-rule": "throw"
+              },
+              "queryStringParameters": {},
+              "requestContext": {}
+            },
+            "eventAbsent": [
+              "/body"
+            ]
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "expect": {
+        "status": 200,
+        "headers": [
+          [
+            "x-added",
+            "after"
+          ],
+          [
+            "x-keep",
+            "keep"
+          ]
+        ],
+        "headersAbsent": [
+          "x-remove",
+          "X-Remove"
+        ],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "headers": {
+                "test-rule": "throw"
+              },
+              "queryStringParameters": null,
+              "requestContext": {
+                "stage": "test-only"
+              },
+              "isBase64Encoded": false,
+              "multiValueHeaders": {
+                "test-rule": [
+                  "throw"
+                ]
+              },
+              "multiValueQueryStringParameters": null,
+              "body": null,
+              "pathParameters": null
+            },
+            "eventExact": {
+              "headers": {
+                "test-rule": "throw"
+              },
+              "multiValueHeaders": {
+                "test-rule": [
+                  "throw"
+                ]
+              },
+              "queryStringParameters": null,
+              "multiValueQueryStringParameters": null,
+              "pathParameters": null
+            },
+            "eventAbsent": []
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi"
+    }
+  ],
+  "ruleConfigurationPair": {
+    "java": {
+      "executor": "java-yaml-rule",
+      "rule": {
+        "endpointRules": {
+          "/x@get": {
+            "res-tra": [
+              "slow"
+            ]
+          }
+        },
+        "ruleBodies": {
+          "slow": {
+            "ruleId": "slow",
+            "ruleType": "res-tra",
+            "common": "Y",
+            "ruleName": "test-only-response-headers",
+            "conditions": [],
+            "actions": [
+              {
+                "actionId": "slow",
+                "actionClassName": "com.networknt.aws.lambda.conformance.ConformanceResponseHeaderAction"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "rust": {
+      "executor": "light-rule-cel",
+      "rule": {
+        "endpointRules": {
+          "/x@get": {
+            "res-tra": [
+              "slow"
+            ]
+          }
+        },
+        "ruleBodies": {
+          "slow": {
+            "ruleId": "slow",
+            "ruleType": "res-tra",
+            "common": "Y",
+            "ruleName": "test-only-response-headers",
+            "actions": [
+              {
+                "actionId": "slow",
+                "actionRef": "response-headers-literal",
+                "actionValues": {
+                  "remove": [
+                    "X-Remove"
+                  ],
+                  "update": {
+                    "x-added": "after"
+                  }
+                }
+              }
+            ],
+            "conditionLanguage": "cel",
+            "conditionSecurityProfile": "standard",
+            "expression": "true"
+          }
+        }
+      }
+    }
+  }
+}

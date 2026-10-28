@@ -1,0 +1,317 @@
+[
+  {
+    "input": {
+      "id": "missing-query",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-missing-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "parameters": [
+                  {
+                    "name": "v",
+                    "in": "query",
+                    "required": true,
+                    "schema": {
+                      "type": "integer"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "missing-query",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11000\",\"message\":\"VALIDATOR_REQUEST_PARAMETER_QUERY_MISSING\",\"description\":\"Query parameter v is required on path /x but not found in request.\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/bounded-admission-20261016T201237Z/request-missing-probes-final/missing-query.json",
+    "sha256": "0752304a46d47e9408b34ac0f972ba7ae4d70caefa1296a90f60d429bfda6598"
+  },
+  {
+    "input": {
+      "id": "missing-header",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-missing-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "parameters": [
+                  {
+                    "name": "v",
+                    "in": "header",
+                    "required": true,
+                    "schema": {
+                      "type": "integer"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "missing-header",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11017\",\"message\":\"VALIDATOR_REQUEST_PARAMETER_HEADER_MISSING\",\"description\":\"Header parameter v is required on path /x but not found in request.\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/bounded-admission-20261016T201237Z/request-missing-probes-final/missing-header.json",
+    "sha256": "2c560c0b0eee8b1099d1968b7fcaab871dc3278ca6c602aa284ee3093c100f82"
+  },
+  {
+    "input": {
+      "id": "missing-path",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-missing-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "parameters": [
+                  {
+                    "name": "v",
+                    "in": "path",
+                    "required": true,
+                    "schema": {
+                      "type": "integer"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "missing-path",
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/bounded-admission-20261016T201237Z/request-missing-probes-final/missing-path.json",
+    "sha256": "2eec4d5a2cab5116cd6a797559e589a55446c6fb6481b4eba754ec351f7a0bb6"
+  },
+  {
+    "input": {
+      "id": "missing-unexpected",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-missing-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "missing-unexpected",
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/bounded-admission-20261016T201237Z/request-missing-probes-final/missing-unexpected.json",
+    "sha256": "19aaf9e57dc9ff8c093c45c02a5103f7a35a3263abd8afba8c91c86ada1e495b"
+  }
+]

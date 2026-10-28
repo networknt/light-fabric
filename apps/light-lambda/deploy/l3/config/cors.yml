@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "allowedOrigins": [
+    "https://test.invalid"
+  ],
+  "allowedMethods": [
+    "GET",
+    "POST"
+  ]
+}

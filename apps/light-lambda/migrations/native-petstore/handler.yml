@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "handlers": [
+    "com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware@specification",
+    "com.networknt.aws.lambda.handler.middleware.validator.ValidatorMiddleware@validator",
+    "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy"
+  ],
+  "defaultHandlers": ["specification", "validator", "proxy"]
+}

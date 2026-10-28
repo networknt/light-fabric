@@ -1,0 +1,62 @@
+[
+  {
+    "fixture": "CFG-02-loopback-jks-tls-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/CFG-02-loopback-jks-tls-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "CFG-02",
+      "H-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "CFG-02",
+      "CFG-04"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Reviewed original TlsLoopbackTest/SdkTlsBoundaryTest/HttpFailureTest setup and exact Java bodies. Generated self-signed loopback certificate and public JKS truststore at execution; no stored key. Router TLS uses JKS and exact declared synthetic Date matching historical bytes (raw responder avoids automatic wall Date). SDK Netty fails trust before any HTTP request despite shared client JKS. Refused endpoint follows original reserve-and-close loopback-port setup, zero captured calls; slow endpoint retains300ms response delay and100ms router/client caps, one captured request and no Lambda fallback. Ephemeral error target is declared synthetic dependency substitution, exact bytes checked after resolution. Original Java service/JKS configuration remains invalid for proposed Rust Init, no Rust transport credit.",
+    "validation": "passed focused separate-JVM workflow 20261011T011036.135926Z; result schema exit 0; isolation passed"
+  },
+  {
+    "fixture": "CFG-02-sdk-netty-trust-boundary-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/CFG-02-sdk-netty-trust-boundary-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "CFG-02",
+      "D-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "CFG-02",
+      "CFG-04"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Reviewed original TlsLoopbackTest/SdkTlsBoundaryTest/HttpFailureTest setup and exact Java bodies. Generated self-signed loopback certificate and public JKS truststore at execution; no stored key. Router TLS uses JKS and exact declared synthetic Date matching historical bytes (raw responder avoids automatic wall Date). SDK Netty fails trust before any HTTP request despite shared client JKS. Refused endpoint follows original reserve-and-close loopback-port setup, zero captured calls; slow endpoint retains300ms response delay and100ms router/client caps, one captured request and no Lambda fallback. Ephemeral error target is declared synthetic dependency substitution, exact bytes checked after resolution. Original Java service/JKS configuration remains invalid for proposed Rust Init, no Rust transport credit.",
+    "validation": "passed focused separate-JVM workflow 20261011T011036.135926Z; result schema exit 0; isolation passed"
+  },
+  {
+    "fixture": "H-04-loopback-test-refused-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/H-04-loopback-test-refused-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "H-04",
+      "H-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "CFG-02",
+      "CFG-04"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Reviewed original TlsLoopbackTest/SdkTlsBoundaryTest/HttpFailureTest setup and exact Java bodies. Generated self-signed loopback certificate and public JKS truststore at execution; no stored key. Router TLS uses JKS and exact declared synthetic Date matching historical bytes (raw responder avoids automatic wall Date). SDK Netty fails trust before any HTTP request despite shared client JKS. Refused endpoint follows original reserve-and-close loopback-port setup, zero captured calls; slow endpoint retains300ms response delay and100ms router/client caps, one captured request and no Lambda fallback. Ephemeral error target is declared synthetic dependency substitution, exact bytes checked after resolution. Original Java service/JKS configuration remains invalid for proposed Rust Init, no Rust transport credit.",
+    "validation": "passed focused separate-JVM workflow 20261011T011036.135926Z; result schema exit 0; isolation passed"
+  },
+  {
+    "fixture": "H-04-loopback-test-slow-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/H-04-loopback-test-slow-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "H-04",
+      "H-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "CFG-02",
+      "CFG-04"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Reviewed original TlsLoopbackTest/SdkTlsBoundaryTest/HttpFailureTest setup and exact Java bodies. Generated self-signed loopback certificate and public JKS truststore at execution; no stored key. Router TLS uses JKS and exact declared synthetic Date matching historical bytes (raw responder avoids automatic wall Date). SDK Netty fails trust before any HTTP request despite shared client JKS. Refused endpoint follows original reserve-and-close loopback-port setup, zero captured calls; slow endpoint retains300ms response delay and100ms router/client caps, one captured request and no Lambda fallback. Ephemeral error target is declared synthetic dependency substitution, exact bytes checked after resolution. Original Java service/JKS configuration remains invalid for proposed Rust Init, no Rust transport credit. Pinned client RequestConfig default maxRequestRetry=3 and sendWithRetry bounds three attempts. Concurrent finite delayed responder preserves that path; exact three requests asserted. Faulty five-attempt draft/replays retained separately. Pinned client RequestConfig default maxRequestRetry=3 and sendWithRetry bounds three attempts. Concurrent finite delayed responder preserves that path; exact three requests asserted. Faulty five-attempt draft/replays retained separately. Pinned client RequestConfig default maxRequestRetry=3 and sendWithRetry bounds three attempts. Concurrent finite delayed responder preserves that path; exact three requests asserted. Faulty five-attempt draft/replays retained separately.",
+    "validation": "passed focused separate-JVM workflow 20261011T011036.135926Z; result schema exit 0; isolation passed"
+  }
+]

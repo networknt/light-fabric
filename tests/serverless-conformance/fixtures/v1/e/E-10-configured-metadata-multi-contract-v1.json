@@ -1,0 +1,279 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "E-10-configured-metadata-multi-contract-v1",
+  "title": "Shared ALB event reaches configured backend metadata",
+  "ledger": [
+    "E-10",
+    "E-10a",
+    "E-10b",
+    "E-10c",
+    "E-10d",
+    "E-10e",
+    "E-10f",
+    "E-11",
+    "E-10g"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only",
+      "light-lambda.accountId": "000000000000",
+      "light-lambda.apiId": "test-only-api",
+      "light-lambda.domainName": "test-only.example",
+      "light-lambda.resourceId": "test-only-resource",
+      "light-lambda.stageVariables": {
+        "synthetic": "configured"
+      }
+    },
+    "files": {
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy"
+        ],
+        "chains": {
+          "request": [],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {},
+  "tokens": {},
+  "headerMode": "multi",
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "backendCalls"
+  ],
+  "rawEvent": {
+    "requestContext": {
+      "accountId": "test-account",
+      "apiId": "test-api",
+      "domainName": "test.example",
+      "resourceId": "test-resource",
+      "stage": "test-stage",
+      "requestId": "test-request",
+      "extendedRequestId": "test-extended",
+      "requestTime": "test-time",
+      "requestTimeEpoch": 123,
+      "protocol": "HTTP/1.1",
+      "resourcePath": "/synthetic",
+      "httpMethod": "GET",
+      "path": "/x",
+      "identity": {
+        "sourceIp": "203.0.113.9",
+        "userAgent": "test-agent"
+      },
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "GET",
+    "path": "/x",
+    "body": null,
+    "isBase64Encoded": false,
+    "stageVariables": {
+      "test": "value"
+    },
+    "resource": "/synthetic",
+    "multiValueHeaders": {
+      "x-forwarded-for": [
+        "198.51.100.7, 203.0.113.9",
+        "192.0.2.12, 203.0.113.17"
+      ]
+    },
+    "multiValueQueryStringParameters": {}
+  },
+  "backend": [
+    {
+      "match": {
+        "target": "FnX"
+      },
+      "respond": {
+        "functionError": null,
+        "payload": {
+          "statusCode": 200,
+          "headers": {
+            "x-backend": "synthetic"
+          },
+          "body": "ok",
+          "isBase64Encoded": false
+        }
+      }
+    }
+  ],
+  "expectJava": {
+    "status": 200,
+    "headers": [
+      [
+        "x-backend",
+        "synthetic"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "ok",
+    "bodyBase64": false,
+    "backendCalls": [
+      {
+        "target": "FnX",
+        "event": {
+          "resource": "/synthetic",
+          "path": "/x",
+          "httpMethod": "GET",
+          "stageVariables": {
+            "test": "value"
+          },
+          "requestContext": {
+            "accountId": "test-account",
+            "stage": "test-stage",
+            "resourceId": "test-resource",
+            "requestId": "test-request",
+            "identity": {
+              "sourceIp": "203.0.113.9",
+              "userAgent": "test-agent"
+            },
+            "resourcePath": "/synthetic",
+            "httpMethod": "GET",
+            "apiId": "test-api",
+            "path": "/x",
+            "extendedRequestId": "test-extended",
+            "requestTime": "test-time",
+            "requestTimeEpoch": 123,
+            "domainName": "test.example",
+            "protocol": "HTTP/1.1"
+          },
+          "isBase64Encoded": false
+        },
+        "eventExact": {
+          "requestContext": {
+            "accountId": "test-account",
+            "stage": "test-stage",
+            "resourceId": "test-resource",
+            "requestId": "test-request",
+            "identity": {
+              "sourceIp": "203.0.113.9",
+              "userAgent": "test-agent"
+            },
+            "resourcePath": "/synthetic",
+            "httpMethod": "GET",
+            "apiId": "test-api",
+            "path": "/x",
+            "extendedRequestId": "test-extended",
+            "requestTime": "test-time",
+            "requestTimeEpoch": 123,
+            "domainName": "test.example",
+            "protocol": "HTTP/1.1"
+          },
+          "stageVariables": {
+            "test": "value"
+          },
+          "multiValueHeaders": {
+            "x-forwarded-for": [
+              "198.51.100.7, 203.0.113.9",
+              "192.0.2.12, 203.0.113.17"
+            ]
+          },
+          "multiValueQueryStringParameters": {}
+        },
+        "eventAbsent": [
+          "/headers",
+          "/queryStringParameters",
+          "/requestContext/elb"
+        ]
+      }
+    ],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "expect": {
+    "status": 200,
+    "headers": [
+      [
+        "x-backend",
+        "synthetic"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "ok",
+    "bodyBase64": false,
+    "backendCalls": [
+      {
+        "target": "FnX",
+        "event": {
+          "resource": "/x",
+          "path": "/x",
+          "httpMethod": "GET",
+          "body": null,
+          "isBase64Encoded": false,
+          "requestContext": {
+            "stage": "test-only",
+            "accountId": "000000000000",
+            "apiId": "test-only-api",
+            "domainName": "test-only.example",
+            "resourceId": "test-only-resource",
+            "requestId": "test-only-request",
+            "extendedRequestId": "test-only-request",
+            "resourcePath": "/x",
+            "httpMethod": "GET",
+            "path": "/x",
+            "protocol": "HTTP/1.1",
+            "identity": {
+              "sourceIp": "203.0.113.17"
+            }
+          }
+        },
+        "eventExact": {
+          "headers": {
+            "x-forwarded-for": "192.0.2.12, 203.0.113.17"
+          },
+          "multiValueHeaders": {
+            "x-forwarded-for": [
+              "198.51.100.7, 203.0.113.9",
+              "192.0.2.12, 203.0.113.17"
+            ]
+          },
+          "queryStringParameters": null,
+          "multiValueQueryStringParameters": null,
+          "pathParameters": null,
+          "stageVariables": {
+            "synthetic": "configured"
+          }
+        },
+        "eventAbsent": [
+          "/requestContext/authorizer"
+        ],
+        "eventClock": "invocation-wall-clock"
+      }
+    ],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "substitutions": []
+}

@@ -1,0 +1,94 @@
+[
+  {
+    "fixture": "A-02-selected-string-ascii-at-1024-contract-v1",
+    "javaRun": "20261011T134639.759660Z",
+    "javaBehaviorAsserted": [
+      "A-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "A-02"
+    ],
+    "review": "Exact selected audit header byte bound: 1024 UTF-8 bytes. Java actual source preserved. Rust retains at/below1024 or exact <truncated> over1024. Both exact backend events retain full input; no output/status/auth masking.",
+    "source": "Owner approvals20261011T134329.535325Z and exact reviewed assertions",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T134639.759660Z"
+  },
+  {
+    "fixture": "A-02-selected-string-ascii-over-1024-contract-v1",
+    "javaRun": "20261011T134639.759660Z",
+    "javaBehaviorAsserted": [
+      "A-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "A-02"
+    ],
+    "review": "Exact selected audit header byte bound: 1025 UTF-8 bytes. Java actual source preserved. Rust retains at/below1024 or exact <truncated> over1024. Both exact backend events retain full input; no output/status/auth masking.",
+    "source": "Owner approvals20261011T134329.535325Z and exact reviewed assertions",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T134639.759660Z"
+  },
+  {
+    "fixture": "A-02-selected-string-utf8-at-1024-contract-v1",
+    "javaRun": "20261011T134639.759660Z",
+    "javaBehaviorAsserted": [
+      "A-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "A-02"
+    ],
+    "review": "Exact selected audit header byte bound: 1024 UTF-8 bytes. Java actual source preserved. Rust retains at/below1024 or exact <truncated> over1024. Both exact backend events retain full input; no output/status/auth masking.",
+    "source": "Owner approvals20261011T134329.535325Z and exact reviewed assertions",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T134639.759660Z"
+  },
+  {
+    "fixture": "A-02-selected-string-utf8-over-1024-contract-v1",
+    "javaRun": "20261011T134639.759660Z",
+    "javaBehaviorAsserted": [
+      "A-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "A-02"
+    ],
+    "review": "Exact selected audit header byte bound: 1026 UTF-8 bytes. Java actual source preserved. Rust retains at/below1024 or exact <truncated> over1024. Both exact backend events retain full input; no output/status/auth masking.",
+    "source": "Owner approvals20261011T134329.535325Z and exact reviewed assertions",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T134639.759660Z"
+  },
+  {
+    "fixture": "D-09-response-cap-minimum-4095-init-contract-v1",
+    "javaRun": "20261011T134639.759660Z",
+    "javaBehaviorAsserted": [
+      "D-09",
+      "C-10",
+      "CFG-05"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-09",
+      "C-10",
+      "CFG-05"
+    ],
+    "review": "Approved response-cap minimum boundary:4095 rejects Rust Init InvalidConfiguration while Java ignores the Rust-only key;4096 passes minimum gate and normal reviewed dispatch. Does not prove replacement size checks or Rust execution.",
+    "source": "Owner approvals20261011T134329.535325Z and exact reviewed assertions",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T134639.759660Z"
+  },
+  {
+    "fixture": "D-09-response-cap-minimum-4096-init-contract-v1",
+    "javaRun": "20261011T134639.759660Z",
+    "javaBehaviorAsserted": [
+      "D-09",
+      "C-10",
+      "CFG-05"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-09",
+      "C-10",
+      "CFG-05"
+    ],
+    "review": "Approved response-cap minimum boundary:4095 rejects Rust Init InvalidConfiguration while Java ignores the Rust-only key;4096 passes minimum gate and normal reviewed dispatch. Does not prove replacement size checks or Rust execution.",
+    "source": "Owner approvals20261011T134329.535325Z and exact reviewed assertions",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T134639.759660Z"
+  }
+]

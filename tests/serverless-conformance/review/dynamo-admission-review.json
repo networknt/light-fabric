@@ -1,0 +1,24 @@
+[
+  {
+    "fixture": "K-01-loopback-crud-component-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/K-01-loopback-crud-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "K-01"
+    ],
+    "proposedRustBehaviorReached": [],
+    "rustExecutionEvidence": null,
+    "review": "Closed component calls the original WP2 DynamoCacheTest methods against their owned loopback server, using the original one-public-constructor DynamoDbCacheManager. It verifies endpointOverride before any SDK request, dummy property credentials and blank profile, AWS_REGION=us-east-1 scoped to this fixture JVM. Exact operation/request list and getSize are compared as complete JSON, not subset; original JUnit malformed-cache assertion also executes. No withdrawn constructor seam. Zero throughput accepted only by fake server, no real Dynamo acceptance claim. Deferred Java-only row; Rust skipped.",
+    "validation": "passed focused separate-JVM workflow 20261011T010110.645229Z; result schema exit 0; isolation passed"
+  },
+  {
+    "fixture": "K-01-loopback-create-remove-component-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/K-01-loopback-create-remove-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "K-01"
+    ],
+    "proposedRustBehaviorReached": [],
+    "rustExecutionEvidence": null,
+    "review": "Closed component calls the original WP2 DynamoCacheTest methods against their owned loopback server, using the original one-public-constructor DynamoDbCacheManager. It verifies endpointOverride before any SDK request, dummy property credentials and blank profile, AWS_REGION=us-east-1 scoped to this fixture JVM. Exact operation/request list and getSize are compared as complete JSON, not subset; original JUnit malformed-cache assertion also executes. No withdrawn constructor seam. Zero throughput accepted only by fake server, no real Dynamo acceptance claim. Deferred Java-only row; Rust skipped.",
+    "validation": "passed focused separate-JVM workflow 20261011T010110.645229Z; result schema exit 0; isolation passed"
+  }
+]

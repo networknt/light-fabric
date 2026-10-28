@@ -1,0 +1,21 @@
+{
+  "enabled": true,
+  "request": {
+    "update": {
+      "x-request": "configured",
+      "x-remove": "request-added",
+      "x-added": "request-before"
+    }
+  },
+  "response": {
+    "remove": [
+      "x-business"
+    ],
+    "update": {
+      "x-added": "response-before",
+      "x-remove": "response-before",
+      "x-chain": "composed",
+      "access-control-allow-origin": "https://headers.invalid"
+    }
+  }
+}

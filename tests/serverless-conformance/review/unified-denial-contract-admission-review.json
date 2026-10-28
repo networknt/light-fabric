@@ -1,0 +1,36 @@
+[
+  {
+    "fixture": "S-12-denied-x-multi-contract-v1",
+    "source": "S-12-denied-x-warm-init-v1",
+    "javaBehaviorAsserted": [
+      "S-12"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-12"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared valid multimap, supported Basic-only configuration; exact source-reviewed missing credential/unknown prefix denial with zero dispatch and header casing under E06a. All warm step header differences explicitly declared. No combined-factor/API-key or missing/disabled handler credit.",
+    "remainingContractAssertions": [
+      "S-12: JWT/API-key and combined factor precedence, missing/disabled handler remain open"
+    ],
+    "javaRun": "20261011T105322.171083Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T105322.171083Z"
+  },
+  {
+    "fixture": "S-12-denied-unknown-multi-contract-v1",
+    "source": "S-12-denied-unknown-warm-init-v1",
+    "javaBehaviorAsserted": [
+      "S-12"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-12"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared valid multimap, supported Basic-only configuration; exact source-reviewed missing credential/unknown prefix denial with zero dispatch and header casing under E06a. All warm step header differences explicitly declared. No combined-factor/API-key or missing/disabled handler credit.",
+    "remainingContractAssertions": [
+      "S-12: JWT/API-key and combined factor precedence, missing/disabled handler remain open"
+    ],
+    "javaRun": "20261011T105322.171083Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T105322.171083Z"
+  }
+]

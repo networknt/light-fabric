@@ -1,0 +1,59 @@
+[
+  {
+    "fixture": "S-09-anonymous-multi-policy-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "E-10"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-09",
+      "E-10"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Source-reviewed independent shared multimap input. Java Basic/API matched header accesses iterate absent single map and preserve fail-open dispatch; no credential checking credited. Unmatched API prefix bypasses header access and establishes no-table-path behavior. Rust approved local Basic anonymous/bearer gate or plain API-key policy reaches success and FnX, not early E-13 rejection. No token verification claimed for bearer gate. Exact one-call count and forwarded maps asserted; no per-runner input transformation.",
+    "validation": "passed focused separate-JVM workflow 20261011T011623.414280Z; result schema exit 0; isolation passed"
+  },
+  {
+    "fixture": "S-10-bearer-gate-multi-policy-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "E-10"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-10",
+      "E-10"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Source-reviewed independent shared multimap input. Java Basic/API matched header accesses iterate absent single map and preserve fail-open dispatch; no credential checking credited. Unmatched API prefix bypasses header access and establishes no-table-path behavior. Rust approved local Basic anonymous/bearer gate or plain API-key policy reaches success and FnX, not early E-13 rejection. No token verification claimed for bearer gate. Exact one-call count and forwarded maps asserted; no per-runner input transformation.",
+    "validation": "passed focused separate-JVM workflow 20261011T011623.414280Z; result schema exit 0; isolation passed"
+  },
+  {
+    "fixture": "S-11-valid-multi-policy-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "E-10"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-11",
+      "E-10"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Source-reviewed independent shared multimap input. Java Basic/API matched header accesses iterate absent single map and preserve fail-open dispatch; no credential checking credited. Unmatched API prefix bypasses header access and establishes no-table-path behavior. Rust approved local Basic anonymous/bearer gate or plain API-key policy reaches success and FnX, not early E-13 rejection. No token verification claimed for bearer gate. Exact one-call count and forwarded maps asserted; no per-runner input transformation.",
+    "validation": "passed focused separate-JVM workflow 20261011T011623.414280Z; result schema exit 0; isolation passed"
+  },
+  {
+    "fixture": "S-11-unmatched-multi-policy-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "S-11",
+      "E-10"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-11",
+      "E-10"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Source-reviewed independent shared multimap input. Java Basic/API matched header accesses iterate absent single map and preserve fail-open dispatch; no credential checking credited. Unmatched API prefix bypasses header access and establishes no-table-path behavior. Rust approved local Basic anonymous/bearer gate or plain API-key policy reaches success and FnX, not early E-13 rejection. No token verification claimed for bearer gate. Exact one-call count and forwarded maps asserted; no per-runner input transformation.",
+    "validation": "passed focused separate-JVM workflow 20261011T011623.414280Z; result schema exit 0; isolation passed"
+  }
+]

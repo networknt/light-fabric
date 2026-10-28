@@ -1,0 +1,101 @@
+{
+  "schema": "light-lambda-family-adapter-selection/v1",
+  "scope": "65 additional registered-handler fixtures; expectations and actual differential failures remain authoritative",
+  "families": {
+    "token": {
+      "name": "Token / OAuth",
+      "fixtures": [
+        "B-01-loopback-acquisition-cache-secondary-multi-contract-v1",
+        "B-01-malformed-oauth-error-loopback-multi-contract-v1",
+        "B-01-oauth-denial-loopback-multi-contract-v1"
+      ]
+    },
+    "jwt": {
+      "name": "JWT / unified security / scope",
+      "fixtures": [
+        "C-03-warm-jwt-principal-not-reused-multi-contract-v1",
+        "S-01-valid-jks-init-v1",
+        "S-01-valid-multi-policy-v1",
+        "S-01a-malformed-multi-policy-v1",
+        "S-01a-wrong-key-multi-policy-v1",
+        "S-02-expired-jks-init-v1",
+        "S-02-expired-multi-policy-v1",
+        "S-03-hmac-rsa-rejection-generated-v1",
+        "S-03-malformed-0-jks-init-v1",
+        "S-03-malformed-1-jks-init-v1",
+        "S-03-malformed-2-jks-init-v1",
+        "S-03-rs512-jks-init-v1",
+        "S-03-wrong-key-jks-init-v1",
+        "S-04-issuer-not-enforced-jks-init-v1",
+        "S-04-provider-explicit-multi-contract-v1",
+        "S-04-provider-path-0-multi-contract-v1",
+        "S-04-provider-path-1-multi-contract-v1",
+        "S-04-provider-path-2-multi-contract-v1",
+        "S-04-wrong-audience-jks-init-v1",
+        "S-04-wrong-audience-multi-contract-v1",
+        "S-04a-matching-issuer-multi-contract-v1",
+        "S-04a-wrong-issuer-multi-contract-v1",
+        "S-05-any-match-multi-contract-v1",
+        "S-05-denied-multi-contract-v1",
+        "S-05-no-required-multi-contract-v1",
+        "S-05-scope-list-multi-contract-v1",
+        "S-05-scope-string-multi-contract-v1",
+        "S-05-scp-list-multi-contract-v1",
+        "S-05-scp-string-multi-contract-v1",
+        "S-06-secondary-0-dual-token-multi-contract-v1",
+        "S-06-secondary-1-dual-token-multi-contract-v1",
+        "S-06-secondary-forged-read-claims-multi-contract-v1",
+        "S-06-secondary-invalid-0-dual-token-multi-contract-v1",
+        "S-06-secondary-invalid-1-dual-token-multi-contract-v1",
+        "S-06-secondary-scope-list-multi-contract-v1",
+        "S-06-secondary-scope-string-multi-contract-v1",
+        "S-06-secondary-scp-string-multi-contract-v1",
+        "S-12-jwt-apikey-authorization-precedence-warm-multi-contract-v1",
+        "S-12-unified-jwt-valid-missing-warm-multi-contract-v1",
+        "S-12a-basic-on-jwt-prefix-multi-contract-v1",
+        "S-13-S-18-rotation-retention-multi-contract-v1",
+        "S-13-algorithm-hmac-no-refresh-multi-contract-v1",
+        "S-13-normalized-service-set-cooldown-multi-contract-v1",
+        "S-13a-bootstrap-records-cooldown-multi-contract-v1",
+        "S-13a-failed-refresh-cooldown-multi-contract-v1",
+        "S-13a-successful-fetch-cooldown-multi-contract-v1",
+        "S-14-enableMockJwt-init-contract-v1",
+        "S-14-ignoreJwtExpiry-init-contract-v1",
+        "S-14-logJwtToken-init-contract-v1",
+        "S-17-absent-nbf-multi-contract-v1",
+        "S-17-far-future-nbf-jks-init-v1",
+        "S-17-future-nbf-120-skew60-multi-contract-v1",
+        "S-17-future-nbf-30-skew60-multi-contract-v1",
+        "S-18-cached-expiry-multi-contract-v1"
+      ]
+    },
+    "proxy": {
+      "name": "Proxy / request metadata",
+      "fixtures": [
+        "E-10-configured-metadata-multi-contract-v1"
+      ]
+    },
+    "limit": {
+      "name": "Limiter",
+      "fixtures": [
+        "L-02-remote-address-explicit-identity-xff-multi-contract-v1",
+        "L-02-verified-client-counter-multi-contract-v1",
+        "L-02-verified-user-counter-multi-contract-v1"
+      ]
+    },
+    "correlation": {
+      "name": "Correlation / headers",
+      "fixtures": [
+        "Q-02-generated-correlation-multi-contract-v1"
+      ]
+    },
+    "transformer": {
+      "name": "Transformer",
+      "fixtures": [
+        "T-01-deny-native-cel-multi-contract-v1",
+        "T-01-local-native-cel-multi-contract-v1",
+        "T-01-metadata-native-cel-multi-contract-v1"
+      ]
+    }
+  }
+}

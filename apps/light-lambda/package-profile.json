@@ -1,0 +1,178 @@
+{
+  "schema": "light-lambda-package-profile/v1",
+  "profile": "baseline-bootstrap-only-v1",
+  "architecture": "x86_64",
+  "runtime": "provided.al2023",
+  "zipEntries": [
+    {
+      "path": "bootstrap",
+      "mode": "0755"
+    }
+  ],
+  "supportedHandlers": [
+    "metrics",
+    "limit",
+    "traceability",
+    "correlation",
+    "requestCors",
+    "responseCors",
+    "requestHeader",
+    "responseHeader",
+    "requestTransformer",
+    "responseTransformer",
+    "audit",
+    "token",
+    "router",
+    "specification",
+    "security",
+    "jwt",
+    "basic",
+    "apikey",
+    "sanitizer",
+    "proxy",
+    "health",
+    "info",
+    "getLogger"
+  ],
+  "unavailableHandlers": [
+    "validator",
+    "swt",
+    "cache"
+  ],
+  "restrictions": {
+    "router": "forwarding only; nonempty urlRewriteRules reject Init",
+    "validator": "factory wired but activation closed; enabled configuration rejects Init",
+    "metrics": "APM profile only; Influx remains deferred",
+    "requestTransformer": "existing admitted fixed Transformer profile only",
+    "responseTransformer": "existing admitted fixed Transformer profile only",
+    "info": "existing redaction and verified-JWT admin restrictions",
+    "getLogger": "read-only installed filter; existing verified-JWT restrictions",
+    "security": "existing JWT/OAuth profile; SWT/certificate/profile restrictions preserved"
+  },
+  "workerDependencies": [],
+  "rieEnabledHandlers": [
+    "proxy"
+  ],
+  "rieFamilyProfiles": {
+    "headers": [
+      "correlation",
+      "requestHeader",
+      "proxy",
+      "responseHeader"
+    ],
+    "jwt": [
+      [
+        "jwt",
+        "proxy"
+      ],
+      [
+        "security",
+        "proxy"
+      ]
+    ],
+    "router": [
+      "router",
+      "proxy"
+    ],
+    "transformers": [
+      "requestTransformer",
+      "proxy",
+      "responseTransformer"
+    ],
+    "cors": [
+      "requestCors",
+      "proxy",
+      "responseCors"
+    ],
+    "factors": [
+      [
+        "basic",
+        "proxy"
+      ],
+      [
+        "apikey",
+        "proxy"
+      ]
+    ],
+    "limit": [
+      "limit",
+      "proxy"
+    ],
+    "telemetry": [
+      "metrics",
+      "traceability",
+      "audit",
+      "proxy"
+    ],
+    "token": [
+      "token",
+      "proxy"
+    ],
+    "specification": [
+      "specification",
+      "jwt",
+      "proxy"
+    ],
+    "sanitizer": [
+      "sanitizer",
+      "proxy"
+    ],
+    "admin": [
+      "health",
+      "jwt",
+      "info",
+      "getLogger",
+      "proxy"
+    ]
+  },
+  "rieQualifiedHandlers": [
+    "proxy",
+    "correlation",
+    "requestHeader",
+    "responseHeader",
+    "jwt",
+    "security",
+    "router",
+    "requestTransformer",
+    "responseTransformer",
+    "metrics",
+    "limit",
+    "requestCors",
+    "responseCors",
+    "audit",
+    "token",
+    "specification",
+    "basic",
+    "apikey",
+    "sanitizer",
+    "health",
+    "info",
+    "getLogger"
+  ],
+  "rieQualificationBlockers": {
+    "traceability": "Selected in telemetry profile but not qualified: the unchanged package suppresses span fields, so the handler's private traceability state cannot be distinguished from pass-through header forwarding. Component/comparison evidence remains separate."
+  },
+  "instrumentedOnlyProfiles": {
+    "traceability": {
+      "profile": "test-only-traceability-observer-v1",
+      "example": "examples/test-only-traceability.rs",
+      "defaultBootstrapQualified": false,
+      "scope": "Actual exchange-state observation through existing backend observer; separate eight-request service proof plus one ingress-admission check",
+      "documentation": "tests/l2/TRACEABILITY-OBSERVER.md"
+    }
+  },
+  "qualification": "rieEnabledHandlers names the baseline default chain; rieFamilyProfiles names selected opt-in layers, with admin aliases bound by path. rieQualifiedHandlers excludes selected aliases without observable proof. Only documented assertions are L2-qualified; registered availability is not full conformance/AWS proof",
+  "conditionalHandlers": {
+    "setLogger": {
+      "scope": "partial X-04 ROOT INFO/DEBUG/TRACE only; maximum1024-byte strict command schema",
+      "startupRequirements": [
+        "LIGHT_LAMBDA_ALLOW_LOGGER_SET=1",
+        "logger.enabled=true",
+        "scalar INFO/DEBUG/TRACE RUST_LOG",
+        "preceding Jwt/Security and verified principal"
+      ],
+      "defaultEnabled": false,
+      "rieProfile": "logger_set.py"
+    }
+  }
+}

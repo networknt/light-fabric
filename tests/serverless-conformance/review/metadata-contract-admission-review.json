@@ -1,0 +1,57 @@
+[
+  {
+    "fixture": "E-10-configured-metadata-multi-contract-v1",
+    "source": "Approved ledger/plan 5.2/5.3 and retained raw mapping observations",
+    "javaBehaviorAsserted": [
+      "E-10a",
+      "E-10b",
+      "E-10c",
+      "E-10d",
+      "E-10e",
+      "E-10f",
+      "E-11"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-10a",
+      "E-10b",
+      "E-10c",
+      "E-10d",
+      "E-10e",
+      "E-10f",
+      "E-11",
+      "E-10g"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Java exact inbound metadata and stageVariables retained from reviewed WP2 assertion. Rust configured metadata supersedes spoofed input, request IDs come from the test-only invocation context, and source IP is the rightmost item in the last XFF value. Request time is not yet asserted; E-10g is not counted from protocol alone.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T022700.416380Z"
+  },
+  {
+    "fixture": "E-07-alb-discriminator-multi-contract-v1",
+    "source": "Approved ledger/plan 5.2/5.3 and retained raw mapping observations",
+    "javaBehaviorAsserted": [
+      "E-07",
+      "E-10i"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-07",
+      "E-10i"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Valid ALB discriminator wins over supplied version 2.0. Java forwards version exactly; Rust omits it under approved E-10i. Unknown root field is omitted by both. Shared multimap permits dispatch.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T022419.087495Z"
+  },
+  {
+    "fixture": "E-14-non-alb-multi-contract-v1",
+    "source": "Approved ledger/plan 5.2/5.3 and retained raw mapping observations",
+    "javaBehaviorAsserted": [
+      "E-07"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-07",
+      "E-14"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "No elb discriminator; valid shared multimap avoids E-13. Java generic mapper still dispatches literal target; Rust approved family rejection is exact and zero Invoke. Error bytes must be reviewed against Appendix C before admission.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T022419.087495Z"
+  }
+]

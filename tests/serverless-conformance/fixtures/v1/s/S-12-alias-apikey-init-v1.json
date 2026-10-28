@@ -1,0 +1,124 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "S-12-alias-apikey-init-v1",
+  "title": "S-12-alias-apikey malformed alias selection",
+  "ledger": [
+    "S-12",
+    "C-10",
+    "C-04"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "lambda-proxy": {
+        "functions": {
+          "/x/basic@get": "FnX",
+          "/x/jwt@get": "FnX",
+          "/x/swt@get": "FnX",
+          "/x/apikey@get": "FnX"
+        },
+        "logType": "Tail",
+        "enabled": true
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "handler": {
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@basic",
+          "com.networknt.aws.lambda.handler.middleware.security.UnifiedSecurityMiddleware@unified"
+        ],
+        "chains": {},
+        "paths": [],
+        "defaultHandlers": [
+          "unified",
+          "proxy"
+        ]
+      },
+      "unified-security": {
+        "enabled": true,
+        "pathPrefixAuths": [
+          {
+            "prefix": "/x/basic",
+            "basic": true
+          },
+          {
+            "prefix": "/x/jwt",
+            "jwt": true
+          },
+          {
+            "prefix": "/x/swt",
+            "swt": true
+          },
+          {
+            "prefix": "/x/apikey",
+            "apikey": true
+          }
+        ]
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Synthetic literal malformed bearer; no production or generated token."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "headerMode": "single",
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "GET",
+    "path": "/x/apikey",
+    "headers": {
+      "Authorization": "Bearer test-only-not-a-token"
+    },
+    "queryStringParameters": {},
+    "body": null,
+    "isBase64Encoded": false
+  },
+  "backend": [],
+  "expectJava": {
+    "outcome": "response",
+    "status": 400,
+    "headers": [
+      [
+        "Content-Type",
+        "application/json"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "{\"statusCode\":400,\"code\":\"ERR11200\",\"message\":\"HANDLER_NOT_FOUND\",\"description\":\"Handler for service com.networknt.aws.lambda.handler.middleware.security.ApiKeyMiddleware@apikey cannot be found.\",\"severity\":\"ERROR\"}",
+    "bodyBase64": false,
+    "backendCalls": [],
+    "jwksFetches": 0
+  },
+  "expect": {
+    "outcome": "initError",
+    "code": "InvalidConfiguration",
+    "backendCalls": [],
+    "jwksFetches": 0
+  },
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls",
+    "header:content-type",
+    "header:x-backend"
+  ]
+}

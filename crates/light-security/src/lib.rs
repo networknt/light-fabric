@@ -22,7 +22,13 @@ use tokio::sync::RwLock;
 
 pub const SECURITY_FILE: &str = "security.yml";
 pub mod dual_identity;
+mod jwks_observation;
+mod jwks_refresh;
+#[cfg(feature = "conformance-worker")]
+#[doc(hidden)]
+pub use jwks_refresh::conformance_worker::component_probe as run_jwks_gate_component_for_conformance;
 pub mod token_purpose;
+use jwks_refresh::{JwksRefreshGate, refresh_jwks_gated};
 pub const SECURITY_MODULE_ID: &str = "light-pingora/security";
 pub const SECURITY_CONFIG_NAME: &str = "security";
 
@@ -109,6 +115,8 @@ pub struct SecurityConfig {
     pub jwt_cache_full_size: usize,
     #[serde(default)]
     pub bootstrap_from_key_service: bool,
+    #[serde(default = "default_jwks_refresh_min_interval_secs")]
+    pub jwks_refresh_min_interval_secs: u64,
     #[serde(default)]
     pub provider_id: String,
     #[serde(default)]
@@ -141,6 +149,7 @@ impl Default for SecurityConfig {
             enable_jwt_cache: true,
             jwt_cache_full_size: default_jwt_cache_full_size(),
             bootstrap_from_key_service: false,
+            jwks_refresh_min_interval_secs: default_jwks_refresh_min_interval_secs(),
             provider_id: String::new(),
             issuer: String::new(),
             audience: Vec::new(),
@@ -171,6 +180,7 @@ pub struct SecurityRuntime {
     jwk_source: Option<Arc<JwkSource>>,
     jwks: Arc<RwLock<BTreeMap<String, Jwk>>>,
     cache: Arc<Mutex<BTreeMap<String, CachedPrincipal>>>,
+    refresh_gate: Arc<JwksRefreshGate>,
 }
 
 impl SecurityRuntime {
@@ -190,6 +200,7 @@ impl SecurityRuntime {
             })),
             jwks: Arc::new(RwLock::new(BTreeMap::new())),
             cache: Arc::new(Mutex::new(BTreeMap::new())),
+            refresh_gate: Arc::default(),
         };
         runtime.config.enable_jwt_cache = false;
         let jwk: Jwk = serde_json::from_value(serde_json::json!({
@@ -208,11 +219,13 @@ impl SecurityRuntime {
             jwk_source,
             jwks: Arc::new(RwLock::new(BTreeMap::new())),
             cache: Arc::new(Mutex::new(BTreeMap::new())),
+            refresh_gate: Arc::default(),
         })
     }
 
     pub async fn bootstrap(&self) -> Result<(), HandlerRejection> {
         if self.config.bootstrap_from_key_service {
+            jwks_refresh::record_bootstrap(self);
             refresh_jwks_for_service(self, None).await?;
         }
         Ok(())
@@ -243,7 +256,7 @@ struct JwkSource {
 #[serde(untagged)]
 enum JwkResponse {
     Set(JwkSet),
-    Single(Jwk),
+    Single(Box<Jwk>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,11 +315,9 @@ pub fn load_security_runtime_from_file(
         true,
     )?;
 
-    Ok(
-        (config.enable_verify_jwt || config.enable_verify_swt || config.enable_mock_jwt)
-            .then(|| SecurityRuntime::new(config, runtime_config))
-            .transpose()?,
-    )
+    (config.enable_verify_jwt || config.enable_verify_swt || config.enable_mock_jwt)
+        .then(|| SecurityRuntime::new(config, runtime_config))
+        .transpose()
 }
 
 pub async fn verify_jwt_token(
@@ -323,6 +334,47 @@ pub async fn verify_jwt_token_for_services(
     expiry_mode: JwtExpiryMode,
     service_ids: &[String],
 ) -> Result<AuthPrincipal, HandlerRejection> {
+    verify_jwt_token_for_services_with_deadline(runtime, token, expiry_mode, service_ids, None)
+        .await
+}
+
+/// Verify with an optional caller budget. Timing out or dropping this future does
+/// not cancel a shared JWKS refresh; that attempt has its own client timeout.
+pub async fn verify_jwt_token_for_services_with_deadline(
+    runtime: &SecurityRuntime,
+    token: &str,
+    expiry_mode: JwtExpiryMode,
+    service_ids: &[String],
+    deadline: Option<tokio::time::Instant>,
+) -> Result<AuthPrincipal, HandlerRejection> {
+    verify_jwt_token_for_services_policy(runtime, token, expiry_mode, service_ids, deadline, true)
+        .await
+}
+
+/// Signed-claims diagnostic only: never fetch keys or authenticate the caller.
+/// Uses the same signature, issuer, audience and claim checks with resident keys.
+pub async fn verify_jwt_token_for_services_without_refresh(
+    runtime: &SecurityRuntime,
+    token: &str,
+    expiry_mode: JwtExpiryMode,
+    service_ids: &[String],
+    deadline: Option<tokio::time::Instant>,
+) -> Result<AuthPrincipal, HandlerRejection> {
+    verify_jwt_token_for_services_policy(runtime, token, expiry_mode, service_ids, deadline, false)
+        .await
+}
+
+async fn verify_jwt_token_for_services_policy(
+    runtime: &SecurityRuntime,
+    token: &str,
+    expiry_mode: JwtExpiryMode,
+    service_ids: &[String],
+    deadline: Option<tokio::time::Instant>,
+    allow_refresh: bool,
+) -> Result<AuthPrincipal, HandlerRejection> {
+    if deadline.is_some_and(|end| end <= tokio::time::Instant::now()) {
+        return Err(jwks_refresh::deadline_error());
+    }
     let token = token.trim();
     if token.is_empty() {
         return Err(HandlerRejection::unauthorized("missing bearer token"));
@@ -342,8 +394,15 @@ pub async fn verify_jwt_token_for_services(
             return Err(HandlerRejection::unauthorized("invalid JWT header"));
         }
     };
-    let key = match decoding_key_for_token(runtime, header.kid.as_deref(), header.alg, service_ids)
-        .await
+    let (key, refreshed) = match decoding_key_for_token(
+        runtime,
+        header.kid.as_deref(),
+        header.alg,
+        service_ids,
+        deadline,
+        allow_refresh,
+    )
+    .await
     {
         Ok(key) => key,
         Err(error) => {
@@ -354,11 +413,25 @@ pub async fn verify_jwt_token_for_services(
     let validation = validation_for_mode(&runtime.config, header.alg, expiry_mode);
     let decoded = match decode::<JsonValue>(token, &key, &validation) {
         Ok(decoded) => decoded,
-        Err(error) if runtime.jwk_source.is_some() => {
-            refresh_jwks_for_services(runtime, service_ids).await?;
-            let key =
-                decoding_key_for_token(runtime, header.kid.as_deref(), header.alg, service_ids)
-                    .await?;
+        Err(error)
+            if allow_refresh
+                && !refreshed
+                && runtime.jwk_source.is_some()
+                && matches!(
+                    error.kind(),
+                    jsonwebtoken::errors::ErrorKind::InvalidSignature
+                ) =>
+        {
+            refresh_jwks_gated(runtime, service_ids, deadline).await?;
+            let (key, _) = decoding_key_for_token(
+                runtime,
+                header.kid.as_deref(),
+                header.alg,
+                service_ids,
+                deadline,
+                false,
+            )
+            .await?;
             decode::<JsonValue>(token, &key, &validation).map_err(|_| {
                 tracing::debug!("JWT validation failed after JWKS refresh: {error}");
                 HandlerRejection::unauthorized("JWT validation failed")
@@ -395,6 +468,7 @@ fn validation_for_mode(
     let mut validation = Validation::new(algorithm);
     validation.leeway = config.jwt.clock_skew_in_seconds;
     validation.validate_aud = false;
+    validation.validate_nbf = true;
     if config.ignore_jwt_expiry || matches!(expiry_mode, JwtExpiryMode::Ignore) {
         validation.validate_exp = false;
         validation.required_spec_claims.clear();
@@ -435,7 +509,7 @@ fn claim_audience_matches(claims: &JsonValue, configured: &[&str]) -> bool {
         Some(JsonValue::Array(values)) => values.iter().any(|value| {
             value
                 .as_str()
-                .is_some_and(|audience| configured.iter().any(|expected| audience == *expected))
+                .is_some_and(|audience| configured.contains(&audience))
         }),
         _ => false,
     }
@@ -498,39 +572,53 @@ async fn decoding_key_for_token(
     kid: Option<&str>,
     _algorithm: Algorithm,
     service_ids: &[String],
-) -> Result<DecodingKey, HandlerRejection> {
-    if let Some(key) = decoding_key_from_jwk(runtime, kid, service_ids).await? {
-        return Ok(key);
-    }
-    Err(HandlerRejection::unauthorized("JWT key is not configured"))
+    deadline: Option<tokio::time::Instant>,
+    allow_refresh: bool,
+) -> Result<(DecodingKey, bool), HandlerRejection> {
+    let (key, refreshed) =
+        decoding_key_from_jwk(runtime, kid, service_ids, deadline, allow_refresh).await?;
+    key.map(|key| (key, refreshed))
+        .ok_or_else(|| HandlerRejection::unauthorized("JWT key is not configured"))
 }
 
 async fn decoding_key_from_jwk(
     runtime: &SecurityRuntime,
     kid: Option<&str>,
     service_ids: &[String],
-) -> Result<Option<DecodingKey>, HandlerRejection> {
-    let Some(jwk) = jwk_for_services(runtime, kid, service_ids).await? else {
-        return Ok(None);
-    };
-    DecodingKey::from_jwk(&jwk)
-        .map(Some)
-        .map_err(|_| HandlerRejection::unauthorized("JWK cannot verify token algorithm"))
+    deadline: Option<tokio::time::Instant>,
+    allow_refresh: bool,
+) -> Result<(Option<DecodingKey>, bool), HandlerRejection> {
+    let (jwk, refreshed) =
+        jwk_for_services(runtime, kid, service_ids, deadline, allow_refresh).await?;
+    let key = jwk
+        .map(|jwk| {
+            DecodingKey::from_jwk(&jwk)
+                .map_err(|_| HandlerRejection::unauthorized("JWK cannot verify token algorithm"))
+        })
+        .transpose()?;
+    Ok((key, refreshed))
 }
 
 async fn jwk_for_services(
     runtime: &SecurityRuntime,
     kid: Option<&str>,
     service_ids: &[String],
-) -> Result<Option<Jwk>, HandlerRejection> {
+    deadline: Option<tokio::time::Instant>,
+    allow_refresh: bool,
+) -> Result<(Option<Jwk>, bool), HandlerRejection> {
     if runtime.jwk_source.is_none() {
-        return Ok(None);
+        return Ok((None, false));
     }
     if let Some(jwk) = cached_jwk_for_services(runtime, kid, service_ids).await {
-        return Ok(Some(jwk));
+        return Ok((Some(jwk), false));
     }
-    refresh_jwks_for_services(runtime, service_ids).await?;
-    Ok(cached_jwk_for_services(runtime, kid, service_ids).await)
+    if allow_refresh {
+        refresh_jwks_gated(runtime, service_ids, deadline).await?;
+    }
+    let jwk = cached_jwk_for_services(runtime, kid, service_ids)
+        .await
+        .ok_or_else(|| HandlerRejection::unauthorized("unknown key id"))?;
+    Ok((Some(jwk), allow_refresh))
 }
 
 async fn cached_jwk_for_services(
@@ -566,6 +654,7 @@ async fn cached_jwk_for_services(
                 return Some(jwk.clone());
             }
         }
+        return None;
     }
     if !service_ids.is_empty() {
         for service_id in &service_ids {
@@ -682,6 +771,7 @@ async fn fetch_jwks_for_provider(
     ) {
         request = request.basic_auth(client_id, Some(client_secret));
     }
+    let mut observation = jwks_observation::Fetch::begin();
     let response = request.send().await.map_err(|error| {
         HandlerRejection::new(502, "ERR10056", format!("failed to request JWKS: {error}"))
     })?;
@@ -715,6 +805,7 @@ async fn fetch_jwks_for_provider(
             );
         }
     }
+    observation.completed();
     Ok(entries)
 }
 
@@ -794,7 +885,7 @@ fn parse_jwks(body: &str) -> Result<Vec<Jwk>, HandlerRejection> {
     })?;
     Ok(match response {
         JwkResponse::Set(set) => set.keys,
-        JwkResponse::Single(jwk) => vec![jwk],
+        JwkResponse::Single(jwk) => vec![*jwk],
     })
 }
 
@@ -813,6 +904,13 @@ async fn resolve_jwk_server_url(
         )
     })?;
     if let Some(url) = source.direct_registry.direct_urls.get(service_id) {
+        if url.contains(',') {
+            return Err(HandlerRejection::new(
+                502,
+                "ERR10056",
+                "JWK serviceId requires a single direct URL",
+            ));
+        }
         return Ok(url.trim().to_string());
     }
     let registry_client = source.registry_client.as_deref().ok_or_else(|| {
@@ -949,6 +1047,14 @@ fn cached_principal(runtime: &SecurityRuntime, token: &str) -> Option<AuthPrinci
         .unwrap_or_else(|error| error.into_inner())
         .get(token)
         .cloned()?;
+    // Recheck temporal validity even on a principal cache hit (including after
+    // clock rollback or a changed caller skew). Malformed claims fall back to decode.
+    if let Some(nbf) = cached.principal.claims.get("nbf") {
+        let nbf = nbf.as_u64()?;
+        if nbf > now_epoch_seconds().saturating_add(runtime.config.jwt.clock_skew_in_seconds) {
+            return None;
+        }
+    }
     if runtime.config.ignore_jwt_expiry {
         return Some(cached.principal);
     }
@@ -968,10 +1074,10 @@ fn cache_principal(runtime: &SecurityRuntime, token: String, principal: &AuthPri
         .cache
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    if cache.len() >= runtime.config.jwt_cache_full_size {
-        if let Some(first_key) = cache.keys().next().cloned() {
-            cache.remove(&first_key);
-        }
+    if cache.len() >= runtime.config.jwt_cache_full_size
+        && let Some(first_key) = cache.keys().next().cloned()
+    {
+        cache.remove(&first_key);
     }
     cache.insert(
         token,
@@ -1114,6 +1220,10 @@ fn default_swt_client_id_header() -> String {
 
 fn default_swt_client_secret_header() -> String {
     "swt-client-secret".to_string()
+}
+
+fn default_jwks_refresh_min_interval_secs() -> u64 {
+    30
 }
 
 fn default_jwt_cache_full_size() -> usize {
@@ -1298,6 +1408,7 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
             jwk_source: Some(Arc::new(test_jwk_source(client))),
             jwks: Arc::new(RwLock::new(BTreeMap::new())),
             cache: Arc::new(Mutex::new(BTreeMap::new())),
+            refresh_gate: Arc::default(),
         }
     }
 
@@ -1309,6 +1420,54 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
             direct_registry: DirectRegistryConfig::default(),
             registry_client: None,
         }
+    }
+
+    #[tokio::test]
+    async fn jwk_registry_csv_rejected_before_transport_or_discovery() {
+        let mut source = test_jwk_source(ClientTokenConfig::default());
+        source.direct_registry.direct_urls.insert(
+            "keys".into(),
+            "https://one.invalid,https://two.invalid".into(),
+        );
+        let mut provider = ResolvedKeyProvider {
+            server_url: Some("https://explicit.invalid".into()),
+            key_service_id: Some("keys".into()),
+            uri: "/certs".into(),
+            client_id: String::new(),
+            client_secret: String::new(),
+            proxy_host: None,
+            proxy_port: None,
+            enable_http2: false,
+            audience: None,
+            cache_service_id: None,
+        };
+        assert_eq!(
+            resolve_jwk_server_url(&source, &provider).await.unwrap(),
+            "https://explicit.invalid"
+        );
+        provider.server_url = None;
+        let error = resolve_jwk_server_url(&source, &provider)
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, 502);
+        assert_eq!(error.code, "ERR10056");
+        assert_eq!(error.message, "JWK serviceId requires a single direct URL");
+        source
+            .direct_registry
+            .direct_urls
+            .insert("keys".into(), " https://single.invalid/base ".into());
+        assert_eq!(
+            resolve_jwk_server_url(&source, &provider).await.unwrap(),
+            "https://single.invalid/base"
+        );
+        source.direct_registry.direct_urls.clear();
+        let error = resolve_jwk_server_url(&source, &provider)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.message,
+            "JWK serviceId discovery requires portal registry to be enabled"
+        );
     }
 
     #[tokio::test]
@@ -1493,15 +1652,11 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
         let call_count = Arc::new(Mutex::new(0));
         let count_clone = call_count.clone();
         tokio::spawn(async move {
-            loop {
-                if let Ok((mut stream, _)) = listener.accept().await {
-                    let mut buffer = vec![0_u8; 1024];
-                    let _read = stream.read(&mut buffer).await;
-                    *count_clone.lock().unwrap() += 1;
-                    let _ = stream.write_all(response.as_bytes()).await;
-                } else {
-                    break;
-                }
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buffer = vec![0_u8; 1024];
+                let _read = stream.read(&mut buffer).await;
+                *count_clone.lock().unwrap() += 1;
+                let _ = stream.write_all(response.as_bytes()).await;
             }
         });
         (format!("http://{address}"), call_count)
@@ -1529,23 +1684,23 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
         let runtime = test_runtime_with_client(client);
 
         // First call should fetch
-        let first = jwk_for_services(&runtime, Some("key_fetch_once"), &[])
+        let first = jwk_for_services(&runtime, Some("key_fetch_once"), &[], None, true)
             .await
             .unwrap();
-        assert!(first.is_some());
+        assert!(first.0.is_some());
         assert_eq!(
-            first.unwrap().common.key_id,
+            first.0.unwrap().common.key_id,
             Some("key_fetch_once".to_string())
         );
         assert_eq!(*call_count.lock().unwrap(), 1);
 
         // Second call should hit the cache directly, call count stays at 1
-        let second = jwk_for_services(&runtime, Some("key_fetch_once"), &[])
+        let second = jwk_for_services(&runtime, Some("key_fetch_once"), &[], None, true)
             .await
             .unwrap();
-        assert!(second.is_some());
+        assert!(second.0.is_some());
         assert_eq!(
-            second.unwrap().common.key_id,
+            second.0.unwrap().common.key_id,
             Some("key_fetch_once".to_string())
         );
         assert_eq!(*call_count.lock().unwrap(), 1);
@@ -1607,10 +1762,16 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
         assert!(found.is_some());
         assert_eq!(found.unwrap().common.key_id, Some("key_boot".to_string()));
 
-        let resolved = jwk_for_services(&runtime, Some("key_boot"), &["service_boot1".to_string()])
-            .await
-            .unwrap();
-        assert!(resolved.is_some());
+        let resolved = jwk_for_services(
+            &runtime,
+            Some("key_boot"),
+            &["service_boot1".to_string()],
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(resolved.0.is_some());
         assert_eq!(*call_count.lock().unwrap(), 2); // No new fetch!
     }
 

@@ -1,0 +1,6 @@
+# Unavailable in Phase 1; enabling this policy fails Init.
+enabled: ${basic-auth.enabled:false}
+enableAD: ${basic-auth.enableAD:false}
+allowAnonymous: ${basic-auth.allowAnonymous:false}
+allowBearerToken: ${basic-auth.allowBearerToken:false}
+users: ${basic-auth.users:[]}

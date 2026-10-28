@@ -1,0 +1,29 @@
+[
+  {
+    "fixture": "R-02-mixed-method-multi-v1",
+    "review": "Separately authored minimal valid shared multi-value ALB input and reviewed proxy method normalization source. Java lookup gEt matches configured GET and preserves original httpMethod gEt in Invoke payload. Rust lookup is case-insensitive and builds uppercase method GET under E-10h. Duplicate-only control has nonempty stage and exactly two normalized-equal route keys, with no malformed /bad or /empty route; first Java target wins, while Rust rejects duplicate normalized configuration. No other invalid declaration is used to attribute this specific Init boundary.",
+    "javaBehaviorAsserted": [
+      "R-02",
+      "E-10h"
+    ],
+    "proposedRustBehaviorReached": [
+      "R-02",
+      "E-10h"
+    ],
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "R-06-duplicate-only-init-v1",
+    "review": "Separately authored minimal valid shared multi-value ALB input and reviewed proxy method normalization source. Java lookup gEt matches configured GET and preserves original httpMethod gEt in Invoke payload. Rust lookup is case-insensitive and builds uppercase method GET under E-10h. Duplicate-only control has nonempty stage and exactly two normalized-equal route keys, with no malformed /bad or /empty route; first Java target wins, while Rust rejects duplicate normalized configuration. No other invalid declaration is used to attribute this specific Init boundary.",
+    "javaBehaviorAsserted": [
+      "R-02",
+      "R-06"
+    ],
+    "proposedRustBehaviorReached": [
+      "R-06"
+    ],
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  }
+]

@@ -1,0 +1,93 @@
+[
+  {
+    "fixture": "C-01-whole-invocation-listeners-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-01-whole-invocation-cp1-e02-accepted.json",
+    "sourceSha256": "c786fc2190f09e859c898f247f11eeff1cc72640662079f98541057a8580914a",
+    "review": "InvocationTest/FailOpenTest/ExchangeEdgesTest and public WP2 test plugins reviewed. Plugins executed in actual configured LambdaApp chain; exact callback LIFO order, finalized header mutation, body presence/flag, retained local response, null/warning/fail-open status and raw encoded maps asserted as applicable. Repeat getters probe actual retained exchange and require exact exception class without another completion callback. Bridge drains only test observation list, never production static fields; all WP2 source remains unchanged. Rust rejects unknown test plugin classes at Init, with explicit non-executed request steps; no downstream Rust coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "C-03-repeat-finalization-listeners-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-03-repeat-finalization-cp1-e02-accepted.json",
+    "sourceSha256": "7ebc7450a47ccdc8176ec853ccd485e9f4dff7abe81a1ed73b17c43b7ce094b6",
+    "review": "InvocationTest/FailOpenTest/ExchangeEdgesTest and public WP2 test plugins reviewed. Plugins executed in actual configured LambdaApp chain; exact callback LIFO order, finalized header mutation, body presence/flag, retained local response, null/warning/fail-open status and raw encoded maps asserted as applicable. Repeat getters probe actual retained exchange and require exact exception class without another completion callback. Bridge drains only test observation list, never production static fields; all WP2 source remains unchanged. Rust rejects unknown test plugin classes at Init, with explicit non-executed request steps; no downstream Rust coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "C-04-fail-open-listeners-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-04-fail-open-cp1-e02-accepted.json",
+    "sourceSha256": "ee276421db3c7efcf8b5bda2933dc84aa59660ee13413b477a5067b3bb74572a",
+    "review": "InvocationTest/FailOpenTest/ExchangeEdgesTest and public WP2 test plugins reviewed. Plugins executed in actual configured LambdaApp chain; exact callback LIFO order, finalized header mutation, body presence/flag, retained local response, null/warning/fail-open status and raw encoded maps asserted as applicable. Repeat getters probe actual retained exchange and require exact exception class without another completion callback. Bridge drains only test observation list, never production static fields; all WP2 source remains unchanged. Rust rejects unknown test plugin classes at Init, with explicit non-executed request steps; no downstream Rust coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "C-04-null-status-listeners-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-04-null-status-cp1-e02-accepted.json",
+    "sourceSha256": "3e36b9a0312279b8d3aa787e367c31a15acb53801a743eb127bd20bc87d041b4",
+    "review": "InvocationTest/FailOpenTest/ExchangeEdgesTest and public WP2 test plugins reviewed. Plugins executed in actual configured LambdaApp chain; exact callback LIFO order, finalized header mutation, body presence/flag, retained local response, null/warning/fail-open status and raw encoded maps asserted as applicable. Repeat getters probe actual retained exchange and require exact exception class without another completion callback. Bridge drains only test observation list, never production static fields; all WP2 source remains unchanged. Rust rejects unknown test plugin classes at Init, with explicit non-executed request steps; no downstream Rust coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "C-02-warning-severity-listeners-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-02-warning-severity-cp1-e02-accepted.json",
+    "sourceSha256": "2311423edb561ba0fa4480cd7e58c477ff93a212f8d97a6060d7fe432b419e1a",
+    "review": "InvocationTest/FailOpenTest/ExchangeEdgesTest and public WP2 test plugins reviewed. Plugins executed in actual configured LambdaApp chain; exact callback LIFO order, finalized header mutation, body presence/flag, retained local response, null/warning/fail-open status and raw encoded maps asserted as applicable. Repeat getters probe actual retained exchange and require exact exception class without another completion callback. Bridge drains only test observation list, never production static fields; all WP2 source remains unchanged. Rust rejects unknown test plugin classes at Init, with explicit non-executed request steps; no downstream Rust coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "C-05-retained-response-listeners-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-05-retained-response-cp1-e02-accepted.json",
+    "sourceSha256": "0943f56ce81b0a6b1d103bf13bf52fb59f9b4f99e24ab867ab0abcf520d2484d",
+    "review": "InvocationTest/FailOpenTest/ExchangeEdgesTest and public WP2 test plugins reviewed. Plugins executed in actual configured LambdaApp chain; exact callback LIFO order, finalized header mutation, body presence/flag, retained local response, null/warning/fail-open status and raw encoded maps asserted as applicable. Repeat getters probe actual retained exchange and require exact exception class without another completion callback. Bridge drains only test observation list, never production static fields; all WP2 source remains unchanged. Rust rejects unknown test plugin classes at Init, with explicit non-executed request steps; no downstream Rust coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "E-03-body-off-0-listeners-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/E-03-body-off-0-cp1-e02-accepted.json",
+    "sourceSha256": "8910f9295dcd5da1dec7d3557865369085e6a5ddac22a802495daf8b63b3784b",
+    "review": "InvocationTest/FailOpenTest/ExchangeEdgesTest and public WP2 test plugins reviewed. Plugins executed in actual configured LambdaApp chain; exact callback LIFO order, finalized header mutation, body presence/flag, retained local response, null/warning/fail-open status and raw encoded maps asserted as applicable. Repeat getters probe actual retained exchange and require exact exception class without another completion callback. Bridge drains only test observation list, never production static fields; all WP2 source remains unchanged. Rust rejects unknown test plugin classes at Init, with explicit non-executed request steps; no downstream Rust coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "E-03-body-off-1-listeners-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/E-03-body-off-1-cp1-e02-accepted.json",
+    "sourceSha256": "bc8f98374e5f1e359b25a9a20c02d8c0d2fe02e2934d6d73bc43520d5875d57a",
+    "review": "InvocationTest/FailOpenTest/ExchangeEdgesTest and public WP2 test plugins reviewed. Plugins executed in actual configured LambdaApp chain; exact callback LIFO order, finalized header mutation, body presence/flag, retained local response, null/warning/fail-open status and raw encoded maps asserted as applicable. Repeat getters probe actual retained exchange and require exact exception class without another completion callback. Bridge drains only test observation list, never production static fields; all WP2 source remains unchanged. Rust rejects unknown test plugin classes at Init, with explicit non-executed request steps; no downstream Rust coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "E-03-body-off-2-listeners-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/E-03-body-off-2-cp1-e02-accepted.json",
+    "sourceSha256": "f928bc3774c5977c7a6d64117e16c9e64083ee16a34e13f89237f7ae2f19ce3a",
+    "review": "InvocationTest/FailOpenTest/ExchangeEdgesTest and public WP2 test plugins reviewed. Plugins executed in actual configured LambdaApp chain; exact callback LIFO order, finalized header mutation, body presence/flag, retained local response, null/warning/fail-open status and raw encoded maps asserted as applicable. Repeat getters probe actual retained exchange and require exact exception class without another completion callback. Bridge drains only test observation list, never production static fields; all WP2 source remains unchanged. Rust rejects unknown test plugin classes at Init, with explicit non-executed request steps; no downstream Rust coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "E-03-body-off-3-listeners-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/E-03-body-off-3-cp1-e02-accepted.json",
+    "sourceSha256": "1d3ffc3c27784fb793b4fad6891d5880cef4037f5544928bdc04a4d8c0bd1ff3",
+    "review": "InvocationTest/FailOpenTest/ExchangeEdgesTest and public WP2 test plugins reviewed. Plugins executed in actual configured LambdaApp chain; exact callback LIFO order, finalized header mutation, body presence/flag, retained local response, null/warning/fail-open status and raw encoded maps asserted as applicable. Repeat getters probe actual retained exchange and require exact exception class without another completion callback. Bridge drains only test observation list, never production static fields; all WP2 source remains unchanged. Rust rejects unknown test plugin classes at Init, with explicit non-executed request steps; no downstream Rust coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "E-03-body-off-4-listeners-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/E-03-body-off-4-cp1-e02-accepted.json",
+    "sourceSha256": "6a80aadcd780aa5ffaba11c2f5fef9bd2ef5e9dad7dbfc5d0df062b9deb45da1",
+    "review": "InvocationTest/FailOpenTest/ExchangeEdgesTest and public WP2 test plugins reviewed. Plugins executed in actual configured LambdaApp chain; exact callback LIFO order, finalized header mutation, body presence/flag, retained local response, null/warning/fail-open status and raw encoded maps asserted as applicable. Repeat getters probe actual retained exchange and require exact exception class without another completion callback. Bridge drains only test observation list, never production static fields; all WP2 source remains unchanged. Rust rejects unknown test plugin classes at Init, with explicit non-executed request steps; no downstream Rust coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "E-04-raw-encoded-query-listeners-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/E-04-raw-encoded-query-cp1-e02-accepted.json",
+    "sourceSha256": "f76c74bda8c9f4ad3078338b91a4c17966d770edb6d5bba8dcf267f979f776ad",
+    "review": "InvocationTest/FailOpenTest/ExchangeEdgesTest and public WP2 test plugins reviewed. Plugins executed in actual configured LambdaApp chain; exact callback LIFO order, finalized header mutation, body presence/flag, retained local response, null/warning/fail-open status and raw encoded maps asserted as applicable. Repeat getters probe actual retained exchange and require exact exception class without another completion callback. Bridge drains only test observation list, never production static fields; all WP2 source remains unchanged. Rust rejects unknown test plugin classes at Init, with explicit non-executed request steps; no downstream Rust coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "C-03-listener-exception-listeners-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-03-listener-exception-cp1-e02-accepted.json",
+    "sourceSha256": "04e04d25bae800dca14e537624849c14e0079a8b47f2afd3f486163defc43153",
+    "review": "ExchangeEdgesTest Edge response-completion callback source throws exact synthetic-listener IllegalStateException before recording either completion; actual proxy dispatched exactly once first. Explicit invocation exception retained, no fabricated HTTP response. Unknown Edge test class rejects Rust Init.",
+    "rustExecutionEvidence": null
+  }
+]

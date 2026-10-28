@@ -1,0 +1,32 @@
+[
+  {
+    "fixture": "S-01a-malformed-multi-policy-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "S-01a",
+      "E-10"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-01a",
+      "S-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Approved S-01a shared multimap distinction. Java JwtVerifyMiddleware skips absent single header map; original shared control dispatch and exact forwarded map reviewed. Rust S-03 rejects malformed JWT or incorrect RSA signature with exact approved ERR10000 body, zero Invoke. Wrong-key recipe signs at execution using an independent generated key while declaring published kid k1. No token bytes, real keys, output-derived expectation, per-runner input transformation or ingress-only downstream credit.",
+    "validation": "passed focused separate-JVM workflow 20261011T011739.311486Z; result schema exit 0; isolation passed"
+  },
+  {
+    "fixture": "S-01a-wrong-key-multi-policy-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "S-01a",
+      "E-10"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-01a",
+      "S-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Approved S-01a shared multimap distinction. Java JwtVerifyMiddleware skips absent single header map; original shared control dispatch and exact forwarded map reviewed. Rust S-03 rejects malformed JWT or incorrect RSA signature with exact approved ERR10000 body, zero Invoke. Wrong-key recipe signs at execution using an independent generated key while declaring published kid k1. No token bytes, real keys, output-derived expectation, per-runner input transformation or ingress-only downstream credit.",
+    "validation": "passed focused separate-JVM workflow 20261011T011739.311486Z; result schema exit 0; isolation passed"
+  }
+]

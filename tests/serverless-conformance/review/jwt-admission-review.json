@@ -1,0 +1,98 @@
+[
+  {
+    "fixture": "S-01-valid-jks-init-v1",
+    "observation": "S-01-valid-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-01-valid-cp1-e02-accepted.json",
+    "sourceSha256": "f6de7bd0688afe2b16db7a14c765c6da1efc4a7749f901b1fde995540d345390",
+    "review": "JwtTest/JwtSupport assertions reviewed. Retains explicit JKS options; KEY-181 et al require Rust Init rejection, so no Rust JWT behavior is counted. Token scp omission, RS512 algorithm and wrong signing-key setup reconstructed from source; only referenced recipes included. Init preload explains zero request JWKS delta.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-02-expired-jks-init-v1",
+    "observation": "S-02-expired-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-02-expired-cp1-e02-accepted.json",
+    "sourceSha256": "46edb7e2625f12026a35c2a44c704fccd8ef2ee7bf1a611e42b24876ac746136",
+    "review": "JwtTest/JwtSupport assertions reviewed. Retains explicit JKS options; KEY-181 et al require Rust Init rejection, so no Rust JWT behavior is counted. Token scp omission, RS512 algorithm and wrong signing-key setup reconstructed from source; only referenced recipes included. Init preload explains zero request JWKS delta.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-03-malformed-0-jks-init-v1",
+    "observation": "S-03-malformed-0-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-03-malformed-0-cp1-e02-accepted.json",
+    "sourceSha256": "189cbdc18ec37cc151e520a132e040513fe5d4ba2ec5437a096bc3d5eb9396c9",
+    "review": "JwtTest/JwtSupport assertions reviewed. Retains explicit JKS options; KEY-181 et al require Rust Init rejection, so no Rust JWT behavior is counted. Token scp omission, RS512 algorithm and wrong signing-key setup reconstructed from source; only referenced recipes included. Init preload explains zero request JWKS delta.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-03-malformed-1-jks-init-v1",
+    "observation": "S-03-malformed-1-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-03-malformed-1-cp1-e02-accepted.json",
+    "sourceSha256": "a39b5df855d15e7743d8d8972e4684daa59bfad26a495bee4e7e93e58cc07161",
+    "review": "JwtTest/JwtSupport assertions reviewed. Retains explicit JKS options; KEY-181 et al require Rust Init rejection, so no Rust JWT behavior is counted. Token scp omission, RS512 algorithm and wrong signing-key setup reconstructed from source; only referenced recipes included. Init preload explains zero request JWKS delta.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-03-malformed-2-jks-init-v1",
+    "observation": "S-03-malformed-2-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-03-malformed-2-cp1-e02-accepted.json",
+    "sourceSha256": "0afb582f1e06df0cb371515eaf3c05cafd62320bfc5edfa263668233ea5cae00",
+    "review": "JwtTest/JwtSupport assertions reviewed. Retains explicit JKS options; KEY-181 et al require Rust Init rejection, so no Rust JWT behavior is counted. Token scp omission, RS512 algorithm and wrong signing-key setup reconstructed from source; only referenced recipes included. Init preload explains zero request JWKS delta.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-03-rs512-jks-init-v1",
+    "observation": "S-03-rs512-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-03-rs512-cp1-e02-accepted.json",
+    "sourceSha256": "eb663a88a3482901a2da42b81011eaca3bc1a96be7729665a19752c2b820909f",
+    "review": "JwtTest/JwtSupport assertions reviewed. Retains explicit JKS options; KEY-181 et al require Rust Init rejection, so no Rust JWT behavior is counted. Token scp omission, RS512 algorithm and wrong signing-key setup reconstructed from source; only referenced recipes included. Init preload explains zero request JWKS delta.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-03-wrong-key-jks-init-v1",
+    "observation": "S-03-wrong-key-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-03-wrong-key-cp1-e02-accepted.json",
+    "sourceSha256": "f672c8157f3989c7596b0f2894373b5ca120001ad4c053364b6805d6e5c06087",
+    "review": "JwtTest/JwtSupport assertions reviewed. Retains explicit JKS options; KEY-181 et al require Rust Init rejection, so no Rust JWT behavior is counted. Token scp omission, RS512 algorithm and wrong signing-key setup reconstructed from source; only referenced recipes included. Init preload explains zero request JWKS delta.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-04-issuer-not-enforced-jks-init-v1",
+    "observation": "S-04-issuer-not-enforced-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-04-issuer-not-enforced-cp1-e02-accepted.json",
+    "sourceSha256": "3d533a81f7a43b4f6a089acf6e46ef230659adb0833f305aa26bb865524284a2",
+    "review": "JwtTest/JwtSupport assertions reviewed. Retains explicit JKS options; KEY-181 et al require Rust Init rejection, so no Rust JWT behavior is counted. Token scp omission, RS512 algorithm and wrong signing-key setup reconstructed from source; only referenced recipes included. Init preload explains zero request JWKS delta.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-04-wrong-audience-jks-init-v1",
+    "observation": "S-04-wrong-audience-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-04-wrong-audience-cp1-e02-accepted.json",
+    "sourceSha256": "b4335ea2d038b11649035553ca2240ccf3e20fc26c5d38fe5884df75ef6e3a6d",
+    "review": "JwtTest/JwtSupport assertions reviewed. Retains explicit JKS options; KEY-181 et al require Rust Init rejection, so no Rust JWT behavior is counted. Token scp omission, RS512 algorithm and wrong signing-key setup reconstructed from source; only referenced recipes included. Init preload explains zero request JWKS delta.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-17-far-future-nbf-jks-init-v1",
+    "observation": "S-17-far-future-nbf-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-17-far-future-nbf-cp1-e02-accepted.json",
+    "sourceSha256": "f1f450e64159ac392ffdd31821fad4dedc61d24c1a0d0bf4c8864ef711f1eeaf",
+    "review": "JwtTest/JwtSupport assertions reviewed. Retains explicit JKS options; KEY-181 et al require Rust Init rejection, so no Rust JWT behavior is counted. Token scp omission, RS512 algorithm and wrong signing-key setup reconstructed from source; only referenced recipes included. Init preload explains zero request JWKS delta.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-01-valid-multi-policy-v1",
+    "observation": "S-01-valid-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-01-valid-cp1-e02-accepted.json",
+    "sourceSha256": "f6de7bd0688afe2b16db7a14c765c6da1efc4a7749f901b1fde995540d345390",
+    "review": "Separately authored shared multi input. No JKS or explicit JVM service/cache bindings: Java uses bundled defaults; plain loopback JWKS needs no TLS store. Java multi headers invisible: fail-open dispatch (E-13 observation/source). Rust sees bearer and reaches S-01/S-02; Init preload outside request delta. No Java JWT coverage from this case; no Rust execution claim. Contract review: E-06 specifies lowercase ALB names. The separately authored shared multi input now uses lowercase authorization for both runners; exact Java forwarding follows that input and proposed Rust maps also stay lowercase. Original uppercase draft preserved in review/S-01-valid-multi-policy-uppercase-before-review.json; no per-runner transformation, no equivalence fixture, and no Java casing behavior change.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-02-expired-multi-policy-v1",
+    "observation": "S-02-expired-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-02-expired-cp1-e02-accepted.json",
+    "sourceSha256": "46edb7e2625f12026a35c2a44c704fccd8ef2ee7bf1a611e42b24876ac746136",
+    "review": "Separately authored shared multi input. No JKS or explicit JVM service/cache bindings: Java uses bundled defaults; plain loopback JWKS needs no TLS store. Java multi headers invisible: fail-open dispatch (E-13 observation/source). Rust sees bearer and reaches S-01/S-02; Init preload outside request delta. No Java JWT coverage from this case; no Rust execution claim.",
+    "rustExecutionEvidence": null
+  }
+]

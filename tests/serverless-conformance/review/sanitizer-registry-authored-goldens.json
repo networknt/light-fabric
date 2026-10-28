@@ -1,0 +1,128 @@
+[
+  {
+    "fixture": "V-03-html-attribute-golden-encoder-multi-contract-v1",
+    "encoder": "html-attribute",
+    "input": "<",
+    "encoded": "&lt;",
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned."
+  },
+  {
+    "fixture": "V-03-html-attribute-unquoted-golden-encoder-multi-contract-v1",
+    "encoder": "html-attribute-unquoted",
+    "input": "<",
+    "encoded": "&lt;",
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned."
+  },
+  {
+    "fixture": "V-03-xml-attribute-golden-encoder-multi-contract-v1",
+    "encoder": "xml-attribute",
+    "input": "<",
+    "encoded": "&lt;",
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned."
+  },
+  {
+    "fixture": "V-03-xml-comment-golden-encoder-multi-contract-v1",
+    "encoder": "xml-comment",
+    "input": "--",
+    "encoded": "~~",
+    "review": "Corrected from actual1.5.0 XMLCommentEncoder.encodeArrays bytecode: each hyphen45 writes tilde126 independently. Original1.3.1-based -~ draft and failed run retained. Assertion reauthored from resolved binary control flow, not current gateway output."
+  },
+  {
+    "fixture": "V-03-xml-1-1-golden-encoder-multi-contract-v1",
+    "encoder": "xml-1.1",
+    "input": "<",
+    "encoded": "&lt;",
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned."
+  },
+  {
+    "fixture": "V-03-xml-1-1-content-golden-encoder-multi-contract-v1",
+    "encoder": "xml-1.1-content",
+    "input": "<",
+    "encoded": "&lt;",
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned."
+  },
+  {
+    "fixture": "V-03-xml-1-1-attribute-golden-encoder-multi-contract-v1",
+    "encoder": "xml-1.1-attribute",
+    "input": "<",
+    "encoded": "&lt;",
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned."
+  },
+  {
+    "fixture": "V-03-cdata-golden-encoder-multi-contract-v1",
+    "encoder": "cdata",
+    "input": "]",
+    "encoded": "]]>]<![CDATA[",
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned."
+  },
+  {
+    "fixture": "V-03-css-string-golden-encoder-multi-contract-v1",
+    "encoder": "css-string",
+    "input": "x\nf",
+    "encoded": "x\\a f",
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned."
+  },
+  {
+    "fixture": "V-03-css-url-golden-encoder-multi-contract-v1",
+    "encoder": "css-url",
+    "input": "x\nf",
+    "encoded": "x\\a f",
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned."
+  },
+  {
+    "fixture": "V-03-java-golden-encoder-multi-contract-v1",
+    "encoder": "java",
+    "input": "x\ny",
+    "encoded": "x\\ny",
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned."
+  },
+  {
+    "fixture": "V-03-javascript-golden-encoder-multi-contract-v1",
+    "encoder": "javascript",
+    "input": "x\ny",
+    "encoded": "x\\ny",
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned."
+  },
+  {
+    "fixture": "V-03-javascript-attribute-golden-encoder-multi-contract-v1",
+    "encoder": "javascript-attribute",
+    "input": "x\ny",
+    "encoded": "x\\ny",
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned."
+  },
+  {
+    "fixture": "V-03-javascript-block-golden-encoder-multi-contract-v1",
+    "encoder": "javascript-block",
+    "input": "x\ny",
+    "encoded": "x\\ny",
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned."
+  },
+  {
+    "fixture": "V-03-javascript-source-golden-encoder-multi-contract-v1",
+    "encoder": "javascript-source",
+    "input": "x\ny",
+    "encoded": "x\\ny",
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned."
+  },
+  {
+    "fixture": "V-03-json-golden-encoder-multi-contract-v1",
+    "encoder": "json",
+    "input": "x\ny",
+    "encoded": "x\\ny",
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned."
+  },
+  {
+    "fixture": "V-03-uri-golden-encoder-multi-contract-v1",
+    "encoder": "uri",
+    "input": "<",
+    "encoded": "%3C",
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned."
+  },
+  {
+    "fixture": "V-03-uri-component-golden-encoder-multi-contract-v1",
+    "encoder": "uri-component",
+    "input": "<",
+    "encoded": "%3C",
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned."
+  }
+]

@@ -1,0 +1,161 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "D-08a-request-bounded-work-multi-contract-v1",
+  "title": "Closed100ms request work exceeds shared50ms invocation budget",
+  "ledger": [
+    "D-08",
+    "D-08a",
+    "E-06a",
+    "E-10"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only",
+      "light-lambda.responseReserveMs": 20,
+      "light-lambda.postReserveMs": 10
+    },
+    "files": {
+      "lambda-proxy": {
+        "functions": {
+          "/pets/fixed@get": "FnX"
+        },
+        "logType": "Tail",
+        "enabled": true
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy"
+        ],
+        "chains": {
+          "request": [],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {},
+  "tokens": {},
+  "headerMode": "multi",
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "status",
+    "body",
+    "header:content-type",
+    "backendCalls",
+    "invocationTiming"
+  ],
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "GET",
+    "path": "/pets/fixed",
+    "multiValueHeaders": {},
+    "multiValueQueryStringParameters": {
+      "a": [
+        "1",
+        "2"
+      ]
+    },
+    "body": null,
+    "isBase64Encoded": false
+  },
+  "backend": [
+    {
+      "match": {
+        "target": "FnX"
+      },
+      "respond": {
+        "functionError": null,
+        "payload": {
+          "statusCode": 200,
+          "body": "ok",
+          "isBase64Encoded": false
+        }
+      }
+    }
+  ],
+  "expectJava": {
+    "outcome": "response",
+    "status": 200,
+    "headers": [],
+    "headersAbsent": [],
+    "body": "ok",
+    "bodyBase64": false,
+    "jwksFetches": 0,
+    "backendCalls": [
+      {
+        "target": "FnX",
+        "event": {
+          "path": "/pets/fixed",
+          "httpMethod": "GET",
+          "isBase64Encoded": false
+        },
+        "eventAbsent": [
+          "/body",
+          "/headers",
+          "/queryStringParameters",
+          "/pathParameters",
+          "/requestContext/stage"
+        ],
+        "eventExact": {
+          "multiValueHeaders": {},
+          "multiValueQueryStringParameters": {
+            "a": [
+              "1",
+              "2"
+            ]
+          },
+          "requestContext": {}
+        }
+      }
+    ],
+    "boundedWorkProbeExecutions": 1,
+    "invocationTiming": {
+      "minimumMs": 100,
+      "maximumMs": 3000
+    }
+  },
+  "expect": {
+    "outcome": "response",
+    "status": 504,
+    "headers": [
+      [
+        "content-type",
+        "application/json"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "{\"statusCode\":504,\"code\":\"ERR14017\",\"message\":\"BACKEND_TIMEOUT\",\"description\":\"Backend did not respond within the request deadline.\",\"severity\":\"ERROR\"}",
+    "bodyBase64": false,
+    "backendCalls": [],
+    "jwksFetches": 0,
+    "boundedWorkProbeExecutions": 1
+  },
+  "substitutions": [],
+  "boundedWorkProbe": "request-100ms-v1",
+  "context": {
+    "remainingTimeMs": 50
+  }
+}

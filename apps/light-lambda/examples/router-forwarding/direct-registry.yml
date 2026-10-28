@@ -1,0 +1,3 @@
+# Test/example destination; the L1 harness replaces it with an owned port.
+directUrls:
+  http-service: http://127.0.0.1:18080/base

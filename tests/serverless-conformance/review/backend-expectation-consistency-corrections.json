@@ -1,0 +1,32 @@
+[
+  {
+    "fixture": "D-03-D-04-safe-metadata-no-log-tail-multi-contract-v1",
+    "decision": "Correct stale eventExact query a=2 contradicting event subset null. Declared raw input has empty query maps and no path parameters; approved business-envelope contract asserts null query. Exact null assertion retained, no relaxation. Original fixture and failed validator evidence preserved.",
+    "rustExecutionEvidence": []
+  },
+  {
+    "fixture": "D-03-unhandled-multi-contract-v1",
+    "decision": "Correct stale eventExact query a=2 contradicting event subset null. Declared raw input has empty query maps and no path parameters; approved business-envelope contract asserts null query. Exact null assertion retained, no relaxation. Original fixture and failed validator evidence preserved.",
+    "rustExecutionEvidence": []
+  },
+  {
+    "fixture": "D-03-handled-multi-contract-v1",
+    "decision": "Correct stale eventExact query a=2 contradicting event subset null. Declared raw input has empty query maps and no path parameters; approved business-envelope contract asserts null query. Exact null assertion retained, no relaxation. Original fixture and failed validator evidence preserved.",
+    "rustExecutionEvidence": []
+  },
+  {
+    "fixture": "E-05-utf8-multi-contract-v1",
+    "decision": "Correct stale eventExact query a=2 contradicting event subset null. Declared raw input has empty query maps and no path parameters; approved business-envelope contract asserts null query. Exact null assertion retained, no relaxation. Original fixture and failed validator evidence preserved.",
+    "rustExecutionEvidence": []
+  },
+  {
+    "fixture": "E-05-once-multi-contract-v1",
+    "decision": "Correct stale eventExact query a=2 contradicting event subset null. Declared raw input has empty query maps and no path parameters; approved business-envelope contract asserts null query. Exact null assertion retained, no relaxation. Original fixture and failed validator evidence preserved.",
+    "rustExecutionEvidence": []
+  },
+  {
+    "fixture": "E-05-slash-multi-contract-v1",
+    "decision": "Correct stale eventExact query a=2 contradicting event subset null. Declared raw input has empty query maps and no path parameters; approved business-envelope contract asserts null query. Exact null assertion retained, no relaxation. Original fixture and failed validator evidence preserved.",
+    "rustExecutionEvidence": []
+  }
+]

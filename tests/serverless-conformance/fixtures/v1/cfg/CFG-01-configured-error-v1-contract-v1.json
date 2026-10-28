@@ -1,0 +1,55 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "CFG-01-configured-error-v1-contract-v1",
+  "title": "Rust Init logging component configured-error-v1",
+  "ledger": [
+    "CFG-01"
+  ],
+  "config": {
+    "values": {},
+    "files": {}
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Dynamic RFC3339 timestamps must fall within recorded component process start/end; no deterministic Rust clock is claimed."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": true,
+  "component": "rustInitLoggingCfg01",
+  "initLoggingProbe": {
+    "mode": "configured-error-v1"
+  },
+  "expect": {
+    "outcome": "initLogging",
+    "stdoutContract": {
+      "format": "json-lines-v1",
+      "recordKeys": [
+        "timestamp",
+        "level",
+        "target",
+        "fields"
+      ],
+      "timestamp": "rfc3339-process-window-v1",
+      "records": [
+        {
+          "level": "ERROR",
+          "target": "light_lambda::init",
+          "fields": {
+            "message": "test-only-error"
+          }
+        }
+      ],
+      "forbiddenSubstrings": [
+        "logback",
+        "/opt/logback.xml",
+        "test-only-secret"
+      ]
+    },
+    "stderr": "",
+    "fileWrites": []
+  }
+}

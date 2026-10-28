@@ -1,0 +1,134 @@
+[
+  {
+    "fixture": "D-08-absolute-cross-stage-budget-multi-contract-v1",
+    "javaRun": "20261011T132322.861117Z",
+    "javaBehaviorAsserted": [
+      "D-08",
+      "D-08a",
+      "D-08b"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-08",
+      "D-08a",
+      "D-08b"
+    ],
+    "review": "Fixed request100ms then response100ms against one150ms budget. Java completes both and dispatches once. Authored Rust request fits deadline130ms, dispatches once, response expires at absolute140ms rather than obtaining a new duration. Exact timeout body/call/count asserted; no blocking capacity claim.",
+    "source": "Reviewed Java source and approved contract",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T132322.861117Z"
+  },
+  {
+    "fixture": "D-08-ingress-hard-limit-minimum-multi-contract-v1",
+    "javaRun": "20261011T132459.817979Z",
+    "javaBehaviorAsserted": [
+      "D-08",
+      "D-08a"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-08",
+      "D-08a"
+    ],
+    "review": "Fixed100ms request work; Lambda150ms, ingress50ms. Authored minimum hard limit is ingress50ms, request deadline30ms, zero dispatch and exact timeout. Java actual finite work/dispatch preserved. No deterministic wall-clock control asserted.",
+    "source": "Reviewed Java source and approved contract",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T132459.817979Z"
+  },
+  {
+    "fixture": "T-02-actual-native-response-input-map-multi-contract-v1",
+    "javaRun": "20261011T133316.202937Z",
+    "javaBehaviorAsserted": [
+      "T-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "T-02"
+    ],
+    "review": "Read-only actual native action input and reference-change execution observation. Complete exact input map: responseHeaders reads request headers, requestBody is current request-transformed, backend responseBody ok, method/path/status exact, absent query/path/audit null. LightLambdaExchange clones the current request at call time. Initial mistaken original-body draft/failure retained; assertion corrected from reviewed source, not regenerated from output.",
+    "source": "Reviewed Java source and approved contract",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T133316.202937Z"
+  },
+  {
+    "fixture": "V-03-html-content-encoder-multi-contract-v1",
+    "javaRun": "20261011T132633.024118Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Reviewed named OWASP html-content encoder applies less-than/greater-than escaping to selected body value; ignored field remains exact. Assertions reuse separately reviewed mathematical encoder semantics, not runner-output regeneration. Header/body input and output bytes exact; additional encoder families and ordering still require review.",
+    "source": "Reviewed Java source and approved contract",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T132633.024118Z"
+  },
+  {
+    "fixture": "V-03-xml-encoder-multi-contract-v1",
+    "javaRun": "20261011T132633.024118Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Reviewed named OWASP xml encoder applies less-than/greater-than escaping to selected body value; ignored field remains exact. Assertions reuse separately reviewed mathematical encoder semantics, not runner-output regeneration. Header/body input and output bytes exact; additional encoder families and ordering still require review.",
+    "source": "Reviewed Java source and approved contract",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T132633.024118Z"
+  },
+  {
+    "fixture": "V-03-xml-content-encoder-multi-contract-v1",
+    "javaRun": "20261011T132633.024118Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Reviewed named OWASP xml-content encoder applies less-than/greater-than escaping to selected body value; ignored field remains exact. Assertions reuse separately reviewed mathematical encoder semantics, not runner-output regeneration. Header/body input and output bytes exact; additional encoder families and ordering still require review.",
+    "source": "Reviewed Java source and approved contract",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T132633.024118Z"
+  },
+  {
+    "fixture": "T-01-metadata-native-cel-multi-contract-v1",
+    "javaRun": "20261011T133456.009817Z",
+    "javaBehaviorAsserted": [
+      "T-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "T-01"
+    ],
+    "review": "Exact closed native/CEL pair reaches metadata effects. Native EdgeAction and reviewed Java assertions retained. Rust named literal action with CEL condition matches the same synthetic input; path/query/header/body effects, selected denial, or local202/body with one business dispatch asserted as applicable. T-02 ledger reference is prerequisite/context only, not counted. No Rust action execution claimed.",
+    "source": "Reviewed Java source and approved contract",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T133456.009817Z"
+  },
+  {
+    "fixture": "T-01-local-native-cel-multi-contract-v1",
+    "javaRun": "20261011T133456.009817Z",
+    "javaBehaviorAsserted": [
+      "T-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "T-01"
+    ],
+    "review": "Exact closed native/CEL pair reaches local effects. Native EdgeAction and reviewed Java assertions retained. Rust named literal action with CEL condition matches the same synthetic input; path/query/header/body effects, selected denial, or local202/body with one business dispatch asserted as applicable. T-02 ledger reference is prerequisite/context only, not counted. No Rust action execution claimed.",
+    "source": "Reviewed Java source and approved contract",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T133456.009817Z"
+  },
+  {
+    "fixture": "T-01-deny-native-cel-multi-contract-v1",
+    "javaRun": "20261011T133456.009817Z",
+    "javaBehaviorAsserted": [
+      "T-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "T-01"
+    ],
+    "review": "Exact closed native/CEL pair reaches deny effects. Native EdgeAction and reviewed Java assertions retained. Rust named literal action with CEL condition matches the same synthetic input; path/query/header/body effects, selected denial, or local202/body with one business dispatch asserted as applicable. T-02 ledger reference is prerequisite/context only, not counted. No Rust action execution claimed.",
+    "source": "Reviewed Java source and approved contract",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T133456.009817Z"
+  }
+]

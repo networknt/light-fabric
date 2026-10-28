@@ -1,0 +1,119 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "R-05-missing-route-2-v1",
+  "title": "R-05-missing-route-2-v1",
+  "ledger": [
+    "R-02",
+    "R-05",
+    "D-01",
+    "R-06"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only",
+      "light-lambda.accountId": "000000000000",
+      "light-lambda.apiId": "test-only",
+      "light-lambda.domainName": "test.example",
+      "light-lambda.resourceId": "test-only"
+    },
+    "files": {
+      "lambda-proxy": {
+        "enabled": true,
+        "metricsInjection": false,
+        "logType": "None",
+        "functions": {
+          "/pets/{id}@GET": "Template",
+          "/pets/fixed@get": "Literal",
+          "/pets/fixed@GET": "Duplicate",
+          "/bad": "Invalid",
+          "/empty@": "Invalid"
+        }
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy"
+        ],
+        "chains": {
+          "request": [],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": [
+          {
+            "path": "/pets/{id}",
+            "method": "get",
+            "exec": [
+              "proxy"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {},
+  "tokens": {},
+  "headerMode": "single",
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "substitutions": [],
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "GET",
+    "path": "/empty",
+    "headers": {},
+    "queryStringParameters": {},
+    "body": null,
+    "isBase64Encoded": false
+  },
+  "backend": [],
+  "expectJava": {
+    "status": 400,
+    "headers": [
+      [
+        "Content-Type",
+        "application/json"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "{\"statusCode\":400,\"code\":\"ERR10086\",\"message\":\"FAILED_TO_INVOKE_LAMBDA\",\"description\":\"Failed to invoke lambda function /empty@get.\",\"severity\":\"ERROR\"}",
+    "bodyBase64": false,
+    "backendCalls": [],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "expect": {
+    "outcome": "initError",
+    "code": "InvalidConfiguration",
+    "backendCalls": [],
+    "jwksFetches": 0
+  },
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls",
+    "header:content-type",
+    "header:x-backend"
+  ]
+}

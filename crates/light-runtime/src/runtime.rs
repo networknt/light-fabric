@@ -80,18 +80,22 @@ pub struct RegistrationPolicy {
 pub trait Module: Send + Sync {
     fn name(&self) -> &'static str;
 
+    #[must_use = "the on_runtime_built future must be awaited to perform the operation"]
     async fn on_runtime_built(&self, _config: &RuntimeConfig) -> Result<(), RuntimeError> {
         Ok(())
     }
 
+    #[must_use = "the on_server_bound future must be awaited to perform the operation"]
     async fn on_server_bound(&self, _config: &RuntimeConfig) -> Result<(), RuntimeError> {
         Ok(())
     }
 
+    #[must_use = "the on_ready future must be awaited to perform the operation"]
     async fn on_ready(&self, _config: &RuntimeConfig) -> Result<(), RuntimeError> {
         Ok(())
     }
 
+    #[must_use = "the on_shutdown future must be awaited to perform the operation"]
     async fn on_shutdown(
         &self,
         _config: &RuntimeConfig,
@@ -564,6 +568,36 @@ where
         self.prepare_runtime_config(false).await
     }
 
+    /// Opt-in local-only preparation for immutable Lambda Router catalogues.
+    /// CSV destinations are validated individually. Legacy preparation, remote
+    /// startup and reload retain single-URL admission. No listeners or discovery.
+    pub async fn prepare_local_config_for_router(mut self) -> Result<RuntimeConfig, RuntimeError> {
+        init_rustls_provider();
+        Ok(self
+            .prepare_runtime_config_with_registry_mode(false, RegistryAdmission::RouterCsv)
+            .await?
+            .runtime_config)
+    }
+
+    /// Opt-in Lambda preparation from one immutable, already bounded capture.
+    /// Ordinary, remote and reload preparation retain their existing paths.
+    pub async fn prepare_local_config_from_sources(
+        mut self,
+        sources: &config_loader::BoundedLocalSources,
+        router: bool,
+    ) -> Result<RuntimeConfig, RuntimeError> {
+        init_rustls_provider();
+        let mode = if router {
+            RegistryAdmission::RouterCsv
+        } else {
+            RegistryAdmission::Single
+        };
+        Ok(self
+            .prepare_runtime_config_with_sources(false, mode, Some(sources))
+            .await?
+            .runtime_config)
+    }
+
     /// Starts the runtime for embedding and tests.
     ///
     /// The caller must install a [`ShutdownWatcher`] or arrange equivalent
@@ -783,8 +817,31 @@ where
         &mut self,
         include_remote: bool,
     ) -> Result<PreparedConfig, RuntimeError> {
+        self.prepare_runtime_config_with_registry_mode(include_remote, RegistryAdmission::Single)
+            .await
+    }
+
+    async fn prepare_runtime_config_with_registry_mode(
+        &mut self,
+        include_remote: bool,
+        registry_mode: RegistryAdmission,
+    ) -> Result<PreparedConfig, RuntimeError> {
+        self.prepare_runtime_config_with_sources(include_remote, registry_mode, None)
+            .await
+    }
+
+    async fn prepare_runtime_config_with_sources(
+        &mut self,
+        include_remote: bool,
+        registry_mode: RegistryAdmission,
+        sources: Option<&config_loader::BoundedLocalSources>,
+    ) -> Result<PreparedConfig, RuntimeError> {
         self.state = LifecycleState::BootstrapLocal;
-        let (bootstrap, bootstrap_client) = self.load_bootstrap_config()?;
+        let (bootstrap, bootstrap_client) = if let Some(sources) = sources {
+            self.load_bootstrap_config_from_values(sources.values(true)?)?
+        } else {
+            self.load_bootstrap_config()?
+        };
         let external_config_dir = self.resolve_external_config_dir(&bootstrap);
 
         self.state = LifecycleState::BootstrapRemoteOrFallback;
@@ -802,7 +859,14 @@ where
         self.state = LifecycleState::BuildRuntime;
         let source = if remote_result.values_yaml.is_some() {
             ConfigSource::Remote
-        } else if external_config_dir.join(VALUES_FILE).is_file() {
+        } else if sources.map_or_else(
+            || external_config_dir.join(VALUES_FILE).is_file(),
+            |sources| {
+                sources
+                    .source(&external_config_dir.join(VALUES_FILE))
+                    .is_some()
+            },
+        ) {
             ConfigSource::Cache
         } else {
             ConfigSource::Local
@@ -810,18 +874,42 @@ where
         let snapshot_id = remote_result.snapshot_id.clone();
         let host_id = remote_result.host_id.clone();
         let instance_id = remote_result.instance_id.clone();
-        let source_content = remote_result
-            .values_yaml
-            .clone()
-            .or_else(|| fs::read_to_string(external_config_dir.join(VALUES_FILE)).ok());
-        let runtime_config = self.build_runtime_config(
-            bootstrap,
-            bootstrap_client,
-            external_config_dir,
-            remote_result,
-        )?;
+        let source_content = if let Some(sources) = sources {
+            sources
+                .source(&external_config_dir.join(VALUES_FILE))
+                .map(|raw| raw.to_vec())
+        } else {
+            remote_result
+                .values_yaml
+                .clone()
+                .or_else(|| fs::read_to_string(external_config_dir.join(VALUES_FILE)).ok())
+                .map(String::into_bytes)
+        };
+        let runtime_config = if let Some(sources) = sources {
+            self.build_runtime_config_from_values(
+                bootstrap,
+                external_config_dir,
+                registry_mode,
+                sources.values(false)?,
+            )?
+        } else if matches!(registry_mode, RegistryAdmission::Single) {
+            self.build_runtime_config(
+                bootstrap,
+                bootstrap_client,
+                external_config_dir,
+                remote_result,
+            )?
+        } else {
+            self.build_runtime_config_with_registry_mode(
+                bootstrap,
+                bootstrap_client,
+                external_config_dir,
+                remote_result,
+                registry_mode,
+            )?
+        };
         let content_digest = match source_content {
-            Some(content) => format!("{:x}", Sha256::digest(content.as_bytes())),
+            Some(content) => format!("{:x}", Sha256::digest(&content)),
             None => sha256_values(&runtime_config.resolved_values)?,
         };
         Ok(PreparedConfig {
@@ -844,6 +932,13 @@ where
             self.default_config_dir.as_deref(),
             &self.config_dir,
         )?;
+        self.load_bootstrap_config_from_values(values)
+    }
+
+    fn load_bootstrap_config_from_values(
+        &self,
+        values: HashMap<String, Value>,
+    ) -> Result<(BootstrapConfig, Option<ClientConfig>), RuntimeError> {
         let password = std::env::var(CONFIG_PASSWORD_ENV).ok();
         let loader = ConfigLoader::from_values(values, password.as_deref(), None)?;
 
@@ -896,6 +991,23 @@ where
         external_config_dir: PathBuf,
         remote_result: RemoteBootstrapResult,
     ) -> Result<RuntimeConfig, RuntimeError> {
+        self.build_runtime_config_with_registry_mode(
+            bootstrap,
+            _client,
+            external_config_dir,
+            remote_result,
+            RegistryAdmission::Single,
+        )
+    }
+
+    fn build_runtime_config_with_registry_mode(
+        &self,
+        bootstrap: BootstrapConfig,
+        _client: Option<ClientConfig>,
+        external_config_dir: PathBuf,
+        remote_result: RemoteBootstrapResult,
+        registry_mode: RegistryAdmission,
+    ) -> Result<RuntimeConfig, RuntimeError> {
         let values = load_values_from_sources(
             self.embedded_config,
             self.default_config_dir.as_deref(),
@@ -903,6 +1015,16 @@ where
             Some(&external_config_dir),
             remote_result.values_yaml.as_deref(),
         )?;
+        self.build_runtime_config_from_values(bootstrap, external_config_dir, registry_mode, values)
+    }
+
+    fn build_runtime_config_from_values(
+        &self,
+        bootstrap: BootstrapConfig,
+        external_config_dir: PathBuf,
+        registry_mode: RegistryAdmission,
+        values: HashMap<String, Value>,
+    ) -> Result<RuntimeConfig, RuntimeError> {
         let password = std::env::var(CONFIG_PASSWORD_ENV).ok();
         let loader = ConfigLoader::from_values(values.clone(), password.as_deref(), None)?;
 
@@ -910,7 +1032,7 @@ where
         let client = self.try_load_typed_config::<ClientConfig>(&loader, CLIENT_FILE)?;
         let portal_registry =
             self.try_load_typed_config::<PortalRegistryConfig>(&loader, PORTAL_REGISTRY_FILE)?;
-        let direct_registry = self.load_direct_registry_config(&loader, &values)?;
+        let direct_registry = self.load_direct_registry_config(&loader, &values, registry_mode)?;
         let env_tag = bootstrap
             .env_tag
             .clone()
@@ -1032,6 +1154,7 @@ where
         &self,
         loader: &ConfigLoader,
         values: &HashMap<String, Value>,
+        registry_mode: RegistryAdmission,
     ) -> Result<DirectRegistryConfig, RuntimeError> {
         let config = match self
             .try_load_typed_config::<DirectRegistryConfig>(loader, DIRECT_REGISTRY_FILE)?
@@ -1045,7 +1168,7 @@ where
                     .unwrap_or_default(),
             },
         };
-        validate_direct_registry_config(&config)?;
+        validate_direct_registry_with_mode(&config, registry_mode)?;
         Ok(config)
     }
 
@@ -1507,7 +1630,7 @@ fn config_server_tls_config(
     if tls
         .ca_cert_path
         .as_ref()
-        .map_or(true, |path| path.as_os_str().is_empty())
+        .is_none_or(|path| path.as_os_str().is_empty())
     {
         tls.ca_cert_path = bootstrap.bootstrap_ca_cert_path.clone();
     }
@@ -1854,6 +1977,22 @@ fn parse_direct_registry_urls_value(
 }
 
 fn validate_direct_registry_config(config: &DirectRegistryConfig) -> Result<(), RuntimeError> {
+    validate_direct_registry_with_mode(config, RegistryAdmission::Single)
+}
+
+#[derive(Clone, Copy)]
+enum RegistryAdmission {
+    Single,
+    RouterCsv,
+}
+#[cfg(test)]
+#[path = "wp12_registry_tests.rs"]
+mod wp12_registry_tests;
+
+fn validate_direct_registry_with_mode(
+    config: &DirectRegistryConfig,
+    mode: RegistryAdmission,
+) -> Result<(), RuntimeError> {
     for (key, url) in &config.direct_urls {
         if key.trim().is_empty() {
             return Err(RuntimeError::Unsupported(
@@ -1866,20 +2005,45 @@ fn validate_direct_registry_config(config: &DirectRegistryConfig) -> Result<(), 
                 "direct-registry.directUrls `{key}` value must not be empty"
             )));
         }
-        let parsed = Url::parse(url).map_err(|error| {
-            RuntimeError::Unsupported(format!(
-                "direct-registry.directUrls `{key}` value `{url}` is invalid: {error}"
-            ))
-        })?;
-        if !matches!(parsed.scheme(), "http" | "https") {
-            return Err(RuntimeError::Unsupported(format!(
-                "direct-registry.directUrls `{key}` value `{url}` must use http or https"
-            )));
-        }
-        if parsed.host().is_none() {
-            return Err(RuntimeError::Unsupported(format!(
-                "direct-registry.directUrls `{key}` value `{url}` is missing a host"
-            )));
+        let members = match mode {
+            RegistryAdmission::Single => vec![url],
+            RegistryAdmission::RouterCsv => url.split(',').map(str::trim).collect(),
+        };
+        for url in members {
+            if url.is_empty() {
+                return Err(RuntimeError::Unsupported(
+                    "direct-registry: empty Router destination".into(),
+                ));
+            }
+            let parsed = Url::parse(url).map_err(|error| {
+                RuntimeError::Unsupported(format!(
+                    "direct-registry.directUrls `{key}` value `{url}` is invalid: {error}"
+                ))
+            })?;
+            if !matches!(parsed.scheme(), "http" | "https") {
+                return Err(RuntimeError::Unsupported(format!(
+                    "direct-registry.directUrls `{key}` value `{url}` must use http or https"
+                )));
+            }
+            if parsed.host().is_none() {
+                return Err(RuntimeError::Unsupported(format!(
+                    "direct-registry.directUrls `{key}` value `{url}` is missing a host"
+                )));
+            }
+            if matches!(mode, RegistryAdmission::RouterCsv)
+                && (!parsed.username().is_empty()
+                    || parsed.password().is_some()
+                    || parsed.fragment().is_some()
+                    || url.split_once("://").is_some_and(|(_, tail)| {
+                        tail.split(['/', '?', '#'])
+                            .next()
+                            .is_some_and(|authority| authority.contains('@'))
+                    }))
+            {
+                return Err(RuntimeError::Unsupported(
+                    "direct-registry: unsupported trusted Router destination".into(),
+                ));
+            }
         }
     }
     Ok(())

@@ -1,0 +1,20 @@
+[
+  {
+    "fixture": "B-04-Q-02-header-prefix-correlation-multi-contract-v1",
+    "source": "Reviewed WP2 header/correlation behavior and approved equivalent Q02 contract with E10 forward-map differences",
+    "javaBehaviorAsserted": [
+      "B-04",
+      "Q-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "B-04",
+      "Q-02"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Valid shared multimap reaches request/response policy. Supplied correlation preserved exactly in prefix case; generated case asserts exact22-character base64url ID, exact Java single-header map, and authored Rust coupled single/multi maps with one identical value. Separate forwarding maps preserve Java unmodified raw multimap. Actual generated output retained. Prefix request/response values and remove assertions exact. No trace-context credit from incidental traceability input.",
+    "remainingContractAssertions": [
+      "Empty and repeated correlation inputs, header update/removal collision precedence"
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T042052.455962Z"
+  }
+]

@@ -1,0 +1,7 @@
+# Opt-in local health terminal; downstream checks remain unsupported.
+enabled: ${health.enabled:false}
+useJson: ${health.useJson:false}
+timeout: ${health.timeout:2000}
+downstreamEnabled: ${health.downstreamEnabled:false}
+downstreamHost: ${health.downstreamHost:http://localhost:8081}
+downstreamPath: ${health.downstreamPath:/health}

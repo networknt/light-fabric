@@ -1,0 +1,24 @@
+[
+  {
+    "fixture": "D-01-missing-target-multi-contract-v1",
+    "source": "Approved D-01/E-01/R-05 contract and exact retained R-05-missing-route-0 Java error bytes; valid route configuration from reviewed alias control",
+    "javaBehaviorAsserted": [
+      "D-01",
+      "E-01",
+      "R-05",
+      "C-02",
+      "C-05"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-01",
+      "E-01",
+      "R-05",
+      "C-02",
+      "C-05",
+      "E-06a"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Unknown target with valid shared multimap and valid configuration reaches exact missing-target 400 ERR10086; zero Invoke. Default Status JSON bytes remain exact. Only approved E-06a response casing differs.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T023658.114753Z"
+  }
+]

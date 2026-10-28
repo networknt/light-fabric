@@ -1,0 +1,93 @@
+[
+  {
+    "fixture": "S-05-scope-string-multi-contract-v1",
+    "source": "S-05 primary-scope WP2 evidence and JwtVerifyMiddleware.hasValidScope/matchedScopes",
+    "javaBehaviorAsserted": [
+      "S-01a"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-05"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared valid multimap and supported configuration. Java skips verification under approved S-01a; authored Rust scope/scp extraction, any-match and empty required scope assertions. No per-runner transformation.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T015626.636290Z"
+  },
+  {
+    "fixture": "S-05-scope-list-multi-contract-v1",
+    "source": "S-05 primary-scope WP2 evidence and JwtVerifyMiddleware.hasValidScope/matchedScopes",
+    "javaBehaviorAsserted": [
+      "S-01a"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-05"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared valid multimap and supported configuration. Java skips verification under approved S-01a; authored Rust scope/scp extraction, any-match and empty required scope assertions. No per-runner transformation.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T015626.636290Z"
+  },
+  {
+    "fixture": "S-05-scp-string-multi-contract-v1",
+    "source": "S-05 primary-scope WP2 evidence and JwtVerifyMiddleware.hasValidScope/matchedScopes",
+    "javaBehaviorAsserted": [
+      "S-01a"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-05"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared valid multimap and supported configuration. Java skips verification under approved S-01a; authored Rust scope/scp extraction, any-match and empty required scope assertions. No per-runner transformation.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T015626.636290Z"
+  },
+  {
+    "fixture": "S-05-scp-list-multi-contract-v1",
+    "source": "S-05 primary-scope WP2 evidence and JwtVerifyMiddleware.hasValidScope/matchedScopes",
+    "javaBehaviorAsserted": [
+      "S-01a"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-05"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared valid multimap and supported configuration. Java skips verification under approved S-01a; authored Rust scope/scp extraction, any-match and empty required scope assertions. No per-runner transformation.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T015626.636290Z"
+  },
+  {
+    "fixture": "S-05-any-match-multi-contract-v1",
+    "source": "S-05 primary-scope WP2 evidence and JwtVerifyMiddleware.hasValidScope/matchedScopes",
+    "javaBehaviorAsserted": [
+      "S-01a"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-05"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared valid multimap and supported configuration. Java skips verification under approved S-01a; authored Rust scope/scp extraction, any-match and empty required scope assertions. No per-runner transformation.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T015626.636290Z"
+  },
+  {
+    "fixture": "S-05-no-required-multi-contract-v1",
+    "source": "S-05 primary-scope WP2 evidence and JwtVerifyMiddleware.hasValidScope/matchedScopes",
+    "javaBehaviorAsserted": [
+      "S-01a"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-05"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared valid multimap and supported configuration. Java skips verification under approved S-01a; authored Rust scope/scp extraction, any-match and empty required scope assertions. No per-runner transformation.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T015626.636290Z"
+  },
+  {
+    "fixture": "S-05-denied-multi-contract-v1",
+    "source": "S-05 primary-scope WP2 evidence and JwtVerifyMiddleware.hasValidScope/matchedScopes",
+    "javaBehaviorAsserted": [
+      "S-01a"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-05"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared valid multimap and supported configuration. Java skips verification under approved S-01a; authored Rust scope/scp extraction, any-match and empty required scope assertions. No per-runner transformation.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T015626.636290Z"
+  }
+]

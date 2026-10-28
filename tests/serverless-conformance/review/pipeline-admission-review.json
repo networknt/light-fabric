@@ -1,0 +1,62 @@
+[
+  {
+    "fixture": "C-08-unverified-client-before-security-configured-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-08-unverified-client-before-security-cp1-e02-accepted.json",
+    "sourceSha256": "3f5f7719519f68ba2b40c0d05b2cf14d326481e03cf2b4dc628158bd2a6fbd8b",
+    "review": "ClientLimitTest two warm steps preserve unverified CLIENT-ID quota consumption before security: first 401, then 429, zero dispatch. Explicit local-only enableAD=false avoids an unrelated deferred Init cause without changing missing-credential Java behavior. Rust identity-keyed limit ordering rejects Init under C-08.",
+    "javaBehaviorAsserted": [
+      "C-08",
+      "L-02",
+      "L-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-08"
+    ],
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "C-10-endpoint-source-configured-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-10-endpoint-source-cp1-e02-accepted.json",
+    "sourceSha256": "6881a60e31217319db52cf9239489b37b0b5b3451a2a0ef04833bf2ee01a7498",
+    "review": "EndpointSourceTest original public source/Selected plugin retains selected route and x-source mutation; unsupported Java class source/handler is Rust Init failure under C-10.",
+    "javaBehaviorAsserted": [
+      "C-10",
+      "C-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "C-10-no-terminal-configured-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-10-no-terminal-cp1-e02-accepted.json",
+    "sourceSha256": "64468941c0d215110fcad1dbc65b89d3b349eb31abcd509aa4f72e78a32f5588",
+    "review": "MissingTerminalTest exact correlation-only configured chain initializes Java but finalization throws with zero calls; explicit invocation exception. Missing terminal is Rust Init failure under C-10.",
+    "javaBehaviorAsserted": [
+      "C-10"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "L-02-synthetic-address-counter-configured-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/L-02-synthetic-address-counter-cp1-e02-accepted.json",
+    "sourceSha256": "9dd2c467071b0319063e6b805a18cae80f81e3dd2e7df469f8034de241dcce6b",
+    "review": "AddressResolverTest explicit address override bucket recreated from source, preserving first dispatch/second 429 and exact 60s duration header. This differs from existing fallback fixture lacking an address override, which recreates fallback counter; not treated as a duplicate. Rust single-value rejection reaches E-13 only.",
+    "javaBehaviorAsserted": [
+      "L-02",
+      "L-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-13"
+    ],
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  }
+]

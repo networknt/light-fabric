@@ -1,0 +1,70 @@
+[
+  {
+    "fixture": "S-06-secondary-0-dual-token-multi-contract-v1",
+    "source": "Preserved WP2-reviewed conformance fixture and approved contract rows",
+    "javaBehaviorAsserted": [
+      "S-06"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-06"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Reviewed primary/secondary scope-token recipes and exact Java outcomes from the preserved S-06 observations. Shared lower-case multimap plus unchanged single-map headers reaches both verifiers. Closed cache/JWKS prerequisites replace only test infrastructure; bootstrap1 and exact GET /jwks are asserted separately. Valid and denied secondary scopes and expired/malformed secondary-token bodies are exact. Business dispatch counts and forwarded bytes/maps are exact. No unverified principal trust or Rust execution evidence.",
+    "remainingContractAssertions": [
+      "Unverified-claim authorization must be reviewed clause by clause; these four cases do not alone qualify every dual-token clause."
+    ],
+    "javaRun": "20261011T044351.928101Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T044351.928101Z"
+  },
+  {
+    "fixture": "S-06-secondary-1-dual-token-multi-contract-v1",
+    "source": "Preserved WP2-reviewed conformance fixture and approved contract rows",
+    "javaBehaviorAsserted": [
+      "S-06"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-06"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Reviewed primary/secondary scope-token recipes and exact Java outcomes from the preserved S-06 observations. Shared lower-case multimap plus unchanged single-map headers reaches both verifiers. Closed cache/JWKS prerequisites replace only test infrastructure; bootstrap1 and exact GET /jwks are asserted separately. Valid and denied secondary scopes and expired/malformed secondary-token bodies are exact. Business dispatch counts and forwarded bytes/maps are exact. No unverified principal trust or Rust execution evidence.",
+    "remainingContractAssertions": [
+      "Unverified-claim authorization must be reviewed clause by clause; these four cases do not alone qualify every dual-token clause."
+    ],
+    "javaRun": "20261011T044351.928101Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T044351.928101Z"
+  },
+  {
+    "fixture": "S-06-secondary-invalid-0-dual-token-multi-contract-v1",
+    "source": "Preserved WP2-reviewed conformance fixture and approved contract rows",
+    "javaBehaviorAsserted": [
+      "S-06"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-06"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Reviewed primary/secondary scope-token recipes and exact Java outcomes from the preserved S-06 observations. Shared lower-case multimap plus unchanged single-map headers reaches both verifiers. Closed cache/JWKS prerequisites replace only test infrastructure; bootstrap1 and exact GET /jwks are asserted separately. Valid and denied secondary scopes and expired/malformed secondary-token bodies are exact. Business dispatch counts and forwarded bytes/maps are exact. No unverified principal trust or Rust execution evidence.",
+    "remainingContractAssertions": [
+      "Unverified-claim authorization must be reviewed clause by clause; these four cases do not alone qualify every dual-token clause."
+    ],
+    "javaRun": "20261011T044351.928101Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T044351.928101Z"
+  },
+  {
+    "fixture": "S-06-secondary-invalid-1-dual-token-multi-contract-v1",
+    "source": "Preserved WP2-reviewed conformance fixture and approved contract rows",
+    "javaBehaviorAsserted": [
+      "S-06"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-06"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Reviewed primary/secondary scope-token recipes and exact Java outcomes from the preserved S-06 observations. Shared lower-case multimap plus unchanged single-map headers reaches both verifiers. Closed cache/JWKS prerequisites replace only test infrastructure; bootstrap1 and exact GET /jwks are asserted separately. Valid and denied secondary scopes and expired/malformed secondary-token bodies are exact. Business dispatch counts and forwarded bytes/maps are exact. No unverified principal trust or Rust execution evidence.",
+    "remainingContractAssertions": [
+      "Unverified-claim authorization must be reviewed clause by clause; these four cases do not alone qualify every dual-token clause."
+    ],
+    "javaRun": "20261011T044410.875129Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T044410.875129Z"
+  }
+]

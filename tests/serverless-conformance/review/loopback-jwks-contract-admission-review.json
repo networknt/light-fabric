@@ -1,0 +1,16 @@
+[
+  {
+    "fixture": "S-13b-active-refresh-join-multi-contract-v1",
+    "source": "Owner approvals and focused Java evidence",
+    "javaBehaviorAsserted": [
+      "S-13b"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-13b"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Approved closed infrastructure prerequisite; two Java refresh calls versus authored one Rust joined refresh. Both responses remain exact 401. Readable empty synthetic JKS and Caffeine caches checked before Init; actual JWKS count asserted. No cancellation, starter-drop or cooldown completion claim. Init/bootstrap fetches now asserted separately from per-request fetches. Failed-refresh cooldown fixture explicitly disables bootstrap so first request establishes the failed attempt, rather than inheriting Init cooldown. Prior revisions retained.",
+    "remainingContractAssertions": [],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T043042.345473Z"
+  }
+]

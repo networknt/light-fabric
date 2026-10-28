@@ -1,0 +1,4 @@
+# GET requires verified OAuth/JWT. Partial ROOT INFO/DEBUG/TRACE SET additionally
+# requires LIGHT_LAMBDA_ALLOW_LOGGER_SET=1 and an admitted scalar startup filter.
+# Native reserved POST /adm/logger still requires the separate reservation wiring.
+enabled: ${logger.enabled:false}

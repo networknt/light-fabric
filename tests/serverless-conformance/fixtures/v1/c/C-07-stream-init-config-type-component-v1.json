@@ -1,0 +1,65 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "C-07-stream-init-config-type-component-v1",
+  "title": "C-07-stream-init-config-type approved closed Java-only stream component",
+  "ledger": [
+    "C-07"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "lambda-proxy": {
+        "enabled": true,
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@options": "FnX"
+        }
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy"
+        ],
+        "chains": {
+          "request": [],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "No stream clock assertion."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": true,
+  "rustOnly": false,
+  "component": "javaStreamC07",
+  "streamInput": "{}",
+  "expect": {
+    "outcome": "exception",
+    "phase": "init",
+    "class": "java.lang.ExceptionInInitializerError",
+    "backendCalls": [],
+    "jwksFetches": 0
+  }
+}

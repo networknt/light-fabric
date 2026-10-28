@@ -1,0 +1,2 @@
+# Local request metadata; no thread-local MDC and no implicit response echo.
+enabled: ${traceability.enabled:false}

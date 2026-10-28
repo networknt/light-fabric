@@ -1,0 +1,1 @@
+Plan §5.1 uses the same reporting path/header Runtime.InitError for Init failures and panics; only errorType is Runtime.InitPanic. Corrected authored header from plan, not runner output. Original declaration and earlier skipped results preserved; fresh validation required.

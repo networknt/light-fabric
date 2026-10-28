@@ -1,0 +1,38 @@
+[
+  {
+    "ParameterKey": "ArtifactBucket",
+    "ParameterValue": "REQUIRED"
+  },
+  {
+    "ParameterKey": "BootstrapKey",
+    "ParameterValue": "REQUIRED"
+  },
+  {
+    "ParameterKey": "LayerKey",
+    "ParameterValue": "REQUIRED"
+  },
+  {
+    "ParameterKey": "AllowedClientCidr",
+    "ParameterValue": "REQUIRED_PUBLIC_IP/32"
+  },
+  {
+    "ParameterKey": "CertificateArn",
+    "ParameterValue": "REQUIRED"
+  },
+  {
+    "ParameterKey": "PetsGetArn",
+    "ParameterValue": "arn:aws:lambda:us-east-2:964637446810:function:PetsGetFunction"
+  },
+  {
+    "ParameterKey": "PetsPostArn",
+    "ParameterValue": "arn:aws:lambda:us-east-2:964637446810:function:PetsPostFunction"
+  },
+  {
+    "ParameterKey": "PetGetArn",
+    "ParameterValue": "arn:aws:lambda:us-east-2:964637446810:function:PetsPetIdGetFunction"
+  },
+  {
+    "ParameterKey": "PetDeleteArn",
+    "ParameterValue": "arn:aws:lambda:us-east-2:964637446810:function:PetsPetIdDeleteFunction"
+  }
+]

@@ -1,0 +1,19 @@
+{
+  "status": "not admitted; owner direction pending on closed loopback client prerequisite",
+  "fixture": "S-13b-active-refresh-join-multi-contract-v1",
+  "source": "Original S-13b WP2 two-caller observation; plan WP6 active-first gate; approved closed cache prerequisite",
+  "javaExpected": "two exact 401 responses and two refresh calls",
+  "javaObservedCurrentSharedClient": "two exact 401 responses and zero refresh calls; cache prerequisite readiness check passes",
+  "nativeClientDiagnostic": "Restore only WP2 empty synthetic JKS client settings: Java assertion passes unchanged, two refresh calls; not admission because Rust Init rejects JKS configuration",
+  "runsPreserved": [
+    "20261011T032426.009230Z",
+    "20261011T032521.606315Z",
+    "20261011T032848.454323Z",
+    "20261011T033116.037364Z",
+    "20261011T033150.992750Z",
+    "20261011T033200.761653Z",
+    "20261011T033220.275468Z"
+  ],
+  "rustEvidence": 0,
+  "otherIndependentWork": "D-02 finalized body, D-09 oversize response and M-01 closed EMF admitted separately; no full final qualification yet"
+}

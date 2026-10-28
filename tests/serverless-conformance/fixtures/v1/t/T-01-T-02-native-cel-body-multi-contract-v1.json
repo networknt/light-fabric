@@ -1,0 +1,304 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "T-01-T-02-native-cel-body-multi-contract-v1",
+  "title": "Native Java and light-rule CEL paired body transformations on shared ALB input",
+  "ledger": [
+    "T-01",
+    "T-02",
+    "E-10",
+    "D-02"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "request-transformer": {
+        "enabled": true,
+        "appliedPathPrefixes": [
+          "/x"
+        ]
+      },
+      "response-transformer": {
+        "enabled": true,
+        "appliedPathPrefixes": [
+          "/x"
+        ]
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "None",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.transformer.RequestTransformerMiddleware@h0",
+          "com.networknt.aws.lambda.handler.middleware.transformer.ResponseTransformerMiddleware@response0"
+        ],
+        "chains": {
+          "request": [
+            "h0"
+          ],
+          "response": [
+            "response0"
+          ]
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "No virtual deadline or elapsed-time equality; exact observed rule result is asserted."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "backendCalls"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "x-input": "request-value"
+        },
+        "body": "original",
+        "isBase64Encoded": false,
+        "multiValueHeaders": {
+          "x-input": [
+            "request-value"
+          ]
+        }
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "response-transformed",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "POST",
+              "headers": {
+                "x-input": "request-value"
+              },
+              "requestContext": {},
+              "body": "request-transformed",
+              "isBase64Encoded": false
+            },
+            "eventExact": {
+              "headers": {
+                "x-input": "request-value"
+              },
+              "requestContext": {},
+              "multiValueHeaders": {
+                "x-input": [
+                  "request-value"
+                ]
+              }
+            },
+            "eventAbsent": [
+              "/queryStringParameters"
+            ]
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "expect": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "response-transformed",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "POST",
+              "body": "request-transformed",
+              "isBase64Encoded": false,
+              "requestContext": {
+                "stage": "test-only"
+              }
+            },
+            "eventExact": {
+              "headers": {
+                "x-input": "request-value"
+              },
+              "multiValueHeaders": {
+                "x-input": [
+                  "request-value"
+                ]
+              },
+              "queryStringParameters": null,
+              "multiValueQueryStringParameters": null,
+              "pathParameters": null
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      }
+    }
+  ],
+  "ruleConfigurationPair": {
+    "java": {
+      "executor": "java-yaml-rule",
+      "rule": {
+        "endpointRules": {
+          "/x@post": {
+            "req-tra": [
+              "request"
+            ],
+            "res-tra": [
+              "response"
+            ]
+          }
+        },
+        "ruleBodies": {
+          "request": {
+            "ruleId": "request",
+            "ruleType": "req-tra",
+            "common": "Y",
+            "ruleName": "test-only-request",
+            "conditions": [],
+            "actions": [
+              {
+                "actionId": "request",
+                "actionClassName": "com.networknt.aws.lambda.characterization.TransformerTest$RequestAction"
+              }
+            ]
+          },
+          "response": {
+            "ruleId": "response",
+            "ruleType": "res-tra",
+            "common": "Y",
+            "ruleName": "test-only-response",
+            "conditions": [],
+            "actions": [
+              {
+                "actionId": "response",
+                "actionClassName": "com.networknt.aws.lambda.characterization.TransformerTest$ResponseAction"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "rust": {
+      "executor": "light-rule-cel",
+      "rule": {
+        "endpointRules": {
+          "/x@post": {
+            "req-tra": [
+              "request"
+            ],
+            "res-tra": [
+              "response"
+            ]
+          }
+        },
+        "ruleBodies": {
+          "request": {
+            "ruleId": "request",
+            "ruleType": "req-tra",
+            "common": "Y",
+            "ruleName": "test-only-request",
+            "actions": [
+              {
+                "actionId": "request",
+                "actionRef": "request-body-literal",
+                "actionValues": {
+                  "body": "request-transformed"
+                }
+              }
+            ],
+            "conditionLanguage": "cel",
+            "conditionSecurityProfile": "standard",
+            "expression": "true"
+          },
+          "response": {
+            "ruleId": "response",
+            "ruleType": "res-tra",
+            "common": "Y",
+            "ruleName": "test-only-response",
+            "actions": [
+              {
+                "actionId": "response",
+                "actionRef": "response-body-literal",
+                "actionValues": {
+                  "body": "response-transformed"
+                }
+              }
+            ],
+            "conditionLanguage": "cel",
+            "conditionSecurityProfile": "standard",
+            "expression": "true"
+          }
+        }
+      }
+    }
+  }
+}

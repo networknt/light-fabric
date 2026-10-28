@@ -1,0 +1,18 @@
+[
+  {
+    "fixture": "D-09-serialized-response-over-limit-multi-contract-v1",
+    "source": "Plan 5.4 exact serialized ALB envelope limit 1048576 and Appendix C ERR14016",
+    "javaBehaviorAsserted": [
+      "D-09"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-09"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "One backend response has exactly 1048576 x bytes. JSON envelope overhead necessarily exceeds ingress limit. Java actual body remains byte-exact; authored Rust expectation is exact minimal 502 ERR14016 and one backend operation, no redispatch.",
+    "remainingContractAssertions": [
+      "Header/escaping/base64 size-boundary cases, replacement recheck and response-chain no-rerun need explicit clause assertions."
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T032242.638421Z"
+  }
+]

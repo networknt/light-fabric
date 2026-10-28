@@ -1,0 +1,211 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "B-01-no-service-represented-v1",
+  "title": "B-01-no-service exact Java behavior",
+  "ledger": [
+    "B-01",
+    "CFG-02",
+    "CFG-04"
+  ],
+  "config": {
+    "values": {},
+    "files": {
+      "token": {
+        "enabled": true,
+        "appliedPathPrefixes": [
+          "/x"
+        ]
+      },
+      "service": {
+        "singletons": [
+          {
+            "com.networknt.cache.CacheManager": [
+              "com.networknt.cache.CaffeineCacheManager"
+            ]
+          }
+        ]
+      },
+      "cache": {
+        "caches": [
+          {
+            "cacheName": "token",
+            "expiryInMinutes": 15,
+            "maxSize": 100
+          }
+        ]
+      },
+      "client": {
+        "request": {
+          "connectTimeout": 1000,
+          "timeout": 1000,
+          "maxRequestRetry": 1
+        },
+        "tls": {
+          "loadKeyStore": false,
+          "loadTrustStore": true,
+          "trustStore": "test-only-truststore.jks",
+          "trustStorePass": "test-only-store",
+          "verifyHostname": true
+        },
+        "oauth": {
+          "multipleAuthServers": false,
+          "token": {
+            "server_url": "${dependency:http}",
+            "enableHttp2": false,
+            "tokenRenewBeforeExpired": 0,
+            "client_credentials": {
+              "uri": "/token",
+              "client_id": "test-only-client",
+              "client_secret": "test-only-secret",
+              "scope": [
+                "test"
+              ]
+            }
+          }
+        }
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.token.TokenMiddleware@h0"
+        ],
+        "chains": {
+          "request": [
+            "h0"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Runtime generated token recipes, synthetic loopback HTTP dependencies and fixed dependency response Date; no virtual verifier clock."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls",
+    "jwksFetches",
+    "httpCalls",
+    "header:x-backend",
+    "header:content-type",
+    "header:access-control-allow-origin"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {},
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "headers": {},
+              "queryStringParameters": {},
+              "requestContext": {},
+              "isBase64Encoded": false
+            },
+            "eventExact": {
+              "headers": {}
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response",
+        "httpCalls": []
+      },
+      "headerMode": "single",
+      "expect": {
+        "outcome": "notExecuted",
+        "reason": "initError",
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "httpCalls": []
+      }
+    }
+  ],
+  "expectRustInit": {
+    "outcome": "initError",
+    "code": "InvalidConfiguration",
+    "backendCalls": [],
+    "jwksFetches": 0
+  },
+  "dependencies": {
+    "http": {
+      "responses": []
+    }
+  }
+}

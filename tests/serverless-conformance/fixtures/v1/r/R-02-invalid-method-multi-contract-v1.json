@@ -1,0 +1,125 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "R-02-invalid-method-multi-contract-v1",
+  "title": "Invalid HTTP token rejects Rust encoding before dispatch",
+  "ledger": [
+    "R-02",
+    "E-14",
+    "E-06a"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "lambda-proxy": {
+        "functions": {
+          "/pets/{id}@get": "FnTemplate",
+          "/pets/fixed@get": "FnLiteral"
+        },
+        "logType": "Tail",
+        "enabled": true
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy"
+        ],
+        "chains": {
+          "request": [
+            "proxy"
+          ]
+        },
+        "defaultHandlers": [
+          "request"
+        ],
+        "paths": [
+          {
+            "path": "/pets/fixed",
+            "method": "get",
+            "exec": [
+              "proxy"
+            ]
+          },
+          {
+            "path": "/pets/{id}",
+            "method": "get",
+            "exec": [
+              "proxy"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {},
+  "tokens": {},
+  "headerMode": "multi",
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "header:content-type",
+    "body"
+  ],
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "GET SPACE",
+    "path": "/unknown",
+    "multiValueHeaders": {},
+    "multiValueQueryStringParameters": {
+      "a": [
+        "1",
+        "2"
+      ]
+    },
+    "body": null,
+    "isBase64Encoded": false
+  },
+  "backend": [],
+  "expectJava": {
+    "status": 400,
+    "headers": [
+      [
+        "Content-Type",
+        "application/json"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "{\"statusCode\":400,\"code\":\"ERR10086\",\"message\":\"FAILED_TO_INVOKE_LAMBDA\",\"description\":\"Failed to invoke lambda function /unknown@get space.\",\"severity\":\"ERROR\"}",
+    "bodyBase64": false,
+    "backendCalls": [],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "expect": {
+    "status": 400,
+    "headers": [
+      [
+        "content-type",
+        "application/json"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "{\"statusCode\":400,\"code\":\"ERR14012\",\"message\":\"INVALID_REQUEST_ENCODING\",\"description\":\"Request method, path, query or body encoding is invalid.\",\"severity\":\"ERROR\"}",
+    "bodyBase64": false,
+    "backendCalls": [],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "substitutions": []
+}

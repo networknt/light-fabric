@@ -1,0 +1,1 @@
+Unadmitted drafts. Excluded from fixtures/v1 digest, passing corpus qualification and behavioral coverage. Admission requires reviewed assertions and successful Java execution/schema validation. Historical pre-separation manifest preserved in approval history.

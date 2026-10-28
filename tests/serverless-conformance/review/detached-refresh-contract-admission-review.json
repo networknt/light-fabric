@@ -1,0 +1,20 @@
+[
+  {
+    "fixture": "S-13c-detached-refresh-cache-publish-multi-contract-v1",
+    "source": "Owner-approved closed prerequisite, reviewed Java behavior, approved deadline/cache contracts",
+    "javaBehaviorAsserted": [
+      "S-13c",
+      "D-08f"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-13c",
+      "D-08f"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "First caller has valid multimap ingress, 500ms hard budget and 400/100ms reserves; JWKS reply takes300ms beyond100ms request deadline. Java succeeds synchronously; authored Rust504 has zero business dispatch. Second warm step waits350ms and asserts200 with zero fetch, proving the proposed cache publication contrast. Init/bootstrap and actual GET /jwks traces are exact. No freeze/thaw, panic or starter-drop claim.",
+    "remainingContractAssertions": [
+      "S-13c: panic cleanup requires the requested closed actual shared-fetch panic probe; cancellation is not panic evidence."
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T044051.986779Z"
+  }
+]

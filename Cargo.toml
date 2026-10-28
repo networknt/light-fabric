@@ -1,10 +1,12 @@
 [workspace]
 members = [
+    "crates/gateway-policy",
     "crates/*",
     "frameworks/*",
     "apps/*",
     "patches/pingora-core",
 ]
+exclude = ["crates/light-lambda-validator/vendor/json", "crates/light-lambda-validator/vendor/jsonschema", "crates/light-lambda-validator/vendor/referencing"]
 resolver = "2"
 
 [patch.crates-io]
@@ -23,6 +25,8 @@ repository = "https://github.com/networknt/light-fabric"
 anyhow = "1"
 aws-config = "=1.10.1"
 aws-sdk-bedrockruntime = "=1.139.0"
+aws-sdk-lambda = { version = "=1.139.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
+lambda_runtime = "=1.4.0"
 aws-smithy-types = "=1.6.2"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["macros", "ws"] }
@@ -57,6 +61,11 @@ rkyv = { version = "=0.8.12", default-features = false, features = ["std", "byte
 [profile.release]
 panic = "unwind"
 
+# Bootstrap-only Lambda packaging; preserve the workspace release profile.
+[profile.lambda]
+inherits = "release"
+strip = "symbols"
+
 [profile.dev.package.cel]
 opt-level = 1
 
@@ -68,3 +77,8 @@ opt-level = 1
 
 [profile.test.package.antlr4rust]
 opt-level = 1
+
+# Self-image admission tests hash large debug executables under real deadlines.
+# Optimize hashing rather than relaxing deadlines or changing production profiles.
+[profile.test.package.sha2]
+opt-level = 2

@@ -1,0 +1,262 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "D-08f-synchronous-jwks-represented-v1",
+  "title": "D-08f-synchronous-jwks \u2014 exact Java JWKS contrast",
+  "ledger": [
+    "D-08f",
+    "S-13",
+    "S-13c",
+    "CFG-02",
+    "CFG-04"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "security": {
+        "enableVerifyJwt": true,
+        "enableVerifyScope": false,
+        "ignoreJwtExpiry": false,
+        "jwt": {
+          "clockSkewInSeconds": 0,
+          "keyResolver": "JsonWebKeySet",
+          "certificate": {}
+        },
+        "enableJwtCache": true,
+        "jwtCacheFullSize": 1000,
+        "bootstrapFromKeyService": true,
+        "logJwtToken": false,
+        "enableMockJwt": false,
+        "enableRelaxedKeyValidation": false
+      },
+      "service": {
+        "singletons": [
+          {
+            "com.networknt.cache.CacheManager": [
+              "com.networknt.cache.CaffeineCacheManager"
+            ]
+          }
+        ]
+      },
+      "cache": {
+        "caches": [
+          {
+            "cacheName": "jwt",
+            "expiryInMinutes": 15,
+            "maxSize": 1000
+          },
+          {
+            "cacheName": "jwk",
+            "expiryInMinutes": 600,
+            "maxSize": 1000
+          }
+        ]
+      },
+      "client": {
+        "request": {
+          "connectTimeout": 1000,
+          "timeout": 1000,
+          "maxRequestRetry": 1
+        },
+        "tls": {
+          "loadKeyStore": false,
+          "loadTrustStore": true,
+          "trustStore": "test-only-truststore.jks",
+          "trustStorePass": "test-only-store",
+          "verifyHostname": true
+        },
+        "oauth": {
+          "multipleAuthServers": false,
+          "token": {
+            "key": {
+              "server_url": "${dependency:jwks}",
+              "uri": "/jwks",
+              "enableHttp2": false,
+              "audience": "test-audience"
+            }
+          }
+        }
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.security.JwtVerifyMiddleware@h0"
+        ],
+        "chains": {
+          "request": [
+            "h0"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Synthetic literal malformed bearer; no production or generated token."
+  },
+  "keys": {
+    "k1": {
+      "alg": "RS256"
+    },
+    "k2": {
+      "alg": "RS256"
+    }
+  },
+  "tokens": {
+    "synchronous-jwks": {
+      "kid": "k2",
+      "claims": {
+        "sub": "test-user",
+        "iss": "test-issuer",
+        "aud": "test-audience",
+        "jti": "synchronous-jwks",
+        "client_id": "test-client",
+        "user_id": "test-user",
+        "scp": null
+      },
+      "issuedOffsetSec": -10,
+      "expOffsetSec": 600,
+      "nbfOffsetSec": 0
+    }
+  },
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "headerMode": "single",
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "header:content-type",
+    "header:x-backend",
+    "backendCalls",
+    "jwksFetches",
+    "invocationTiming"
+  ],
+  "dependencies": {
+    "jwks": {
+      "publishedKeys": [
+        "k1"
+      ],
+      "delayMs": 120
+    }
+  },
+  "substitutions": [
+    {
+      "pointer": "/steps/0/rawEvent/headers/AUTHORIZATION",
+      "recipe": "token:synchronous-jwks"
+    }
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {
+          "AUTHORIZATION": "Bearer ${token:synchronous-jwks}"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "headers": {
+                "AUTHORIZATION": "Bearer ${token:synchronous-jwks}"
+              },
+              "queryStringParameters": {},
+              "requestContext": {},
+              "isBase64Encoded": false
+            }
+          }
+        ],
+        "jwksFetches": 1,
+        "outcome": "response",
+        "invocationTiming": {
+          "minimumMs": 120,
+          "maximumMs": 10000
+        }
+      },
+      "expect": {
+        "outcome": "notExecuted",
+        "reason": "initError",
+        "backendCalls": [],
+        "jwksFetches": 0
+      },
+      "jwksPublishedKeys": [
+        "k1",
+        "k2"
+      ]
+    }
+  ],
+  "expectRustInit": {
+    "outcome": "initError",
+    "code": "InvalidConfiguration",
+    "backendCalls": [],
+    "jwksFetches": 0
+  }
+}

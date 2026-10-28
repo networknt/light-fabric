@@ -1,0 +1,38 @@
+[
+  {
+    "fixture": "S-11-unmatched-multi-policy-v1",
+    "source": "/home/steve/workspace/light-fabric-light-lambda/tests/serverless-conformance/fixtures/v1/s/S-11-unmatched-multi-policy-v1.json",
+    "paths": [
+      "/expect/backendCalls/0/eventExact/headers",
+      "/expect/backendCalls/0/eventExact/multiValueHeaders"
+    ],
+    "basis": "Approved plan5.3: each empty business-envelope map serializes null. Java expectations and input unchanged; Rust assertions authored, not observed."
+  },
+  {
+    "fixture": "S-09-anonymous-multi-policy-v1",
+    "source": "/home/steve/workspace/light-fabric-light-lambda/tests/serverless-conformance/fixtures/v1/s/S-09-anonymous-multi-policy-v1.json",
+    "paths": [
+      "/expect/backendCalls/0/eventExact/headers",
+      "/expect/backendCalls/0/eventExact/multiValueHeaders"
+    ],
+    "basis": "Approved plan5.3: each empty business-envelope map serializes null. Java expectations and input unchanged; Rust assertions authored, not observed."
+  },
+  {
+    "fixture": "E-14-decoded-utf8-at-cap-multi-contract-v1",
+    "source": "/tmp/wp3-clause-controls-fixtures/E-14-decoded-utf8-at-cap-multi-contract-v1.json",
+    "paths": [
+      "/expect/backendCalls/0/event/multiValueQueryStringParameters",
+      "/expect/backendCalls/0/eventExact/multiValueQueryStringParameters"
+    ],
+    "basis": "Approved plan5.3: each empty business-envelope map serializes null. Java expectations and input unchanged; Rust assertions authored, not observed."
+  },
+  {
+    "fixture": "R-01-longest-template-multi-contract-v1",
+    "source": "/tmp/wp3-clause-controls-fixtures/R-01-longest-template-multi-contract-v1.json",
+    "paths": [
+      "/expect/backendCalls/0/event/multiValueQueryStringParameters",
+      "/expect/backendCalls/0/eventExact/multiValueQueryStringParameters"
+    ],
+    "basis": "Approved plan5.3: each empty business-envelope map serializes null. Java expectations and input unchanged; Rust assertions authored, not observed."
+  }
+]

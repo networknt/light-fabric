@@ -1,0 +1,42 @@
+[
+  {
+    "id": "synthetic-typed-keyword-3.0.3-contains",
+    "rawSchemaEngineBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must contain at least 1 element(s) that passes these validations: {\"type\":\"integer\"}\",\"severity\":\"ERROR\"}",
+    "actualRequestPath": false
+  },
+  {
+    "id": "synthetic-typed-keyword-3.0.3-dependentRequired",
+    "rawSchemaEngineBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: has a missing property 'b' which is dependent required because 'a' is present\",\"severity\":\"ERROR\"}",
+    "actualRequestPath": false
+  },
+  {
+    "id": "synthetic-typed-keyword-3.0.3-prefixItems",
+    "rawSchemaEngineBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v/0: string found, integer expected\",\"severity\":\"ERROR\"}",
+    "actualRequestPath": false
+  },
+  {
+    "id": "synthetic-typed-keyword-3.0.3-propertyNames",
+    "rawSchemaEngineBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: property 'bad' name is not valid: does not match the regex pattern ^x\",\"severity\":\"ERROR\"}",
+    "actualRequestPath": false
+  },
+  {
+    "id": "synthetic-typed-keyword-3.1.0-contains",
+    "rawSchemaEngineBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must contain at least 1 element(s) that passes these validations: {\"type\":\"integer\"}\",\"severity\":\"ERROR\"}",
+    "actualRequestPath": false
+  },
+  {
+    "id": "synthetic-typed-keyword-3.1.0-dependentRequired",
+    "rawSchemaEngineBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: has a missing property 'b' which is dependent required because 'a' is present\",\"severity\":\"ERROR\"}",
+    "actualRequestPath": false
+  },
+  {
+    "id": "synthetic-typed-keyword-3.1.0-prefixItems",
+    "rawSchemaEngineBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v/0: string found, integer expected\",\"severity\":\"ERROR\"}",
+    "actualRequestPath": false
+  },
+  {
+    "id": "synthetic-typed-keyword-3.1.0-propertyNames",
+    "rawSchemaEngineBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: property 'bad' name is not valid: does not match the regex pattern ^x\",\"severity\":\"ERROR\"}",
+    "actualRequestPath": false
+  }
+]

@@ -1,0 +1,773 @@
+{
+  "H-04-shared-http-deadline-multi-contract-v1": {
+    "H-04": {
+      "fixtures": [
+        "H-04-already-failed-router-component-v1",
+        "H-04-unsupported-HEAD-multi-contract-v1",
+        "H-04-transport-refused-multi-contract-v1",
+        "H-04-transport-slow-multi-contract-v1",
+        "H-04-shared-http-deadline-multi-contract-v1"
+      ],
+      "reason": "Exact component ERR10087/state10/no calls and ordinary unknown/method/transport/capped-request/shared-deadline fixtures supersede this earlier open note; Rust assertions authored, unexecuted."
+    }
+  },
+  "H-04-transport-refused-multi-contract-v1": {
+    "H-04": {
+      "fixtures": [
+        "H-04-already-failed-router-component-v1",
+        "H-04-unsupported-HEAD-multi-contract-v1",
+        "H-04-transport-refused-multi-contract-v1",
+        "H-04-transport-slow-multi-contract-v1",
+        "H-04-shared-http-deadline-multi-contract-v1"
+      ],
+      "reason": "Exact component ERR10087/state10/no calls and ordinary unknown/method/transport/capped-request/shared-deadline fixtures supersede this earlier open note; Rust assertions authored, unexecuted."
+    }
+  },
+  "H-04-transport-slow-multi-contract-v1": {
+    "H-04": {
+      "fixtures": [
+        "H-04-already-failed-router-component-v1",
+        "H-04-unsupported-HEAD-multi-contract-v1",
+        "H-04-transport-refused-multi-contract-v1",
+        "H-04-transport-slow-multi-contract-v1",
+        "H-04-shared-http-deadline-multi-contract-v1"
+      ],
+      "reason": "Exact component ERR10087/state10/no calls and ordinary unknown/method/transport/capped-request/shared-deadline fixtures supersede this earlier open note; Rust assertions authored, unexecuted."
+    }
+  },
+  "H-04-unknown-service-multi-contract-v1": {
+    "H-04": {
+      "fixtures": [
+        "H-04-already-failed-router-component-v1",
+        "H-04-unsupported-HEAD-multi-contract-v1",
+        "H-04-transport-refused-multi-contract-v1",
+        "H-04-transport-slow-multi-contract-v1",
+        "H-04-shared-http-deadline-multi-contract-v1"
+      ],
+      "reason": "Exact component ERR10087/state10/no calls and ordinary unknown/method/transport/capped-request/shared-deadline fixtures supersede this earlier open note; Rust assertions authored, unexecuted."
+    }
+  },
+  "H-04-unsupported-HEAD-multi-contract-v1": {
+    "H-04": {
+      "fixtures": [
+        "H-04-already-failed-router-component-v1",
+        "H-04-unsupported-HEAD-multi-contract-v1",
+        "H-04-transport-refused-multi-contract-v1",
+        "H-04-transport-slow-multi-contract-v1",
+        "H-04-shared-http-deadline-multi-contract-v1"
+      ],
+      "reason": "Exact component ERR10087/state10/no calls and ordinary unknown/method/transport/capped-request/shared-deadline fixtures supersede this earlier open note; Rust assertions authored, unexecuted."
+    }
+  },
+  "B-04-Q-02-header-prefix-correlation-multi-contract-v1": {
+    "Q-02": {
+      "fixtures": [
+        "Q-02-empty-correlation-multi-contract-v1",
+        "Q-02-repeated-correlation-multi-contract-v1",
+        "Q-02-generated-correlation-multi-contract-v1",
+        "B-04-remove-update-prefix-collision-multi-contract-v1"
+      ],
+      "reason": "Reviewed exact empty/repeated/generated forwarding and remove/update/prefix collision expectations; no ingress rejection credit."
+    },
+    "B-04": {
+      "fixtures": [
+        "B-04-remove-update-prefix-collision-multi-contract-v1"
+      ],
+      "reason": "Exact final backend request maps and response header prove configured remove/update/prefix ordering."
+    }
+  },
+  "Q-02-generated-correlation-multi-contract-v1": {
+    "Q-02": {
+      "fixtures": [
+        "Q-02-empty-correlation-multi-contract-v1",
+        "Q-02-repeated-correlation-multi-contract-v1",
+        "Q-02-generated-correlation-multi-contract-v1",
+        "B-04-remove-update-prefix-collision-multi-contract-v1"
+      ],
+      "reason": "Reviewed exact empty/repeated/generated forwarding and remove/update/prefix collision expectations; no ingress rejection credit."
+    }
+  },
+  "C-09-response-policy-error-multi-contract-v1": {
+    "C-09": {
+      "fixtures": [
+        "C-09-response-policy-error-counter-multi-contract-v1",
+        "D-08e-response-timeout-emf-finalization-counter-multi-contract-v1",
+        "D-09-response-policy-headers-limit-counter-multi-contract-v1"
+      ],
+      "reason": "Closed actual Java counters and authored Rust entries/completions/finalizations explicitly assert ordinary error 1/1/1, response-timeout 1/0/1 and oversize replacement 1/1/1; replacement starts no second pass."
+    },
+    "B-05": {
+      "fixtures": [
+        "C-09-response-policy-error-counter-multi-contract-v1",
+        "D-08e-response-timeout-emf-finalization-counter-multi-contract-v1",
+        "D-09-response-policy-headers-limit-counter-multi-contract-v1"
+      ],
+      "reason": "Closed actual Java counters and authored Rust entries/completions/finalizations explicitly assert ordinary error 1/1/1, response-timeout 1/0/1 and oversize replacement 1/1/1; replacement starts no second pass."
+    }
+  },
+  "T-01-T-02-native-cel-body-multi-contract-v1": {
+    "T-01": {
+      "fixtures": [
+        "T-01-metadata-native-cel-multi-contract-v1",
+        "T-01-local-native-cel-multi-contract-v1",
+        "T-01-deny-native-cel-multi-contract-v1",
+        "T-01-caught-native-cel-rule-error-multi-contract-v1"
+      ],
+      "reason": "Exact path/query/header/body mutations, local response, validation denial and internally caught engine error assertions supersede original broad note; no escaping C04 exception or class Init rejection credit."
+    },
+    "T-02": {
+      "fixtures": [
+        "T-02-actual-native-response-input-map-multi-contract-v1",
+        "T-02-caught-native-cel-rule-error-multi-contract-v1",
+        "T-02-response-header-remove-update-multi-contract-v1"
+      ],
+      "reason": "Exact actual request-header-based response rule input map, caught engine failure retaining response and response header removal/update assertions; native/CEL pair is closed and shared input retained."
+    }
+  },
+  "A-01-safe-selected-stdout-multi-contract-v1": {
+    "A-01": {
+      "fixtures": [
+        "A-01-safe-selected-stdout-multi-contract-v1",
+        "A-02-unsafe-authorization-selector-init-contract-v1",
+        "A-02-selected-string-ascii-at-1024-contract-v1",
+        "A-02-selected-string-ascii-over-1024-contract-v1",
+        "A-02-selected-string-utf8-at-1024-contract-v1",
+        "A-02-selected-string-utf8-over-1024-contract-v1",
+        "S-14-verified-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+        "D-03-D-04-safe-metadata-no-log-tail-multi-contract-v1"
+      ],
+      "reason": "Safe selected structured audit once, unsafe selector Init denial, exact byte bounds/truncation, verified/failed secret logging and safe backend diagnostics represented under distinct A02 differences. No durable acknowledgement or Rust execution inferred."
+    },
+    "A-02": {
+      "fixtures": [
+        "A-01-safe-selected-stdout-multi-contract-v1",
+        "A-02-unsafe-authorization-selector-init-contract-v1",
+        "A-02-selected-string-ascii-at-1024-contract-v1",
+        "A-02-selected-string-ascii-over-1024-contract-v1",
+        "A-02-selected-string-utf8-at-1024-contract-v1",
+        "A-02-selected-string-utf8-over-1024-contract-v1",
+        "S-14-verified-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+        "D-03-D-04-safe-metadata-no-log-tail-multi-contract-v1"
+      ],
+      "reason": "Safe selected structured audit once, unsafe selector Init denial, exact byte bounds/truncation, verified/failed secret logging and safe backend diagnostics represented under distinct A02 differences. No durable acknowledgement or Rust execution inferred."
+    }
+  },
+  "A-02-unsafe-authorization-selector-init-contract-v1": {
+    "A-02": {
+      "fixtures": [
+        "A-01-safe-selected-stdout-multi-contract-v1",
+        "A-02-unsafe-authorization-selector-init-contract-v1",
+        "A-02-selected-string-ascii-at-1024-contract-v1",
+        "A-02-selected-string-ascii-over-1024-contract-v1",
+        "A-02-selected-string-utf8-at-1024-contract-v1",
+        "A-02-selected-string-utf8-over-1024-contract-v1",
+        "S-14-verified-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+        "D-03-D-04-safe-metadata-no-log-tail-multi-contract-v1"
+      ],
+      "reason": "Safe selected structured audit once, unsafe selector Init denial, exact byte bounds/truncation, verified/failed secret logging and safe backend diagnostics represented under distinct A02 differences. No durable acknowledgement or Rust execution inferred."
+    }
+  },
+  "D-07-self-name-init-contract-v1": {
+    "D-07": {
+      "fixtures": [
+        "D-07-caller-cannot-select-target-multi-contract-v1"
+      ],
+      "reason": "Exact shared header/query/body spoof retains configured target FnLiteral and one dispatch; qualified self/ARN Init cases retained separately."
+    }
+  },
+  "D-08-zero-remaining-multi-contract-v1": {
+    "D-08": {
+      "fixtures": [
+        "D-08-absolute-cross-stage-budget-multi-contract-v1",
+        "D-08-ingress-hard-limit-minimum-multi-contract-v1",
+        "D-08c-blocking-capacity-two-callers-multi-contract-v1"
+      ],
+      "reason": "Nonzero minimum, one absolute deadline/reserve subtraction, capacity-one permit until actual return and two-caller saturation exact assertions supersede initial broad notes."
+    }
+  },
+  "D-08a-request-bounded-work-multi-contract-v1": {
+    "D-08a": {
+      "fixtures": [
+        "D-08-absolute-cross-stage-budget-multi-contract-v1",
+        "D-08-ingress-hard-limit-minimum-multi-contract-v1",
+        "D-08c-blocking-capacity-two-callers-multi-contract-v1"
+      ],
+      "reason": "Request deadline and absolute cross-stage budget; blocking executor lease semantics independently asserted under D08c response-stage real test probe, without Rust execution."
+    },
+    "D-08": {
+      "fixtures": [
+        "D-08-absolute-cross-stage-budget-multi-contract-v1",
+        "D-08-ingress-hard-limit-minimum-multi-contract-v1",
+        "D-08c-blocking-capacity-two-callers-multi-contract-v1"
+      ],
+      "reason": "Nonzero minimum, one absolute deadline/reserve subtraction, capacity-one permit until actual return and two-caller saturation exact assertions supersede initial broad notes."
+    }
+  },
+  "D-08b-response-bounded-work-multi-contract-v1": {
+    "D-08b": {
+      "fixtures": [
+        "D-08-absolute-cross-stage-budget-multi-contract-v1",
+        "D-08c-blocking-capacity-two-callers-multi-contract-v1"
+      ],
+      "reason": "Response wait uses same absolute budget; real blocking lease observation and late discard/saturation contract declared separately."
+    },
+    "D-08": {
+      "fixtures": [
+        "D-08-absolute-cross-stage-budget-multi-contract-v1",
+        "D-08-ingress-hard-limit-minimum-multi-contract-v1",
+        "D-08c-blocking-capacity-two-callers-multi-contract-v1"
+      ],
+      "reason": "Nonzero minimum, one absolute deadline/reserve subtraction, capacity-one permit until actual return and two-caller saturation exact assertions supersede initial broad notes."
+    }
+  },
+  "D-09-escaping-limit-multi-contract-v1": {
+    "D-09": {
+      "fixtures": [
+        "D-09-base64-expansion-below-limit-multi-contract-v1",
+        "D-09-base64-expansion-over-limit-multi-contract-v1",
+        "D-09-escaping-limit-multi-contract-v1",
+        "D-09-response-policy-headers-limit-counter-multi-contract-v1",
+        "D-09-minimum-cap-replacement-recheck-multi-contract-v1",
+        "D-09-response-cap-minimum-4095-init-contract-v1"
+      ],
+      "reason": "Final serialized escaping/base64/header bounds; minimum4096 and exact bounded replacement, discarded large headers and counters1/1/1 assert replacement does not rerun policy. Authored Rust recheck, no execution claim."
+    }
+  },
+  "D-09-response-policy-headers-limit-multi-contract-v1": {
+    "D-09": {
+      "fixtures": [
+        "D-09-base64-expansion-below-limit-multi-contract-v1",
+        "D-09-base64-expansion-over-limit-multi-contract-v1",
+        "D-09-escaping-limit-multi-contract-v1",
+        "D-09-response-policy-headers-limit-counter-multi-contract-v1",
+        "D-09-minimum-cap-replacement-recheck-multi-contract-v1",
+        "D-09-response-cap-minimum-4095-init-contract-v1"
+      ],
+      "reason": "Final serialized escaping/base64/header bounds; minimum4096 and exact bounded replacement, discarded large headers and counters1/1/1 assert replacement does not rerun policy. Authored Rust recheck, no execution claim."
+    }
+  },
+  "D-09-serialized-response-over-limit-multi-contract-v1": {
+    "D-09": {
+      "fixtures": [
+        "D-09-base64-expansion-below-limit-multi-contract-v1",
+        "D-09-base64-expansion-over-limit-multi-contract-v1",
+        "D-09-escaping-limit-multi-contract-v1",
+        "D-09-response-policy-headers-limit-counter-multi-contract-v1",
+        "D-09-minimum-cap-replacement-recheck-multi-contract-v1",
+        "D-09-response-cap-minimum-4095-init-contract-v1"
+      ],
+      "reason": "Final serialized escaping/base64/header bounds; minimum4096 and exact bounded replacement, discarded large headers and counters1/1/1 assert replacement does not rerun policy. Authored Rust recheck, no execution claim."
+    }
+  },
+  "M-01-per-request-emf-multi-contract-v1": {
+    "M-01": {
+      "fixtures": [
+        "M-01-per-request-emf-multi-contract-v1",
+        "M-01-gateway-error-emf-multi-contract-v1",
+        "M-01-request-timeout-emf-completion-multi-contract-v1",
+        "D-08e-response-timeout-emf-finalization-counter-multi-contract-v1",
+        "M-01-oversize-emf-completion-multi-contract-v1"
+      ],
+      "reason": "Closed one-record per-request EMF contract covers success, ordinary error, request and response timeout, oversize replacement; Errors exact by response outcome. Real Java counts distinct from authored Rust record/finalization assertions."
+    }
+  },
+  "S-04-wrong-audience-multi-contract-v1": {
+    "S-04": {
+      "fixtures": [
+        "S-04-provider-explicit-multi-contract-v1",
+        "S-04-provider-path-0-multi-contract-v1",
+        "S-04-provider-path-1-multi-contract-v1",
+        "S-04-provider-path-2-multi-contract-v1",
+        "S-04-wrong-audience-multi-contract-v1",
+        "S-04a-matching-issuer-multi-contract-v1"
+      ],
+      "reason": "Exact provider/path/multiple-server selection and accepted/denied audiences represented; issuer uses S04a approval and normalization/refresh belongs S13."
+    },
+    "S-13": {
+      "fixtures": [
+        "S-04-wrong-audience-multi-contract-v1",
+        "S-04a-wrong-issuer-multi-contract-v1",
+        "S-13-algorithm-hmac-no-refresh-multi-contract-v1",
+        "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+        "S-17-future-nbf-120-skew60-multi-contract-v1",
+        "S-06-secondary-forged-read-claims-multi-contract-v1",
+        "S-13-S-18-rotation-retention-multi-contract-v1",
+        "S-13-normalized-service-set-cooldown-multi-contract-v1",
+        "S-13a-successful-fetch-cooldown-multi-contract-v1",
+        "S-13a-failed-refresh-cooldown-multi-contract-v1",
+        "S-13a-bootstrap-records-cooldown-multi-contract-v1",
+        "S-13a-cancelled-shared-fetch-component-v1",
+        "S-13b-active-refresh-join-multi-contract-v1",
+        "S-13c-detached-refresh-cache-publish-multi-contract-v1"
+      ],
+      "reason": "Explicit no-refresh expiry/nbf/audience/issuer/HS256 algorithm, unknownkid/InvalidSignature refresh, normalized service sets, success/failure/bootstrap/cancellation cooldown, active joining and detached/caller deadline publication contracts represented. Actual Java counts remain separate from authored Rust expectations; meaningful cancellation component is Rust-only and Java skipped."
+    }
+  },
+  "S-06-secondary-0-dual-token-multi-contract-v1": {
+    "S-06": {
+      "fixtures": [
+        "S-06-secondary-0-dual-token-multi-contract-v1",
+        "S-06-secondary-1-dual-token-multi-contract-v1",
+        "S-06-secondary-invalid-0-dual-token-multi-contract-v1",
+        "S-06-secondary-invalid-1-dual-token-multi-contract-v1",
+        "S-06-secondary-scope-list-multi-contract-v1",
+        "S-06-secondary-scope-string-multi-contract-v1",
+        "S-06-secondary-scp-string-multi-contract-v1",
+        "S-06-secondary-forged-read-claims-multi-contract-v1"
+      ],
+      "reason": "Verified scope/scp list/string formats, missing scope, expired/malformed secondary and forged read claims have exact outcomes and dispatch counts; unverified claims never authorize."
+    }
+  },
+  "S-06-secondary-1-dual-token-multi-contract-v1": {
+    "S-06": {
+      "fixtures": [
+        "S-06-secondary-0-dual-token-multi-contract-v1",
+        "S-06-secondary-1-dual-token-multi-contract-v1",
+        "S-06-secondary-invalid-0-dual-token-multi-contract-v1",
+        "S-06-secondary-invalid-1-dual-token-multi-contract-v1",
+        "S-06-secondary-scope-list-multi-contract-v1",
+        "S-06-secondary-scope-string-multi-contract-v1",
+        "S-06-secondary-scp-string-multi-contract-v1",
+        "S-06-secondary-forged-read-claims-multi-contract-v1"
+      ],
+      "reason": "Verified scope/scp list/string formats, missing scope, expired/malformed secondary and forged read claims have exact outcomes and dispatch counts; unverified claims never authorize."
+    }
+  },
+  "S-06-secondary-invalid-0-dual-token-multi-contract-v1": {
+    "S-06": {
+      "fixtures": [
+        "S-06-secondary-0-dual-token-multi-contract-v1",
+        "S-06-secondary-1-dual-token-multi-contract-v1",
+        "S-06-secondary-invalid-0-dual-token-multi-contract-v1",
+        "S-06-secondary-invalid-1-dual-token-multi-contract-v1",
+        "S-06-secondary-scope-list-multi-contract-v1",
+        "S-06-secondary-scope-string-multi-contract-v1",
+        "S-06-secondary-scp-string-multi-contract-v1",
+        "S-06-secondary-forged-read-claims-multi-contract-v1"
+      ],
+      "reason": "Verified scope/scp list/string formats, missing scope, expired/malformed secondary and forged read claims have exact outcomes and dispatch counts; unverified claims never authorize."
+    }
+  },
+  "S-06-secondary-invalid-1-dual-token-multi-contract-v1": {
+    "S-06": {
+      "fixtures": [
+        "S-06-secondary-0-dual-token-multi-contract-v1",
+        "S-06-secondary-1-dual-token-multi-contract-v1",
+        "S-06-secondary-invalid-0-dual-token-multi-contract-v1",
+        "S-06-secondary-invalid-1-dual-token-multi-contract-v1",
+        "S-06-secondary-scope-list-multi-contract-v1",
+        "S-06-secondary-scope-string-multi-contract-v1",
+        "S-06-secondary-scp-string-multi-contract-v1",
+        "S-06-secondary-forged-read-claims-multi-contract-v1"
+      ],
+      "reason": "Verified scope/scp list/string formats, missing scope, expired/malformed secondary and forged read claims have exact outcomes and dispatch counts; unverified claims never authorize."
+    }
+  },
+  "S-12-basic-anonymous-prefix-multi-contract-v1": {
+    "S-12": {
+      "fixtures": [
+        "S-12-unified-jwt-valid-missing-warm-multi-contract-v1",
+        "S-12-unified-apikey-valid-denied-warm-multi-contract-v1",
+        "S-12-jwt-apikey-authorization-precedence-warm-multi-contract-v1",
+        "S-12a-basic-on-jwt-prefix-multi-contract-v1",
+        "S-12-disabled-selected-basic-multi-contract-v1"
+      ],
+      "reason": "JWT/API-key selection, missing/invalid factors and Authorization-first combined precedence exact. S12a Basic restriction separate. Missing/disabled handler is C10 Init validation; its fixture receives no S12 downstream credit."
+    }
+  },
+  "S-12-denied-unknown-multi-contract-v1": {
+    "S-12": {
+      "fixtures": [
+        "S-12-unified-jwt-valid-missing-warm-multi-contract-v1",
+        "S-12-unified-apikey-valid-denied-warm-multi-contract-v1",
+        "S-12-jwt-apikey-authorization-precedence-warm-multi-contract-v1",
+        "S-12a-basic-on-jwt-prefix-multi-contract-v1",
+        "S-12-disabled-selected-basic-multi-contract-v1"
+      ],
+      "reason": "JWT/API-key selection, missing/invalid factors and Authorization-first combined precedence exact. S12a Basic restriction separate. Missing/disabled handler is C10 Init validation; its fixture receives no S12 downstream credit."
+    }
+  },
+  "S-12-denied-x-multi-contract-v1": {
+    "S-12": {
+      "fixtures": [
+        "S-12-unified-jwt-valid-missing-warm-multi-contract-v1",
+        "S-12-unified-apikey-valid-denied-warm-multi-contract-v1",
+        "S-12-jwt-apikey-authorization-precedence-warm-multi-contract-v1",
+        "S-12a-basic-on-jwt-prefix-multi-contract-v1",
+        "S-12-disabled-selected-basic-multi-contract-v1"
+      ],
+      "reason": "JWT/API-key selection, missing/invalid factors and Authorization-first combined precedence exact. S12a Basic restriction separate. Missing/disabled handler is C10 Init validation; its fixture receives no S12 downstream credit."
+    }
+  },
+  "S-13-S-18-rotation-retention-multi-contract-v1": {
+    "S-18": {
+      "fixtures": [
+        "S-13-S-18-rotation-retention-multi-contract-v1",
+        "S-18-cached-expiry-multi-contract-v1",
+        "S-17-future-nbf-120-skew60-multi-contract-v1"
+      ],
+      "reason": "Environment JWKS retention uses a distinct token after published-key removal; actual cached Java expiry and authored warm-key nbf rechecks represented. No principal-cache or immediate revocation promise invented. Other shared callers belong explicit S13d/WP6."
+    },
+    "S-13": {
+      "fixtures": [
+        "S-04-wrong-audience-multi-contract-v1",
+        "S-04a-wrong-issuer-multi-contract-v1",
+        "S-13-algorithm-hmac-no-refresh-multi-contract-v1",
+        "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+        "S-17-future-nbf-120-skew60-multi-contract-v1",
+        "S-06-secondary-forged-read-claims-multi-contract-v1",
+        "S-13-S-18-rotation-retention-multi-contract-v1",
+        "S-13-normalized-service-set-cooldown-multi-contract-v1",
+        "S-13a-successful-fetch-cooldown-multi-contract-v1",
+        "S-13a-failed-refresh-cooldown-multi-contract-v1",
+        "S-13a-bootstrap-records-cooldown-multi-contract-v1",
+        "S-13a-cancelled-shared-fetch-component-v1",
+        "S-13b-active-refresh-join-multi-contract-v1",
+        "S-13c-detached-refresh-cache-publish-multi-contract-v1"
+      ],
+      "reason": "Explicit no-refresh expiry/nbf/audience/issuer/HS256 algorithm, unknownkid/InvalidSignature refresh, normalized service sets, success/failure/bootstrap/cancellation cooldown, active joining and detached/caller deadline publication contracts represented. Actual Java counts remain separate from authored Rust expectations; meaningful cancellation component is Rust-only and Java skipped."
+    }
+  },
+  "S-13a-failed-refresh-cooldown-multi-contract-v1": {
+    "S-13a": {
+      "fixtures": [
+        "S-13a-successful-fetch-cooldown-multi-contract-v1",
+        "S-13a-failed-refresh-cooldown-multi-contract-v1",
+        "S-13a-bootstrap-records-cooldown-multi-contract-v1",
+        "S-13a-cancelled-shared-fetch-component-v1",
+        "S-13b-active-refresh-join-multi-contract-v1",
+        "S-13c-detached-refresh-cache-publish-multi-contract-v1",
+        "S-13-normalized-service-set-cooldown-multi-contract-v1"
+      ],
+      "reason": "Successful/failed/cancelled attempts and ungated bootstrap record cooldown; active join takes precedence; normalized set and caller-drop/deadline ownership have separate exact actual-Java/authored-Rust assertions. Cancellation is meaningful Rust-only component with Java skip."
+    },
+    "S-13": {
+      "fixtures": [
+        "S-04-wrong-audience-multi-contract-v1",
+        "S-04a-wrong-issuer-multi-contract-v1",
+        "S-13-algorithm-hmac-no-refresh-multi-contract-v1",
+        "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+        "S-17-future-nbf-120-skew60-multi-contract-v1",
+        "S-06-secondary-forged-read-claims-multi-contract-v1",
+        "S-13-S-18-rotation-retention-multi-contract-v1",
+        "S-13-normalized-service-set-cooldown-multi-contract-v1",
+        "S-13a-successful-fetch-cooldown-multi-contract-v1",
+        "S-13a-failed-refresh-cooldown-multi-contract-v1",
+        "S-13a-bootstrap-records-cooldown-multi-contract-v1",
+        "S-13a-cancelled-shared-fetch-component-v1",
+        "S-13b-active-refresh-join-multi-contract-v1",
+        "S-13c-detached-refresh-cache-publish-multi-contract-v1"
+      ],
+      "reason": "Explicit no-refresh expiry/nbf/audience/issuer/HS256 algorithm, unknownkid/InvalidSignature refresh, normalized service sets, success/failure/bootstrap/cancellation cooldown, active joining and detached/caller deadline publication contracts represented. Actual Java counts remain separate from authored Rust expectations; meaningful cancellation component is Rust-only and Java skipped."
+    }
+  },
+  "S-14-enableMockJwt-explicit-test-override-contract-v1": {
+    "S-14": {
+      "fixtures": [
+        "S-14-verified-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-test-override-does-not-relax-max-skew-init-contract-v1",
+        "S-14-enableMockJwt-explicit-test-override-contract-v1",
+        "S-14-ignoreJwtExpiry-explicit-test-override-contract-v1",
+        "S-14-logJwtToken-explicit-test-override-contract-v1"
+      ],
+      "reason": "Closed process-start insecure flag, max60 skew independent of override, and exact verified/failed token/fragment/claim trace exposure flags represented. Default unsupported switches still reject Init."
+    }
+  },
+  "S-14-enableMockJwt-init-contract-v1": {
+    "S-14": {
+      "fixtures": [
+        "S-14-verified-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-test-override-does-not-relax-max-skew-init-contract-v1",
+        "S-14-enableMockJwt-explicit-test-override-contract-v1",
+        "S-14-ignoreJwtExpiry-explicit-test-override-contract-v1",
+        "S-14-logJwtToken-explicit-test-override-contract-v1"
+      ],
+      "reason": "Closed process-start insecure flag, max60 skew independent of override, and exact verified/failed token/fragment/claim trace exposure flags represented. Default unsupported switches still reject Init."
+    }
+  },
+  "S-14-ignoreJwtExpiry-explicit-test-override-contract-v1": {
+    "S-14": {
+      "fixtures": [
+        "S-14-verified-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-test-override-does-not-relax-max-skew-init-contract-v1",
+        "S-14-enableMockJwt-explicit-test-override-contract-v1",
+        "S-14-ignoreJwtExpiry-explicit-test-override-contract-v1",
+        "S-14-logJwtToken-explicit-test-override-contract-v1"
+      ],
+      "reason": "Closed process-start insecure flag, max60 skew independent of override, and exact verified/failed token/fragment/claim trace exposure flags represented. Default unsupported switches still reject Init."
+    }
+  },
+  "S-14-ignoreJwtExpiry-init-contract-v1": {
+    "S-14": {
+      "fixtures": [
+        "S-14-verified-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-test-override-does-not-relax-max-skew-init-contract-v1",
+        "S-14-enableMockJwt-explicit-test-override-contract-v1",
+        "S-14-ignoreJwtExpiry-explicit-test-override-contract-v1",
+        "S-14-logJwtToken-explicit-test-override-contract-v1"
+      ],
+      "reason": "Closed process-start insecure flag, max60 skew independent of override, and exact verified/failed token/fragment/claim trace exposure flags represented. Default unsupported switches still reject Init."
+    }
+  },
+  "S-14-logJwtToken-explicit-test-override-contract-v1": {
+    "S-14": {
+      "fixtures": [
+        "S-14-verified-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-test-override-does-not-relax-max-skew-init-contract-v1",
+        "S-14-enableMockJwt-explicit-test-override-contract-v1",
+        "S-14-ignoreJwtExpiry-explicit-test-override-contract-v1",
+        "S-14-logJwtToken-explicit-test-override-contract-v1"
+      ],
+      "reason": "Closed process-start insecure flag, max60 skew independent of override, and exact verified/failed token/fragment/claim trace exposure flags represented. Default unsupported switches still reject Init."
+    }
+  },
+  "S-14-logJwtToken-init-contract-v1": {
+    "S-14": {
+      "fixtures": [
+        "S-14-verified-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-test-override-does-not-relax-max-skew-init-contract-v1",
+        "S-14-enableMockJwt-explicit-test-override-contract-v1",
+        "S-14-ignoreJwtExpiry-explicit-test-override-contract-v1",
+        "S-14-logJwtToken-explicit-test-override-contract-v1"
+      ],
+      "reason": "Closed process-start insecure flag, max60 skew independent of override, and exact verified/failed token/fragment/claim trace exposure flags represented. Default unsupported switches still reject Init."
+    }
+  },
+  "S-17-absent-nbf-multi-contract-v1": {
+    "S-17": {
+      "fixtures": [
+        "S-17-absent-nbf-multi-contract-v1",
+        "S-17-future-nbf-30-skew60-multi-contract-v1",
+        "S-17-future-nbf-120-skew60-multi-contract-v1",
+        "S-17-ignore-exp-retains-nbf-multi-contract-v1",
+        "S-17-ignore-exp-absent-nbf-multi-contract-v1"
+      ],
+      "reason": "Light Lambda absent/present/skew/Ignore-exp-only semantics represented including warm repeat; shared non-Lambda caller regression is individually assigned S13d/WP6, not removed Light Lambda coverage."
+    }
+  },
+  "S-17-future-nbf-120-skew60-multi-contract-v1": {
+    "S-17": {
+      "fixtures": [
+        "S-17-absent-nbf-multi-contract-v1",
+        "S-17-future-nbf-30-skew60-multi-contract-v1",
+        "S-17-future-nbf-120-skew60-multi-contract-v1",
+        "S-17-ignore-exp-retains-nbf-multi-contract-v1",
+        "S-17-ignore-exp-absent-nbf-multi-contract-v1"
+      ],
+      "reason": "Light Lambda absent/present/skew/Ignore-exp-only semantics represented including warm repeat; shared non-Lambda caller regression is individually assigned S13d/WP6, not removed Light Lambda coverage."
+    },
+    "S-13": {
+      "fixtures": [
+        "S-04-wrong-audience-multi-contract-v1",
+        "S-04a-wrong-issuer-multi-contract-v1",
+        "S-13-algorithm-hmac-no-refresh-multi-contract-v1",
+        "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+        "S-17-future-nbf-120-skew60-multi-contract-v1",
+        "S-06-secondary-forged-read-claims-multi-contract-v1",
+        "S-13-S-18-rotation-retention-multi-contract-v1",
+        "S-13-normalized-service-set-cooldown-multi-contract-v1",
+        "S-13a-successful-fetch-cooldown-multi-contract-v1",
+        "S-13a-failed-refresh-cooldown-multi-contract-v1",
+        "S-13a-bootstrap-records-cooldown-multi-contract-v1",
+        "S-13a-cancelled-shared-fetch-component-v1",
+        "S-13b-active-refresh-join-multi-contract-v1",
+        "S-13c-detached-refresh-cache-publish-multi-contract-v1"
+      ],
+      "reason": "Explicit no-refresh expiry/nbf/audience/issuer/HS256 algorithm, unknownkid/InvalidSignature refresh, normalized service sets, success/failure/bootstrap/cancellation cooldown, active joining and detached/caller deadline publication contracts represented. Actual Java counts remain separate from authored Rust expectations; meaningful cancellation component is Rust-only and Java skipped."
+    }
+  },
+  "S-17-future-nbf-30-skew60-multi-contract-v1": {
+    "S-17": {
+      "fixtures": [
+        "S-17-absent-nbf-multi-contract-v1",
+        "S-17-future-nbf-30-skew60-multi-contract-v1",
+        "S-17-future-nbf-120-skew60-multi-contract-v1",
+        "S-17-ignore-exp-retains-nbf-multi-contract-v1",
+        "S-17-ignore-exp-absent-nbf-multi-contract-v1"
+      ],
+      "reason": "Light Lambda absent/present/skew/Ignore-exp-only semantics represented including warm repeat; shared non-Lambda caller regression is individually assigned S13d/WP6, not removed Light Lambda coverage."
+    }
+  },
+  "S-17-ignore-exp-absent-nbf-multi-contract-v1": {
+    "S-14": {
+      "fixtures": [
+        "S-14-verified-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-test-override-does-not-relax-max-skew-init-contract-v1",
+        "S-14-enableMockJwt-explicit-test-override-contract-v1",
+        "S-14-ignoreJwtExpiry-explicit-test-override-contract-v1",
+        "S-14-logJwtToken-explicit-test-override-contract-v1"
+      ],
+      "reason": "Closed process-start insecure flag, max60 skew independent of override, and exact verified/failed token/fragment/claim trace exposure flags represented. Default unsupported switches still reject Init."
+    }
+  },
+  "S-17-ignore-exp-retains-nbf-multi-contract-v1": {
+    "S-14": {
+      "fixtures": [
+        "S-14-verified-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+        "S-14-test-override-does-not-relax-max-skew-init-contract-v1",
+        "S-14-enableMockJwt-explicit-test-override-contract-v1",
+        "S-14-ignoreJwtExpiry-explicit-test-override-contract-v1",
+        "S-14-logJwtToken-explicit-test-override-contract-v1"
+      ],
+      "reason": "Closed process-start insecure flag, max60 skew independent of override, and exact verified/failed token/fragment/claim trace exposure flags represented. Default unsupported switches still reject Init."
+    }
+  },
+  "S-18-cached-expiry-multi-contract-v1": {
+    "S-18": {
+      "fixtures": [
+        "S-13-S-18-rotation-retention-multi-contract-v1",
+        "S-18-cached-expiry-multi-contract-v1",
+        "S-17-future-nbf-120-skew60-multi-contract-v1"
+      ],
+      "reason": "Environment JWKS retention uses a distinct token after published-key removal; actual cached Java expiry and authored warm-key nbf rechecks represented. No principal-cache or immediate revocation promise invented. Other shared callers belong explicit S13d/WP6."
+    }
+  },
+  "V-03-json-object-multi-contract-v1": {
+    "V-03": {
+      "fixtures": [
+        "V-03-cdata-golden-encoder-multi-contract-v1",
+        "V-03-css-string-golden-encoder-multi-contract-v1",
+        "V-03-css-url-golden-encoder-multi-contract-v1",
+        "V-03-html-attribute-golden-encoder-multi-contract-v1",
+        "V-03-html-attribute-unquoted-golden-encoder-multi-contract-v1",
+        "V-03-html-content-encoder-multi-contract-v1",
+        "V-03-ignore-beats-explicit-encode-multi-contract-v1",
+        "V-03-java-golden-encoder-multi-contract-v1",
+        "V-03-javascript-attribute-golden-encoder-multi-contract-v1",
+        "V-03-javascript-block-golden-encoder-multi-contract-v1",
+        "V-03-javascript-golden-encoder-multi-contract-v1",
+        "V-03-javascript-source-golden-encoder-multi-contract-v1",
+        "V-03-json-golden-encoder-multi-contract-v1",
+        "V-03-uri-component-golden-encoder-multi-contract-v1",
+        "V-03-uri-golden-encoder-multi-contract-v1",
+        "V-03-xml-1-1-attribute-golden-encoder-multi-contract-v1",
+        "V-03-xml-1-1-content-golden-encoder-multi-contract-v1",
+        "V-03-xml-1-1-golden-encoder-multi-contract-v1",
+        "V-03-xml-attribute-golden-encoder-multi-contract-v1",
+        "V-03-xml-comment-golden-encoder-multi-contract-v1",
+        "V-03-xml-content-encoder-multi-contract-v1",
+        "V-03-xml-encoder-multi-contract-v1",
+        "V-03-json-object-multi-contract-v1",
+        "V-03-array-multi-contract-v1",
+        "V-03-malformed-json-multi-contract-v1",
+        "V-03-non-json-multi-contract-v1",
+        "V-03a-base64-json-multi-contract-v1"
+      ],
+      "reason": "All22 resolved encoder registry contexts have significant golden byte assertions; explicit ignore beats encode, outer JSON trimming and object/array/method/nonJSON/parse/encoder failure controls retained. Decoded base64 uses approved V03a, not normalization."
+    }
+  },
+  "V-03-malformed-json-multi-contract-v1": {
+    "V-03": {
+      "fixtures": [
+        "V-03-cdata-golden-encoder-multi-contract-v1",
+        "V-03-css-string-golden-encoder-multi-contract-v1",
+        "V-03-css-url-golden-encoder-multi-contract-v1",
+        "V-03-html-attribute-golden-encoder-multi-contract-v1",
+        "V-03-html-attribute-unquoted-golden-encoder-multi-contract-v1",
+        "V-03-html-content-encoder-multi-contract-v1",
+        "V-03-ignore-beats-explicit-encode-multi-contract-v1",
+        "V-03-java-golden-encoder-multi-contract-v1",
+        "V-03-javascript-attribute-golden-encoder-multi-contract-v1",
+        "V-03-javascript-block-golden-encoder-multi-contract-v1",
+        "V-03-javascript-golden-encoder-multi-contract-v1",
+        "V-03-javascript-source-golden-encoder-multi-contract-v1",
+        "V-03-json-golden-encoder-multi-contract-v1",
+        "V-03-uri-component-golden-encoder-multi-contract-v1",
+        "V-03-uri-golden-encoder-multi-contract-v1",
+        "V-03-xml-1-1-attribute-golden-encoder-multi-contract-v1",
+        "V-03-xml-1-1-content-golden-encoder-multi-contract-v1",
+        "V-03-xml-1-1-golden-encoder-multi-contract-v1",
+        "V-03-xml-attribute-golden-encoder-multi-contract-v1",
+        "V-03-xml-comment-golden-encoder-multi-contract-v1",
+        "V-03-xml-content-encoder-multi-contract-v1",
+        "V-03-xml-encoder-multi-contract-v1",
+        "V-03-json-object-multi-contract-v1",
+        "V-03-array-multi-contract-v1",
+        "V-03-malformed-json-multi-contract-v1",
+        "V-03-non-json-multi-contract-v1",
+        "V-03a-base64-json-multi-contract-v1"
+      ],
+      "reason": "All22 resolved encoder registry contexts have significant golden byte assertions; explicit ignore beats encode, outer JSON trimming and object/array/method/nonJSON/parse/encoder failure controls retained. Decoded base64 uses approved V03a, not normalization."
+    }
+  },
+  "V-03-non-json-multi-contract-v1": {
+    "V-03": {
+      "fixtures": [
+        "V-03-cdata-golden-encoder-multi-contract-v1",
+        "V-03-css-string-golden-encoder-multi-contract-v1",
+        "V-03-css-url-golden-encoder-multi-contract-v1",
+        "V-03-html-attribute-golden-encoder-multi-contract-v1",
+        "V-03-html-attribute-unquoted-golden-encoder-multi-contract-v1",
+        "V-03-html-content-encoder-multi-contract-v1",
+        "V-03-ignore-beats-explicit-encode-multi-contract-v1",
+        "V-03-java-golden-encoder-multi-contract-v1",
+        "V-03-javascript-attribute-golden-encoder-multi-contract-v1",
+        "V-03-javascript-block-golden-encoder-multi-contract-v1",
+        "V-03-javascript-golden-encoder-multi-contract-v1",
+        "V-03-javascript-source-golden-encoder-multi-contract-v1",
+        "V-03-json-golden-encoder-multi-contract-v1",
+        "V-03-uri-component-golden-encoder-multi-contract-v1",
+        "V-03-uri-golden-encoder-multi-contract-v1",
+        "V-03-xml-1-1-attribute-golden-encoder-multi-contract-v1",
+        "V-03-xml-1-1-content-golden-encoder-multi-contract-v1",
+        "V-03-xml-1-1-golden-encoder-multi-contract-v1",
+        "V-03-xml-attribute-golden-encoder-multi-contract-v1",
+        "V-03-xml-comment-golden-encoder-multi-contract-v1",
+        "V-03-xml-content-encoder-multi-contract-v1",
+        "V-03-xml-encoder-multi-contract-v1",
+        "V-03-json-object-multi-contract-v1",
+        "V-03-array-multi-contract-v1",
+        "V-03-malformed-json-multi-contract-v1",
+        "V-03-non-json-multi-contract-v1",
+        "V-03a-base64-json-multi-contract-v1"
+      ],
+      "reason": "All22 resolved encoder registry contexts have significant golden byte assertions; explicit ignore beats encode, outer JSON trimming and object/array/method/nonJSON/parse/encoder failure controls retained. Decoded base64 uses approved V03a, not normalization."
+    }
+  },
+  "CFG-05-immutable-valid-snapshot-multi-contract-v1": {
+    "CFG-05": {
+      "fixtures": [
+        "CFG-05-missing-stage-init-report-contract-v1",
+        "CFG-05-prepare-local-config-panic-init-contract-v1",
+        "CFG-05-runtime-api-unset-v1-contract-v1",
+        "CFG-05-loopback-connection-refused-v1-contract-v1",
+        "CFG-05-loopback-http-503-v1-contract-v1",
+        "CFG-05-loopback-response-withheld-v1-contract-v1"
+      ],
+      "reason": "Owner-approved complete report and four transport faults now admitted; invalid required stage/config rejection already separately asserted, actual snapshot warm FnA retained despiteFnB rewrite. No Rust executed evidence."
+    }
+  },
+  "CFG-05-missing-stage-init-report-contract-v1": {
+    "CFG-05": {
+      "fixtures": [
+        "CFG-05-missing-stage-init-report-contract-v1",
+        "CFG-05-prepare-local-config-panic-init-contract-v1",
+        "CFG-05-runtime-api-unset-v1-contract-v1",
+        "CFG-05-loopback-connection-refused-v1-contract-v1",
+        "CFG-05-loopback-http-503-v1-contract-v1",
+        "CFG-05-loopback-response-withheld-v1-contract-v1"
+      ],
+      "reason": "Owner-approved complete report and four transport faults now admitted; invalid required stage/config rejection already separately asserted, actual snapshot warm FnA retained despiteFnB rewrite. No Rust executed evidence."
+    }
+  },
+  "S-13c-detached-refresh-cache-publish-multi-contract-v1": {
+    "S-13c": {
+      "fixtures": [
+        "S-13c-detached-refresh-cache-publish-multi-contract-v1",
+        "S-13c-shared-fetch-panic-recovery-component-v1"
+      ],
+      "reason": "Barrier-controlled task-boundary panic, waiting callers/no principals, active cleanup/cooldown and actual post-cooldown recovery represented under owner approval. Public panic error-code mapping remains explicitly unspecified, not fabricated."
+    }
+  }
+}

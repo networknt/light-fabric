@@ -1,0 +1,161 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "A-01-response-body-finalization-exception-sink-v1",
+  "title": "Response-body audit callback preserves finalized-exchange exception",
+  "ledger": [
+    "A-01",
+    "C-03",
+    "D-08e",
+    "A-02",
+    "CFG-04",
+    "C-10"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "audit": {
+        "enabled": true,
+        "statusCode": true,
+        "responseTime": false,
+        "auditOnError": false,
+        "auditStackTrace": false,
+        "mask": false,
+        "requestBodyMaxSize": 1000,
+        "audit": [
+          "responseBody"
+        ],
+        "headers": [],
+        "timestampFormat": "'synthetic-time'"
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.audit.AuditMiddleware@h0"
+        ],
+        "chains": {
+          "request": [
+            "h0"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Explicit synthetic literal audit.timestampFormat avoids variable log metadata; actual record and message are preserved. No virtual clock."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls",
+    "auditRecords",
+    "header:x-backend",
+    "header:content-type"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {},
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "outcome": "exception",
+        "phase": "invocation",
+        "class": "com.networknt.aws.lambda.exception.LambdaExchangeStateException",
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "headers": {},
+              "queryStringParameters": {},
+              "requestContext": {},
+              "isBase64Encoded": false
+            },
+            "eventAbsent": [
+              "/body"
+            ]
+          }
+        ],
+        "jwksFetches": 0,
+        "auditRecords": []
+      },
+      "observeAudit": true,
+      "expect": {
+        "outcome": "notExecuted",
+        "reason": "initError",
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "auditRecords": []
+      }
+    }
+  ],
+  "expectRustInit": {
+    "outcome": "initError",
+    "code": "InvalidConfiguration",
+    "backendCalls": [],
+    "jwksFetches": 0
+  }
+}

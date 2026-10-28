@@ -1,0 +1,111 @@
+[
+  {
+    "fixture": "B-01-loopback-acquisition-cache-secondary-multi-contract-v1",
+    "javaRun": "20261011T123708.973479Z",
+    "javaBehaviorAsserted": [
+      "B-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "B-01"
+    ],
+    "review": "Closed enumerated Java client/JKS/Caffeine prerequisite, same supported shared OAuth policy. Production TokenMiddleware acquisition issues exactly one POST /token with reviewed grant/scope body; second warm invocation reuses cache and preserves user Authorization while forwarding the acquired scope token. No Init rejection or preseeded token coverage. HTTP loopback exercises no HTTPS; hostname verification remains enabled and no production trust is used. Exact RFC Basic credential, form content type and JSON accept headers asserted without changing raw HTTP observations.",
+    "kind": "intentional-difference",
+    "source": "Owner-approved bounded decisions and preserved source/focused evidence",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T123708.973479Z"
+  },
+  {
+    "fixture": "C-09-response-policy-error-counter-multi-contract-v1",
+    "javaRun": "20261011T122803.793679Z",
+    "javaBehaviorAsserted": [
+      "C-09",
+      "B-05"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-09",
+      "B-05"
+    ],
+    "review": "Java source-reviewed flattened-chain error skips response handler: entry0/termination0, actual response finalization1. Rust contract runs response header policy once, finalizes once and preserves exact error status/body. The initial incorrect Java count failure is retained.",
+    "kind": "intentional-difference",
+    "source": "Owner-approved bounded decisions and preserved source/focused evidence",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T122803.793679Z"
+  },
+  {
+    "fixture": "D-09-response-policy-headers-limit-counter-multi-contract-v1",
+    "javaRun": "20261011T122803.793679Z",
+    "javaBehaviorAsserted": [
+      "D-09",
+      "C-09"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-09",
+      "C-09"
+    ],
+    "review": "Policy header growth crosses the serialized response cap. Exact entry1/termination1/finalization1 prohibits replacement policy rerun; replacement has exact approved status/body and zero redispatch. Java actual oversize body/maps retained.",
+    "kind": "intentional-difference",
+    "source": "Owner-approved bounded decisions and preserved source/focused evidence",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T122803.793679Z"
+  },
+  {
+    "fixture": "D-08e-response-timeout-emf-finalization-counter-multi-contract-v1",
+    "javaRun": "20261011T122803.793679Z",
+    "javaBehaviorAsserted": [
+      "D-08e",
+      "D-08b",
+      "C-09",
+      "M-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-08e",
+      "D-08b",
+      "C-09",
+      "M-01"
+    ],
+    "review": "Finite response work probe entry1; Java returns after actual termination1/finalization1. Rust authored cooperative timeout has entry1/termination0/finalization1 at response, exact504, one backend call and EMF Errors1; no response-policy rerun.",
+    "kind": "intentional-difference",
+    "source": "Owner-approved bounded decisions and preserved source/focused evidence",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T122803.793679Z"
+  },
+  {
+    "fixture": "CFG-01-default-info-v1-contract-v1",
+    "javaRun": "20261011T122922.509240Z",
+    "javaBehaviorAsserted": [],
+    "proposedRustBehaviorReached": [
+      "CFG-01"
+    ],
+    "review": "Owner-approved Rust-only real-logging component contract; no meaningful Java counterpart. Java emits valid skipped result before gateway Init. Exact stdout JSON field set, level filtering/order, process-window bounded timestamp, empty stderr and no file writes; no Rust output manufactured or executed. WP9/WP10 implement and execute, WP13 integrates.",
+    "kind": "rustOnly",
+    "source": "Owner-approved bounded decisions and preserved source/focused evidence",
+    "rustExecutionEvidence": null,
+    "validation": "Java skipped (rustOnly, no gateway Init); result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T122922.509240Z"
+  },
+  {
+    "fixture": "CFG-01-configured-debug-v1-contract-v1",
+    "javaRun": "20261011T122922.509240Z",
+    "javaBehaviorAsserted": [],
+    "proposedRustBehaviorReached": [
+      "CFG-01"
+    ],
+    "review": "Owner-approved Rust-only real-logging component contract; no meaningful Java counterpart. Java emits valid skipped result before gateway Init. Exact stdout JSON field set, level filtering/order, process-window bounded timestamp, empty stderr and no file writes; no Rust output manufactured or executed. WP9/WP10 implement and execute, WP13 integrates.",
+    "kind": "rustOnly",
+    "source": "Owner-approved bounded decisions and preserved source/focused evidence",
+    "rustExecutionEvidence": null,
+    "validation": "Java skipped (rustOnly, no gateway Init); result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T122922.509240Z"
+  },
+  {
+    "fixture": "CFG-01-configured-error-v1-contract-v1",
+    "javaRun": "20261011T122922.509240Z",
+    "javaBehaviorAsserted": [],
+    "proposedRustBehaviorReached": [
+      "CFG-01"
+    ],
+    "review": "Owner-approved Rust-only real-logging component contract; no meaningful Java counterpart. Java emits valid skipped result before gateway Init. Exact stdout JSON field set, level filtering/order, process-window bounded timestamp, empty stderr and no file writes; no Rust output manufactured or executed. WP9/WP10 implement and execute, WP13 integrates.",
+    "kind": "rustOnly",
+    "source": "Owner-approved bounded decisions and preserved source/focused evidence",
+    "rustExecutionEvidence": null,
+    "validation": "Java skipped (rustOnly, no gateway Init); result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T122922.509240Z"
+  }
+]

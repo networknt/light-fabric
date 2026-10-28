@@ -1,0 +1,479 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "S-08-basic-failures-warm-multi-contract-v1",
+  "title": "All reviewed missing/malformed Basic outcomes and challenges in one warm gateway",
+  "ledger": [
+    "S-08",
+    "E-06a"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "basic-auth": {
+        "enabled": true,
+        "allowAnonymous": false,
+        "allowBearerToken": true,
+        "enableAD": false,
+        "users": [
+          {
+            "username": "test-user",
+            "password": "test-only-password",
+            "paths": [
+              "/x"
+            ]
+          },
+          {
+            "username": "bearer",
+            "paths": [
+              "/x"
+            ]
+          }
+        ]
+      },
+      "header": {
+        "enabled": true,
+        "response": {
+          "update": {
+            "x-response-policy": "ran"
+          }
+        }
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.security.BasicAuthMiddleware@h0",
+          "com.networknt.aws.lambda.handler.middleware.header.ResponseHeaderMiddleware@response0"
+        ],
+        "chains": {
+          "request": [
+            "h0"
+          ],
+          "response": [
+            "response0"
+          ]
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {},
+  "tokens": {},
+  "headerMode": "single",
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "header:content-type",
+    "header:www-authenticate"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {},
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {},
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [],
+      "expectJava": {
+        "status": 401,
+        "headers": [
+          [
+            "WWW-Authenticate",
+            "Basic realm=\"Basic Auth\""
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "expect": {
+        "status": 401,
+        "headers": [
+          [
+            "www-authenticate",
+            "Basic realm=\"Basic Auth\""
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi"
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {
+          "authorization": "Basic"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {
+          "authorization": [
+            "Basic"
+          ]
+        },
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [],
+      "expectJava": {
+        "status": 401,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR12003\",\"message\":\"INVALID_AUTHORIZATION_HEADER\",\"description\":\"Invalid authorization header BASIC.\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "expect": {
+        "status": 401,
+        "headers": [
+          [
+            "content-type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR12003\",\"message\":\"INVALID_AUTHORIZATION_HEADER\",\"description\":\"Invalid authorization header BASIC.\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi"
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {
+          "authorization": "Basic "
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {
+          "authorization": [
+            "Basic "
+          ]
+        },
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [],
+      "expectJava": {
+        "status": 401,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR12003\",\"message\":\"INVALID_AUTHORIZATION_HEADER\",\"description\":\"Invalid authorization header BASIC.\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "expect": {
+        "status": 401,
+        "headers": [
+          [
+            "content-type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR12003\",\"message\":\"INVALID_AUTHORIZATION_HEADER\",\"description\":\"Invalid authorization header BASIC.\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi"
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {
+          "authorization": "Basic test-user:bad"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {
+          "authorization": [
+            "Basic test-user:bad"
+          ]
+        },
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [],
+      "expectJava": {
+        "status": 401,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR10047\",\"message\":\"INVALID_USERNAME_OR_PASSWORD\",\"description\":\"Invalid username or password for basic authentication\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "expect": {
+        "status": 401,
+        "headers": [
+          [
+            "content-type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR10047\",\"message\":\"INVALID_USERNAME_OR_PASSWORD\",\"description\":\"Invalid username or password for basic authentication\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi"
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {
+          "authorization": "Basic anonymous:x"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {
+          "authorization": [
+            "Basic anonymous:x"
+          ]
+        },
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [],
+      "expectJava": {
+        "status": 401,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR10047\",\"message\":\"INVALID_USERNAME_OR_PASSWORD\",\"description\":\"Invalid username or password for basic authentication\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "expect": {
+        "status": 401,
+        "headers": [
+          [
+            "content-type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR10047\",\"message\":\"INVALID_USERNAME_OR_PASSWORD\",\"description\":\"Invalid username or password for basic authentication\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi"
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {
+          "authorization": "Basic bearer:x"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {
+          "authorization": [
+            "Basic bearer:x"
+          ]
+        },
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [],
+      "expectJava": {
+        "status": 401,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR10047\",\"message\":\"INVALID_USERNAME_OR_PASSWORD\",\"description\":\"Invalid username or password for basic authentication\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "expect": {
+        "status": 401,
+        "headers": [
+          [
+            "content-type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR10047\",\"message\":\"INVALID_USERNAME_OR_PASSWORD\",\"description\":\"Invalid username or password for basic authentication\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi"
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {
+          "authorization": "Digest test-only"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {
+          "authorization": [
+            "Digest test-only"
+          ]
+        },
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [],
+      "expectJava": {
+        "status": 401,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR12003\",\"message\":\"INVALID_AUTHORIZATION_HEADER\",\"description\":\"Invalid authorization header unknown.\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "expect": {
+        "status": 401,
+        "headers": [
+          [
+            "content-type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR12003\",\"message\":\"INVALID_AUTHORIZATION_HEADER\",\"description\":\"Invalid authorization header unknown.\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi"
+    }
+  ],
+  "substitutions": []
+}

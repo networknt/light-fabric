@@ -1,0 +1,318 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "S-06-secondary-forged-read-claims-multi-contract-v1",
+  "title": "Unverified secondary read claim cannot authorize dispatch",
+  "ledger": [
+    "S-06",
+    "E-06a",
+    "E-10",
+    "E-02",
+    "CFG-02",
+    "CFG-04",
+    "S-13"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "security": {
+        "enableVerifyJwt": true,
+        "enableVerifyScope": true,
+        "ignoreJwtExpiry": false,
+        "jwt": {
+          "clockSkewInSeconds": 0,
+          "keyResolver": "JsonWebKeySet",
+          "certificate": {}
+        },
+        "enableJwtCache": true,
+        "jwtCacheFullSize": 1000,
+        "bootstrapFromKeyService": true,
+        "logJwtToken": false,
+        "enableMockJwt": false,
+        "enableRelaxedKeyValidation": false,
+        "jwksRefreshMinIntervalSecs": 0
+      },
+      "client": {
+        "request": {
+          "connectTimeout": 1000,
+          "timeout": 1000,
+          "maxRequestRetry": 1
+        },
+        "tls": {
+          "loadKeyStore": false,
+          "loadTrustStore": false,
+          "verifyHostname": true
+        },
+        "oauth": {
+          "multipleAuthServers": false,
+          "token": {
+            "key": {
+              "server_url": "${dependency:jwks}",
+              "uri": "/jwks",
+              "enableHttp2": false,
+              "audience": "test-audience"
+            }
+          }
+        }
+      },
+      "openapi": {
+        "openapi": "3.0.3",
+        "info": {
+          "title": "test-only-characterization",
+          "version": "1.0.0"
+        },
+        "paths": {
+          "/x": {
+            "get": {
+              "responses": {
+                "200": {
+                  "description": "synthetic response"
+                }
+              },
+              "security": [
+                {
+                  "oauth": [
+                    "read"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "components": {
+          "securitySchemes": {
+            "oauth": {
+              "type": "oauth2",
+              "flows": {
+                "clientCredentials": {
+                  "tokenUrl": "http://127.0.0.1/test-only",
+                  "scopes": {
+                    "read": "synthetic"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "openapi-inject": {},
+      "openapi-handler": {
+        "enabled": true
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware@h0",
+          "com.networknt.aws.lambda.handler.middleware.security.JwtVerifyMiddleware@h1"
+        ],
+        "chains": {
+          "request": [
+            "h0",
+            "h1"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Tokens signed at execution relative to wall clock; verifier remains on wall clock. Init bootstrap fetch and per-step requests asserted separately."
+  },
+  "keys": {
+    "k1": {
+      "alg": "RS256"
+    },
+    "k2": {
+      "alg": "RS256"
+    }
+  },
+  "tokens": {
+    "secondary-0": {
+      "kid": "k1",
+      "claims": {
+        "sub": "test-user",
+        "iss": "test-issuer",
+        "aud": "test-audience",
+        "jti": "secondary-0",
+        "client_id": "test-client",
+        "user_id": "test-user",
+        "scp": [
+          "read"
+        ]
+      },
+      "issuedOffsetSec": -10,
+      "expOffsetSec": 600,
+      "nbfOffsetSec": 0,
+      "signingKey": "k2"
+    },
+    "primary-0": {
+      "kid": "k1",
+      "claims": {
+        "sub": "test-user",
+        "iss": "test-issuer",
+        "aud": "test-audience",
+        "jti": "primary-0",
+        "client_id": "test-client",
+        "user_id": "test-user",
+        "scp": [
+          "read"
+        ]
+      },
+      "issuedOffsetSec": -10,
+      "expOffsetSec": 600,
+      "nbfOffsetSec": 0
+    }
+  },
+  "dependencies": {
+    "jwks": {
+      "publishedKeys": [
+        "k1"
+      ]
+    }
+  },
+  "substitutions": [
+    {
+      "pointer": "/steps/0/rawEvent/headers/AUTHORIZATION",
+      "recipe": "token:primary-0"
+    },
+    {
+      "pointer": "/steps/0/rawEvent/multiValueHeaders/authorization/0",
+      "recipe": "token:primary-0"
+    },
+    {
+      "pointer": "/steps/0/rawEvent/headers/X-Scope-Token",
+      "recipe": "token:secondary-0"
+    },
+    {
+      "pointer": "/steps/0/rawEvent/multiValueHeaders/x-scope-token/0",
+      "recipe": "token:secondary-0"
+    }
+  ],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "header:content-type",
+    "jwksFetches"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {
+          "AUTHORIZATION": "Bearer ${token:primary-0}",
+          "X-Scope-Token": "Bearer ${token:secondary-0}"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {
+          "authorization": [
+            "Bearer ${token:primary-0}"
+          ],
+          "x-scope-token": [
+            "Bearer ${token:secondary-0}"
+          ]
+        },
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [],
+      "expectJava": {
+        "status": 401,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR10003\",\"message\":\"INVALID_SCOPE_TOKEN\",\"description\":\"Incorrect signature or malformed token in X-Scope-Token header\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response",
+        "jwksCalls": []
+      },
+      "headerMode": "multi",
+      "expect": {
+        "status": 401,
+        "headers": [
+          [
+            "content-type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR10003\",\"message\":\"INVALID_SCOPE_TOKEN\",\"description\":\"Incorrect signature or malformed token in X-Scope-Token header\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 1,
+        "outcome": "response",
+        "jwksCalls": [
+          {
+            "target": "jwks",
+            "method": "GET",
+            "uri": "/jwks"
+          }
+        ]
+      }
+    }
+  ],
+  "jwtCachePrerequisite": "caffeine-jwt-jwk-v1",
+  "loopbackJwksPrerequisite": "synthetic-jks-client-v1",
+  "expectJavaInit": {
+    "outcome": "initSuccess",
+    "backendCalls": [],
+    "jwksFetches": 1,
+    "jwksCalls": [
+      {
+        "target": "jwks",
+        "method": "GET",
+        "uri": "/jwks"
+      }
+    ]
+  },
+  "expectInit": {
+    "outcome": "initSuccess",
+    "backendCalls": [],
+    "jwksFetches": 1,
+    "jwksCalls": [
+      {
+        "target": "jwks",
+        "method": "GET",
+        "uri": "/jwks"
+      }
+    ]
+  }
+}

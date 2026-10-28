@@ -1,0 +1,155 @@
+{
+  "schema": "light-lambda-rust-expectations/v2",
+  "proposals": [
+    {
+      "id": "S-04a-wrong-issuer-multi-contract-v1",
+      "originalFixtureDigest": "4b9f5a6a2567bd1d54a23ad6dd02de61c885fa835f26444f6b65f890b510fae5",
+      "originalFixtureBytesSha256": "c2accf16f13217e339bb9d317224d03b8ffa41c9a8a65c774f4b6ce73c369864",
+      "originalExpected": [
+        {
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10001\",\"message\":\"AUTH_TOKEN_EXPIRED\",\"description\":\"Jwt token in authorization header expired\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response",
+          "jwksCalls": []
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10000\",\"message\":\"INVALID_AUTH_TOKEN\",\"description\":\"Incorrect signature or malformed token in authorization header\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response",
+          "jwksCalls": []
+        }
+      ],
+      "approvedExpectationDifferenceFields": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "authority": "Owner approval in current session: exact S-04a ERR10000 and S-13 configured provider order proposals; original Java and original Rust fixtures unchanged",
+      "status": "approved-active-v2"
+    },
+    {
+      "id": "S-13-normalized-service-set-cooldown-multi-contract-v1",
+      "originalFixtureDigest": "f74fea4c24ca9eebb266941e797642e88cfce02b5e8c4cb865be7d373882cea2",
+      "originalFixtureBytesSha256": "8093dc173872c812badd3f6cf684f164424ff0bc09013162fa2e873b480a9360",
+      "originalExpected": [
+        {
+          "outcome": "response",
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10000\",\"message\":\"INVALID_AUTH_TOKEN\",\"description\":\"Incorrect signature or malformed token in authorization header\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 2,
+          "headersAbsent": [],
+          "jwksCalls": [
+            {
+              "target": "jwks",
+              "method": "GET",
+              "uri": "/jwks"
+            },
+            {
+              "target": "jwks",
+              "method": "GET",
+              "uri": "/other"
+            }
+          ]
+        },
+        {
+          "outcome": "response",
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10000\",\"message\":\"INVALID_AUTH_TOKEN\",\"description\":\"Incorrect signature or malformed token in authorization header\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "headersAbsent": [],
+          "jwksCalls": []
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "outcome": "response",
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10000\",\"message\":\"INVALID_AUTH_TOKEN\",\"description\":\"Incorrect signature or malformed token in authorization header\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 2,
+          "headersAbsent": [],
+          "jwksCalls": [
+            {
+              "method": "GET",
+              "target": "jwks",
+              "uri": "/other"
+            },
+            {
+              "method": "GET",
+              "target": "jwks",
+              "uri": "/jwks"
+            }
+          ]
+        },
+        {
+          "outcome": "response",
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10000\",\"message\":\"INVALID_AUTH_TOKEN\",\"description\":\"Incorrect signature or malformed token in authorization header\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "headersAbsent": [],
+          "jwksCalls": []
+        }
+      ],
+      "approvedExpectationDifferenceFields": [
+        "jwksFetches"
+      ],
+      "authority": "Owner approval in current session: exact S-04a ERR10000 and S-13 configured provider order proposals; original Java and original Rust fixtures unchanged",
+      "status": "approved-active-v2"
+    }
+  ]
+}

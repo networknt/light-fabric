@@ -221,11 +221,7 @@ fn root_store_with_ca_bundle(
 
     let mut reader = BufReader::new(Cursor::new(ca_certificate));
     let mut certificate_count = 0usize;
-    loop {
-        let Some(item) = rustls_pemfile::read_one(&mut reader)? else {
-            break;
-        };
-
+    while let Some(item) = rustls_pemfile::read_one(&mut reader)? {
         match item {
             rustls_pemfile::Item::X509Certificate(cert) => {
                 root_store.add(cert)?;
@@ -288,7 +284,9 @@ pub struct RegistrySession {
 
 #[async_trait::async_trait]
 pub trait RegistryHandler: Send + Sync {
+    #[must_use = "the notification future must be awaited to handle the notification"]
     async fn handle_notification(&self, _method: &str, _params: serde_json::Value) {}
+    #[must_use = "the request future must be awaited to produce the response"]
     async fn handle_request(&self, method: &str, _params: serde_json::Value) -> serde_json::Value {
         unsupported_method_response(method)
     }
@@ -1198,7 +1196,7 @@ mod tests {
     ) {
         let frame = encode_rkyv_frame_v1(&message, 1024 * 1024).expect("encode wire frame");
         socket
-            .send(Message::Binary(frame.into()))
+            .send(Message::Binary(frame))
             .await
             .expect("send wire frame");
     }
@@ -1839,8 +1837,7 @@ mod tests {
                                 "status": "registered"
                             }
                         })
-                        .to_string()
-                        .into(),
+                        .to_string(),
                     ))
                     .await
                     .expect("send ack");
@@ -2050,8 +2047,7 @@ mod tests {
                         "status": "registered"
                     }
                 })
-                .to_string()
-                .into(),
+                .to_string(),
             ))
             .await
             .expect("send ack");
@@ -2150,8 +2146,7 @@ mod tests {
                         "status": "registered"
                     }
                 })
-                .to_string()
-                .into(),
+                .to_string(),
             ))
             .await
             .expect("send ack");
@@ -2192,8 +2187,7 @@ mod tests {
                         }]
                     }
                 })
-                .to_string()
-                .into(),
+                .to_string(),
             ))
             .await
             .expect("send lookup response");
@@ -2271,7 +2265,7 @@ mod tests {
             let register_json = serde_json::from_str::<Value>(&register).expect("register json");
             assert_eq!(register_json["method"], "service/register");
 
-            ws.send(Message::Ping("pre-ack".as_bytes().to_vec().into()))
+            ws.send(Message::Ping("pre-ack".as_bytes().to_vec()))
                 .await
                 .expect("send ping");
 
@@ -2294,8 +2288,7 @@ mod tests {
                         "status": "registered"
                     }
                 })
-                .to_string()
-                .into(),
+                .to_string(),
             ))
             .await
             .expect("send ack");
@@ -2356,7 +2349,7 @@ mod tests {
                 "jsonrpc": "2.0",
                 "id": "register-1",
                 "result": { "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f39", "status": "registered" }
-            }).to_string().into())).await.unwrap();
+            }).to_string())).await.unwrap();
             ws.close(None).await.unwrap();
 
             // Second connection
@@ -2368,7 +2361,7 @@ mod tests {
                 "jsonrpc": "2.0",
                 "id": "register-1",
                 "result": { "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f40", "status": "registered" }
-            }).to_string().into())).await.unwrap();
+            }).to_string())).await.unwrap();
             ws.close(None).await.unwrap();
         });
 
@@ -2429,7 +2422,7 @@ mod tests {
                 "jsonrpc": "2.0",
                 "id": "register-1",
                 "result": { "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f39", "status": "registered" }
-            }).to_string().into())).await.unwrap();
+            }).to_string())).await.unwrap();
 
             // Keep the connection open indefinitely without reading from it,
             // so we do not automatically respond with a Pong to the client's Ping.

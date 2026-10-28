@@ -1,0 +1,17 @@
+[
+  {"id":"decimal-valid","path":"/v1/decimal","method":"POST","body":"{\"n\":0.3}","status":200},
+  {"id":"decimal-invalid","path":"/v1/decimal","method":"POST","body":"{\"n\":0.31}","status":400,"code":"ERR11004","message":"VALIDATOR_SCHEMA"},
+  {"id":"decimal-warm","path":"/v1/decimal","method":"POST","body":"{\"n\":0.2}","status":200},
+  {"id":"integer-exact","path":"/v1/integer","method":"POST","body":"{\"n\":9007199254740993}","status":200},
+  {"id":"integer-neighbor","path":"/v1/integer","method":"POST","body":"{\"n\":9007199254740992}","status":400,"code":"ERR11004","message":"VALIDATOR_SCHEMA"},
+  {"id":"integer-warm","path":"/v1/integer","method":"POST","body":"{\"n\":9007199254740993}","status":200},
+  {"id":"parameters-valid","path":"/v1/pets/17","method":"GET","queryLimit":"2","requiredHeader":"synthetic","status":200},
+  {"id":"path-invalid","path":"/v1/pets/0","method":"GET","queryLimit":"2","requiredHeader":"synthetic","status":400,"code":"ERR11004","message":"VALIDATOR_SCHEMA"},
+  {"id":"query-missing","path":"/v1/pets/17","method":"GET","requiredHeader":"synthetic","status":400,"code":"ERR11000","message":"VALIDATOR_REQUEST_PARAMETER_QUERY_MISSING"},
+  {"id":"header-missing","path":"/v1/pets/17","method":"GET","queryLimit":"2","status":400,"code":"ERR11017","message":"VALIDATOR_REQUEST_PARAMETER_HEADER_MISSING"},
+  {"id":"parameters-warm","path":"/v1/pets/23","method":"GET","queryLimit":"3","requiredHeader":"warm-synthetic","status":200},
+  {"id":"malformed-json","path":"/v1/decimal","method":"POST","body":"{","status":400,"code":"ERR10015","message":"CONTENT_TYPE_MISMATCH"},
+  {"id":"parser-warm","path":"/v1/decimal","method":"POST","body":"{\"n\":0.4}","status":200},
+  {"id":"non-json-native-bypass","path":"/v1/decimal","method":"POST","body":"{}","contentType":"text/plain","status":200},
+  {"id":"json-charset","path":"/v1/decimal","method":"POST","body":"{\"n\":0.5}","contentType":"application/json; charset=utf-8","status":200}
+]

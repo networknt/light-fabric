@@ -1,0 +1,4 @@
+# Only regex is supported. Java string/json defaults are reported, not applied.
+string: ${mask.string:{"uri":{"password=[^&]*":"password=******"}}}
+regex: ${mask.regex:null}
+json: ${mask.json:null}

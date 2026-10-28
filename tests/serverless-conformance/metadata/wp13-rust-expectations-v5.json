@@ -1,0 +1,356 @@
+{
+  "schema": "light-lambda-rust-expectations/v5",
+  "proposals": [
+    {
+      "id": "S-13a-cancelled-shared-fetch-component-v1",
+      "originalFixtureDigest": "e925bf6d71ffa3761f89640980a4107cbf8fbcfc279b960d7a62db4c637396ce",
+      "proposal": "unknown-kid-code",
+      "active": false,
+      "originalExpected": [
+        {
+          "outcome": "jwksGateCancellation",
+          "prerequisiteReady": true,
+          "backendCalls": [],
+          "jwksFetches": 1,
+          "jwksCalls": [
+            {
+              "target": "jwks",
+              "method": "GET",
+              "uri": "/jwks"
+            }
+          ],
+          "gate": {
+            "fetchStarted": 1,
+            "fetchCancelled": 1,
+            "active": false,
+            "attemptRecordedBeforeIo": true,
+            "cooldownRecorded": true,
+            "followupUnknownKid": {
+              "outcome": "verificationRejected",
+              "code": "ERR10000",
+              "jwksFetches": 0
+            }
+          }
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "outcome": "jwksGateCancellation",
+          "prerequisiteReady": true,
+          "backendCalls": [],
+          "jwksFetches": 1,
+          "jwksCalls": [
+            {
+              "target": "jwks",
+              "method": "GET",
+              "uri": "/jwks"
+            }
+          ],
+          "gate": {
+            "fetchStarted": 1,
+            "fetchCancelled": 1,
+            "active": false,
+            "attemptRecordedBeforeIo": true,
+            "cooldownRecorded": true,
+            "followupUnknownKid": {
+              "outcome": "verificationRejected",
+              "code": "ERR10002",
+              "jwksFetches": 0
+            }
+          }
+        }
+      ],
+      "approvedExpectationDifferenceFields": [],
+      "authority": "Owner approval R1/R2/R5/R6, including separate JWKS publication and reuse proof",
+      "status": "approved-active-v5"
+    },
+    {
+      "id": "S-13c-shared-fetch-panic-recovery-component-v1",
+      "originalFixtureDigest": "a7151f3f05e7cc4a31937258064909f32f0cf88984a453932b446d564c8eb6ee",
+      "proposal": "scoped-principal-cache",
+      "active": false,
+      "originalExpected": [
+        {
+          "outcome": "jwksGatePanicRecovery",
+          "prerequisiteReady": true,
+          "backendCalls": [],
+          "jwksFetches": 1,
+          "jwksCalls": [
+            {
+              "target": "jwks",
+              "method": "GET",
+              "uri": "/jwks"
+            }
+          ],
+          "failure": {
+            "taskStarts": 1,
+            "joinersAttached": 2,
+            "networkRequests": 0,
+            "waitersTerminated": 3,
+            "verifiedPrincipals": 0,
+            "attemptRecordedBeforeTask": true,
+            "activePublishedBeforePanic": true,
+            "activeAfterCleanup": false,
+            "cooldownRetained": true,
+            "callerBudgetMs": 1000,
+            "publicErrorMapping": "unspecified-by-approved-contract"
+          },
+          "recovery": {
+            "afterCooldown": true,
+            "taskStarts": 1,
+            "joinersAttached": 0,
+            "networkRequests": 1,
+            "verifiedPrincipals": 1,
+            "cachePublished": true,
+            "activeAfterCompletion": false
+          }
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "outcome": "jwksGatePanicRecovery",
+          "prerequisiteReady": true,
+          "backendCalls": [],
+          "jwksFetches": 1,
+          "jwksCalls": [
+            {
+              "target": "jwks",
+              "method": "GET",
+              "uri": "/jwks"
+            }
+          ],
+          "failure": {
+            "taskStarts": 1,
+            "joinersAttached": 2,
+            "networkRequests": 0,
+            "waitersTerminated": 3,
+            "verifiedPrincipals": 0,
+            "attemptRecordedBeforeTask": true,
+            "activePublishedBeforePanic": true,
+            "activeAfterCleanup": false,
+            "cooldownRetained": true,
+            "callerBudgetMs": 1000,
+            "publicErrorMapping": "unspecified-by-approved-contract"
+          },
+          "recovery": {
+            "afterCooldown": true,
+            "taskStarts": 1,
+            "joinersAttached": 0,
+            "networkRequests": 1,
+            "verifiedPrincipals": 1,
+            "cachePublished": false,
+            "activeAfterCompletion": false,
+            "scopedPrincipalCachePublished": false,
+            "jwksPublished": true,
+            "reuse": {
+              "verifiedPrincipals": 1,
+              "taskStarts": 0,
+              "joinersAttached": 0,
+              "networkRequests": 0,
+              "residentKeyUnchanged": true
+            }
+          }
+        }
+      ],
+      "approvedExpectationDifferenceFields": [],
+      "authority": "Owner approval R1/R2/R5/R6, including separate JWKS publication and reuse proof",
+      "status": "approved-active-v5"
+    },
+    {
+      "id": "C-03-completion-probe-multi-contract-v1",
+      "originalFixtureDigest": "e2bb9b6b869107b0d0a0b0e33ccf274ae384faf774ffa1721df7d0dd0e722500",
+      "proposal": "completion-order",
+      "active": false,
+      "originalExpected": [
+        {
+          "outcome": "response",
+          "status": 200,
+          "headers": [],
+          "headersAbsent": [],
+          "body": "ok",
+          "bodyBase64": false,
+          "jwksFetches": 0,
+          "backendCalls": [
+            {
+              "target": "FnLiteral",
+              "event": {
+                "path": "/pets/fixed",
+                "httpMethod": "GET",
+                "body": null,
+                "isBase64Encoded": false,
+                "requestContext": {
+                  "stage": "test-only"
+                },
+                "queryStringParameters": {
+                  "a": "2"
+                },
+                "pathParameters": null,
+                "multiValueQueryStringParameters": {
+                  "a": [
+                    "1",
+                    "2"
+                  ]
+                }
+              },
+              "eventExact": {
+                "headers": null,
+                "multiValueHeaders": null,
+                "queryStringParameters": {
+                  "a": "2"
+                },
+                "pathParameters": null,
+                "multiValueQueryStringParameters": {
+                  "a": [
+                    "1",
+                    "2"
+                  ]
+                }
+              }
+            }
+          ],
+          "completionProbeResult": {
+            "order": [
+              "request-last",
+              "request-first",
+              "response-last",
+              "response-first"
+            ],
+            "countBeforeRepeat": 4,
+            "countAfterRepeat": 4,
+            "requestRepeatRejected": true,
+            "responseRepeatRejected": true
+          }
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "outcome": "response",
+          "status": 200,
+          "headers": [],
+          "headersAbsent": [],
+          "body": "ok",
+          "bodyBase64": false,
+          "jwksFetches": 0,
+          "backendCalls": [
+            {
+              "target": "FnLiteral",
+              "event": {
+                "path": "/pets/fixed",
+                "httpMethod": "GET",
+                "body": null,
+                "isBase64Encoded": false,
+                "requestContext": {
+                  "stage": "test-only"
+                },
+                "queryStringParameters": {
+                  "a": "2"
+                },
+                "pathParameters": null,
+                "multiValueQueryStringParameters": {
+                  "a": [
+                    "1",
+                    "2"
+                  ]
+                }
+              },
+              "eventExact": {
+                "headers": null,
+                "multiValueHeaders": null,
+                "queryStringParameters": {
+                  "a": "2"
+                },
+                "pathParameters": null,
+                "multiValueQueryStringParameters": {
+                  "a": [
+                    "1",
+                    "2"
+                  ]
+                }
+              }
+            }
+          ],
+          "completionProbeResult": {
+            "order": [
+              "response-last",
+              "response-first",
+              "request-last",
+              "request-first"
+            ],
+            "countBeforeRepeat": 4,
+            "countAfterRepeat": 4,
+            "requestRepeatRejected": true,
+            "responseRepeatRejected": true
+          }
+        }
+      ],
+      "approvedExpectationDifferenceFields": [
+        "backendCalls",
+        "completionProbeResult"
+      ],
+      "authority": "Owner approval R1/R2/R5/R6, including separate JWKS publication and reuse proof",
+      "status": "approved-active-v5"
+    },
+    {
+      "id": "CFG-05-prepare-local-config-panic-init-contract-v1",
+      "originalFixtureDigest": "443a67cb274758be91b4283ed180b0be051b626c72cd9c8ade9cd04501497403",
+      "proposal": "panic-diagnostic",
+      "active": false,
+      "originalExpected": [
+        {
+          "outcome": "initError",
+          "code": "Runtime.InitPanic",
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "initFailureReporting": {
+            "endpoint": "/2018-06-01/runtime/init/error",
+            "reportCount": 1,
+            "exitCode": 1,
+            "header": {
+              "Lambda-Runtime-Function-Error-Type": "Runtime.InitError"
+            },
+            "body": {
+              "errorType": "Runtime.InitPanic",
+              "errorMessage": "prepare_local_config: synthetic Init panic"
+            },
+            "maxBodyBytes": 1024,
+            "forbiddenBodyValues": [
+              "test-only-secret-sentinel",
+              "test-only-password-sentinel"
+            ],
+            "invocationLoopEntered": false
+          }
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "outcome": "initError",
+          "code": "Runtime.InitPanic",
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "initFailureReporting": {
+            "endpoint": "/2018-06-01/runtime/init/error",
+            "reportCount": 1,
+            "exitCode": 1,
+            "header": {
+              "Lambda-Runtime-Function-Error-Type": "Runtime.InitPanic"
+            },
+            "body": {
+              "errorType": "Runtime.InitPanic",
+              "errorMessage": "initialization: panic"
+            },
+            "maxBodyBytes": 1024,
+            "forbiddenBodyValues": [
+              "test-only-secret-sentinel",
+              "test-only-password-sentinel"
+            ],
+            "invocationLoopEntered": false
+          }
+        }
+      ],
+      "approvedExpectationDifferenceFields": [],
+      "authority": "Owner approval R1/R2/R5/R6, including separate JWKS publication and reuse proof",
+      "status": "approved-active-v5"
+    }
+  ],
+  "sourcePackageSha256": "04d2e9c9d3e3c63a84c41ecbb84f16d0aa72ede4f2a59c17a9faa7f644e343be"
+}

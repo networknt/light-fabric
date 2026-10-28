@@ -1,0 +1,44 @@
+[
+  {
+    "fixture": "Q-02-empty-correlation-multi-contract-v1",
+    "javaRun": "20261011T114117.334654Z",
+    "javaBehaviorAsserted": [
+      "Q-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "Q-02"
+    ],
+    "source": "CorrelationMiddleware null-only autogeneration branch; reviewed shared multimap control",
+    "rustExecutionEvidence": null,
+    "review": "Exact supplied first value is retained, including empty string. Repeated multimap values and forwarded Java single/multi maps are asserted separately without normalization. No correlation response header is synthesized.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T114117.334654Z"
+  },
+  {
+    "fixture": "Q-02-repeated-correlation-multi-contract-v1",
+    "javaRun": "20261011T114117.334654Z",
+    "javaBehaviorAsserted": [
+      "Q-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "Q-02"
+    ],
+    "source": "CorrelationMiddleware null-only autogeneration branch; reviewed shared multimap control",
+    "rustExecutionEvidence": null,
+    "review": "Exact supplied first value is retained, including empty string. Repeated multimap values and forwarded Java single/multi maps are asserted separately without normalization. No correlation response header is synthesized.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T114117.334654Z"
+  },
+  {
+    "fixture": "B-04-remove-update-prefix-collision-multi-contract-v1",
+    "javaRun": "20261011T114144.973432Z",
+    "javaBehaviorAsserted": [
+      "B-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "B-04"
+    ],
+    "source": "RequestHeaderMiddleware global remove/update followed by matching-prefix remove/update",
+    "rustExecutionEvidence": null,
+    "review": "Same raw ingress and policy configuration. Exact final prefix value proves update wins after removal at both global and prefix stages. Java original multimap remains untouched; Rust expected multimap reflects policy mutation.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T114144.973432Z"
+  }
+]

@@ -1,0 +1,1812 @@
+[
+  {
+    "input": {
+      "id": "reference-uri-3.0.3-query-slash",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "parameters": [
+                  {
+                    "$ref": "#/components/parameters/a~1b"
+                  }
+                ]
+              }
+            }
+          },
+          "components": {
+            "parameters": {
+              "a/b": {
+                "name": "v",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.0.3-query-slash",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11000\",\"message\":\"VALIDATOR_REQUEST_PARAMETER_QUERY_MISSING\",\"description\":\"Query parameter v is required on path /x but not found in request.\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.0.3-query-slash.json",
+    "sha256": "5f92e4ac82f2d2c7797beceb5191b86707b3efc27e7bbe237adbb5862aa92a53"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.0.3-query-tilde",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "parameters": [
+                  {
+                    "$ref": "#/components/parameters/a~0b"
+                  }
+                ]
+              }
+            }
+          },
+          "components": {
+            "parameters": {
+              "a~b": {
+                "name": "v",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.0.3-query-tilde",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11000\",\"message\":\"VALIDATOR_REQUEST_PARAMETER_QUERY_MISSING\",\"description\":\"Query parameter v is required on path /x but not found in request.\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.0.3-query-tilde.json",
+    "sha256": "84cb49e17eb1ad0318a90483200437455793b9342993984e80e908e59e913e40"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.0.3-query-unicode",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "parameters": [
+                  {
+                    "$ref": "#/components/parameters/\u00e9"
+                  }
+                ]
+              }
+            }
+          },
+          "components": {
+            "parameters": {
+              "\u00e9": {
+                "name": "v",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.0.3-query-unicode",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11000\",\"message\":\"VALIDATOR_REQUEST_PARAMETER_QUERY_MISSING\",\"description\":\"Query parameter v is required on path /x but not found in request.\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.0.3-query-unicode.json",
+    "sha256": "5d0b940fe3f83e6bbae35c9dec7bbba6ece0b00b4c998dde9b2172425822f396"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.0.3-query-percent-ascii",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "parameters": [
+                  {
+                    "$ref": "#/components/parameters/%76alue"
+                  }
+                ]
+              }
+            }
+          },
+          "components": {
+            "parameters": {
+              "value": {
+                "name": "v",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.0.3-query-percent-ascii",
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.0.3-query-percent-ascii.json",
+    "sha256": "84c22d5bc64a588be9bcab168c8e45040230518fab7af46576264c11f55ccbdb"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.0.3-query-percent-unicode",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "parameters": [
+                  {
+                    "$ref": "#/components/parameters/%C3%A9"
+                  }
+                ]
+              }
+            }
+          },
+          "components": {
+            "parameters": {
+              "\u00e9": {
+                "name": "v",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.0.3-query-percent-unicode",
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.0.3-query-percent-unicode.json",
+    "sha256": "ff7ce5d17751472ff8b0e522d0d96bb82a9067ce197983f0834ff2a231b0694b"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.0.3-body-slash",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "$ref": "#/components/requestBodies/a~1b"
+                }
+              }
+            }
+          },
+          "components": {
+            "requestBodies": {
+              "a/b": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "v": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\":\"bad\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.0.3-body-slash",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: string found, integer expected\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.0.3-body-slash.json",
+    "sha256": "9756eb1d29abe2424b1a5628211fd09088ffe7102affb302bf15a0f2a362672f"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.0.3-body-tilde",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "$ref": "#/components/requestBodies/a~0b"
+                }
+              }
+            }
+          },
+          "components": {
+            "requestBodies": {
+              "a~b": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "v": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\":\"bad\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.0.3-body-tilde",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: string found, integer expected\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.0.3-body-tilde.json",
+    "sha256": "bee270774f7030b99663dec44dabe6ab28414660c832781f0e94005d4d06b663"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.0.3-body-unicode",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "$ref": "#/components/requestBodies/\u00e9"
+                }
+              }
+            }
+          },
+          "components": {
+            "requestBodies": {
+              "\u00e9": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "v": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\":\"bad\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.0.3-body-unicode",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: string found, integer expected\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.0.3-body-unicode.json",
+    "sha256": "7319c2307b788353495760798bc71f974dc7a9daefe51b4c57bfd897b2bf8324"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.0.3-body-percent-ascii",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "$ref": "#/components/requestBodies/%76alue"
+                }
+              }
+            }
+          },
+          "components": {
+            "requestBodies": {
+              "value": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "v": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\":\"bad\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.0.3-body-percent-ascii",
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.0.3-body-percent-ascii.json",
+    "sha256": "4391de666f5ecd22d01ac35ee85bf92a1e7e640fbb06c25d0c073a8b4fda5d4d"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.0.3-body-percent-unicode",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "$ref": "#/components/requestBodies/%C3%A9"
+                }
+              }
+            }
+          },
+          "components": {
+            "requestBodies": {
+              "\u00e9": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "v": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\":\"bad\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.0.3-body-percent-unicode",
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.0.3-body-percent-unicode.json",
+    "sha256": "c80c11b510313b292a21e9044824c4548bc0d4a405d0478c22968c5c72793f13"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.1.0-query-slash",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "parameters": [
+                  {
+                    "$ref": "#/components/parameters/a~1b"
+                  }
+                ]
+              }
+            }
+          },
+          "components": {
+            "parameters": {
+              "a/b": {
+                "name": "v",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.1.0-query-slash",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11000\",\"message\":\"VALIDATOR_REQUEST_PARAMETER_QUERY_MISSING\",\"description\":\"Query parameter v is required on path /x but not found in request.\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.1.0-query-slash.json",
+    "sha256": "808f2d7f3226884f91c45e650ea9088cf6c534aad358f5bdfaffccf8d8a52946"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.1.0-query-tilde",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "parameters": [
+                  {
+                    "$ref": "#/components/parameters/a~0b"
+                  }
+                ]
+              }
+            }
+          },
+          "components": {
+            "parameters": {
+              "a~b": {
+                "name": "v",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.1.0-query-tilde",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11000\",\"message\":\"VALIDATOR_REQUEST_PARAMETER_QUERY_MISSING\",\"description\":\"Query parameter v is required on path /x but not found in request.\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.1.0-query-tilde.json",
+    "sha256": "d2b784bbacf2edee173f4e4bc0fb4d550ff01024c0f779c8bba808b5ecd8c06c"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.1.0-query-unicode",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "parameters": [
+                  {
+                    "$ref": "#/components/parameters/\u00e9"
+                  }
+                ]
+              }
+            }
+          },
+          "components": {
+            "parameters": {
+              "\u00e9": {
+                "name": "v",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.1.0-query-unicode",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11000\",\"message\":\"VALIDATOR_REQUEST_PARAMETER_QUERY_MISSING\",\"description\":\"Query parameter v is required on path /x but not found in request.\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.1.0-query-unicode.json",
+    "sha256": "9ff01bc01df95d8c044962badef05bda9e478abedf048ab8e1428cba69cb2c95"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.1.0-query-percent-ascii",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "parameters": [
+                  {
+                    "$ref": "#/components/parameters/%76alue"
+                  }
+                ]
+              }
+            }
+          },
+          "components": {
+            "parameters": {
+              "value": {
+                "name": "v",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.1.0-query-percent-ascii",
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.1.0-query-percent-ascii.json",
+    "sha256": "656438f169c9d50699c0aea3a0a8bd62952485bae8f730ee0cb6c58c4d60b192"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.1.0-query-percent-unicode",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "parameters": [
+                  {
+                    "$ref": "#/components/parameters/%C3%A9"
+                  }
+                ]
+              }
+            }
+          },
+          "components": {
+            "parameters": {
+              "\u00e9": {
+                "name": "v",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.1.0-query-percent-unicode",
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.1.0-query-percent-unicode.json",
+    "sha256": "cd8a879f56e4d77ecb81bc2f0c2bb4e20afb3378161b428e3d1085518f7bc350"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.1.0-body-slash",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "$ref": "#/components/requestBodies/a~1b"
+                }
+              }
+            }
+          },
+          "components": {
+            "requestBodies": {
+              "a/b": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "v": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\":\"bad\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.1.0-body-slash",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: string found, integer expected\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.1.0-body-slash.json",
+    "sha256": "8a1fe511a36579f1a8bb87c1369dadfd7affc6ece1dc7a566b97ee66bbbcf592"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.1.0-body-tilde",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "$ref": "#/components/requestBodies/a~0b"
+                }
+              }
+            }
+          },
+          "components": {
+            "requestBodies": {
+              "a~b": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "v": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\":\"bad\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.1.0-body-tilde",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: string found, integer expected\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.1.0-body-tilde.json",
+    "sha256": "46538325c0b3b53a76d5442e790a296f4013deb74f722ae01bcbb391a401a8c6"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.1.0-body-unicode",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "$ref": "#/components/requestBodies/\u00e9"
+                }
+              }
+            }
+          },
+          "components": {
+            "requestBodies": {
+              "\u00e9": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "v": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\":\"bad\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.1.0-body-unicode",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: string found, integer expected\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.1.0-body-unicode.json",
+    "sha256": "fe418b9277c0ba0509b0ca2f519fb09692efedfbd32280c64f1580f7754ddef5"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.1.0-body-percent-ascii",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "$ref": "#/components/requestBodies/%76alue"
+                }
+              }
+            }
+          },
+          "components": {
+            "requestBodies": {
+              "value": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "v": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\":\"bad\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.1.0-body-percent-ascii",
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.1.0-body-percent-ascii.json",
+    "sha256": "4aa25fbd87e08ad40dbcdf6f936dea79242f4f79607cfbab8b0501f75e8e1c3b"
+  },
+  {
+    "input": {
+      "id": "reference-uri-3.1.0-body-percent-unicode",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "$ref": "#/components/requestBodies/%C3%A9"
+                }
+              }
+            }
+          },
+          "components": {
+            "requestBodies": {
+              "\u00e9": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "v": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\":\"bad\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-uri-3.1.0-body-percent-unicode",
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-reference-uri-matrix/reference-uri-3.1.0-body-percent-unicode.json",
+    "sha256": "0438b29d5deb53fcba65d6ea6dccf06b369c3b8f555a74d92fb687e78b75d9bd"
+  }
+]

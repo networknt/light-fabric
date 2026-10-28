@@ -1,0 +1,51 @@
+{
+  "cases": [
+    {
+      "id": "keyword-3.0.3-not",
+      "historicalExpectedBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must not be valid to the schema {\"type\":\"string\"}\",\"severity\":\"ERROR\"}",
+      "proposedCorrectedBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must not be valid to the schema {\\\"type\\\":\\\"string\\\"}\",\"severity\":\"ERROR\"}",
+      "status": 400,
+      "dispatches": 0,
+      "decodedDescription": "Schema Validation Error - /v: must not be valid to the schema {\"type\":\"string\"}",
+      "disposition": "approved exact JSON escaping amendment; historical malformed expectation preserved"
+    },
+    {
+      "id": "keyword-3.1.0-not",
+      "historicalExpectedBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must not be valid to the schema {\"type\":\"string\"}\",\"severity\":\"ERROR\"}",
+      "proposedCorrectedBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must not be valid to the schema {\\\"type\\\":\\\"string\\\"}\",\"severity\":\"ERROR\"}",
+      "status": 400,
+      "dispatches": 0,
+      "decodedDescription": "Schema Validation Error - /v: must not be valid to the schema {\"type\":\"string\"}",
+      "disposition": "approved exact JSON escaping amendment; historical malformed expectation preserved"
+    },
+    {
+      "id": "keyword-3.1.0-contains",
+      "historicalExpectedBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must contain at least 1 element(s) that passes these validations: {\"type\":\"integer\"}\",\"severity\":\"ERROR\"}",
+      "proposedCorrectedBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must contain at least 1 element(s) that passes these validations: {\\\"type\\\":\\\"integer\\\"}\",\"severity\":\"ERROR\"}",
+      "status": 400,
+      "dispatches": 0,
+      "decodedDescription": "Schema Validation Error - /v: must contain at least 1 element(s) that passes these validations: {\"type\":\"integer\"}",
+      "disposition": "approved exact JSON escaping amendment; historical malformed expectation preserved"
+    },
+    {
+      "id": "synthetic-typed-keyword-3.1.0-contains",
+      "historicalExpectedBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must contain at least 1 element(s) that passes these validations: {\"type\":\"integer\"}\",\"severity\":\"ERROR\"}",
+      "proposedCorrectedBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must contain at least 1 element(s) that passes these validations: {\\\"type\\\":\\\"integer\\\"}\",\"severity\":\"ERROR\"}",
+      "status": 400,
+      "dispatches": 0,
+      "decodedDescription": "Schema Validation Error - /v: must contain at least 1 element(s) that passes these validations: {\"type\":\"integer\"}",
+      "disposition": "approved exact JSON escaping amendment; historical malformed expectation preserved"
+    },
+    {
+      "id": "schema-byte-enum",
+      "historicalExpectedBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: does not have a value in the enumeration [\"a\", \"b\"]\",\"severity\":\"ERROR\"}",
+      "proposedCorrectedBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: does not have a value in the enumeration [\\\"a\\\", \\\"b\\\"]\",\"severity\":\"ERROR\"}",
+      "status": 400,
+      "dispatches": 0,
+      "decodedDescription": "Schema Validation Error - /v: does not have a value in the enumeration [\"a\", \"b\"]",
+      "disposition": "approved exact JSON escaping amendment; historical malformed expectation preserved"
+    }
+  ],
+  "version": 1,
+  "ownerDisposition": "2026-10-17 exact five additional escaping amendments approved"
+}

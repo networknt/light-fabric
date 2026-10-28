@@ -1,0 +1,166 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "S-12-anonymous-prefix-warm-init-v1",
+  "title": "S-12-anonymous-prefix Java selection and Rust Init compatibility boundary",
+  "ledger": [
+    "S-12",
+    "C-10"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "unified-security": {
+        "enabled": true,
+        "anonymousPrefixes": [
+          "/x/public"
+        ],
+        "pathPrefixAuths": [
+          {
+            "prefix": "/x",
+            "basic": true,
+            "apikey": true
+          }
+        ]
+      },
+      "basic-auth": {
+        "enabled": true,
+        "allowAnonymous": false,
+        "allowBearerToken": false,
+        "enableAD": false,
+        "users": [
+          {
+            "username": "test-user",
+            "password": "test-only-password",
+            "paths": [
+              "/x"
+            ]
+          }
+        ]
+      },
+      "lambda-proxy": {
+        "functions": {
+          "/x@get": "FnX",
+          "/x/public@get": "FnX"
+        },
+        "logType": "Tail",
+        "enabled": true
+      },
+      "handler": {
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.security.BasicAuthMiddleware@basic",
+          "com.networknt.aws.lambda.handler.middleware.security.UnifiedSecurityMiddleware@unified"
+        ],
+        "defaultHandlers": [
+          "unified",
+          "proxy"
+        ],
+        "chains": {},
+        "paths": []
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "No generated time-sensitive token or clock control."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "expectRustInit": {
+    "outcome": "initError",
+    "code": "InvalidConfiguration",
+    "backendCalls": [],
+    "jwksFetches": 0
+  },
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls",
+    "header:x-backend",
+    "header:content-type",
+    "header:www-authenticate"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x/public",
+        "headers": {},
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x/public",
+              "httpMethod": "GET",
+              "headers": {},
+              "queryStringParameters": {},
+              "requestContext": {},
+              "isBase64Encoded": false
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "single",
+      "expect": {
+        "outcome": "notExecuted",
+        "reason": "initError",
+        "backendCalls": [],
+        "jwksFetches": 0
+      }
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+[
+  {
+    "fixture": "B-01-no-service-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/B-01-no-service-cp1-e02-accepted.json",
+    "sourceSha256": "7a539d4bb5e1dbc57b50e99f2295424bf1b8db274d7c3b51f721fa255ea0a08f",
+    "review": "TokenInjectionTest, Cors source observation or JwtTest E13 source reviewed. Exact Java failure/open/dispatch, header null, repeated multi headers and generated secondary token injection preserved. OAuth form body/auth setup reviewed in resolved http-client source ClientCredentialsRequest/ClientRequestComposerProvider/OauthHelper: grant_type + default scope, client credentials in Basic header; fixed test-only credentials. All per-step fetch/call counts explicit. Unsupported JKS rejects Rust once at Init in OAuth/JWT configs; CORS single input reaches E-13 only. Incidental downstream rows not counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "B-01-fetch-cache-secondary-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/B-01-fetch-cache-secondary-cp1-e02-accepted.json",
+    "sourceSha256": "8a5afd78633dffae24ae1e7f0bb9f2de283be8cc82e190e641ec703679ce0c77",
+    "review": "TokenInjectionTest, Cors source observation or JwtTest E13 source reviewed. Exact Java failure/open/dispatch, header null, repeated multi headers and generated secondary token injection preserved. OAuth form body/auth setup reviewed in resolved http-client source ClientCredentialsRequest/ClientRequestComposerProvider/OauthHelper: grant_type + default scope, client credentials in Basic header; fixed test-only credentials. All per-step fetch/call counts explicit. Unsupported JKS rejects Rust once at Init in OAuth/JWT configs; CORS single input reaches E-13 only. Incidental downstream rows not counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "B-01-oauth-denial-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/B-01-oauth-denial-cp1-e02-accepted.json",
+    "sourceSha256": "b60edb0941d27123053c6f6073a0fc57a32ff180f2f209d11ac079d8cbc5cfe3",
+    "review": "TokenInjectionTest, Cors source observation or JwtTest E13 source reviewed. Exact Java failure/open/dispatch, header null, repeated multi headers and generated secondary token injection preserved. OAuth form body/auth setup reviewed in resolved http-client source ClientCredentialsRequest/ClientRequestComposerProvider/OauthHelper: grant_type + default scope, client credentials in Basic header; fixed test-only credentials. All per-step fetch/call counts explicit. Unsupported JKS rejects Rust once at Init in OAuth/JWT configs; CORS single input reaches E-13 only. Incidental downstream rows not counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "B-01-malformed-oauth-error-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/B-01-malformed-oauth-error-cp1-e02-accepted.json",
+    "sourceSha256": "6913d889d92dc5fdf05cd51530ac2e91cbf19d9fddf588ec527977045ae6c590",
+    "review": "TokenInjectionTest, Cors source observation or JwtTest E13 source reviewed. Exact Java failure/open/dispatch, header null, repeated multi headers and generated secondary token injection preserved. OAuth form body/auth setup reviewed in resolved http-client source ClientCredentialsRequest/ClientRequestComposerProvider/OauthHelper: grant_type + default scope, client credentials in Basic header; fixed test-only credentials. All per-step fetch/call counts explicit. Unsupported JKS rejects Rust once at Init in OAuth/JWT configs; CORS single input reaches E-13 only. Incidental downstream rows not counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "B-03-lowercase-origin-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/B-03-lowercase-origin-cp1-e02-accepted.json",
+    "sourceSha256": "d026692c2a643b2c06544dac05e2cb33e0ed54041303c14ee4fa0242a817dcb3",
+    "review": "TokenInjectionTest, Cors source observation or JwtTest E13 source reviewed. Exact Java failure/open/dispatch, header null, repeated multi headers and generated secondary token injection preserved. OAuth form body/auth setup reviewed in resolved http-client source ClientCredentialsRequest/ClientRequestComposerProvider/OauthHelper: grant_type + default scope, client credentials in Basic header; fixed test-only credentials. All per-step fetch/call counts explicit. Unsupported JKS rejects Rust once at Init in OAuth/JWT configs; CORS single input reaches E-13 only. Incidental downstream rows not counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "E-13-multi-auth-invisible-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/E-13-multi-auth-invisible-cp1-e02-accepted.json",
+    "sourceSha256": "9e1605c50b5ddcf6da2997c9ca0c20684c243298f7ed1d9614ea2615c9c5d9e8",
+    "review": "TokenInjectionTest, Cors source observation or JwtTest E13 source reviewed. Exact Java failure/open/dispatch, header null, repeated multi headers and generated secondary token injection preserved. OAuth form body/auth setup reviewed in resolved http-client source ClientCredentialsRequest/ClientRequestComposerProvider/OauthHelper: grant_type + default scope, client credentials in Basic header; fixed test-only credentials. All per-step fetch/call counts explicit. Unsupported JKS rejects Rust once at Init in OAuth/JWT configs; CORS single input reaches E-13 only. Incidental downstream rows not counted.",
+    "rustExecutionEvidence": null
+  }
+]

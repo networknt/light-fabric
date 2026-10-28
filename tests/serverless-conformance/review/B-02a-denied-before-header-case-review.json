@@ -1,0 +1,173 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "B-02a-denied-multi-policy-v1",
+  "title": "Approved shared ALB multimap CORS denied",
+  "ledger": [
+    "B-02",
+    "B-02a",
+    "B-03",
+    "B-03a",
+    "E-10"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "cors": {
+        "enabled": true,
+        "allowedOrigins": [
+          "https://test.invalid"
+        ],
+        "allowedMethods": [
+          "GET",
+          "POST"
+        ]
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@options": "FnX"
+        }
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.cors.RequestCorsMiddleware@h0",
+          "com.networknt.aws.lambda.handler.middleware.cors.ResponseCorsMiddleware@response0"
+        ],
+        "chains": {
+          "request": [
+            "h0"
+          ],
+          "response": [
+            "response0"
+          ]
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Runtime generated token recipes, synthetic loopback HTTP dependencies and fixed dependency response Date; no virtual verifier clock."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "multiValueHeaders": {
+          "origin": [
+            "https://denied.invalid"
+          ]
+        },
+        "multiValueQueryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {},
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "outcome": "response",
+        "status": 200,
+        "headers": [],
+        "headersAbsent": [
+          "access-control-allow-origin"
+        ],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "isBase64Encoded": false
+            },
+            "eventAbsent": [
+              "/body",
+              "/headers",
+              "/queryStringParameters",
+              "/pathParameters",
+              "/requestContext/stage"
+            ],
+            "eventExact": {
+              "multiValueHeaders": {
+                "origin": [
+                  "https://denied.invalid"
+                ]
+              },
+              "multiValueQueryStringParameters": {},
+              "requestContext": {}
+            }
+          }
+        ],
+        "jwksFetches": 0
+      },
+      "expect": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":403,\"code\":\"ERR10092\",\"message\":\"CORS_PREFLIGHT_REQUEST_FAILED\",\"description\":\"CORS preflight request failed. Origin not allowed or method/headers unsupported..\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      }
+    }
+  ],
+  "differences": [
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls",
+    "header:content-type",
+    "header:access-control-allow-origin"
+  ]
+}

@@ -1,0 +1,11 @@
+
+
+## WP12 owner amendment: bounded completion descriptors — 2026-10-13
+
+Owner approves only ExecutionPlan::compile's narrow completion-bound adaptation described in audit-amendments-20261013T021831Z/completion-bound-impact-stop.md. GitNexus exact symbol Function:crates/serverless-core/src/plan.rs:ExecutionPlan.compile#3 reports LOW0; source-reviewed HIGH scope is separately accepted, including documented callers (25 call sites/17 distinct functions before the bound regression). Neither graph absence nor source review replaces the other evidence.
+
+Explicit Rust safety limit: at most 64 combined active Audit/Metrics request-policy occurrences per fully expanded selectable default/path chain after disabled removal. Repeated occurrences and nested aliases count individually. Unselected catalogue entries and unreachable definitions do not count. Overflow rejects Init with redacted InvalidConfiguration: Malformed("active audit/metrics occurrence limit (64)"), before immutable publication or policy/provider/network/backend execution. No truncation, deduplication or cap on unrelated handler types. Preserve public APIs and existing alias/cycle/terminal/ordering/security validation. Completion preparation remains bounded local configuration capture only.
+
+Retain original failing bound regression and qualify 0/1/64 accepted,65 rejected, mixed/repeated/nested chains, disabled/unselected exclusions and existing compiler errors. The 64-line writer queue motivates this limit but proves neither bounded elapsed time nor delivery. Preparation/drain and queue-full behavior require separate qualification. Callback ordering, panic/cancellation/drop behavior and exactly-once counts remain unchanged. No CompletionCallbacks::add changes authorized. Existing impact/lint exceptions remain scoped; WP12 incomplete and WP5 open. No later-package work, delegation, commits, publication, packaging, deployment, live/AWS calls or shared-stack changes.
+
+Admission disposition: no fixture expected outcomes or Java observations changed. Existing corpus configurations must be reviewed for selectable active occurrence overflow before activation; compiler safety qualification is not WP13 differential execution.

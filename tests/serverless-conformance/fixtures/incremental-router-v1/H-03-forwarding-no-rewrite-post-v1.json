@@ -1,0 +1,191 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "H-03-forwarding-no-rewrite-post-v1",
+  "title": "Native Router forwarding profile without rewrite: POST",
+  "ledger": [
+    "H-03"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "router": {
+        "enabled": true,
+        "httpsEnabled": false,
+        "metricsInjection": false,
+        "maxRequestTime": 1000,
+        "urlRewriteRules": []
+      },
+      "direct-registry": {
+        "directUrls": {
+          "test-service": "${dependency:http}/base"
+        }
+      },
+      "service": {
+        "singletons": [
+          {
+            "com.networknt.registry.URL": [
+              "com.networknt.registry.URLImpl"
+            ]
+          },
+          {
+            "com.networknt.registry.Registry": [
+              "com.networknt.registry.support.DirectRegistry"
+            ]
+          },
+          {
+            "com.networknt.balance.LoadBalance": [
+              "com.networknt.balance.RoundRobinLoadBalance"
+            ]
+          },
+          {
+            "com.networknt.cluster.Cluster": [
+              "com.networknt.cluster.LightCluster"
+            ]
+          }
+        ]
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "functions": {
+          "/x@get": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.router.LambdaRouterMiddleware@router",
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy"
+        ],
+        "defaultHandlers": [
+          "router",
+          "proxy"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Owned HTTP responder supplies a fixed Date; no virtual verifier clock."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "headerMode": "multi",
+  "dependencies": {
+    "http": {
+      "responses": [
+        {
+          "method": "POST",
+          "uri": "/base/x",
+          "status": 202,
+          "headers": [
+            [
+              "content-type",
+              "text/plain"
+            ],
+            [
+              "date",
+              "Thu, 01 Jan 1970 00:00:00 GMT"
+            ],
+            [
+              "set-cookie",
+              "first"
+            ],
+            [
+              "set-cookie",
+              "second"
+            ]
+          ],
+          "body": "http-ok"
+        }
+      ]
+    }
+  },
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "POST",
+    "path": "/x",
+    "headers": {
+      "service_id": "test-service",
+      "x-forward": "yes"
+    },
+    "queryStringParameters": {
+      "ignored": "1"
+    },
+    "multiValueHeaders": {
+      "service_id": [
+        "test-service"
+      ],
+      "x-forward": [
+        "yes"
+      ]
+    },
+    "multiValueQueryStringParameters": {
+      "ignored": [
+        "1"
+      ]
+    },
+    "body": "test-body",
+    "isBase64Encoded": false
+  },
+  "backend": [],
+  "expect": {
+    "outcome": "response",
+    "status": 202,
+    "headers": [
+      [
+        "content-length",
+        "7"
+      ],
+      [
+        "content-type",
+        "text/plain"
+      ],
+      [
+        "date",
+        "Thu, 01 Jan 1970 00:00:00 GMT"
+      ],
+      [
+        "set-cookie",
+        "first"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "http-ok",
+    "bodyBase64": false,
+    "backendCalls": [],
+    "jwksFetches": 0,
+    "httpCalls": [
+      {
+        "target": "${dependency:http}/base/x",
+        "method": "POST",
+        "uri": "/base/x",
+        "body": "test-body",
+        "serviceId": null,
+        "headers": {
+          "x-forward": [
+            "yes"
+          ]
+        }
+      }
+    ]
+  }
+}

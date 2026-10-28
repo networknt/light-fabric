@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "semanticDirection": "Approved exact count/cardinality mathematics and OAS3.1 contains direction; HTTP bytes pending review",
+  "cases": [
+    {
+      "id": "minContains-0",
+      "sourceSha256": "9c2ace1a183acdfbc723fc3c238a427729366f746d27a596ecd19bebcc5870b9",
+      "expectJava": {
+        "id": "minContains-0",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "minContains-1",
+      "sourceSha256": "9f15dbd0f58bcbc45035591114d37c47352f7041c65d0a51df993afa93af8774",
+      "expectJava": {
+        "id": "minContains-1",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "minContains-18446744073709551615",
+      "sourceSha256": "bcbc926f95abfc0b4f634a04b1ecb1522fa01de85bcd8917035e18265576b28b",
+      "expectJava": {
+        "id": "minContains-18446744073709551615",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minContains-18446744073709551616",
+      "sourceSha256": "8af0f30119da25578ae76916626fc405ef67f84fe183b2be5771cdbe8dce424e",
+      "expectJava": {
+        "id": "minContains-18446744073709551616",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minContains-1e40",
+      "sourceSha256": "57f70230b5db4f1fa5599a99ea16bbe96d474c899c190708d059123875278860",
+      "expectJava": {
+        "id": "minContains-1e40",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "maxContains-0",
+      "sourceSha256": "87fc5af8167fbf701ef3eed81b6a557f141e40cdf883b1a2279fc6ab11170d56",
+      "expectJava": {
+        "id": "maxContains-0",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "maxContains-1",
+      "sourceSha256": "a589144419c2fddeb4e93cb68ce0f06d7c4882dc94f88098d0c9032a3cef4123",
+      "expectJava": {
+        "id": "maxContains-1",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxContains-18446744073709551615",
+      "sourceSha256": "8ab56b040ad028cf68a25c249c2da145b23fe528903320d1d95ecfbd829ddc56",
+      "expectJava": {
+        "id": "maxContains-18446744073709551615",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxContains-18446744073709551616",
+      "sourceSha256": "e042173825679076c6dd6bab88eb6a069975b8645458dbef92c1b66a92299d88",
+      "expectJava": {
+        "id": "maxContains-18446744073709551616",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxContains-1e40",
+      "sourceSha256": "ece31820d27537987db45426912ba24e7bcd5e987df23f90fdfa8b308fb71b62",
+      "expectJava": {
+        "id": "maxContains-1e40",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    }
+  ]
+}

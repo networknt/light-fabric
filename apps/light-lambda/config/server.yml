@@ -1,0 +1,7 @@
+serviceId: light-lambda
+enableRegistry: false
+ip: 127.0.0.1
+httpPort: 0
+httpsPort: 0
+enableHttp: false
+enableHttps: false

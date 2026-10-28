@@ -1,0 +1,58 @@
+[
+  {
+    "fixture": "V-03-array-multi-contract-v1",
+    "source": "SanitizerMiddleware execute/sanitizeArrayBody source; V03 json-object characterization",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Source-authored exact bytes before replay: array/map recursive HTML encoding and ignore precedence; PUT/PATCH body gate; GET leaves body bytes unchanged while header sanitization runs. Exact Java original maps and Rust unified mutations preserved separately under E10. No current-output-derived expectations.",
+    "javaRun": "20261011T105820.158196Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T105820.158196Z"
+  },
+  {
+    "fixture": "V-03-put-multi-contract-v1",
+    "source": "SanitizerMiddleware execute/sanitizeArrayBody source; V03 json-object characterization",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Source-authored exact bytes before replay: array/map recursive HTML encoding and ignore precedence; PUT/PATCH body gate; GET leaves body bytes unchanged while header sanitization runs. Exact Java original maps and Rust unified mutations preserved separately under E10. No current-output-derived expectations.",
+    "javaRun": "20261011T105820.158196Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T105820.158196Z"
+  },
+  {
+    "fixture": "V-03-patch-multi-contract-v1",
+    "source": "SanitizerMiddleware execute/sanitizeArrayBody source; V03 json-object characterization",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Source-authored exact bytes before replay: array/map recursive HTML encoding and ignore precedence; PUT/PATCH body gate; GET leaves body bytes unchanged while header sanitization runs. Exact Java original maps and Rust unified mutations preserved separately under E10. No current-output-derived expectations.",
+    "javaRun": "20261011T105820.158196Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T105820.158196Z"
+  },
+  {
+    "fixture": "V-03-get-body-bypass-multi-contract-v1",
+    "source": "SanitizerMiddleware execute/sanitizeArrayBody source; V03 json-object characterization",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Source-authored exact bytes before replay: array/map recursive HTML encoding and ignore precedence; PUT/PATCH body gate; GET leaves body bytes unchanged while header sanitization runs. Exact Java original maps and Rust unified mutations preserved separately under E10. No current-output-derived expectations.",
+    "javaRun": "20261011T105820.158196Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T105820.158196Z"
+  }
+]

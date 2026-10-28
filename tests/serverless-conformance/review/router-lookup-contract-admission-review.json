@@ -1,0 +1,19 @@
+[
+  {
+    "fixture": "H-04-unknown-service-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "H-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "H-04"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Valid multimap and default client/service infrastructure reach unknown-service lookup error with zero HTTP/business calls. Exact status/body retained; response casing follows E06a. Unsupported method, transport failure and deadline clauses remain open.",
+    "remainingContractAssertions": [
+      "H-04: unsupported method, transport failure and maxRequestTime/deadline clauses remain open"
+    ],
+    "javaRun": "20261011T051450.812247Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T051450.812247Z"
+  }
+]

@@ -1,0 +1,56 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "C-07-valid-stream-no-output-component-v1",
+  "title": "C-07-valid-stream-no-output approved closed Java-only stream component",
+  "ledger": [
+    "C-07"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "lambda-proxy": {
+        "lambdaAppId": "test-only-stream",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "handler": {
+        "handlers": [
+          "com.networknt.aws.lambda.characterization.StreamSuccessfulTest$Terminal@terminal"
+        ],
+        "chains": {},
+        "paths": [],
+        "defaultHandlers": [
+          "terminal"
+        ]
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "No stream clock assertion."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": true,
+  "rustOnly": false,
+  "component": "javaStreamC07",
+  "streamInput": "{\"path\":\"/x\",\"httpMethod\":\"GET\",\"headers\":{},\"queryStringParameters\":{},\"body\":null,\"isBase64Encoded\":false}",
+  "expect": {
+    "outcome": "streamOutput",
+    "outputBase64": "",
+    "outputBytes": 0,
+    "chainExecutions": 1,
+    "backendCalls": [],
+    "jwksFetches": 0
+  }
+}

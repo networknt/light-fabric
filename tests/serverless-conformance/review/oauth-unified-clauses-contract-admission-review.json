@@ -1,0 +1,50 @@
+[
+  {
+    "fixture": "B-01-oauth-denial-loopback-multi-contract-v1",
+    "javaRun": "20261011T124850.710443Z",
+    "javaBehaviorAsserted": [
+      "B-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "B-01"
+    ],
+    "review": "Closed OAuth infrastructure and valid common ALB multimap reach actual token acquisition. Exact POST, grant/scope/form/Basic credential and zero-or-one dispatch asserted. Java denial or malformed-error fail-open preserved; Rust malformed-policy failure uses approved C-04 exact ERR14004 and zero business calls. Synthetic signed recipes remain execution-time only.",
+    "source": "Reviewed source and approved token/JWT/C04 contracts",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T124850.710443Z"
+  },
+  {
+    "fixture": "B-01-malformed-oauth-error-loopback-multi-contract-v1",
+    "javaRun": "20261011T124850.710443Z",
+    "javaBehaviorAsserted": [
+      "B-01",
+      "C-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "B-01",
+      "C-04"
+    ],
+    "review": "Closed OAuth infrastructure and valid common ALB multimap reach actual token acquisition. Exact POST, grant/scope/form/Basic credential and zero-or-one dispatch asserted. Java denial or malformed-error fail-open preserved; Rust malformed-policy failure uses approved C-04 exact ERR14004 and zero business calls. Synthetic signed recipes remain execution-time only.",
+    "source": "Reviewed source and approved token/JWT/C04 contracts",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T124850.710443Z"
+  },
+  {
+    "fixture": "S-12-unified-jwt-valid-missing-warm-multi-contract-v1",
+    "javaRun": "20261011T123432.610451Z",
+    "javaBehaviorAsserted": [
+      "S-12",
+      "S-04",
+      "C-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-12",
+      "S-04",
+      "C-03"
+    ],
+    "review": "Supported JWT-only Unified prefix selects the configured verifier: valid signature/configured audience dispatches once, warm missing credential is denied with zero business calls. Bootstrap and per-request JWKS counts exact; accepted audience and request-local identity asserted, not provider normalization or combined factors.",
+    "source": "Reviewed source and approved token/JWT/C04 contracts",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T123432.610451Z"
+  }
+]

@@ -8,6 +8,7 @@ license = "Apache-2.0"
 test-support = []
 
 [dependencies]
+gateway-policy = { path = "../../crates/gateway-policy" }
 workflow-action = { path = "../../crates/workflow-action" }
 a2a-core = { path = "../../crates/a2a-core" }
 agent-delegation = { path = "../../crates/agent-delegation" }
@@ -50,6 +51,7 @@ url = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+gateway-policy = { path = "../../crates/gateway-policy", features = ["test-support"] }
 light-security = { path = "../../crates/light-security", features = ["test-support"] }
 rcgen = "0.14"
 tempfile = "3"

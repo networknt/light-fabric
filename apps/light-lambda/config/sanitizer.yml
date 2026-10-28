@@ -1,0 +1,10 @@
+# Opt-in decoded-body and header sanitization using Java-compatible encoders.
+enabled: ${sanitizer.enabled:false}
+bodyEnabled: ${sanitizer.bodyEnabled:true}
+bodyEncoder: ${sanitizer.bodyEncoder:javascript-source}
+bodyAttributesToEncode: ${sanitizer.bodyAttributesToEncode:}
+bodyAttributesToIgnore: ${sanitizer.bodyAttributesToIgnore:}
+headerEnabled: ${sanitizer.headerEnabled:true}
+headerEncoder: ${sanitizer.headerEncoder:javascript-source}
+headerAttributesToEncode: ${sanitizer.headerAttributesToEncode:}
+headerAttributesToIgnore: ${sanitizer.headerAttributesToIgnore:}

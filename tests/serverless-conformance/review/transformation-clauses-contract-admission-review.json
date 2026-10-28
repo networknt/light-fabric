@@ -1,0 +1,30 @@
+[
+  {
+    "fixture": "T-01-caught-native-cel-rule-error-multi-contract-v1",
+    "javaRun": "20261011T145659.833422Z",
+    "javaBehaviorAsserted": [
+      "T-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "T-01"
+    ],
+    "review": "Reviewed native EdgeAction null-body switch throws NPE; actual RequestTransformerMiddleware catches exactly once and dispatches unchanged request once. Authored CEL int(throw) evaluation fails before finite action, caught under T01; C04 escaping exceptions not asserted.",
+    "source": "Unchanged native transformers and approved scoped native/CEL configuration pair",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T145659.833422Z"
+  },
+  {
+    "fixture": "T-02-response-header-remove-update-multi-contract-v1",
+    "javaRun": "20261011T145728.232388Z",
+    "javaBehaviorAsserted": [
+      "T-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "T-02"
+    ],
+    "review": "Fixed finite native IAction uses actual transformer response header mutation. Exact x-remove absence, x-added after, retained x-keep and body ok plus one backend call; authored CEL true selects bounded named response-headers-literal action. Request maps/input unchanged; no overlap map normalization.",
+    "source": "Unchanged native transformers and approved scoped native/CEL configuration pair",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T145728.232388Z"
+  }
+]

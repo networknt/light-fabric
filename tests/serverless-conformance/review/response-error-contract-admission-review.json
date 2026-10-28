@@ -1,0 +1,20 @@
+[
+  {
+    "fixture": "C-09-response-policy-error-multi-contract-v1",
+    "source": "Approved C-09 response policies on gateway errors, B-05 supported response header policy; source ChainExecutor failed-state break and retained V-01 exact error body",
+    "javaBehaviorAsserted": [
+      "C-09",
+      "B-05"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-09",
+      "B-05"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Supported shared ALB multimap and OpenAPI configuration reach exact generated 404 ERR10007 with zero Invoke. Java failed-state chain skips response policy, so x-policy is explicitly absent. Rust approved response stage adds exact x-policy value without changing status/body/error content-type value. No normalization or production repair.",
+    "remainingContractAssertions": [
+      "This control establishes response-policy execution on ordinary gateway errors, not timeout/oversize replacement bypass or finalization counts."
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T025209.751044Z"
+  }
+]

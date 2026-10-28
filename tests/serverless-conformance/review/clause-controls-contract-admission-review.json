@@ -1,0 +1,181 @@
+[
+  {
+    "fixture": "R-03-path-query-collision-multi-contract-v1",
+    "javaBehaviorAsserted": [
+      "R-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "R-03"
+    ],
+    "review": "Valid shared maps with id query collision; exact overwritten42 and preserved raw multimap original.",
+    "remainingContractAssertions": [],
+    "source": null,
+    "rustExecutionEvidence": [],
+    "javaRun": "20261011T162915.425344Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T162915.425344Z"
+  },
+  {
+    "fixture": "R-02-invalid-method-multi-contract-v1",
+    "javaBehaviorAsserted": [
+      "R-02",
+      "E-14"
+    ],
+    "proposedRustBehaviorReached": [
+      "R-02",
+      "E-14"
+    ],
+    "review": "Invalid HTTP token; exact proposed400ERR14012 and zero dispatch; Java missing-target assertion from lookup contract.",
+    "remainingContractAssertions": [],
+    "source": null,
+    "rustExecutionEvidence": [],
+    "javaRun": "20261011T162915.425344Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T162915.425344Z"
+  },
+  {
+    "fixture": "E-14-invalid-base64-multi-contract-v1",
+    "javaBehaviorAsserted": [
+      "E-14",
+      "E-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-14",
+      "E-03"
+    ],
+    "review": "Valid multimap; Java forwards original malformed base64; Rust explicit decoding error.",
+    "remainingContractAssertions": [],
+    "source": null,
+    "rustExecutionEvidence": [],
+    "javaRun": "20261011T162915.425344Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T162915.425344Z"
+  },
+  {
+    "fixture": "E-14-decoded-utf8-at-cap-multi-contract-v1",
+    "javaBehaviorAsserted": [
+      "E-14"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-14"
+    ],
+    "review": "Exact decoded UTF8/request-envelope cap, zero required dispatch on oversize; Java unchanged.",
+    "remainingContractAssertions": [],
+    "source": null,
+    "rustExecutionEvidence": [],
+    "javaRun": "20261011T162915.425344Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T162915.425344Z"
+  },
+  {
+    "fixture": "E-14-decoded-utf8-over-cap-multi-contract-v1",
+    "javaBehaviorAsserted": [
+      "E-14"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-14"
+    ],
+    "review": "Exact decoded UTF8/request-envelope cap, zero required dispatch on oversize; Java unchanged.",
+    "remainingContractAssertions": [],
+    "source": null,
+    "rustExecutionEvidence": [],
+    "javaRun": "20261011T162915.425344Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T162915.425344Z"
+  },
+  {
+    "fixture": "E-14-invoke-envelope-over-cap-multi-contract-v1",
+    "javaBehaviorAsserted": [
+      "E-14"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-14"
+    ],
+    "review": "Exact decoded UTF8/request-envelope cap, zero required dispatch on oversize; Java unchanged.",
+    "remainingContractAssertions": [],
+    "source": null,
+    "rustExecutionEvidence": [],
+    "javaRun": "20261011T162915.425344Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T162915.425344Z"
+  },
+  {
+    "fixture": "V-02-parameters-0-multi-contract-v1",
+    "javaBehaviorAsserted": [
+      "V-02",
+      "V-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-02",
+      "V-01"
+    ],
+    "review": "Reviewed path/query/header integer cases; same single+multi maps reach validator; exact body/dispatch assertions.",
+    "remainingContractAssertions": [],
+    "source": null,
+    "rustExecutionEvidence": [],
+    "javaRun": "20261011T162915.425344Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T162915.425344Z"
+  },
+  {
+    "fixture": "V-02-parameters-1-multi-contract-v1",
+    "javaBehaviorAsserted": [
+      "V-02",
+      "V-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-02",
+      "V-01"
+    ],
+    "review": "Reviewed path/query/header integer cases; same single+multi maps reach validator; exact body/dispatch assertions.",
+    "remainingContractAssertions": [],
+    "source": null,
+    "rustExecutionEvidence": [],
+    "javaRun": "20261011T162915.425344Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T162915.425344Z"
+  },
+  {
+    "fixture": "V-02-parameters-2-multi-contract-v1",
+    "javaBehaviorAsserted": [
+      "V-02",
+      "V-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-02",
+      "V-01"
+    ],
+    "review": "Reviewed path/query/header integer cases; same single+multi maps reach validator; exact body/dispatch assertions.",
+    "remainingContractAssertions": [],
+    "source": null,
+    "rustExecutionEvidence": [],
+    "javaRun": "20261011T162915.425344Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T162915.425344Z"
+  },
+  {
+    "fixture": "V-02-parameters-3-multi-contract-v1",
+    "javaBehaviorAsserted": [
+      "V-02",
+      "V-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-02",
+      "V-01"
+    ],
+    "review": "Reviewed path/query/header integer cases; same single+multi maps reach validator; exact body/dispatch assertions.",
+    "remainingContractAssertions": [],
+    "source": null,
+    "rustExecutionEvidence": [],
+    "javaRun": "20261011T162915.425344Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T162915.425344Z"
+  },
+  {
+    "fixture": "V-01-openapi-31-valid-json-multi-contract-v1",
+    "javaBehaviorAsserted": [
+      "V-01",
+      "V-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-01",
+      "V-02"
+    ],
+    "review": "Supported3.1 spec; same reviewed request/JSON body/target; authored Rust expectations.",
+    "remainingContractAssertions": [],
+    "source": null,
+    "rustExecutionEvidence": [],
+    "javaRun": "20261011T162915.425344Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T162915.425344Z"
+  }
+]

@@ -1,0 +1,38 @@
+[
+  {
+    "fixture": "D-08a-request-bounded-work-multi-contract-v1",
+    "source": "Approved bounded-work probe and D08 deadline contract",
+    "javaBehaviorAsserted": [
+      "D-08a",
+      "D-08"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-08a",
+      "D-08"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Valid multimap and FnX reach fixed100ms request probe under shared50ms budget. Java exact200 body with one dispatch; authored Rust504 with zero dispatch for request or one for response. Exact probe execution1 asserted. No semaphore saturation, lease ownership, or late result side effects claimed. Explicit responseReserve20ms/postReserve10ms leave positive dispatch budget under50ms hard limit. Earlier default-reserve draft falsely expired before work; preserved separately, coverage withdrawn then revised. Rust response probe is cooperative async work, not a blocking permit claim.",
+    "remainingContractAssertions": [
+      "Cross-stage deadline budget, permit ownership until actual return, late result discard, concurrent saturation"
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T041007.214893Z"
+  },
+  {
+    "fixture": "D-08b-response-bounded-work-multi-contract-v1",
+    "source": "Approved bounded-work probe and D08 deadline contract",
+    "javaBehaviorAsserted": [
+      "D-08b",
+      "D-08"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-08b",
+      "D-08"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Valid multimap and FnX reach fixed100ms response probe under shared50ms budget. Java exact200 body with one dispatch; authored Rust504 with zero dispatch for request or one for response. Exact probe execution1 asserted. No semaphore saturation, lease ownership, or late result side effects claimed. Explicit responseReserve20ms/postReserve10ms leave positive dispatch budget under50ms hard limit. Earlier default-reserve draft falsely expired before work; preserved separately, coverage withdrawn then revised. Rust response probe is cooperative async work, not a blocking permit claim.",
+    "remainingContractAssertions": [
+      "Cross-stage deadline budget, permit ownership until actual return, late result discard, concurrent saturation"
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T041007.214893Z"
+  }
+]

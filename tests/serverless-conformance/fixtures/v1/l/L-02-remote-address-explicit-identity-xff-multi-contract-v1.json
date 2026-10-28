@@ -1,0 +1,305 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "L-02-remote-address-explicit-identity-xff-multi-contract-v1",
+  "title": "Built-in remote address direct counter with supplied Java identity and matching trusted ALB XFF",
+  "ledger": [
+    "L-02",
+    "L-01",
+    "E-13",
+    "E-11",
+    "E-10",
+    "E-10e",
+    "E-06a"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "limit": {
+        "enabled": true,
+        "key": "address",
+        "errorCode": 0,
+        "rateLimit": "1/m",
+        "addressKeyResolver": "com.networknt.aws.lambda.handler.middleware.limit.key.RemoteAddressKeyResolver",
+        "address": {
+          "203.0.113.7": "1/m"
+        }
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.limit.LimitMiddleware@h0"
+        ],
+        "chains": {
+          "request": [
+            "h0"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "No virtual limiter clock. Exact duration-string RateLimit-Reset is not a timestamp."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "backendCalls",
+    "header:content-type",
+    "header:ratelimit-limit",
+    "header:ratelimit-remaining",
+    "header:ratelimit-reset"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "identity": {
+            "sourceIp": "203.0.113.7"
+          },
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {
+          "x-forwarded-for": "203.0.113.7"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {
+          "x-forwarded-for": [
+            "203.0.113.7"
+          ]
+        },
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "headers": {
+                "x-forwarded-for": "203.0.113.7"
+              },
+              "queryStringParameters": {},
+              "requestContext": {
+                "identity": {
+                  "sourceIp": "203.0.113.7"
+                }
+              },
+              "isBase64Encoded": false,
+              "multiValueHeaders": {
+                "x-forwarded-for": [
+                  "203.0.113.7"
+                ]
+              },
+              "multiValueQueryStringParameters": {}
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "expect": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "body": null,
+              "isBase64Encoded": false,
+              "requestContext": {
+                "stage": "test-only",
+                "identity": {
+                  "sourceIp": "203.0.113.7"
+                }
+              }
+            },
+            "eventExact": {
+              "headers": {
+                "x-forwarded-for": "203.0.113.7"
+              },
+              "multiValueHeaders": {
+                "x-forwarded-for": [
+                  "203.0.113.7"
+                ]
+              },
+              "queryStringParameters": null,
+              "multiValueQueryStringParameters": null,
+              "pathParameters": null
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi"
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "identity": {
+            "sourceIp": "203.0.113.7"
+          },
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {
+          "x-forwarded-for": "203.0.113.7"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {
+          "x-forwarded-for": [
+            "203.0.113.7"
+          ]
+        },
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [],
+      "expectJava": {
+        "status": 429,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "RateLimit-Limit",
+            "1/MINUTES"
+          ],
+          [
+            "RateLimit-Remaining",
+            "0"
+          ],
+          [
+            "RateLimit-Reset",
+            "60s"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":429,\"code\":\"ERR10088\",\"message\":\"RATE_LIMIT_EXCEEDED\",\"description\":\"Rate limit exceeded.\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "expect": {
+        "status": 429,
+        "headers": [
+          [
+            "content-type",
+            "application/json"
+          ],
+          [
+            "ratelimit-limit",
+            "1/MINUTES"
+          ],
+          [
+            "ratelimit-remaining",
+            "0"
+          ],
+          [
+            "ratelimit-reset",
+            "60s"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":429,\"code\":\"ERR10088\",\"message\":\"RATE_LIMIT_EXCEEDED\",\"description\":\"Rate limit exceeded.\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi"
+    }
+  ],
+  "expectInit": {
+    "outcome": "initSuccess",
+    "backendCalls": [],
+    "jwksFetches": 0
+  },
+  "expectJavaInit": {
+    "outcome": "initSuccess",
+    "backendCalls": [],
+    "jwksFetches": 0
+  }
+}

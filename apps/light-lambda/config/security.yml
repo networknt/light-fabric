@@ -1,0 +1,30 @@
+enableVerifyJwt: ${security.enableVerifyJwt:true}
+enableVerifySwt: ${security.enableVerifySwt:false}
+swtClientIdHeader: ${security.swtClientIdHeader:swt-client-id}
+swtClientSecretHeader: ${security.swtClientSecretHeader:swt-client-secret}
+enableExtractScopeToken: ${security.enableExtractScopeToken:true}
+enableVerifyScope: ${security.enableVerifyScope:true}
+skipVerifyScopeWithoutSpec: ${security.skipVerifyScopeWithoutSpec:false}
+ignoreJwtExpiry: ${security.ignoreJwtExpiry:false}
+enableH2c: ${security.enableH2c:false}
+enableMockJwt: ${security.enableMockJwt:false}
+enableRelaxedKeyValidation: ${security.enableRelaxedKeyValidation:false}
+jwt:
+  #  '100': primary.crt
+  #  '101': secondary.crt
+  certificate: ${security.certificate:{}}
+  clockSkewInSeconds: ${security.clockSkewInSeconds:60}
+  # Key distribution server standard: JsonWebKeySet for other OAuth 2.0 provider| X509Certificate for light-oauth2
+  keyResolver: ${security.keyResolver:JsonWebKeySet}
+logJwtToken: ${security.logJwtToken:false}
+logClientUserScope: ${security.logClientUserScope:false}
+enableJwtCache: ${security.enableJwtCache:true}
+jwtCacheFullSize: ${security.jwtCacheFullSize:100}
+bootstrapFromKeyService: ${security.bootstrapFromKeyService:false}
+providerId: ${security.providerId:}
+passThroughClaims: ${security.passThroughClaims:{}}
+enabled: ${security.enabled:true}
+issuer: ${security.issuer:}
+audience: ${security.audience:[]}
+skipPathPrefixes: ${security.skipPathPrefixes:[]}
+jwksRefreshMinIntervalSecs: ${security.jwksRefreshMinIntervalSecs:30}

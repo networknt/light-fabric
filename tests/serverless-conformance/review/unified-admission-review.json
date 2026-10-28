@@ -1,0 +1,72 @@
+[
+  {
+    "fixture": "S-12-anonymous-prefix-warm-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-12-anonymous-prefix-cp1-e02-accepted.json",
+    "sourceSha256": "e3a711c1ed291f41c42646f5a792ab409236a5c71093ef1be54f0353d0266ae1",
+    "review": "UnifiedSecurityTest, UnifiedDisabledSelectionTest or UnifiedMissingAliasTest reviewed: anonymous/basic ordering, absent auth/prefix rejection and disabled/missing selected aliases. Required enabled API-key/basic factors lack an enabled matching handler: approved C-10 Rust Init rejection, not E-13 and not downstream Rust security coverage. Actual proxy explicitly enabled in new synthetic config where WP2 CapturingProxy forced enabled regardless of omitted config; no runner override. All recorded Java steps and exact outcomes retained.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-12-basic-before-apikey-warm-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-12-basic-before-apikey-cp1-e02-accepted.json",
+    "sourceSha256": "87083c0ea353a03a5a6c874c26081987fe44f2c3150c829b1cad78e3159a7291",
+    "review": "UnifiedSecurityTest, UnifiedDisabledSelectionTest or UnifiedMissingAliasTest reviewed: anonymous/basic ordering, absent auth/prefix rejection and disabled/missing selected aliases. Required enabled API-key/basic factors lack an enabled matching handler: approved C-10 Rust Init rejection, not E-13 and not downstream Rust security coverage. Actual proxy explicitly enabled in new synthetic config where WP2 CapturingProxy forced enabled regardless of omitted config; no runner override. All recorded Java steps and exact outcomes retained.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-12-denied-unknown-warm-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-12-denied-unknown-cp1-e02-accepted.json",
+    "sourceSha256": "945f80cdbbdfa7b1fa9b481e66a4f5ee2f716b43cd7918d77e03d09433d467b3",
+    "review": "UnifiedSecurityTest, UnifiedDisabledSelectionTest or UnifiedMissingAliasTest reviewed: anonymous/basic ordering, absent auth/prefix rejection and disabled/missing selected aliases. Required enabled API-key/basic factors lack an enabled matching handler: approved C-10 Rust Init rejection, not E-13 and not downstream Rust security coverage. Actual proxy explicitly enabled in new synthetic config where WP2 CapturingProxy forced enabled regardless of omitted config; no runner override. All recorded Java steps and exact outcomes retained.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-12-denied-x-warm-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-12-denied-x-cp1-e02-accepted.json",
+    "sourceSha256": "16e22c184fa42de96f867d3de655ba06381317328062e67b8d4194183521771b",
+    "review": "UnifiedSecurityTest, UnifiedDisabledSelectionTest or UnifiedMissingAliasTest reviewed: anonymous/basic ordering, absent auth/prefix rejection and disabled/missing selected aliases. Required enabled API-key/basic factors lack an enabled matching handler: approved C-10 Rust Init rejection, not E-13 and not downstream Rust security coverage. Actual proxy explicitly enabled in new synthetic config where WP2 CapturingProxy forced enabled regardless of omitted config; no runner override. All recorded Java steps and exact outcomes retained.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-12-disabled-selected-basic-warm-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-12-disabled-selected-basic-cp1-e02-accepted.json",
+    "sourceSha256": "4bc294053e3c4e40627040c3ee90f7b3148163e837f3a6e62ace62e29dae2e97",
+    "review": "UnifiedSecurityTest, UnifiedDisabledSelectionTest or UnifiedMissingAliasTest reviewed: anonymous/basic ordering, absent auth/prefix rejection and disabled/missing selected aliases. Required enabled API-key/basic factors lack an enabled matching handler: approved C-10 Rust Init rejection, not E-13 and not downstream Rust security coverage. Actual proxy explicitly enabled in new synthetic config where WP2 CapturingProxy forced enabled regardless of omitted config; no runner override. All recorded Java steps and exact outcomes retained.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-12-missing-basic-alias-warm-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-12-missing-basic-alias-cp1-e02-accepted.json",
+    "sourceSha256": "b379ab52820821b71ef55af709344fdbe4a3ce3a4e2b0ec8938daa2b38573c5f",
+    "review": "UnifiedSecurityTest, UnifiedDisabledSelectionTest or UnifiedMissingAliasTest reviewed: anonymous/basic ordering, absent auth/prefix rejection and disabled/missing selected aliases. Required enabled API-key/basic factors lack an enabled matching handler: approved C-10 Rust Init rejection, not E-13 and not downstream Rust security coverage. Actual proxy explicitly enabled in new synthetic config where WP2 CapturingProxy forced enabled regardless of omitted config; no runner override. All recorded Java steps and exact outcomes retained.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-12-alias-basic-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-12-alias-basic-cp1-e02-accepted.json",
+    "sourceSha256": "73546b97ce44ea56886a5990bd4cc4571e9cabff60d758fd13e4d31d66024064",
+    "review": "UnifiedAliasesTest configuration reconstructed from source, including wrong Basic handler type and missing jwt/swt/apikey aliases. Java fixed stub expectations authored from source default response and observed exact error body. Real proxy explicitly enabled instead of CapturingProxy force-enabled override. Rust rejects mismatched/missing enabled factor wiring at Init. Exact Java fail-open dispatch or ERR11200 preserved.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-12-alias-jwt-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-12-alias-jwt-cp1-e02-accepted.json",
+    "sourceSha256": "91bb306e2a0effa2bcbea4f919c02d04ec96654efb733c4a1ff7a76f5ccfc84c",
+    "review": "UnifiedAliasesTest configuration reconstructed from source, including wrong Basic handler type and missing jwt/swt/apikey aliases. Java fixed stub expectations authored from source default response and observed exact error body. Real proxy explicitly enabled instead of CapturingProxy force-enabled override. Rust rejects mismatched/missing enabled factor wiring at Init. Exact Java fail-open dispatch or ERR11200 preserved.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-12-alias-swt-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-12-alias-swt-cp1-e02-accepted.json",
+    "sourceSha256": "8a4661899312d97638edc8d22b24124c1a2ce7e6419293eec816b966fc6ee20a",
+    "review": "UnifiedAliasesTest configuration reconstructed from source, including wrong Basic handler type and missing jwt/swt/apikey aliases. Java fixed stub expectations authored from source default response and observed exact error body. Real proxy explicitly enabled instead of CapturingProxy force-enabled override. Rust rejects mismatched/missing enabled factor wiring at Init. Exact Java fail-open dispatch or ERR11200 preserved.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-12-alias-apikey-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-12-alias-apikey-cp1-e02-accepted.json",
+    "sourceSha256": "30d4a2d8e2de8606d3a7e5ebd9ec59997ae1612a5de5945330dd527207f92f8c",
+    "review": "UnifiedAliasesTest configuration reconstructed from source, including wrong Basic handler type and missing jwt/swt/apikey aliases. Java fixed stub expectations authored from source default response and observed exact error body. Real proxy explicitly enabled instead of CapturingProxy force-enabled override. Rust rejects mismatched/missing enabled factor wiring at Init. Exact Java fail-open dispatch or ERR11200 preserved.",
+    "rustExecutionEvidence": null
+  }
+]

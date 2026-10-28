@@ -1,0 +1,130 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "security": {
+        "enableVerifyJwt": true,
+        "enableVerifyScope": false,
+        "ignoreJwtExpiry": false,
+        "jwt": {
+          "clockSkewInSeconds": 0,
+          "keyResolver": "JsonWebKeySet",
+          "certificate": {}
+        },
+        "enableJwtCache": true,
+        "jwtCacheFullSize": 1000,
+        "bootstrapFromKeyService": false,
+        "logJwtToken": false,
+        "enableMockJwt": false,
+        "enableRelaxedKeyValidation": false,
+        "jwksRefreshMinIntervalSecs": 30
+      },
+      "client": {
+        "request": {
+          "connectTimeout": 1000,
+          "timeout": 1000,
+          "maxRequestRetry": 1
+        },
+        "tls": {
+          "loadKeyStore": false,
+          "loadTrustStore": false,
+          "verifyHostname": true
+        },
+        "oauth": {
+          "multipleAuthServers": false,
+          "token": {
+            "key": {
+              "server_url": "${dependency:jwks}",
+              "uri": "/jwks",
+              "enableHttp2": false,
+              "audience": "test-audience"
+            }
+          }
+        }
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Relative wall-clock cooldown30s. Abort owned fetch only after real request-start observation within1000ms; immediately repeat unknown-kid verification. No fixed token epoch or virtual gateway clock."
+  },
+  "keys": {
+    "k1": {
+      "alg": "RS256"
+    },
+    "k2": {
+      "alg": "RS256"
+    }
+  },
+  "tokens": {
+    "gate-parallel": {
+      "kid": "k2",
+      "claims": {
+        "sub": "test-user",
+        "iss": "test-issuer",
+        "aud": "test-audience",
+        "jti": "gate-parallel",
+        "client_id": "test-client",
+        "user_id": "test-user",
+        "scp": null
+      },
+      "issuedOffsetSec": -10,
+      "expOffsetSec": 600,
+      "nbfOffsetSec": 0
+    }
+  },
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": true,
+  "dependencies": {
+    "jwks": {
+      "publishedKeys": [
+        "k1"
+      ],
+      "delayMs": 500
+    }
+  },
+  "substitutions": [],
+  "id": "S-13a-cancelled-shared-fetch-component-v1",
+  "title": "Actual shared-gate fetch cancellation clears active and retains attempt cooldown",
+  "ledger": [
+    "S-13a"
+  ],
+  "component": "rustJwksGateCancellationS13a",
+  "jwksGateCancellationProbe": {
+    "mode": "abort-started-fetch-v1",
+    "serviceIds": [
+      "test-provider"
+    ],
+    "token": "gate-parallel",
+    "requestStartedWaitMs": 1000
+  },
+  "expect": {
+    "outcome": "jwksGateCancellation",
+    "prerequisiteReady": true,
+    "backendCalls": [],
+    "jwksFetches": 1,
+    "jwksCalls": [
+      {
+        "target": "jwks",
+        "method": "GET",
+        "uri": "/jwks"
+      }
+    ],
+    "gate": {
+      "fetchStarted": 1,
+      "fetchCancelled": 1,
+      "active": false,
+      "attemptRecordedBeforeIo": true,
+      "cooldownRecorded": true,
+      "followupUnknownKid": {
+        "outcome": "verificationRejected",
+        "code": "ERR10000",
+        "jwksFetches": 0
+      }
+    }
+  }
+}

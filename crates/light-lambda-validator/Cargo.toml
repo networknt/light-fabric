@@ -1,0 +1,16 @@
+[package]
+name = "light-lambda-validator"
+version = "0.2.1"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+jsonschema = { package = "light-lambda-precision-jsonschema", path = "vendor/jsonschema", version = "=0.48.0", default-features = false, features = ["arbitrary-precision"] }
+serde_json = { package = "light-lambda-precision-json", path = "vendor/json", version = "=1.0.149", features = ["arbitrary_precision", "preserve_order", "unbounded_depth"] }
+referencing = { package = "light-lambda-precision-referencing", path = "vendor/referencing", version = "=0.48.0" }
+fraction = "=0.15.4"
+unsafe-libyaml = "=0.2.11"
+serde_yaml = "=0.9.34"
+sha2 = "=0.10.9"
+num-bigint = "=0.4.6"
+serde = "=1.0.228"

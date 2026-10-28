@@ -1,0 +1,149 @@
+[
+  {
+    "fixture": "E-04-decoded-query-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "E-04",
+      "E-10"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-04",
+      "E-10"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Plan 5.2/5.3 and approved E-04: raw keys/values retained by Runtime mapper in Java; Rust decodes once, preserves literal plus, Unicode and exact repeated value order. Both dispatch FnX once. Independently authored valid shared multimap config; no listener/plugin or JKS prerequisite.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T014953.224512Z"
+  },
+  {
+    "fixture": "E-05-slash-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "E-05",
+      "D-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-05",
+      "E-10"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Plan 5.2 and approved E-05: literal route exists only for once-decoded path. Java retains encoded raw path and misses with exact ERR10086/zero calls; Rust decodes once, routes decoded slash/UTF-8 or preserved percent escape to FnX once. No template map mutation or per-runner input adaptation. Source-reviewed correction: empty raw query maps/no path parameters require exact null query. Original stale a=2 assertion, contradiction failure and historical Java pass retained separately; current fixture qualified with fresh digest.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T014953.224512Z",
+    "javaRun": "20261011T150940.317142Z"
+  },
+  {
+    "fixture": "E-05-once-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "E-05",
+      "D-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-05",
+      "E-10"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Plan 5.2 and approved E-05: literal route exists only for once-decoded path. Java retains encoded raw path and misses with exact ERR10086/zero calls; Rust decodes once, routes decoded slash/UTF-8 or preserved percent escape to FnX once. No template map mutation or per-runner input adaptation. Source-reviewed correction: empty raw query maps/no path parameters require exact null query. Original stale a=2 assertion, contradiction failure and historical Java pass retained separately; current fixture qualified with fresh digest.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T014953.224512Z",
+    "javaRun": "20261011T150940.317142Z"
+  },
+  {
+    "fixture": "E-05-utf8-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "E-05",
+      "D-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-05",
+      "E-10"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Plan 5.2 and approved E-05: literal route exists only for once-decoded path. Java retains encoded raw path and misses with exact ERR10086/zero calls; Rust decodes once, routes decoded slash/UTF-8 or preserved percent escape to FnX once. No template map mutation or per-runner input adaptation. Source-reviewed correction: empty raw query maps/no path parameters require exact null query. Original stale a=2 assertion, contradiction failure and historical Java pass retained separately; current fixture qualified with fresh digest.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T014953.224512Z",
+    "javaRun": "20261011T150940.317142Z"
+  },
+  {
+    "fixture": "E-05-bad-percent-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "E-05",
+      "D-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-05"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Plan 5.2 and Appendix C: invalid percent syntax/UTF-8 reject ERR14012 with zero calls after valid multimap ingress and configuration. Java raw route miss remains ERR10086. Exact distinct bodies, header names and counts asserted.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T014953.224512Z"
+  },
+  {
+    "fixture": "E-05-bad-utf8-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "E-05",
+      "D-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-05"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Plan 5.2 and Appendix C: invalid percent syntax/UTF-8 reject ERR14012 with zero calls after valid multimap ingress and configuration. Java raw route miss remains ERR10086. Exact distinct bodies, header names and counts asserted.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T014953.224512Z"
+  },
+  {
+    "fixture": "E-09-stage-missing-init-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "E-09"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-09"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Approved E-09/plan 5.3: missing or empty stage is a Rust Init error. All other configuration prerequisites remain supported; Java does not synthesize stage and dispatches FnX. Java eventExact retains empty requestContext and explicit stage absence. No Rust HTTP response is fabricated from Init failure.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T014953.224512Z"
+  },
+  {
+    "fixture": "E-09-stage-empty-init-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "E-09"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-09"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Approved E-09/plan 5.3: missing or empty stage is a Rust Init error. All other configuration prerequisites remain supported; Java does not synthesize stage and dispatches FnX. Java eventExact retains empty requestContext and explicit stage absence. No Rust HTTP response is fabricated from Init failure.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T014953.224512Z"
+  },
+  {
+    "fixture": "D-03-handled-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "D-03",
+      "E-10"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Plan 5.4/Appendix C: both invoke FnX exactly once on supported shared ingress/config. Java ignores Handled/Unhandled and returns proxy-shaped synthetic error body; Rust returns exact safe 502 ERR14014 without payload/errorMessage/stackTrace. Backend event differences remain approved E-10. This fixture asserts response suppression; the no-payload-logging requirement still needs a diagnostics representation and is not claimed from this response alone. Source-reviewed correction: empty raw query maps/no path parameters require exact null query. Original stale a=2 assertion, contradiction failure and historical Java pass retained separately; current fixture qualified with fresh digest.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T014953.224512Z",
+    "javaRun": "20261011T150940.317142Z"
+  },
+  {
+    "fixture": "D-03-unhandled-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "D-03",
+      "E-10"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Plan 5.4/Appendix C: both invoke FnX exactly once on supported shared ingress/config. Java ignores Handled/Unhandled and returns proxy-shaped synthetic error body; Rust returns exact safe 502 ERR14014 without payload/errorMessage/stackTrace. Backend event differences remain approved E-10. This fixture asserts response suppression; the no-payload-logging requirement still needs a diagnostics representation and is not claimed from this response alone. Source-reviewed correction: empty raw query maps/no path parameters require exact null query. Original stale a=2 assertion, contradiction failure and historical Java pass retained separately; current fixture qualified with fresh digest.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T014953.224512Z",
+    "javaRun": "20261011T150940.317142Z"
+  }
+]

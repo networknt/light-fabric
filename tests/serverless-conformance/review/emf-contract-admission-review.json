@@ -1,0 +1,19 @@
+[
+  {
+    "fixture": "M-01-per-request-emf-multi-contract-v1",
+    "source": "Approved M-01 EMF contract amendment and alias metrics mapping; no explicit APM/Influx sink selector",
+    "javaBehaviorAsserted": [
+      "D-04",
+      "E-10"
+    ],
+    "proposedRustBehaviorReached": [
+      "M-01"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Minimal enabled metrics alias has no deferred network sink settings. Shared input explicitly declares functionName and route. Authored Rust EMF recipe asserts one exact closed record, success/error counts, timing constraints and measured invocation bounds. Java success and no calls to fake HTTP dependency preserved; no Java EMF emission is claimed. Java M-01 timed-reporter coverage stays with the original APM observations; this new fixture does not claim to observe a scheduled report. Explicit paths are empty to prevent policy bypass.",
+    "remainingContractAssertions": [
+      "Gateway-error EMF record and exactly-once completion across error/timeout outcomes still need admission."
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T034300.261413Z"
+  }
+]

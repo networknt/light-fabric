@@ -1,0 +1,89 @@
+[
+  {
+    "fixture": "S-06-secondary-scope-list-multi-contract-v1",
+    "javaRun": "20261011T135944.652529Z",
+    "javaBehaviorAsserted": [
+      "S-06"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-06"
+    ],
+    "review": "Native scope list and verified dual-token authorization; exact successful response/one dispatch; actual JWKS readiness and no additional fetch.",
+    "rustExecutionEvidence": null,
+    "source": "Approved contract and native source review; paired/skip actual Java workflow",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T135944.652529Z"
+  },
+  {
+    "fixture": "S-06-secondary-scope-string-multi-contract-v1",
+    "javaRun": "20261011T135944.652529Z",
+    "javaBehaviorAsserted": [
+      "S-06"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-06"
+    ],
+    "review": "Native scope string and verified dual-token authorization; exact successful response/one dispatch.",
+    "rustExecutionEvidence": null,
+    "source": "Approved contract and native source review; paired/skip actual Java workflow",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T135944.652529Z"
+  },
+  {
+    "fixture": "S-06-secondary-scp-string-multi-contract-v1",
+    "javaRun": "20261011T135944.652529Z",
+    "javaBehaviorAsserted": [
+      "S-06"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-06"
+    ],
+    "review": "Fallback scp string and verified dual-token authorization; exact successful response/one dispatch.",
+    "rustExecutionEvidence": null,
+    "source": "Approved contract and native source review; paired/skip actual Java workflow",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T135944.652529Z"
+  },
+  {
+    "fixture": "S-06-secondary-forged-read-claims-multi-contract-v1",
+    "javaRun": "20261011T135944.652529Z",
+    "javaBehaviorAsserted": [
+      "S-06",
+      "S-13"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-06",
+      "S-13"
+    ],
+    "review": "Secondary declares required read scope but signature uses different generated key under known kid. Java rejects with no dispatch and no refresh; authored Rust InvalidSignature refreshes exactly once with interval0, still rejects with no dispatch. Never trusts unverified read claims.",
+    "rustExecutionEvidence": null,
+    "source": "Approved contract and native source review; paired/skip actual Java workflow",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T135944.652529Z"
+  },
+  {
+    "fixture": "S-13-normalized-service-set-cooldown-multi-contract-v1",
+    "javaRun": "20261011T140623.724981Z",
+    "javaBehaviorAsserted": [
+      "S-13",
+      "S-13a"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-13",
+      "S-13a"
+    ],
+    "review": "Unified prefixes declare [b,a] then [a,b,a] for same logical providers. Java exact2 then3 actual requests; Rust normalized sorted deduplicated [a,b] attempts2 then0 within cooldown. Both exact401 and zero dispatch. Missing /other route initial failure retained; corrected synthetic dependency route explicitly published samek1. S04 prerequisite contextual, no additional audience/routing credit.",
+    "rustExecutionEvidence": null,
+    "source": "Approved contract and native source review; paired/skip actual Java workflow",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T140623.724981Z"
+  },
+  {
+    "fixture": "S-13a-cancelled-shared-fetch-component-v1",
+    "javaRun": "20261011T140717.196272Z",
+    "javaBehaviorAsserted": [],
+    "proposedRustBehaviorReached": [
+      "S-13a"
+    ],
+    "review": "Owner-approved Rust-only component contract: actual owned-fetch abort after observed request start, cleared active state, retained pre-I/O attempt/cooldown, immediate unknown-kid verification denied without refresh. Java valid skip with no Init; no asynchronous gate counterpart. No Rust execution evidence.",
+    "rustExecutionEvidence": null,
+    "source": "Approved contract and native source review; paired/skip actual Java workflow",
+    "kind": "rustOnly",
+    "validation": "Java skipped (rustOnly, no gateway Init); result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T140717.196272Z"
+  }
+]

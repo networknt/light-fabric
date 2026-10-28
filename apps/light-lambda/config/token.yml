@@ -1,0 +1,3 @@
+# Client-credentials only; destinations and credentials come from client.yml.
+enabled: ${token.enabled:false}
+appliedPathPrefixes: ${token.appliedPathPrefixes:[]}

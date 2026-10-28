@@ -1,0 +1,80 @@
+[
+  {
+    "fixture": "C-03-warm-jwt-principal-not-reused-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "C-03",
+      "S-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-03",
+      "S-01"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "First valid signature authenticates and dispatches; next present-empty single header map with valid multimap empty yields exact ERR10002 denial and zero dispatch in both contracts. Shared initialized gateway, bootstrap1/per-step JWKS0; no warmed identity can authorize the next request. Java empty-map branch differs from absent-map bypass; initial incorrect prediction and malformed substitution are retained.",
+    "javaRun": "20261011T110302.861747Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T110302.861747Z"
+  },
+  {
+    "fixture": "S-08-basic-failures-warm-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "S-08"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-08"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Entire seven-step reviewed Basic failure sequence retained in one warm gateway, with valid matching single/multimaps. Exact statuses/error bytes/challenge values, zero business calls and E06a response-name casing asserted.",
+    "javaRun": "20261011T110336.012536Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T110336.012536Z"
+  },
+  {
+    "fixture": "D-09-base64-expansion-below-limit-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "D-09",
+      "C-06"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-09",
+      "C-06"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "786000 ASCII body bytes encode to1048000 base64 bytes; fixed empty-header ALB envelope remains below1048576. Java force-base64 output exact bytes/flag; authored Rust same output with reviewed separate forwarding envelope.",
+    "javaRun": "20261011T110500.901946Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T110500.901946Z"
+  },
+  {
+    "fixture": "D-09-base64-expansion-over-limit-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "D-09",
+      "C-06"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-09",
+      "C-06"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "800000 ASCII body bytes are below the cap but encode to1066668 base64 bytes, exceeding1048576 before envelope overhead. Exact Java encoded output retained; authored Rust replaces with approved size error. One dispatch each. No response-policy rerun count claimed.",
+    "javaRun": "20261011T110500.901946Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T110500.901946Z"
+  },
+  {
+    "fixture": "S-14-test-override-does-not-relax-max-skew-init-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "S-14",
+      "CFG-05"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-14",
+      "CFG-05"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Token-free standard proxy configuration isolates global admission: explicit allow-v1 test process flag plus ignoreJwtExpiry does not waive maximum clockSkewInSeconds60. Java has no selected JWT verifier, returns exact200; Rust rejects61 at Init and asserts closed runtime error reporting. No verification/cache/refresh credit. Unnecessary JWKS readiness draft/trace failures retained; zero fetch count remains asserted.",
+    "javaRun": "20261011T110827.400940Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T110827.400940Z"
+  }
+]

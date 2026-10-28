@@ -242,35 +242,51 @@ impl OAuthClient {
     async fn send_with_retries<F>(
         &self,
         endpoint: OAuthEndpoint,
-        mut build_request: F,
+        build_request: F,
     ) -> Result<reqwest::Response, OAuthClientError>
     where
         F: FnMut() -> reqwest::RequestBuilder,
     {
-        let mut retries = 0;
-        loop {
-            match build_request().send().await {
-                Ok(response)
-                    if response.status().is_server_error()
-                        && retries < self.request.max_request_retry =>
-                {
-                    retries += 1;
-                    self.retry_delay().await;
-                }
-                Ok(response) => return Ok(response),
-                Err(source) if retries < self.request.max_request_retry => {
-                    retries += 1;
-                    self.retry_delay().await;
-                    drop(source);
-                }
-                Err(source) => return Err(OAuthClientError::Request { endpoint, source }),
-            }
-        }
+        send_request_with_retries(self.request.max_request_retry, build_request, || {
+            self.retry_delay()
+        })
+        .await
+        .map_err(|source| OAuthClientError::Request { endpoint, source })
     }
 
     async fn retry_delay(&self) {
         if self.request.request_retry_delay > 0 {
             tokio::time::sleep(Duration::from_millis(self.request.request_retry_delay)).await;
+        }
+    }
+}
+
+/// Shared HTTP retry mechanics. Callers own request construction, deadlines and
+/// response policy; this helper activates no OAuth flow and stores no credentials.
+pub async fn send_request_with_retries<F, D, DF>(
+    max_retries: u32,
+    mut build_request: F,
+    mut retry_delay: D,
+) -> Result<reqwest::Response, reqwest::Error>
+where
+    F: FnMut() -> reqwest::RequestBuilder,
+    D: FnMut() -> DF,
+    DF: std::future::Future<Output = ()>,
+{
+    let mut retries = 0;
+    loop {
+        match build_request().send().await {
+            Ok(response) if response.status().is_server_error() && retries < max_retries => {
+                retries += 1;
+                retry_delay().await;
+            }
+            Ok(response) => return Ok(response),
+            Err(source) if retries < max_retries => {
+                retries += 1;
+                retry_delay().await;
+                drop(source);
+            }
+            Err(source) => return Err(source),
         }
     }
 }

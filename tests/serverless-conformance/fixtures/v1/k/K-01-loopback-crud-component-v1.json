@@ -1,0 +1,145 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {},
+  "tokens": {},
+  "nondeterministic": [],
+  "javaOnly": true,
+  "rustOnly": false,
+  "substitutions": [],
+  "id": "K-01-loopback-crud-component-v1",
+  "title": "Original Dynamo SDK constructor and exact synthetic crud component",
+  "ledger": [
+    "K-01"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only",
+      "light-lambda.accountId": "000000000000",
+      "light-lambda.apiId": "test-only",
+      "light-lambda.domainName": "test.example",
+      "light-lambda.resourceId": "test-only"
+    },
+    "files": {
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy"
+        ],
+        "chains": {
+          "request": [],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      },
+      "service": {
+        "singletons": [
+          {
+            "com.networknt.cache.CacheManager": [
+              "com.networknt.aws.lambda.cache.DynamoDbCacheManager"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "initOnly": true,
+  "expect": {
+    "outcome": "initSuccess",
+    "backendCalls": [],
+    "jwksFetches": 0,
+    "dynamoObservation": {
+      "operations": [
+        {
+          "operation": "ListTables",
+          "request": {
+            "Limit": 100
+          }
+        },
+        {
+          "operation": "UpdateItem",
+          "request": {
+            "TableName": "test-table",
+            "Key": {
+              "Id": {
+                "S": "test-app"
+              }
+            },
+            "AttributeUpdates": {
+              "test-key": {
+                "Value": {
+                  "S": "test-value"
+                },
+                "Action": "PUT"
+              }
+            }
+          }
+        },
+        {
+          "operation": "GetItem",
+          "request": {
+            "TableName": "test-table",
+            "Key": {
+              "Id": {
+                "S": "test-app"
+              }
+            }
+          }
+        },
+        {
+          "operation": "UpdateItem",
+          "request": {
+            "TableName": "test-table",
+            "Key": {
+              "Id": {
+                "S": "test-app"
+              }
+            },
+            "AttributeUpdates": {
+              "test-key": {
+                "Action": "DELETE"
+              }
+            }
+          }
+        },
+        {
+          "operation": "DeleteItem",
+          "request": {
+            "TableName": "test-table",
+            "Key": {
+              "Id": {
+                "S": "test-app"
+              }
+            }
+          }
+        }
+      ],
+      "getSize": 0
+    }
+  },
+  "dynamoProbe": "crud"
+}

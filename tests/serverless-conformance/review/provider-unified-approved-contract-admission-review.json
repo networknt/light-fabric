@@ -1,0 +1,86 @@
+[
+  {
+    "fixture": "S-04-provider-explicit-multi-contract-v1",
+    "javaRun": "20261011T130738.042225Z",
+    "javaBehaviorAsserted": [
+      "S-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-04"
+    ],
+    "review": "Explicit provider/path selection reaches supported policy after two actual Init JWKS GETs. Exact token audience/signature outcomes and zero per-request refreshes asserted. Does not assert normalization, refresh filtering or cancellation.",
+    "source": "Reviewed approved contract and preserved focused Java evidence",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T130738.042225Z"
+  },
+  {
+    "fixture": "S-04-provider-path-0-multi-contract-v1",
+    "javaRun": "20261011T130738.042225Z",
+    "javaBehaviorAsserted": [
+      "S-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-04"
+    ],
+    "review": "Explicit provider/path selection reaches supported policy after two actual Init JWKS GETs. Exact token audience/signature outcomes and zero per-request refreshes asserted. Does not assert normalization, refresh filtering or cancellation.",
+    "source": "Reviewed approved contract and preserved focused Java evidence",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T130738.042225Z"
+  },
+  {
+    "fixture": "S-04-provider-path-1-multi-contract-v1",
+    "javaRun": "20261011T130738.042225Z",
+    "javaBehaviorAsserted": [
+      "S-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-04"
+    ],
+    "review": "Explicit provider/path selection reaches supported policy after two actual Init JWKS GETs. Exact token audience/signature outcomes and zero per-request refreshes asserted. Does not assert normalization, refresh filtering or cancellation.",
+    "source": "Reviewed approved contract and preserved focused Java evidence",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T130738.042225Z"
+  },
+  {
+    "fixture": "S-04-provider-path-2-multi-contract-v1",
+    "javaRun": "20261011T130738.042225Z",
+    "javaBehaviorAsserted": [
+      "S-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-04"
+    ],
+    "review": "Explicit provider/path selection reaches supported policy after two actual Init JWKS GETs. Exact token audience/signature outcomes and zero per-request refreshes asserted. Does not assert normalization, refresh filtering or cancellation.",
+    "source": "Reviewed approved contract and preserved focused Java evidence",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T130738.042225Z"
+  },
+  {
+    "fixture": "S-12-jwt-apikey-authorization-precedence-warm-multi-contract-v1",
+    "javaRun": "20261011T130125.928954Z",
+    "javaBehaviorAsserted": [
+      "S-12"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-12"
+    ],
+    "review": "JWT/API-key configured prefix selects Authorization branch first: valid JWT without API key dispatches; warm missing Authorization denies without API-key fallback. No all-factor semantics invented.",
+    "source": "Reviewed approved contract and preserved focused Java evidence",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T130125.928954Z"
+  },
+  {
+    "fixture": "S-12a-basic-on-jwt-prefix-multi-contract-v1",
+    "javaRun": "20261011T131159.845148Z",
+    "javaBehaviorAsserted": [
+      "S-12a"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-12a"
+    ],
+    "review": "Owner-approved S-12a shared Basic credentials on JWT-only prefix: unchanged Java scheme selection dispatches once; authored Rust rule restriction rejects exact INVALID_AUTH_TOKEN 401, zero dispatch/refresh. Diagnostic retained separately.",
+    "source": "Reviewed approved contract and preserved focused Java evidence",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T131159.845148Z"
+  }
+]

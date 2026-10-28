@@ -1,0 +1,32 @@
+[
+  {
+    "fixture": "S-04a-wrong-issuer-multi-contract-v1",
+    "javaRun": "20261011T150220.843768Z",
+    "javaBehaviorAsserted": [
+      "S-04a"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-04a",
+      "S-13"
+    ],
+    "review": "Shared explicit trusted issuer with wrong signed iss; Java ignores issuer field and preserves exact200 one dispatch. Rust authored 401 ERR10000 with zero dispatch and zero JWKS refresh on issuer mismatch. Actual Init prerequisite readiness and bootstrap JWKS requests remain asserted separately. No transformations or Rust execution.",
+    "source": "Owner approved S04a; actual Java diagnostic and reused Rust SecurityConfig issuer source",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150220.843768Z"
+  },
+  {
+    "fixture": "S-04a-matching-issuer-multi-contract-v1",
+    "javaRun": "20261011T150220.843768Z",
+    "javaBehaviorAsserted": [
+      "S-04a"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-04a",
+      "S-04"
+    ],
+    "review": "Shared explicit trusted issuer with matching signed iss; Java ignores issuer field and preserves exact200 one dispatch. Rust authored matching issuer permits200 one dispatch without refresh. Actual Init prerequisite readiness and bootstrap JWKS requests remain asserted separately. No transformations or Rust execution.",
+    "source": "Owner approved S04a; actual Java diagnostic and reused Rust SecurityConfig issuer source",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150220.843768Z"
+  }
+]

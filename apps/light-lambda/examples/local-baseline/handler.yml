@@ -1,0 +1,4 @@
+enabled: true
+handlers:
+  - com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy
+defaultHandlers: [proxy]

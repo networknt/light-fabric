@@ -1,0 +1,34 @@
+[
+  {
+    "fixture": "M-03-enabled-influx-deferred-init-contract-v1",
+    "source": null,
+    "javaRun": "20261011T162012.248012Z",
+    "javaBehaviorAsserted": [
+      "M-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "M-03",
+      "C-10"
+    ],
+    "rustExecutionEvidence": [],
+    "review": "Explicit enabled/selected deferred production configuration. Actual Java response or manager operations retained; Rust authored Init rejection, zero backend/JWKS. No downstream functionality credit.",
+    "remainingContractAssertions": [],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T162012.248012Z"
+  },
+  {
+    "fixture": "K-01-selected-dynamo-deferred-init-contract-v1",
+    "source": null,
+    "javaRun": "20261011T162012.248012Z",
+    "javaBehaviorAsserted": [
+      "K-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "K-01",
+      "CFG-04"
+    ],
+    "rustExecutionEvidence": [],
+    "review": "Explicit enabled/selected deferred production configuration. Actual Java response or manager operations retained; Rust authored Init rejection, zero backend/JWKS. No downstream functionality credit.",
+    "remainingContractAssertions": [],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T162012.248012Z"
+  }
+]

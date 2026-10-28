@@ -1,0 +1,21 @@
+[
+  {
+    "fixture": "CFG-05-missing-stage-init-report-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "CFG-05",
+      "E-09"
+    ],
+    "proposedRustBehaviorReached": [
+      "CFG-05",
+      "E-09"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Missing required stage reaches Rust Init validation; closed endpoint/reportCount/exitCode assertions represent runtime reporting contract. Java actual response unchanged. Rust expectation authored and unexecuted.",
+    "remainingContractAssertions": [
+      "CFG-05: other invalid required config clauses need all-row qualification review"
+    ],
+    "javaRun": "20261011T105111.968687Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T105111.968687Z"
+  }
+]

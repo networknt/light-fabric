@@ -1,0 +1,58 @@
+{
+  "contractVersion": "wp9-runtime-api/v1",
+  "clause": "L1-08",
+  "sdk": "lambda_runtime=1.4.0",
+  "approval": "Owner-approved narrow WP9/L1-08 amendment; see WP9 approval history",
+  "evidenceBoundary": "Framework component contract; full built-app L1 remains WP10; no WP13 runner execution",
+  "event": {
+    "httpMethod": "GET",
+    "path": "/x",
+    "requestContext": { "elb": { "targetGroupArn": "test-only-alb" } },
+    "multiValueHeaders": { "authorization": ["test-only-runtime-secret-marker"] },
+    "body": "test-only-runtime-secret-marker"
+  },
+  "invocations": [
+    {
+      "requestId": "test-request",
+      "invocationId": "test-only-invocation-1",
+      "responsePostStatus": 500,
+      "expectedGatewayStatus": 200,
+      "expectedBusinessDispatches": 1,
+      "expectedResponsePosts": 1
+    },
+    {
+      "requestId": "test-request-2",
+      "invocationId": "test-only-invocation-2",
+      "responsePostStatus": 202,
+      "expectedGatewayStatus": 200,
+      "expectedBusinessDispatches": 1,
+      "expectedResponsePosts": 1
+    }
+  ],
+  "expected": {
+    "requests": [
+      "GET /2018-06-01/runtime/invocation/next HTTP/1.1",
+      "POST /2018-06-01/runtime/invocation/test-request/response HTTP/1.1",
+      "GET /2018-06-01/runtime/invocation/next HTTP/1.1",
+      "POST /2018-06-01/runtime/invocation/test-request-2/response HTTP/1.1",
+      "GET /2018-06-01/runtime/invocation/next HTTP/1.1"
+    ],
+    "acceptedConnections": 5,
+    "receivedRequests": 5,
+    "invocationErrorPosts": 0,
+    "frameworkPostRetries": 0,
+    "firstInvocationRedispatches": 0,
+    "sdkNonSuccessLog": {
+      "target": "lambda_runtime::layers::api_client",
+      "level": "ERROR",
+      "fieldRedaction": "<redacted dependency diagnostic>"
+    },
+    "callerDeliveryAcknowledged": false,
+    "endToEndExactlyOnceGuaranteed": false
+  },
+  "shutdown": {
+    "terminalPollStatus": 500,
+    "description": "After two invocations, a separate terminal fake polling error ends the SDK probe; it is not attributed to the first response POST."
+  },
+  "transportFailures": "Connection refusal/loss are distinct from a received HTTP500 and propagate runtime errors under the separately verified cases."
+}

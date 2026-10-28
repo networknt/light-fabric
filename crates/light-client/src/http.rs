@@ -7,6 +7,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(test)]
+mod lambda_redirect_tests;
+
 #[derive(Debug, Clone, Default)]
 pub struct EndpointOptions {
     pub server_url: Option<String>,
@@ -59,6 +62,15 @@ impl ClientFactory {
         options: EndpointOptions,
     ) -> Result<reqwest::Client, ClientBuildError> {
         build_reqwest_client_with_dns_policy(&self.request, &self.tls, options, true)
+    }
+
+    /// Lambda token providers must never forward credentials through redirects.
+    /// All other construction settings are identical to the ordinary client.
+    pub fn reqwest_client_lambda_token_no_redirect(
+        &self,
+        options: EndpointOptions,
+    ) -> Result<reqwest::Client, ClientBuildError> {
+        build_reqwest_client_with_policies(&self.request, &self.tls, options, false, true)
     }
 }
 
@@ -285,6 +297,16 @@ fn build_reqwest_client_with_dns_policy(
     options: EndpointOptions,
     public_dns_only: bool,
 ) -> Result<reqwest::Client, ClientBuildError> {
+    build_reqwest_client_with_policies(request, tls, options, public_dns_only, false)
+}
+
+fn build_reqwest_client_with_policies(
+    request: &ClientRequestConfig,
+    tls: &ClientTlsConfig,
+    options: EndpointOptions,
+    public_dns_only: bool,
+    no_redirect: bool,
+) -> Result<reqwest::Client, ClientBuildError> {
     if public_dns_only
         && options
             .proxy_host
@@ -308,6 +330,10 @@ fn build_reqwest_client_with_dns_policy(
 
     if public_dns_only {
         builder = builder.dns_resolver(Arc::new(PublicDnsResolver));
+    }
+
+    if no_redirect {
+        builder = builder.redirect(reqwest::redirect::Policy::none());
     }
 
     if request.connection_expire_time == 0 {

@@ -1,0 +1,4 @@
+# Unavailable in Phase 1; enabling this policy fails Init.
+enabled: ${cache.enabled:false}
+# Named token-cache bounds; cache explorer operations remain deferred.
+caches: ${cache.caches:[]}

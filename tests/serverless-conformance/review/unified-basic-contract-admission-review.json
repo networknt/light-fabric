@@ -1,0 +1,19 @@
+[
+  {
+    "fixture": "S-12-basic-anonymous-prefix-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "S-12"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-12"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared valid multimap and supported Basic-only unified configuration. Anonymous prefix and valid Basic selection reach proposed Rust policy; no API-key/JWT/denial or combined-factor precedence claim.",
+    "remainingContractAssertions": [
+      "S-12: JWT/API-key selection, denied path, missing/disabled selected handler and combined precedence remain open"
+    ],
+    "javaRun": "20261011T051158.370038Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T051158.370038Z"
+  }
+]

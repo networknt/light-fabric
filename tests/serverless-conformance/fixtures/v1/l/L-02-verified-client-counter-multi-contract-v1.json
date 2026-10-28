@@ -1,0 +1,414 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "L-02-verified-client-counter-multi-contract-v1",
+  "title": "Verified client built-in resolver direct-key warm counter",
+  "ledger": [
+    "C-03",
+    "S-01",
+    "S-13",
+    "E-10",
+    "E-02",
+    "E-06a",
+    "S-12",
+    "S-04",
+    "L-01",
+    "L-02",
+    "C-08"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "security": {
+        "enableVerifyJwt": true,
+        "enableVerifyScope": false,
+        "ignoreJwtExpiry": false,
+        "jwt": {
+          "clockSkewInSeconds": 0,
+          "keyResolver": "JsonWebKeySet",
+          "certificate": {}
+        },
+        "enableJwtCache": true,
+        "jwtCacheFullSize": 1000,
+        "bootstrapFromKeyService": true,
+        "logJwtToken": false,
+        "enableMockJwt": false,
+        "enableRelaxedKeyValidation": false
+      },
+      "client": {
+        "request": {
+          "connectTimeout": 1000,
+          "timeout": 1000,
+          "maxRequestRetry": 1
+        },
+        "tls": {
+          "loadKeyStore": false,
+          "loadTrustStore": false,
+          "verifyHostname": true
+        },
+        "oauth": {
+          "multipleAuthServers": false,
+          "token": {
+            "key": {
+              "server_url": "${dependency:jwks}",
+              "uri": "/jwks",
+              "enableHttp2": false,
+              "audience": "test-audience"
+            }
+          }
+        }
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.security.JwtVerifyMiddleware@jwt",
+          "com.networknt.aws.lambda.handler.middleware.security.UnifiedSecurityMiddleware@security",
+          "com.networknt.aws.lambda.handler.middleware.limit.LimitMiddleware@limit"
+        ],
+        "chains": {
+          "request": [
+            "security",
+            "limit"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      },
+      "unified-security": {
+        "enabled": true,
+        "anonymousPrefixes": [],
+        "pathPrefixAuths": [
+          {
+            "prefix": "/x",
+            "jwt": true
+          }
+        ]
+      },
+      "limit": {
+        "enabled": true,
+        "key": "client",
+        "errorCode": 0,
+        "rateLimit": "1/m",
+        "clientIdKeyResolver": "com.networknt.aws.lambda.handler.middleware.limit.key.JwtClientIdKeyResolver",
+        "client": {
+          "test-client": "1/m"
+        }
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Relative wall signing; no virtual verifier clock. nbfOffsetSec=0 omits nbf. Warm expiry token is signed after Init for step0; step1 waits3100ms against its2s expiry. Exact outcomes/fetches are asserted."
+  },
+  "keys": {
+    "k1": {
+      "alg": "RS256"
+    }
+  },
+  "tokens": {
+    "future-nbf": {
+      "kid": "k1",
+      "claims": {
+        "sub": "test-user",
+        "iss": "test-issuer",
+        "aud": "test-audience",
+        "jti": "future-nbf",
+        "client_id": "test-client",
+        "user_id": "test-user"
+      },
+      "issuedOffsetSec": -10,
+      "expOffsetSec": 7200,
+      "nbfOffsetSec": 0
+    }
+  },
+  "dependencies": {
+    "jwks": {
+      "publishedKeys": [
+        "k1"
+      ]
+    }
+  },
+  "substitutions": [
+    {
+      "pointer": "/steps/0/rawEvent/headers/AUTHORIZATION",
+      "recipe": "token:future-nbf"
+    },
+    {
+      "pointer": "/steps/0/rawEvent/multiValueHeaders/authorization/0",
+      "recipe": "token:future-nbf"
+    },
+    {
+      "pointer": "/steps/1/rawEvent/headers/AUTHORIZATION",
+      "recipe": "token:future-nbf"
+    },
+    {
+      "pointer": "/steps/1/rawEvent/multiValueHeaders/authorization/0",
+      "recipe": "token:future-nbf"
+    }
+  ],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "backendCalls",
+    "body",
+    "header:content-type",
+    "header:ratelimit-limit",
+    "header:ratelimit-remaining",
+    "header:ratelimit-reset",
+    "header:x-backend",
+    "status"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {
+          "AUTHORIZATION": "Bearer ${token:future-nbf}"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {
+          "authorization": [
+            "Bearer ${token:future-nbf}"
+          ]
+        },
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "headers": {
+                "AUTHORIZATION": "Bearer ${token:future-nbf}"
+              },
+              "queryStringParameters": {},
+              "requestContext": {},
+              "isBase64Encoded": false,
+              "multiValueHeaders": {
+                "authorization": [
+                  "Bearer ${token:future-nbf}"
+                ]
+              },
+              "multiValueQueryStringParameters": {}
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response",
+        "jwksCalls": []
+      },
+      "headerMode": "multi",
+      "expect": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "isBase64Encoded": false,
+              "requestContext": {
+                "stage": "test-only"
+              },
+              "body": null
+            },
+            "eventExact": {
+              "headers": {
+                "authorization": "Bearer ${token:future-nbf}"
+              },
+              "multiValueHeaders": {
+                "authorization": [
+                  "Bearer ${token:future-nbf}"
+                ]
+              },
+              "queryStringParameters": null,
+              "multiValueQueryStringParameters": null,
+              "pathParameters": null
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response",
+        "jwksCalls": []
+      }
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {
+          "AUTHORIZATION": "Bearer ${token:future-nbf}"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {
+          "authorization": [
+            "Bearer ${token:future-nbf}"
+          ]
+        },
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [],
+      "expectJava": {
+        "status": 429,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "RateLimit-Limit",
+            "1/MINUTES"
+          ],
+          [
+            "RateLimit-Remaining",
+            "0"
+          ],
+          [
+            "RateLimit-Reset",
+            "60s"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":429,\"code\":\"ERR10088\",\"message\":\"RATE_LIMIT_EXCEEDED\",\"description\":\"Rate limit exceeded.\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response",
+        "jwksCalls": []
+      },
+      "headerMode": "multi",
+      "expect": {
+        "status": 429,
+        "headers": [
+          [
+            "content-type",
+            "application/json"
+          ],
+          [
+            "ratelimit-limit",
+            "1/MINUTES"
+          ],
+          [
+            "ratelimit-remaining",
+            "0"
+          ],
+          [
+            "ratelimit-reset",
+            "60s"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":429,\"code\":\"ERR10088\",\"message\":\"RATE_LIMIT_EXCEEDED\",\"description\":\"Rate limit exceeded.\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response",
+        "jwksCalls": []
+      }
+    }
+  ],
+  "jwtCachePrerequisite": "caffeine-jwt-jwk-v1",
+  "loopbackJwksPrerequisite": "synthetic-jks-client-v1",
+  "expectInit": {
+    "outcome": "initSuccess",
+    "backendCalls": [],
+    "jwksFetches": 1,
+    "jwksCalls": [
+      {
+        "target": "jwks",
+        "method": "GET",
+        "uri": "/jwks"
+      }
+    ]
+  },
+  "expectJavaInit": {
+    "outcome": "initSuccess",
+    "backendCalls": [],
+    "jwksFetches": 1,
+    "jwksCalls": [
+      {
+        "target": "jwks",
+        "method": "GET",
+        "uri": "/jwks"
+      }
+    ]
+  }
+}

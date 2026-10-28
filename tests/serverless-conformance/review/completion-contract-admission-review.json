@@ -1,0 +1,15 @@
+[
+  {
+    "fixture": "C-03-completion-probe-multi-contract-v1",
+    "source": "Approved closed completion probe; LightLambdaExchange public listener/finalization APIs and retained C-03 observations",
+    "javaBehaviorAsserted": [
+      "C-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Two request and two response callbacks, fixed names, exact reverse completion order and four total calls; known repeated-finalization exceptions required and no repeated callback invocation. No Java-only handler declarations in shared production configuration. Actual Java exception classes are retained as runner diagnostics at result root, while semantic rejection/order/count observations are compared. Rust adapter remains WP13.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T020939.784417Z"
+  }
+]

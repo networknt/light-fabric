@@ -1,4 +1,5 @@
 use aes::cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
 use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
 use thiserror::Error;
@@ -7,7 +8,7 @@ use thiserror::Error;
 pub enum DecryptError {
     #[error("input must start with 'CRYPT'")]
     InvalidPrefix,
-    #[error("input format must be 'CRYPT:salt:hash'")]
+    #[error("input format must be 'CRYPT:salt:hash' or 'CRYPT:salt:iv:ciphertext'")]
     InvalidFormat,
     #[error("invalid hex string: {0}")]
     HexError(#[from] hex::FromHexError),
@@ -49,14 +50,29 @@ impl Decryptor for SymmetricDecryptor {
         }
 
         let parts: Vec<&str> = input.split(':').collect();
-        if parts.len() != 3 {
+        if parts.first() != Some(&CRYPT_PREFIX) || !matches!(parts.len(), 3 | 4) {
             return Err(DecryptError::InvalidFormat);
         }
 
         let salt = hex::decode(parts[1])?;
-        let hash = hex::decode(parts[2])?;
-
         let key = self.derive_key(&salt);
+        // Native Java's current format carries a 96-bit GCM IV and appends
+        // the 128-bit authentication tag to the ciphertext. The three-part
+        // legacy CBC format below remains byte-for-byte compatible.
+        if parts.len() == 4 {
+            let iv = hex::decode(parts[2])?;
+            if iv.len() != 12 {
+                return Err(DecryptError::InvalidFormat);
+            }
+            let ciphertext = hex::decode(parts[3])?;
+            let plaintext = Aes256Gcm::new_from_slice(&key)
+                .map_err(|_| DecryptError::InvalidFormat)?
+                .decrypt(Nonce::from_slice(&iv), ciphertext.as_ref())
+                .map_err(|_| DecryptError::CipherError("authentication failed".into()))?;
+            return String::from_utf8(plaintext)
+                .map_err(|_| DecryptError::CipherError("invalid UTF-8".into()));
+        }
+        let hash = hex::decode(parts[2])?;
 
         type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
         let decryptor = Aes256CbcDec::new(&key.into(), &IV.into());
@@ -75,6 +91,32 @@ impl Decryptor for SymmetricDecryptor {
 mod tests {
     use super::*;
     use aes::cipher::{BlockEncryptMut, block_padding::Pkcs7};
+
+    const JAVA_GCM: &str = "CRYPT:01010101010101010101010101010101:020202020202020202020202:384c3e9b2a30679cf57d653304f96af7599f065069b95682eb8275ee23e927a00d53a009e193590afa";
+
+    #[test]
+    fn native_java_gcm_vector_authenticates_and_preserves_legacy_cbc() {
+        let decryptor = SymmetricDecryptor::new("test-only-master");
+        assert_eq!(
+            decryptor.decrypt(JAVA_GCM).unwrap(),
+            "test-only-decrypted-value"
+        );
+        let mut tampered = JAVA_GCM.to_owned();
+        tampered.pop();
+        tampered.push('b');
+        for value in [
+            tampered,
+            JAVA_GCM.replace(":020202020202020202020202:", ":030202020202020202020202:"),
+            JAVA_GCM.replace(":020202020202020202020202:", ":02:"),
+        ] {
+            assert!(decryptor.decrypt(&value).is_err());
+        }
+        assert!(
+            SymmetricDecryptor::new("wrong-test-password")
+                .decrypt(JAVA_GCM)
+                .is_err()
+        );
+    }
 
     #[test]
     fn test_decrypt_consistency() {

@@ -1,0 +1,28 @@
+[
+  {
+    "fixture": "C-04-throw-test-exception-multi-contract-v1",
+    "source": "Owner-approved closed C-04 failure probe; actual ChainExecutor catch/updateExchangeStatus behavior; existing status.yml ERR14004 exact message/description",
+    "javaBehaviorAsserted": [
+      "C-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-04"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Supported shared production configuration; closed probe registered by each runner test adapter before dispatch. Exact one probe execute, Java continuation/one FnX/200 ok, Rust exact 500 ERR14004 and zero later Invoke. Native status null path and exception path remain distinct; no production static reset or input normalization.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T025814.137082Z"
+  },
+  {
+    "fixture": "C-04-return-null-status-multi-contract-v1",
+    "source": "Owner-approved closed C-04 failure probe; actual ChainExecutor catch/updateExchangeStatus behavior; existing status.yml ERR14004 exact message/description",
+    "javaBehaviorAsserted": [
+      "C-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-04"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Supported shared production configuration; closed probe registered by each runner test adapter before dispatch. Exact one probe execute, Java continuation/one FnX/200 ok, Rust exact 500 ERR14004 and zero later Invoke. Native status null path and exception path remain distinct; no production static reset or input normalization.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T025814.137082Z"
+  }
+]

@@ -1,0 +1,65 @@
+[
+  {
+    "fixture": "X-01-local-health-warm-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/X-01-local-health-cp1-e02-accepted.json",
+    "sourceSha256": "77fe736d79487f109fe8f4ff6dcf8912d1aaea69674c73e1c305cadbb2236f0b",
+    "review": "AdminTest, CacheExplorerTest or CacheMissingTest and concrete handlers reviewed. Exact local health/auth/logger/cache outcomes retained. Logger-get fixture explicitly expects ROOT OFF from the runner logging config and WARN synthetic logger set in step 0; no dynamic-body mask or output-derived expectation. Cache seed is a declared synthetic public CacheManager put/readback; raw synthetic pathParameters remain exactly declared, not invented by the runner. Enabled deferred logger/cache handler registrations reject proposed Rust once at Init, even when another admin route is requested. No Rust downstream admin behavior counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "X-01-admin-health-warm-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/X-01-admin-health-cp1-e02-accepted.json",
+    "sourceSha256": "2152aa6a4045f39af3350f011734656974aa13670cb11ec553589b1546d20c8c",
+    "review": "AdminTest, CacheExplorerTest or CacheMissingTest and concrete handlers reviewed. Exact local health/auth/logger/cache outcomes retained. Logger-get fixture explicitly expects ROOT OFF from the runner logging config and WARN synthetic logger set in step 0; no dynamic-body mask or output-derived expectation. Cache seed is a declared synthetic public CacheManager put/readback; raw synthetic pathParameters remain exactly declared, not invented by the runner. Enabled deferred logger/cache handler registrations reject proposed Rust once at Init, even when another admin route is requested. No Rust downstream admin behavior counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "X-01-admin-health-denied-warm-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/X-01-admin-health-denied-cp1-e02-accepted.json",
+    "sourceSha256": "9fa45afa812f41dda26b00db14c02701e4a9f44ff93462b5aa2514de311149f5",
+    "review": "AdminTest, CacheExplorerTest or CacheMissingTest and concrete handlers reviewed. Exact local health/auth/logger/cache outcomes retained. Logger-get fixture explicitly expects ROOT OFF from the runner logging config and WARN synthetic logger set in step 0; no dynamic-body mask or output-derived expectation. Cache seed is a declared synthetic public CacheManager put/readback; raw synthetic pathParameters remain exactly declared, not invented by the runner. Enabled deferred logger/cache handler registrations reject proposed Rust once at Init, even when another admin route is requested. No Rust downstream admin behavior counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "X-03-get-logger-warm-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/X-03-get-logger-cp1-e02-accepted.json",
+    "sourceSha256": "2241bcdf776e1a252d3ec7ad06e55b17cccfad67e2c69cf88c850b314d40f76c",
+    "review": "AdminTest, CacheExplorerTest or CacheMissingTest and concrete handlers reviewed. Exact local health/auth/logger/cache outcomes retained. Logger-get fixture explicitly expects ROOT OFF from the runner logging config and WARN synthetic logger set in step 0; no dynamic-body mask or output-derived expectation. Cache seed is a declared synthetic public CacheManager put/readback; raw synthetic pathParameters remain exactly declared, not invented by the runner. Enabled deferred logger/cache handler registrations reject proposed Rust once at Init, even when another admin route is requested. No Rust downstream admin behavior counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "X-04-empty-body-warm-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/X-04-empty-body-cp1-e02-accepted.json",
+    "sourceSha256": "e42b3cc854046b8da73d9e37f1aa472a6053bcffdfc6bdc4725a474821562d21",
+    "review": "AdminTest, CacheExplorerTest or CacheMissingTest and concrete handlers reviewed. Exact local health/auth/logger/cache outcomes retained. Logger-get fixture explicitly expects ROOT OFF from the runner logging config and WARN synthetic logger set in step 0; no dynamic-body mask or output-derived expectation. Cache seed is a declared synthetic public CacheManager put/readback; raw synthetic pathParameters remain exactly declared, not invented by the runner. Enabled deferred logger/cache handler registrations reject proposed Rust once at Init, even when another admin route is requested. No Rust downstream admin behavior counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "X-04-set-logger-warm-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/X-04-set-logger-cp1-e02-accepted.json",
+    "sourceSha256": "c32e896874530dcba9cdcf32b5b6269feaf902bd62c2390898fde8c2a32ae519",
+    "review": "AdminTest, CacheExplorerTest or CacheMissingTest and concrete handlers reviewed. Exact local health/auth/logger/cache outcomes retained. Logger-get fixture explicitly expects ROOT OFF from the runner logging config and WARN synthetic logger set in step 0; no dynamic-body mask or output-derived expectation. Cache seed is a declared synthetic public CacheManager put/readback; raw synthetic pathParameters remain exactly declared, not invented by the runner. Enabled deferred logger/cache handler registrations reject proposed Rust once at Init, even when another admin route is requested. No Rust downstream admin behavior counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "X-05-cache-contents-warm-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/X-05-cache-contents-cp1-e02-accepted.json",
+    "sourceSha256": "8ea096f644e266653db5ba5e76ec552399f4e4a6d6ab8b51f4ebde927d8af415",
+    "review": "AdminTest, CacheExplorerTest or CacheMissingTest and concrete handlers reviewed. Exact local health/auth/logger/cache outcomes retained. Logger-get fixture explicitly expects ROOT OFF from the runner logging config and WARN synthetic logger set in step 0; no dynamic-body mask or output-derived expectation. Cache seed is a declared synthetic public CacheManager put/readback; raw synthetic pathParameters remain exactly declared, not invented by the runner. Enabled deferred logger/cache handler registrations reject proposed Rust once at Init, even when another admin route is requested. No Rust downstream admin behavior counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "X-05-missing-manager-warm-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/X-05-missing-manager-cp1-e02-accepted.json",
+    "sourceSha256": "a448b4716233bf3fc55da62f727c0aef771a21a7ec055d14b0034e9851f7233c",
+    "review": "AdminTest, CacheExplorerTest or CacheMissingTest and concrete handlers reviewed. Exact local health/auth/logger/cache outcomes retained. Logger-get fixture explicitly expects ROOT OFF from the runner logging config and WARN synthetic logger set in step 0; no dynamic-body mask or output-derived expectation. Cache seed is a declared synthetic public CacheManager put/readback; raw synthetic pathParameters remain exactly declared, not invented by the runner. Enabled deferred logger/cache handler registrations reject proposed Rust once at Init, even when another admin route is requested. No Rust downstream admin behavior counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-17-controlled-cached-nbf-mutation-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-17-controlled-cached-nbf-cp1-e02-accepted.json",
+    "sourceSha256": "8ddb1c890a329837a2e331ca93a495ae140ef8cad69e80fb0fe2c2782539a32a",
+    "review": "CachedNbfControlTest reconstructed exactly: first populate cache through actual JWT gateway, then mutate the existing serialized cached claim via public SingletonServiceFactory/CacheManager get/put, assert retained write, warm acceptance and cold far-future signed nbf rejection. Actual mutation epoch is recorded, never applied to response bodies or token expectations. This is an explicitly synthetic cache contrast, not natural key/token evolution. Explicit unsupported JKS means proposed Rust never executes cache actions or request steps.",
+    "rustExecutionEvidence": null
+  }
+]

@@ -1,0 +1,40 @@
+{
+  "schema": "light-lambda-declaration-review/v1",
+  "reviews": [
+    {
+      "id": "E-13-warm-single-value-config-log-once-contract-v1",
+      "fixtureDigest": "62421ec71bee7292d18f9b5d8519713cf62c42a412922dd641400595e13ecca9",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend",
+        "configurationDiagnostics"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "reason": "Exact original expectation equality under existing header case rules and numeric fetch assertions; fresh native execution independently passes. No behavioral amendment.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-remaining-adapters-20261018T202155Z/java-observations-fresh/results/E-13-warm-single-value-config-log-once-contract-v1.json",
+      "nativeSha256": "1d16ee18f6120c08d0f0015e3760e8a2d324d38590d300dab03f8b28425dc371"
+    },
+    {
+      "id": "M-01-gateway-error-emf-multi-contract-v1",
+      "fixtureDigest": "d1e8fbfc3df1360d66cb0b13fb24eb0860c5626d0ea340d55373b2d47c38a037",
+      "originalDeclared": [
+        "status",
+        "body",
+        "emf",
+        "header:content-type"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Exact original expectation equality under existing header case rules and numeric fetch assertions; fresh native execution independently passes. No behavioral amendment.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-remaining-adapters-20261018T202155Z/java-observations-fresh/results/M-01-gateway-error-emf-multi-contract-v1.json",
+      "nativeSha256": "f0230fe97a021cf86b361c3a74890fbd56814ab24d1eeb7da0179d7d328ada14"
+    }
+  ]
+}

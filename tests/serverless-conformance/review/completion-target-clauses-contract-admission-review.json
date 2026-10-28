@@ -1,0 +1,50 @@
+[
+  {
+    "fixture": "M-01-request-timeout-emf-completion-multi-contract-v1",
+    "javaRun": "20261011T150330.407962Z",
+    "javaBehaviorAsserted": [
+      "M-01",
+      "D-08a"
+    ],
+    "proposedRustBehaviorReached": [
+      "M-01",
+      "D-08a"
+    ],
+    "review": "Enabled metrics and same bounded request work; authored Rust504/zero dispatch/one EMF record Errors1. Java preserves reviewed finite-work200/one dispatch. Exact counts/input/timing prerequisites unchanged.",
+    "source": "Approved contracts and unchanged gateway/policy behavior; actual focused Java/schema/isolation pass",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150330.407962Z"
+  },
+  {
+    "fixture": "M-01-oversize-emf-completion-multi-contract-v1",
+    "javaRun": "20261011T150330.407962Z",
+    "javaBehaviorAsserted": [
+      "M-01",
+      "D-09",
+      "C-09"
+    ],
+    "proposedRustBehaviorReached": [
+      "M-01",
+      "D-09",
+      "C-09"
+    ],
+    "review": "Enabled metrics and oversized response-policy header; authored Rust502 replacement, one EMF Errors1 and response counters1/1/1, no second policy pass. Java preserves actual large header and backend response, real counters measured.",
+    "source": "Approved contracts and unchanged gateway/policy behavior; actual focused Java/schema/isolation pass",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150330.407962Z"
+  },
+  {
+    "fixture": "D-07-caller-cannot-select-target-multi-contract-v1",
+    "javaRun": "20261011T150352.506401Z",
+    "javaBehaviorAsserted": [
+      "D-07"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-07"
+    ],
+    "review": "Shared header function_name, query target and body target all request FnUnconfigured; exact backend target remains configured FnLiteral, one call. Exact forwarding maps/payload preserved. Caller cannot choose an arbitrary destination; no Init rejection credit.",
+    "source": "Approved contracts and unchanged gateway/policy behavior; actual focused Java/schema/isolation pass",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150352.506401Z"
+  }
+]

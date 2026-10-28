@@ -1,0 +1,16 @@
+[
+  {
+    "fixture": "E-13-warm-single-value-config-log-once-contract-v1",
+    "javaRun": "20261011T162147.674308Z",
+    "javaBehaviorAsserted": [
+      "E-13"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-13"
+    ],
+    "rustExecutionEvidence": [],
+    "review": "Two identical single-value events share one initialized gateway. Rust exact rejection/zero backend each; config diagnostic count1 then0, one preserved actual diagnostic line required in future Rust results. Java200 dispatch remains exact; no downstream Rust policy credit.",
+    "remainingContractAssertions": [],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T162147.674308Z"
+  }
+]

@@ -1,0 +1,5 @@
+# Global mutations precede every matching prefix in declared YAML order.
+enabled: ${header.enabled:false}
+request: ${header.request:{}}
+response: ${header.response:{}}
+pathPrefixHeader: ${header.pathPrefixHeader:{}}

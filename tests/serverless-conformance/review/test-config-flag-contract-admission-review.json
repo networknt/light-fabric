@@ -1,0 +1,91 @@
+[
+  {
+    "fixture": "S-14-ignoreJwtExpiry-explicit-test-override-contract-v1",
+    "source": "Preserved reviewed Java observations, approved contract and source-verifier chronology checks",
+    "javaBehaviorAsserted": [
+      "S-14"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-14"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Closed process-start flag exactly LIGHT_LAMBDA_ALLOW_INSECURE_TEST_CONFIG=1. Existing default rejection fixtures remain; process launcher removes inherited override for undeclared cases. Three token-free cases assert override admission only, not JWT verification. Ignore-exp absent-nbf case proves expired-token acceptance with valid iat<exp chronology. Future nbf with later expiration proves nbf still rejects in Ignore mode. Both initial malformed chronology failures and intermediate result are preserved and explained by NumericDateValidator source, without normalizing events or outputs.",
+    "remainingContractAssertions": [
+      "Maximum skew override rejection, mock/log redaction and other security clauses require separate coverage."
+    ],
+    "javaRun": "20261011T045135.348268Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T045135.348268Z"
+  },
+  {
+    "fixture": "S-14-enableMockJwt-explicit-test-override-contract-v1",
+    "source": "Preserved reviewed Java observations, approved contract and source-verifier chronology checks",
+    "javaBehaviorAsserted": [
+      "S-14"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-14"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Closed process-start flag exactly LIGHT_LAMBDA_ALLOW_INSECURE_TEST_CONFIG=1. Existing default rejection fixtures remain; process launcher removes inherited override for undeclared cases. Three token-free cases assert override admission only, not JWT verification. Ignore-exp absent-nbf case proves expired-token acceptance with valid iat<exp chronology. Future nbf with later expiration proves nbf still rejects in Ignore mode. Both initial malformed chronology failures and intermediate result are preserved and explained by NumericDateValidator source, without normalizing events or outputs.",
+    "remainingContractAssertions": [
+      "Maximum skew override rejection, mock/log redaction and other security clauses require separate coverage."
+    ],
+    "javaRun": "20261011T045135.348268Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T045135.348268Z"
+  },
+  {
+    "fixture": "S-14-logJwtToken-explicit-test-override-contract-v1",
+    "source": "Preserved reviewed Java observations, approved contract and source-verifier chronology checks",
+    "javaBehaviorAsserted": [
+      "S-14"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-14"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Closed process-start flag exactly LIGHT_LAMBDA_ALLOW_INSECURE_TEST_CONFIG=1. Existing default rejection fixtures remain; process launcher removes inherited override for undeclared cases. Three token-free cases assert override admission only, not JWT verification. Ignore-exp absent-nbf case proves expired-token acceptance with valid iat<exp chronology. Future nbf with later expiration proves nbf still rejects in Ignore mode. Both initial malformed chronology failures and intermediate result are preserved and explained by NumericDateValidator source, without normalizing events or outputs.",
+    "remainingContractAssertions": [
+      "Maximum skew override rejection, mock/log redaction and other security clauses require separate coverage."
+    ],
+    "javaRun": "20261011T045135.348268Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T045135.348268Z"
+  },
+  {
+    "fixture": "S-17-ignore-exp-absent-nbf-multi-contract-v1",
+    "source": "Preserved reviewed Java observations, approved contract and source-verifier chronology checks",
+    "javaBehaviorAsserted": [
+      "S-14",
+      "S-17"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-14",
+      "S-17"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Closed process-start flag exactly LIGHT_LAMBDA_ALLOW_INSECURE_TEST_CONFIG=1. Existing default rejection fixtures remain; process launcher removes inherited override for undeclared cases. Three token-free cases assert override admission only, not JWT verification. Ignore-exp absent-nbf case proves expired-token acceptance with valid iat<exp chronology. Future nbf with later expiration proves nbf still rejects in Ignore mode. Both initial malformed chronology failures and intermediate result are preserved and explained by NumericDateValidator source, without normalizing events or outputs.",
+    "remainingContractAssertions": [
+      "Maximum skew override rejection, mock/log redaction and other security clauses require separate coverage."
+    ],
+    "javaRun": "20261011T045242.290955Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T045242.290955Z"
+  },
+  {
+    "fixture": "S-17-ignore-exp-retains-nbf-multi-contract-v1",
+    "source": "Preserved reviewed Java observations, approved contract and source-verifier chronology checks",
+    "javaBehaviorAsserted": [
+      "S-14",
+      "S-17"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-14",
+      "S-17"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Closed process-start flag exactly LIGHT_LAMBDA_ALLOW_INSECURE_TEST_CONFIG=1. Existing default rejection fixtures remain; process launcher removes inherited override for undeclared cases. Three token-free cases assert override admission only, not JWT verification. Ignore-exp absent-nbf case proves expired-token acceptance with valid iat<exp chronology. Future nbf with later expiration proves nbf still rejects in Ignore mode. Both initial malformed chronology failures and intermediate result are preserved and explained by NumericDateValidator source, without normalizing events or outputs.",
+    "remainingContractAssertions": [
+      "Maximum skew override rejection, mock/log redaction and other security clauses require separate coverage."
+    ],
+    "javaRun": "20261011T045311.534384Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T045311.534384Z"
+  }
+]

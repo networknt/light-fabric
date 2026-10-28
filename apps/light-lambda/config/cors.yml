@@ -1,0 +1,5 @@
+# Approved Java configuration names/defaults. Prefix maps retain declaration order.
+enabled: ${cors.enabled:true}
+allowedOrigins: ${cors.allowedOrigins:}
+allowedMethods: ${cors.allowedMethods:}
+pathPrefixAllowed: ${cors.pathPrefixAllowed:}

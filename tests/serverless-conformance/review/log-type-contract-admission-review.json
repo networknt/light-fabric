@@ -1,0 +1,18 @@
+[
+  {
+    "fixture": "D-04-log-type-multi-contract-v1",
+    "source": "Approved D-04 Invoke LogType contract; supported alias configuration and shared ALB multimap",
+    "javaBehaviorAsserted": [
+      "D-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-04"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Exact Invoke option Tail for Java and None for Rust. No Java-only handler declaration or E-13 early rejection. This establishes requested LogType, not execution evidence of Rust logger behavior.",
+    "remainingContractAssertions": [
+      "Rust no-log-tail diagnostic behavior needs separate explicit review"
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T023609.505516Z"
+  }
+]

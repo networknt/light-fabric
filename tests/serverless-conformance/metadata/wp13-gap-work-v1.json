@@ -1,0 +1,678 @@
+{
+  "schema": "light-lambda-gap-work/v1",
+  "cohort": "51 remaining runner gaps at WP13-approved-dispositions-20261018T235124Z",
+  "rows": [
+    {
+      "id": "A-01-mask-error-parameters-sink-init-v1",
+      "fixtureDigest": "b6a90ae214afd8b1aeba6d6fd569b442f2677e1a882f919210094d9706cd520b",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "A-01-null-body-sink-init-v1",
+      "fixtureDigest": "999c4534b959d900366e356108b36dafc711d0e0b589d79343b95fa4e9d0915d",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "A-01-selected-audit-sink-init-v1",
+      "fixtureDigest": "b85aaabfd0c6b5e50bedc890d0d13d2c40cda9da3d03eee287e11e96c9aac45e",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "C-01-whole-invocation-listeners-init-v1",
+      "fixtureDigest": "d8eec457aec759e5ef912e7c15ec92d7e59112a45489f300a4ab3d394d97e09f",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "assertion:completions",
+        "custom fixture handler/probe factory",
+        "warm-step recipe:observeCompletions"
+      ]
+    },
+    {
+      "id": "C-02-warning-severity-listeners-init-v1",
+      "fixtureDigest": "44bfa4b156afb5fa1af1f176049ac879a7495edbe939a48bce1fba8614f2dcb9",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "assertion:completions",
+        "custom fixture handler/probe factory",
+        "warm-step recipe:observeCompletions"
+      ]
+    },
+    {
+      "id": "C-03-listener-exception-listeners-init-v1",
+      "fixtureDigest": "604e5a46773f37f45ca53c180b18abb71afa3322ed0861260b44640d94da3344",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "assertion:completions",
+        "custom fixture handler/probe factory",
+        "warm-step recipe:observeCompletions"
+      ]
+    },
+    {
+      "id": "C-03-repeat-finalization-listeners-init-v1",
+      "fixtureDigest": "d8606043da759bf120ba37661b26af68ac48b505fd80d3ac08778d357746a358",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "assertion:completions",
+        "assertion:finalizationProbe",
+        "custom fixture handler/probe factory",
+        "warm-step recipe:observeCompletions",
+        "warm-step recipe:probeRepeatedFinalization"
+      ]
+    },
+    {
+      "id": "C-04-fail-open-listeners-init-v1",
+      "fixtureDigest": "5e11c98e42d8c38f63801b3f0d1891cb82be84df458917fc9799c2febce9ec2a",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "assertion:completions",
+        "custom fixture handler/probe factory",
+        "warm-step recipe:observeCompletions"
+      ]
+    },
+    {
+      "id": "C-04-null-status-listeners-init-v1",
+      "fixtureDigest": "792bed9ec27fc998fcfbe7b5d44cf0658b27d6992347554255376fb647599d53",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "assertion:completions",
+        "custom fixture handler/probe factory",
+        "warm-step recipe:observeCompletions"
+      ]
+    },
+    {
+      "id": "C-05-retained-response-listeners-init-v1",
+      "fixtureDigest": "b1551a785632925a27092767a2d5eaefdeccac992b7480589652e88466307220",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "assertion:completions",
+        "custom fixture handler/probe factory",
+        "warm-step recipe:observeCompletions"
+      ]
+    },
+    {
+      "id": "C-07-malformed-stream-fallback-component-v1",
+      "fixtureDigest": "de0f7fe485005f323f4a045d8b8542759c727b3fbc70894044bb60eed2038a96",
+      "category": "adapter-only",
+      "cause": "java-only-stream-counterpart",
+      "authority": "C-07",
+      "reason": "Approved Java-only closed stream component. Complete native execution/expectation assertion and the existing Rust counterpart skip contract; no Rust stream feature or service pass.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "assertion:chainExecutions",
+        "assertion:outputBase64",
+        "assertion:outputBytes",
+        "custom fixture handler/probe factory",
+        "fixture prerequisite/probe:component",
+        "fixture prerequisite/probe:streamInput",
+        "non-response expectation adapter",
+        "shared ALB request generator",
+        "single-runner result/skipped contract"
+      ]
+    },
+    {
+      "id": "C-07-valid-stream-no-output-component-v1",
+      "fixtureDigest": "1d6ee405790381a61a3d5545fc45fd181be39e98de749ad612dbc794367b75f6",
+      "category": "adapter-only",
+      "cause": "java-only-stream-counterpart",
+      "authority": "C-07",
+      "reason": "Approved Java-only closed stream component. Complete native execution/expectation assertion and the existing Rust counterpart skip contract; no Rust stream feature or service pass.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "assertion:chainExecutions",
+        "assertion:outputBase64",
+        "assertion:outputBytes",
+        "custom fixture handler/probe factory",
+        "fixture prerequisite/probe:component",
+        "fixture prerequisite/probe:streamInput",
+        "non-response expectation adapter",
+        "shared ALB request generator",
+        "single-runner result/skipped contract"
+      ]
+    },
+    {
+      "id": "C-10-endpoint-source-configured-v1",
+      "fixtureDigest": "2bae303f2bf607d9b29585575efaf4ebe3b552ddc5669f0750dcb9ff4c570712",
+      "category": "explicit-deferral",
+      "cause": "reflective-endpoint-source",
+      "authority": "C-10",
+      "reason": "Reflective Java EndpointSource plugin is excluded by C-10 fixed-table contract; compiled native path routing is separately covered.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "CFG-05-static-init-retention-warm-config-v1",
+      "fixtureDigest": "2116e8d5b8953c8b3fe8bfe41402420167fa13b577ec27c6b6809afc4a3aad52",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "D-01-null-payload-v1",
+      "fixtureDigest": "35cdacb0e0076c270978799a18e4290a7095f8f6770edd56c5872e952e94456c",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "Invoke wire recipe:nullPayload",
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "D-01-sdk-exception-v1",
+      "fixtureDigest": "4d8323c3ab2e9270734e358e22f3d4e90f153db4c56eeb2ba92a4daef4eeff09",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "Invoke client-exception wire recipe",
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "D-01-sdk-loopback-404-v1",
+      "fixtureDigest": "e0d95ca7dc055a5cccc726d9775ff7e3dad49202ca52840610824e5ed6c5aca3",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory",
+        "loopback dependency:invoke profile"
+      ]
+    },
+    {
+      "id": "D-02-sdk-loopback-finalized-v1",
+      "fixtureDigest": "18fcbcc1ff7eca97e3f1c25883d0f5f7f4488b48a94aa942161ad9e264988258",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory",
+        "loopback dependency:invoke profile"
+      ]
+    },
+    {
+      "id": "D-03-error-json-exception-v1",
+      "fixtureDigest": "eff185a213a7f15af40dc45f111bb4d8f311c6c6efe0a855e66cf95f62df2e04",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "D-03-function-error-proxy-shape-v1",
+      "fixtureDigest": "d6cd130a8e0e12a4aee320a5994a8921acc1dc0e6c37148913599909dcf21f43",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "D-04-tail-v1",
+      "fixtureDigest": "dbce02ceeb33eed9a3fc9e9b2888857eb368455e732ad1a5a20e2b06121dfecc",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "D-05-sdk-loopback-retry-v1",
+      "fixtureDigest": "931925f61f9d1c75f621ab1b953bbcc84d0b6ba4ee208409e9b2c6dbf16d125f",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory",
+        "loopback dependency:invoke profile"
+      ]
+    },
+    {
+      "id": "D-06-malformed-response-v1",
+      "fixtureDigest": "441a752dccf46ecd4f9af51b5f7a511f2ca8e993e9f2ae45be6988edaae7a519",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "D-07-forms-alias-represented-v1",
+      "fixtureDigest": "9c610e09ae0e856e7ca72761c7eb1af71b71ef19cec4a6828616724d64739a1b",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "D-07-forms-foreign-represented-v1",
+      "fixtureDigest": "41ef22c8b4c87321cadb445d8f3a830ae678c0c82acf094c03d4e812c18e4ad9",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "D-07-forms-full-represented-v1",
+      "fixtureDigest": "fbd745b60167d860624719ac671df43b4313b54ad00063c17c34cc51629aef36",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "D-07-forms-partial-represented-v1",
+      "fixtureDigest": "4041414871f6656d619533242f55693846524c417ea3ee07cc19b3f2a080a0c1",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "D-07-forms-plain-represented-v1",
+      "fixtureDigest": "9309c74ae0a50d8bb7bd30387d57a592333765ce4a7bcab1a87d42fa8b5c3b27",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "D-07-forms-version-represented-v1",
+      "fixtureDigest": "8661715c7aeee1ddc8148b66260366b3e30299f2dea8333feae311e3dcaa4aec",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "D-07-self-context-target-context-v1",
+      "fixtureDigest": "a45be89eaa3f1e7dbb89b22fbf6e2fcff6321b3013847b095df61278d19451f4",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory",
+        "unsupported Lambda context recipe"
+      ]
+    },
+    {
+      "id": "D-08-independent-policy-waits-timed-v1",
+      "fixtureDigest": "42e5f087a70a52a6a2b1038205e848e2b5fc06adc16bf66a40b59da88d0e2b86",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "D-08-sdk-read-timeout-controlled-5000ms-v1",
+      "fixtureDigest": "e8217ced278abb361dd8f90c3d8b65d188ffa05bc0f453f6e8267e71ba250fda",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory",
+        "loopback dependency:invoke profile"
+      ]
+    },
+    {
+      "id": "E-01-custom-status-serializer-configured-init-v1",
+      "fixtureDigest": "97b6a50fe91d9fc926d1ac6fd8af71289a5e6784b0fb3ec138d418539ad06122",
+      "category": "explicit-deferral",
+      "cause": "custom-status-serializer",
+      "authority": "E-01, C-10",
+      "reason": "Original selects unsupported custom Java StatusSerializer and Deny middleware. Preserve fixed production status renderer; not an adapter-only parity commitment.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "E-01-status-metadata-escaping-configured-init-v1",
+      "fixtureDigest": "9a80d5c50bf32bf3d6ca28a32857e15ee1f811b805f6004f9e90c884dd932690",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "assertion:statusSerialization",
+        "custom fixture handler/probe factory",
+        "warm-step recipe:observeStatusSerialization"
+      ]
+    },
+    {
+      "id": "E-03-body-off-0-listeners-init-v1",
+      "fixtureDigest": "6deaf0b4692c99b6608ef12a311481e8899827e00f0df32a68fbd15285c3755e",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "assertion:completions",
+        "custom fixture handler/probe factory",
+        "warm-step recipe:observeCompletions"
+      ]
+    },
+    {
+      "id": "E-03-body-off-1-listeners-init-v1",
+      "fixtureDigest": "b3a7a4e757d0da399566ebedfada3508c542d6e0a3bb05ad02eb21728e007ca6",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "assertion:completions",
+        "custom fixture handler/probe factory",
+        "warm-step recipe:observeCompletions"
+      ]
+    },
+    {
+      "id": "E-03-body-off-2-listeners-init-v1",
+      "fixtureDigest": "69c469eb3af529060f2fced623c82a8614b0ea8f95493dc8c331b7fba599df29",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "assertion:completions",
+        "custom fixture handler/probe factory",
+        "warm-step recipe:observeCompletions"
+      ]
+    },
+    {
+      "id": "E-03-body-off-3-listeners-init-v1",
+      "fixtureDigest": "ae13ecfea492eb7e4358e51aa8fe4340715bf94b9048763a8a4e2e52a59b06fa",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "assertion:completions",
+        "custom fixture handler/probe factory",
+        "warm-step recipe:observeCompletions"
+      ]
+    },
+    {
+      "id": "E-03-body-off-4-listeners-init-v1",
+      "fixtureDigest": "7ee074176918892034549dd24664c31e08334c38878c84e471801acfea7cdea5",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "assertion:completions",
+        "custom fixture handler/probe factory",
+        "warm-step recipe:observeCompletions"
+      ]
+    },
+    {
+      "id": "E-04-raw-encoded-query-listeners-init-v1",
+      "fixtureDigest": "fcdb3c00413f9123b18ad9c976569ab5265c15d58e86d86701327b40e02cb9c7",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "assertion:completions",
+        "custom fixture handler/probe factory",
+        "warm-step recipe:observeCompletions"
+      ]
+    },
+    {
+      "id": "H-04-already-failed-router-component-v1",
+      "fixtureDigest": "de678edfe6fa4546606e1b00aefdca369bdf6a1f630b8cea1f8a73f0469160b8",
+      "category": "router-failed-state",
+      "cause": "production-request-failure-guard",
+      "authority": "H-04",
+      "reason": "Typed failed request state and real factory-built Router guard missing. Original additionally blocked by absent enabled and nonempty rewrite rules. Rejection is not execution.",
+      "secondaryCategories": [
+        "router-rewriting"
+      ],
+      "originalRunnerGaps": [
+        "assertion:exchangeState",
+        "assertion:failedState",
+        "fixture prerequisite/probe:component",
+        "non-response expectation adapter"
+      ]
+    },
+    {
+      "id": "L-02-resolver-observation-supported-edge-v1",
+      "fixtureDigest": "6d8dd8e53f7db8c57c55fbe35dfd914eed8e0f3920ed6a2a4074ef4d96aceb38",
+      "category": "explicit-deferral",
+      "cause": "custom-identity-resolver-probe",
+      "authority": "L-02, C-10",
+      "reason": "Original selects reflective Java resolver probe; named built-in Rust resolvers have separate service evidence. Do not conflate with original Java L-02 timing failure.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "M-02-apm-loopback-sink-v1",
+      "fixtureDigest": "3ddad670803a6618aed6567239f5a16abaf81d739f4a98890dd557f57c02f444",
+      "category": "explicit-deferral",
+      "cause": "apm-network-sink",
+      "authority": "M-02",
+      "reason": "Explicitly deferred APM network sink/reporter; EMF is the admitted metrics path. Custom Java audit-field helpers are additional recipe prerequisites.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory",
+        "fixture prerequisite/probe:metricsReport"
+      ]
+    },
+    {
+      "id": "M-02-natural-scheduled-report-sink-v1",
+      "fixtureDigest": "8f4dd534ac30200096d635648dc3f20a82f50318babb76384dbcef63466d71e5",
+      "category": "explicit-deferral",
+      "cause": "apm-network-sink",
+      "authority": "M-02",
+      "reason": "Explicitly deferred APM network sink/reporter; EMF is the admitted metrics path. Custom Java audit-field helpers are additional recipe prerequisites.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory",
+        "fixture prerequisite/probe:metricsReport"
+      ]
+    },
+    {
+      "id": "M-03-influx-null-status-cp1-e02-accepted",
+      "fixtureDigest": "5ea24d3b042455ef5a2327cdb4df8ed683f801c7d75aed6a01daa8189e02dc74",
+      "category": "explicit-deferral",
+      "cause": "influx-java-only-counterpart",
+      "authority": "M-03",
+      "reason": "Explicitly deferred Influx production handler. Existing Java-only result can be verified with a Rust counterpart skip, reported separately from Rust expectation/service/differential passes.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "single-runner result/skipped contract"
+      ]
+    },
+    {
+      "id": "Q-01-trace-effects-observed-v1",
+      "fixtureDigest": "2f9c4cc9f9d2cc9ecd4703d7e9f89418ae9b7faa1c367446ab2fce998859126f",
+      "category": "explicit-deferral",
+      "cause": "unsupported-java-extension",
+      "authority": "C-10",
+      "reason": "Original Rust contract rejects a selected arbitrary Java characterization/conformance class. Fixed native compatibility table excludes Java reflection/plugin loading; this is not a missing production handler.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "custom fixture handler/probe factory"
+      ]
+    },
+    {
+      "id": "S-15-introspection-0-deferred-init-v1",
+      "fixtureDigest": "700f59f9a34d008a0899f27c50cb54caef5837fd247d4569f3d8f88c04c18281",
+      "category": "explicit-deferral",
+      "cause": "swt-introspection",
+      "authority": "S-15",
+      "reason": "Explicit SWT/opaque-token introspection deferral. Relative expiry HTTP recipe does not authorize implementing or enabling SWT.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "relative introspection fixture recipe"
+      ]
+    },
+    {
+      "id": "S-15-introspection-1-deferred-init-v1",
+      "fixtureDigest": "abc75039a471459418a6a9f8bbab63ca402a0a431089ba64e2f57cfaeec3a61c",
+      "category": "explicit-deferral",
+      "cause": "swt-introspection",
+      "authority": "S-15",
+      "reason": "Explicit SWT/opaque-token introspection deferral. Relative expiry HTTP recipe does not authorize implementing or enabling SWT.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "relative introspection fixture recipe"
+      ]
+    },
+    {
+      "id": "X-02-enabled-multi-contract-v1",
+      "fixtureDigest": "c508b1e6e7ec99c08f9b687b30e600974df18821dc6c8b295f83dd90239fa43a",
+      "category": "validator-integration",
+      "cause": "admin-chain-validator-prerequisite",
+      "authority": "V-01",
+      "reason": "Selected admin chain contains unregistered Validator. Body/logging observer support alone cannot exercise intended chain; keep Validator qualification gates separate.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "assertion:bodyJson"
+      ]
+    },
+    {
+      "id": "X-02-java-info-v1",
+      "fixtureDigest": "f6033724a33587af146abf8d4b0a28a5d1a6246a824f72b3f531e5f2f41326f4",
+      "category": "validator-integration",
+      "cause": "admin-chain-validator-prerequisite",
+      "authority": "V-01",
+      "reason": "Selected admin chain contains unregistered Validator. Body/logging observer support alone cannot exercise intended chain; keep Validator qualification gates separate.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "assertion:bodyJson"
+      ]
+    },
+    {
+      "id": "X-03-current-filter-multi-contract-v1",
+      "fixtureDigest": "3afd231c40a3b95f96ce5390a10dc9c6471df4f6a516217143e49756183a5c5e",
+      "category": "validator-integration",
+      "cause": "admin-chain-validator-prerequisite",
+      "authority": "V-01",
+      "reason": "Selected admin chain contains unregistered Validator. Body/logging observer support alone cannot exercise intended chain; keep Validator qualification gates separate.",
+      "secondaryCategories": [],
+      "originalRunnerGaps": [
+        "fixture prerequisite/probe:loggerFilterPrerequisite"
+      ]
+    }
+  ]
+}

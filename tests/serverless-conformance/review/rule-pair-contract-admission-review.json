@@ -1,0 +1,22 @@
+[
+  {
+    "fixture": "T-01-T-02-native-cel-body-multi-contract-v1",
+    "source": "Owner-approved scoped native-rule/CEL pair; existing TransformerTest RequestAction and ResponseAction exact literal mutations; plan ALB mode determined by multiValueHeaders presence",
+    "javaBehaviorAsserted": [
+      "T-01",
+      "T-02",
+      "D-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "T-01",
+      "T-02",
+      "D-02"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Reviewed request-body-literal and response-body-literal action values exactly mirror existing native test actions: request-transformed and response-transformed. CEL condition true authorizes each fixed mutation. Shared raw event explicitly carries equal single/multi headers; multimap ingress is valid. No per-runner input conversion. Both transformed backend body and final response body asserted, with exact forwarding map differences under E-10. D-02 is explicitly asserted: the backend event body is request-transformed, distinct from the input body, so it represents finalized policy state rather than ingress-only rejection.",
+    "remainingContractAssertions": [
+      "This control does not establish response rule input-map semantics, validation-error/fail-open semantics or metadata mutation behavior; retain their individual obligations."
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T032258.707387Z"
+  }
+]

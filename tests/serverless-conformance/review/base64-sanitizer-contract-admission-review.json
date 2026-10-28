@@ -1,0 +1,19 @@
+[
+  {
+    "fixture": "V-03a-base64-json-multi-contract-v1",
+    "source": "Preserved reviewed Java observations, approved contract and source-verifier chronology checks",
+    "javaBehaviorAsserted": [
+      "V-03",
+      "V-03a"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03",
+      "V-03a"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Owner-approved V-03a: same valid multimap base64 JSON input, actual Java encoded string preserved unchanged; Rust decodes once and HTML-encodes the value, re-encodes exact bytes under body_was_base64. Flags, call count, target and separate exact backend body assertions required. Earlier pending draft and E-13 cases preserved; no executed Rust claim.",
+    "remainingContractAssertions": [],
+    "javaRun": "20261011T044721.774010Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T044721.774010Z"
+  }
+]

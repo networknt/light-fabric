@@ -1,0 +1,318 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "S-04a-wrong-issuer-multi-contract-v1",
+  "title": "Approved shared explicit issuer policy wrong",
+  "ledger": [
+    "S-04a",
+    "S-04",
+    "S-13",
+    "E-10",
+    "E-06a"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "security": {
+        "enableVerifyJwt": true,
+        "enableVerifyScope": false,
+        "ignoreJwtExpiry": false,
+        "jwt": {
+          "clockSkewInSeconds": 0,
+          "keyResolver": "JsonWebKeySet",
+          "certificate": {}
+        },
+        "enableJwtCache": true,
+        "jwtCacheFullSize": 1000,
+        "bootstrapFromKeyService": true,
+        "logJwtToken": false,
+        "enableMockJwt": false,
+        "enableRelaxedKeyValidation": false,
+        "issuer": "test-issuer"
+      },
+      "client": {
+        "request": {
+          "connectTimeout": 1000,
+          "timeout": 1000,
+          "maxRequestRetry": 1
+        },
+        "tls": {
+          "loadKeyStore": false,
+          "loadTrustStore": false,
+          "verifyHostname": true
+        },
+        "oauth": {
+          "multipleAuthServers": true,
+          "token": {
+            "key": {
+              "server_url": "${dependency:jwks}",
+              "uri": "/jwks",
+              "enableHttp2": false,
+              "audience": "test-audience",
+              "serviceIdAuthServers": {
+                "provider-a": {
+                  "server_url": "${dependency:jwks}",
+                  "uri": "/jwks",
+                  "audience": "aud-a",
+                  "enableHttp2": false
+                },
+                "provider-b": {
+                  "server_url": "${dependency:jwks}",
+                  "uri": "/other",
+                  "audience": "aud-b",
+                  "enableHttp2": false
+                }
+              }
+            }
+          }
+        },
+        "pathPrefixServices": {
+          "/x/path-a": "provider-a",
+          "/x/path-b": "provider-b"
+        }
+      },
+      "unified-security": {
+        "enabled": true,
+        "pathPrefixAuths": [
+          {
+            "prefix": "/x/explicit",
+            "jwt": true,
+            "jwkServiceIds": [
+              "provider-b"
+            ]
+          }
+        ]
+      },
+      "lambda-proxy": {
+        "functions": {
+          "/x/path-a@get": "FnX",
+          "/x/path-b@get": "FnX",
+          "/x/explicit@get": "FnX"
+        },
+        "logType": "Tail",
+        "enabled": true
+      },
+      "handler": {
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.security.JwtVerifyMiddleware@jwt",
+          "com.networknt.aws.lambda.handler.middleware.security.UnifiedSecurityMiddleware@unified"
+        ],
+        "chains": {},
+        "defaultHandlers": [
+          "jwt",
+          "proxy"
+        ],
+        "paths": [
+          {
+            "path": "/x/explicit",
+            "method": "get",
+            "exec": [
+              "unified",
+              "proxy"
+            ]
+          }
+        ]
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Generated execution-time token recipes; real verifier wall time, no fixed epoch."
+  },
+  "keys": {
+    "k1": {
+      "alg": "RS256"
+    },
+    "k2": {
+      "alg": "RS256"
+    }
+  },
+  "tokens": {
+    "multi-explicit": {
+      "kid": "k2",
+      "claims": {
+        "sub": "test-user",
+        "iss": "wrong-issuer",
+        "aud": "aud-b",
+        "jti": "multi-explicit",
+        "client_id": "test-client",
+        "user_id": "test-user"
+      },
+      "issuedOffsetSec": -10,
+      "expOffsetSec": 600,
+      "nbfOffsetSec": 0
+    }
+  },
+  "dependencies": {
+    "jwks": {
+      "publishedKeys": [
+        "k1"
+      ],
+      "routes": {
+        "/other": [
+          "k2"
+        ]
+      }
+    }
+  },
+  "substitutions": [
+    {
+      "pointer": "/steps/0/rawEvent/headers/AUTHORIZATION",
+      "recipe": "token:multi-explicit"
+    },
+    {
+      "pointer": "/steps/0/rawEvent/multiValueHeaders/authorization/0",
+      "recipe": "token:multi-explicit"
+    }
+  ],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "backendCalls",
+    "header:content-type",
+    "status",
+    "body",
+    "header:x-backend"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x/explicit",
+        "headers": {
+          "AUTHORIZATION": "Bearer ${token:multi-explicit}"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {
+          "authorization": [
+            "Bearer ${token:multi-explicit}"
+          ]
+        },
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x/explicit",
+              "httpMethod": "GET",
+              "headers": {
+                "AUTHORIZATION": "Bearer ${token:multi-explicit}"
+              },
+              "queryStringParameters": {},
+              "requestContext": {},
+              "isBase64Encoded": false,
+              "multiValueHeaders": {
+                "authorization": [
+                  "Bearer ${token:multi-explicit}"
+                ]
+              },
+              "multiValueQueryStringParameters": {}
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response",
+        "jwksCalls": []
+      },
+      "headerMode": "multi",
+      "expect": {
+        "status": 401,
+        "headers": [
+          [
+            "content-type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR10001\",\"message\":\"AUTH_TOKEN_EXPIRED\",\"description\":\"Jwt token in authorization header expired\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response",
+        "jwksCalls": []
+      }
+    }
+  ],
+  "jwtCachePrerequisite": "caffeine-jwt-jwk-v1",
+  "loopbackJwksPrerequisite": "synthetic-jks-client-v1",
+  "expectInit": {
+    "outcome": "initSuccess",
+    "backendCalls": [],
+    "jwksFetches": 2,
+    "jwksCalls": [
+      {
+        "target": "jwks",
+        "method": "GET",
+        "uri": "/jwks"
+      },
+      {
+        "target": "jwks",
+        "method": "GET",
+        "uri": "/other"
+      }
+    ]
+  },
+  "expectJavaInit": {
+    "outcome": "initSuccess",
+    "backendCalls": [],
+    "jwksFetches": 2,
+    "jwksCalls": [
+      {
+        "target": "jwks",
+        "method": "GET",
+        "uri": "/jwks"
+      },
+      {
+        "target": "jwks",
+        "method": "GET",
+        "uri": "/other"
+      }
+    ]
+  }
+}

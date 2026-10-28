@@ -1,0 +1,32 @@
+[
+  {
+    "fixture": "A-01-selected-audit-sink-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/A-01-selected-audit-cp1-e02-accepted.json",
+    "sourceSha256": "cb9d336b2835c25bea74e4f3a5ffe66a0b78f9b5c52486d1f2b6b572b2c7851e",
+    "javaBehaviorAsserted": [
+      "A-01",
+      "A-02",
+      "C-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "review": "AuditTest exact selected fields, late callback attachment, omitted null body/header, one record and full JSON field set asserted. Explicit literal timestampFormat is separately authored synthetic configuration; does not claim original default timestamp behavior. Actual log message and parsed JSON retained. Unknown LateAttachment class fails proposed Rust Init, never Rust audit execution.",
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "A-01-null-body-sink-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/A-01-null-body-cp1-e02-accepted.json",
+    "sourceSha256": "16029ece8037fd4c1e79e3de43a3c01f2f62d33737598c4336125a6b2f40703c",
+    "javaBehaviorAsserted": [
+      "A-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "review": "AuditTest exact selected fields, late callback attachment, omitted null body/header, one record and full JSON field set asserted. Explicit literal timestampFormat is separately authored synthetic configuration; does not claim original default timestamp behavior. Actual log message and parsed JSON retained. Unknown LateAttachment class fails proposed Rust Init, never Rust audit execution.",
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  }
+]

@@ -1,0 +1,103 @@
+{
+  "contract": "WP12 owner trusted Route amendment",
+  "approvalEvidence": "/home/steve/artifacts/implementation/light-lambda/WP12/metrics-route-20261013T115511Z/owner-authorization.md",
+  "behavior": "Trusted configured matching handler/proxy template; read-only early-exit matching with existing method/precedence; exact <unmatched> when neither matches; no raw path/capture substitution, dispatch or mutation",
+  "changedFixture": "M-01-gateway-error-emf-multi-contract-v1",
+  "oldRustRoute": "/pets/fixed",
+  "newRustRoute": "<unmatched>",
+  "onlyRustExpectationChanged": true,
+  "JavaObservationsAndExpectationsPreserved": true,
+  "originalFailureEvidence": "/home/steve/artifacts/implementation/light-lambda/WP12/metrics-route-20261013T115511Z/before-wp12-20261013T035513Z-cargo.log",
+  "directEmfDeclarations": [
+    {
+      "fixture": "D-08e-response-timeout-emf-finalization-counter-multi-contract-v1",
+      "path": "tests/serverless-conformance/fixtures/v1/d/D-08e-response-timeout-emf-finalization-counter-multi-contract-v1.json",
+      "rustRoute": "/pets/fixed",
+      "backendCount": 1,
+      "proxyMappings": [
+        "/pets/{id}@get",
+        "/pets/fixed@get"
+      ],
+      "currentDisposition": "Unchanged matching trusted literal/template; early-timeout matching is read-only",
+      "sha256": "70dbba8d815a0f92878587751ba75ec66a668dd05bc17b2eb10da532676dd94c"
+    },
+    {
+      "fixture": "D-08e-response-timeout-emf-finalization-multi-contract-v1",
+      "path": "tests/serverless-conformance/fixtures/v1/d/D-08e-response-timeout-emf-finalization-multi-contract-v1.json",
+      "rustRoute": "/pets/fixed",
+      "backendCount": 1,
+      "proxyMappings": [
+        "/pets/{id}@get",
+        "/pets/fixed@get"
+      ],
+      "currentDisposition": "Unchanged matching trusted literal/template; early-timeout matching is read-only",
+      "sha256": "fa6c950e6e61a5d8179d0e666a3189993a52ff3e21979893aa5da7689a294697"
+    },
+    {
+      "fixture": "M-01-gateway-error-emf-multi-contract-v1",
+      "path": "tests/serverless-conformance/fixtures/v1/m/M-01-gateway-error-emf-multi-contract-v1.json",
+      "rustRoute": "<unmatched>",
+      "backendCount": 0,
+      "proxyMappings": [
+        "/other@get"
+      ],
+      "currentDisposition": "Owner-amended unmatched sentinel",
+      "sha256": "a3a02981f61b2dde36c1ef21f9d505284399578835e9c3528983cc0f739f243f"
+    },
+    {
+      "fixture": "M-01-oversize-emf-completion-multi-contract-v1",
+      "path": "tests/serverless-conformance/fixtures/v1/m/M-01-oversize-emf-completion-multi-contract-v1.json",
+      "rustRoute": "/pets/fixed",
+      "backendCount": 1,
+      "proxyMappings": [
+        "/pets/{id}@get",
+        "/pets/fixed@get"
+      ],
+      "currentDisposition": "Unchanged matching trusted literal/template; early-timeout matching is read-only",
+      "sha256": "94b36a9f74ef3c377c09e8f6f401349e9a458fe3d56136a3bbb11bc262ec3a7e"
+    },
+    {
+      "fixture": "M-01-per-request-emf-multi-contract-v1",
+      "path": "tests/serverless-conformance/fixtures/v1/m/M-01-per-request-emf-multi-contract-v1.json",
+      "rustRoute": "/pets/fixed",
+      "backendCount": 1,
+      "proxyMappings": [
+        "/pets/{id}@get",
+        "/pets/fixed@get"
+      ],
+      "currentDisposition": "Unchanged matching trusted literal/template; early-timeout matching is read-only",
+      "sha256": "98aa21b952ee1c14d1d0482fbc0f7bfed9cabd699e4d357fee420c314db7a83f"
+    },
+    {
+      "fixture": "M-01-request-timeout-emf-completion-multi-contract-v1",
+      "path": "tests/serverless-conformance/fixtures/v1/m/M-01-request-timeout-emf-completion-multi-contract-v1.json",
+      "rustRoute": "/pets/fixed",
+      "backendCount": 0,
+      "proxyMappings": [
+        "/pets/fixed@get"
+      ],
+      "currentDisposition": "Unchanged matching trusted literal/template; early-timeout matching is read-only",
+      "sha256": "06cbe3d0b21b75b43ce594174ef6226df600716232fa980871ae10d779672ad1"
+    }
+  ],
+  "additionalExpectationConflicts": [],
+  "executionEvidence": "Targeted actual policy, compiler/pipeline, offline/startup and component stdout tests; no WP13 differential fixture execution",
+  "qualification": "Trusted Route implementation and admission qualified:77conformance tests,480fixture validation,identical DIGEST generations; no WP13 runtime/comparison",
+  "acceptedAdmissionImpactEvidence": "/home/steve/artifacts/implementation/light-lambda/WP12/route-admission-20261013T132442Z/owner-authorization.md",
+  "wp12TemplateSafetyAmendment": {
+    "maxUtf8Bytes": 1024,
+    "enforcement": "Init, selected expanded active Metrics; handler/proxy/fallback templates; unreachable/disabled/unselected/disjoint exclusions",
+    "runtimeRoute": "exact configured matching handler/proxy template or <unmatched>",
+    "ownerAccessorScope": "limited to message; default None, borrowed immutable Metrics metadata only",
+    "evidence": "/home/steve/artifacts/implementation/light-lambda/WP12/template-qualified-20261013T164302Z/qualification-summary.md",
+    "fixtureExpectationsChanged": false,
+    "fixtureTemplateReview": {
+      "fixtures": 480,
+      "configuredPathStringsAndKeys": 1437,
+      "maxBytes": 21,
+      "overflow": 0
+    },
+    "digestUnchanged": "a377d0336e452f489d7f81a3b7206606516a2aa3ca3bc252d99503b60d5646d2",
+    "deliveryOrElapsedGuarantee": false
+  }
+}

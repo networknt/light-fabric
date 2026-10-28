@@ -1,0 +1,63 @@
+[
+  {
+    "fixture": "CFG-03-synthetic-decryption-init-probe-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/CFG-03-synthetic-decryption-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "CFG-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "CFG-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "ConfigDecryptionTest exact PBKDF2/AES-GCM synthetic recipe and loader assertion. Test-only master/password/plaintext fixed by closed probe; actual Config loader executes after gateway Init. No HTTP response invented. Rust expectation uses the same approved local preparation recipe; zero Rust execution.",
+    "validation": "passed focused workflow 20261011T005339.616831Z"
+  },
+  {
+    "fixture": "CFG-05-static-init-retention-warm-config-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/CFG-05-static-init-retention-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "C-10",
+      "CFG-04",
+      "CFG-05"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10",
+      "CFG-04"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "InitRetentionTest writes a second owned config directory and creates a second LambdaApp object in the same JVM; original initialized handlers persist. No production reset. Exact two FnA calls assert retention, despite next declared FnB. Rust rejects unsupported option/test adapter at Init; no Rust reload/retention credit.",
+    "validation": "passed focused workflow 20261011T005339.616831Z"
+  },
+  {
+    "fixture": "D-08-independent-policy-waits-timed-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-08-independent-policy-waits-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "D-07",
+      "D-08",
+      "D-08a",
+      "D-08b",
+      "D-08c",
+      "D-08d",
+      "T-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "TargetDeadlineTest installs exact two 35ms Slow middleware waits with apiCallTimeout=1. Exact one fake Invoke plus total invocation duration >=60ms checks synchronous policy waits outside SDK timeout; this does not establish actual SDK timeout enforcement or Rust deadline behavior. Rust rejects the synthetic plugin/foreign target at Init; no specific target-validation branch credit.",
+    "validation": "passed focused workflow 20261011T005339.616831Z"
+  },
+  {
+    "fixture": "D-07-self-context-target-context-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-07-self-context-target-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "D-07"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "SelfTargetContextTest uses exact synthetic LambdaContext function name/ARN. Java calls identical self target once via fake Invoke, no recursion or AWS. Preserves original always-enabled WP2 adapter; Rust rejects test plugin at Init, no self-validator attribution.",
+    "validation": "passed focused workflow 20261011T005339.616831Z"
+  }
+]

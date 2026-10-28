@@ -1,0 +1,18 @@
+[
+  {
+    "fixture": "X-03-current-filter-multi-contract-v1",
+    "source": "Owner exact X03a filter shape and existing CP1 difference",
+    "javaBehaviorAsserted": [
+      "X-03",
+      "X-03a"
+    ],
+    "proposedRustBehaviorReached": [
+      "X-03",
+      "X-03a"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "GET-only chain removes deferred LoggerSet selection while historical POST/GET fixture remains. Shared valid ALB multimap carries the same Basic credentials in both maps. Java exact ROOT OFF named logger array preserved; proposed Rust fixed closed info-filter JSON200. No extra body fields allowed. No logging mutation or Rust endpoint implementation. Named filter prerequisite is limited to approved X03a, with no arbitrary overrides.",
+    "remainingContractAssertions": [],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T041510.875004Z"
+  }
+]

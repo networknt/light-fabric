@@ -1,0 +1,16 @@
+[
+  {
+    "fixture": "S-16-loopback-bind-denial-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-16-loopback-bind-denial-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "S-16"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-16",
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Exact LdapLoopbackTest Basic input, synthetic LDAP settings and BER invalid-credentials reply. Actual BasicAuthMiddleware performs exactly one bind, emits exact ERR10047 and zero dispatch. Only owned127.0.0.1 endpoint substituted in configuration, raw input unchanged. Proposed Rust rejects deferred LDAP at Init and makes zero binds; no Rust authentication execution claim.",
+    "validation": "passed focused separate-JVM workflow 20261011T010302.429862Z; result schema exit 0; isolation passed"
+  }
+]

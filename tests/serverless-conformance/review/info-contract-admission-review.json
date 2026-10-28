@@ -1,0 +1,18 @@
+[
+  {
+    "fixture": "X-02-enabled-multi-contract-v1",
+    "source": "X-02 historical structured body; ServerInfoHandler and ServerInfoUtil/updateNormalizeKey",
+    "javaBehaviorAsserted": [
+      "X-02",
+      "E-06a"
+    ],
+    "proposedRustBehaviorReached": [
+      "X-02",
+      "X-02a",
+      "E-06a"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Removed deferred LoggerSet declaration and corresponding path from shared configuration. Historical stable complete body retained except the exact same handler declaration/path removal, reviewed against module configuration normalization. Heap-only constraints retained. Rust body is owner-approved exact redacted shape, not generated output. Admin execution chain omits Basic authentication to exercise ServerInfo independently; the same exact chain removal is asserted in the complete Java module summary. Original authenticated evidence and failed draft remain preserved. Admin execution chain omits Basic authentication to exercise ServerInfo independently; the same exact chain removal is asserted in the complete Java module summary. Original authenticated evidence and failed draft remain preserved.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T015828.001368Z"
+  }
+]

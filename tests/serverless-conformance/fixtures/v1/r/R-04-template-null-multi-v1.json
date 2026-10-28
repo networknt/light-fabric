@@ -1,0 +1,177 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "R-04-template-null-multi-v1",
+  "title": "Shared real multi ALB template null-map behavior",
+  "ledger": [
+    "R-03",
+    "R-04",
+    "E-10"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only",
+      "light-lambda.accountId": "000000000000",
+      "light-lambda.apiId": "test-only",
+      "light-lambda.domainName": "test.example",
+      "light-lambda.resourceId": "test-only"
+    },
+    "files": {
+      "lambda-proxy": {
+        "functions": {
+          "/pets/{id}@get": "FnTemplate",
+          "/pets/fixed@get": "FnLiteral"
+        },
+        "logType": "Tail",
+        "enabled": true
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy"
+        ],
+        "chains": {
+          "request": [],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": [
+          {
+            "path": "/pets/fixed",
+            "method": "get",
+            "exec": [
+              "proxy"
+            ]
+          },
+          {
+            "path": "/pets/{id}",
+            "method": "get",
+            "exec": [
+              "proxy"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {},
+  "tokens": {},
+  "headerMode": "multi",
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls"
+  ],
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "GET",
+    "path": "/pets/42",
+    "multiValueHeaders": {},
+    "multiValueQueryStringParameters": {
+      "a": [
+        "1",
+        "2"
+      ]
+    },
+    "body": null,
+    "isBase64Encoded": false
+  },
+  "backend": [
+    {
+      "match": {
+        "target": "FnTemplate"
+      },
+      "respond": {
+        "functionError": null,
+        "payload": {
+          "statusCode": 200,
+          "body": "ok",
+          "isBase64Encoded": false
+        }
+      }
+    }
+  ],
+  "expectJava": {
+    "outcome": "exception",
+    "phase": "invocation",
+    "class": "java.lang.NullPointerException",
+    "backendCalls": [],
+    "jwksFetches": 0
+  },
+  "expect": {
+    "outcome": "response",
+    "status": 200,
+    "headers": [],
+    "headersAbsent": [],
+    "body": "ok",
+    "bodyBase64": false,
+    "jwksFetches": 0,
+    "backendCalls": [
+      {
+        "target": "FnTemplate",
+        "event": {
+          "path": "/pets/42",
+          "httpMethod": "GET",
+          "body": null,
+          "isBase64Encoded": false,
+          "requestContext": {
+            "stage": "test-only"
+          },
+          "queryStringParameters": {
+            "a": "2",
+            "id": "42"
+          },
+          "pathParameters": {
+            "id": "42"
+          },
+          "multiValueQueryStringParameters": {
+            "a": [
+              "1",
+              "2"
+            ]
+          }
+        },
+        "eventExact": {
+          "headers": null,
+          "multiValueHeaders": null,
+          "queryStringParameters": {
+            "a": "2",
+            "id": "42"
+          },
+          "pathParameters": {
+            "id": "42"
+          },
+          "multiValueQueryStringParameters": {
+            "a": [
+              "1",
+              "2"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "substitutions": []
+}

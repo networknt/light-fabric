@@ -1,0 +1,37 @@
+{
+  "light-lambda.stage": "isolated-petstore-trial",
+  "security.enabled": true,
+  "unified-security.enabled": true,
+  "unified-security.pathPrefixAuths": [
+    {
+      "prefix": "/",
+      "jwt": true
+    }
+  ],
+  "security.skipVerifyScopeWithoutSpec": false,
+  "cache.caches": [
+    {
+      "cacheName": "token",
+      "maxSize": 100,
+      "expiryInMinutes": 15
+    }
+  ],
+  "sanitizer.enabled": true,
+  "sanitizer.bodyEncoder": "html",
+  "sanitizer.headerEnabled": false,
+  "health.enabled": true,
+  "info.enableServerInfo": true,
+  "logger.enabled": true,
+  "light-lambda.accountId": "964637446810",
+  "security.enableVerifyJwt": true,
+  "security.enableVerifyScope": true,
+  "security.ignoreJwtExpiry": false,
+  "security.issuer": "urn:com:networknt:oauth2:v1",
+  "security.audience": [
+    "urn:com.networknt"
+  ],
+  "client.tokenKeyServerUrl": "https://dev.lightapi.net",
+  "client.tokenKeyUri": "/oauth2/AZZRJE52eXu3t1hseacnGQ/keys",
+  "security.logJwtToken": false,
+  "security.logClientUserScope": false
+}

@@ -1,0 +1,204 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "H-03-http-2-loopback-v1",
+  "title": "H-03-http-2 synthetic HTTP protocol assertions",
+  "ledger": [
+    "H-01",
+    "H-02",
+    "H-03",
+    "C-04",
+    "E-13"
+  ],
+  "config": {
+    "values": {},
+    "files": {
+      "router": {
+        "httpsEnabled": false,
+        "metricsInjection": false,
+        "maxRequestTime": 1000,
+        "urlRewriteRules": [
+          "/x /rewritten"
+        ]
+      },
+      "service": {
+        "singletons": [
+          {
+            "com.networknt.registry.URL": [
+              "com.networknt.registry.URLImpl"
+            ]
+          },
+          {
+            "com.networknt.registry.Registry": [
+              "com.networknt.registry.support.DirectRegistry"
+            ]
+          },
+          {
+            "com.networknt.balance.LoadBalance": [
+              "com.networknt.balance.RoundRobinLoadBalance"
+            ]
+          },
+          {
+            "com.networknt.cluster.Cluster": [
+              "com.networknt.cluster.LightCluster"
+            ]
+          }
+        ]
+      },
+      "direct-registry": {
+        "directUrls": {
+          "test-service": "${dependency:http}"
+        }
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.router.LambdaRouterMiddleware@h0"
+        ],
+        "chains": {
+          "request": [
+            "h0"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Synthetic dependency sends a declared fixed Date header; gateway response is not rewritten."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "headerMode": "single",
+  "dependencies": {
+    "http": {
+      "responses": [
+        {
+          "method": "DELETE",
+          "uri": "/rewritten",
+          "status": 202,
+          "headers": [
+            [
+              "Set-Cookie",
+              "a=1"
+            ],
+            [
+              "Set-Cookie",
+              "b=2"
+            ],
+            [
+              "Date",
+              "Thu, 01 Jan 1970 00:00:00 GMT"
+            ]
+          ],
+          "body": "http-ok"
+        }
+      ]
+    }
+  },
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "DELETE",
+    "path": "/x",
+    "headers": {
+      "SERVICE_ID": "test-service",
+      "x-forward": "yes"
+    },
+    "queryStringParameters": {
+      "a": "1"
+    },
+    "body": "synthetic-body",
+    "isBase64Encoded": false
+  },
+  "backend": [],
+  "expectJava": {
+    "status": 202,
+    "headers": [
+      [
+        "content-length",
+        "7"
+      ],
+      [
+        "date",
+        "Thu, 01 Jan 1970 00:00:00 GMT"
+      ],
+      [
+        "set-cookie",
+        "a=1"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "http-ok",
+    "bodyBase64": false,
+    "backendCalls": [],
+    "jwksFetches": 0,
+    "outcome": "response",
+    "httpCalls": [
+      {
+        "target": "${dependency:http}/rewritten",
+        "method": "DELETE",
+        "uri": "/rewritten",
+        "body": "",
+        "serviceId": null
+      }
+    ]
+  },
+  "expect": {
+    "status": 500,
+    "headers": [
+      [
+        "content-type",
+        "application/json"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "{\"statusCode\":500,\"code\":\"ERR14011\",\"message\":\"ALB_MULTI_VALUE_HEADERS_REQUIRED\",\"description\":\"The target group must enable multi-value headers.\",\"severity\":\"ERROR\"}",
+    "bodyBase64": false,
+    "backendCalls": [],
+    "jwksFetches": 0,
+    "outcome": "response",
+    "httpCalls": []
+  },
+  "differences": [
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls",
+    "httpCalls",
+    "header:content-type",
+    "header:content-length",
+    "header:date",
+    "header:set-cookie"
+  ]
+}
