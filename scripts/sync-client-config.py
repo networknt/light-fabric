@@ -27,12 +27,18 @@ def main():
     pending = []
     skipped = set()
     checked = 0
+    def repository_root(repo):
+        # Manifest keys use the logical repository name. A linked worktree or
+        # renamed checkout must validate itself, never a different sibling clone.
+        return fabric if repo == "light-fabric" else args.workspace / repo
+
     for relative, overrides in targets.items():
-        repo = relative.split("/")[0]
-        if not (args.workspace / repo).is_dir():
+        repo, suffix = relative.split("/", 1)
+        directory = repository_root(repo)
+        if not directory.is_dir():
             skipped.add(repo)
             continue
-        path = args.workspace / relative
+        path = directory / suffix
         if not path.is_file():
             errors.append(f"Missing registered template: {relative}")
             continue
@@ -50,13 +56,13 @@ def main():
 
     # Catch new product templates that have not been enrolled in the manifest.
     for repo in sorted({name.split('/')[0] for name in targets}):
-        directory = args.workspace / repo
+        directory = repository_root(repo)
         patterns = ["apps/*/config/client.yml"] if repo in {
             "light-fabric", "portal-service", "light-example-rs"
         } else ["*-rust/config/client.yml", "all-in-*/*-rust/config/client.yml"]
         for glob in patterns:
             for path in directory.glob(glob):
-                relative = path.relative_to(args.workspace).as_posix()
+                relative = repo + "/" + path.relative_to(directory).as_posix()
                 if relative not in targets:
                     errors.append(f"Unregistered template: {relative}")
     for error in errors:

@@ -14,6 +14,10 @@
     "client.timeout": "4000"
   },
   "light-fabric/apps/light-knowledge/config/client.yml": {},
+  "light-fabric/apps/light-lambda/config/client.yml": {
+    "client.earlyRefreshRetryDelay": "30000",
+    "client.timeout": "4000"
+  },
   "light-fabric/apps/light-workflow/config/client.yml": {
     "client.caCertPath": "/config/ca.pem",
     "client.tokenKeyServerUrl": "https://light-oauth:6881",

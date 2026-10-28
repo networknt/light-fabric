@@ -93,3 +93,15 @@ Router forwarding comparisons and separate runner counts are retained.
 Response/contract parity, byte identity, local HTTP attempts and AWS execution
 identity are distinct claims. These local observations do not measure raw
 SDK-wire behavior or establish AWS/freeze-thaw/resource bounds.
+
+## Remote CI template repair
+
+The first PR CI run rejected an unregistered Lambda client template. The manifest
+now records its existing 30,000 ms early-refresh and 4,000 ms request fallbacks;
+the application YAML bytes and qualified package are unchanged. The synchronizer
+also resolves the logical light-fabric manifest paths against its own checkout,
+so a renamed worktree cannot accidentally check a different sibling clone.
+Seven hermetic regression tests cover active/shadow checkouts, drift, missing
+and unregistered templates, sibling repositories and write targeting. They pass
+on the repair and fail on the old script. CI runs these tests before parity.
+The failed remote run remains preserved; this tooling fix requires a new CI run.
