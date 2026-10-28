@@ -140,3 +140,26 @@ correctly produces one backend call, zero response entries and one finalization.
 It supplements rather than replaces the wall-clock fixture. Deterministic fixture
 timing and exact attribution of the CI failure remain open; no retries, broader
 serialization, tolerance expansion or count normalization have been applied.
+
+## JWKS timeout-test setup repair
+
+Run 40675615110 failed earlier than D-08e: light-security had 47 passes and one
+failure waiting for the timeout test's real loopback request to arrive. The other
+four jobs passed. D-08e was not reached, so there is no new D-08e phase evidence.
+
+The 50 ms timeout could expire during HTTP setup before the test captured the
+active attempt. A bounded local scheduling control (yield to start the task,
+then 75 ms executor delay) exposed this race at active-attempt capture. The exact
+CI request-arrival failure and this distinct local failure are both retained.
+A delay before task start did not reproduce it and is also recorded.
+
+Only this test now holds Tokio time paused while driving real loopback I/O with
+a runnable yield branch and the original five-second wall watchdog. It advances
+the unchanged 50 ms timeout only after actual request arrival, observes cleanup,
+retains the immediate cooldown rejection, advances the existing 31-second cooldown,
+and drives recovery without racing I/O against virtual clock auto-advance.
+All error/status, completion, active-state and exact request-count assertions are
+preserved. JWT claim time, production security code, fixture contracts and other
+tests are unchanged. The 75 ms scheduling control remains in the repaired test.
+All 62 security library/integration tests passed locally. This repair does not
+resolve the separate retained D-08e wall-clock fixture finding.

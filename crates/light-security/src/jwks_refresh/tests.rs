@@ -269,18 +269,23 @@ async fn failed_bootstrap_is_ungated_but_records_attempt() {
     assert_eq!(server.requests(), 2);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn timeout_completion_clears_active_and_allows_post_cooldown_recovery() {
     let server = Server::new("new", true).await;
     let runtime = runtime(&server, SecurityConfig::default(), 50);
     let token = valid("new");
     let mut f = Box::pin(verify_jwt_token(&runtime, &token, JwtExpiryMode::Enforce));
     pending(&mut f).await;
-    server.request_started().await;
+    // Start the detached task, then model descheduling beyond its 50 ms budget.
+    // A wall-clock timeout must not race the setup of this timeout/cleanup test.
+    tokio::task::yield_now().await;
+    std::thread::sleep(Duration::from_millis(75));
+    drive_loopback_without_advancing_time(server.request_started()).await;
     let mut completion = runtime.refresh_gate.entries.lock().unwrap()[&gate_key(&[])]
         .active
         .clone()
         .unwrap();
+    tokio::time::advance(Duration::from_millis(50)).await;
     assert_eq!(f.await.unwrap_err().status, 502);
     // The caller and task timers can fire together. Observe actual task cleanup.
     let _ = tokio::time::timeout(Duration::from_secs(1), completion.changed())
@@ -296,13 +301,38 @@ async fn timeout_completion_clears_active_and_allows_post_cooldown_recovery() {
             .status,
         401
     );
-    cooldown().await;
+    tokio::time::advance(Duration::from_secs(31)).await;
     server.release(2);
     assert!(
-        verify_jwt_token(&runtime, &token, JwtExpiryMode::Enforce)
-            .await
-            .is_ok()
+        drive_loopback_without_advancing_time(verify_jwt_token(
+            &runtime,
+            &token,
+            JwtExpiryMode::Enforce,
+        ))
+        .await
+        .is_ok()
     );
     inactive_recorded(&runtime);
     assert_eq!(server.requests(), 2);
+}
+
+// Paused Tokio time must not auto-advance while real loopback I/O is pending.
+// The runnable yield branch holds it fixed; the original 5 s setup bound stays
+// a wall-clock watchdog. No retries, enlarged client budget or production hook.
+async fn drive_loopback_without_advancing_time<T>(
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    let wall_start = std::time::Instant::now();
+    tokio::pin!(future);
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut future => return result,
+            _ = tokio::task::yield_now() => {}
+        }
+        assert!(
+            wall_start.elapsed() < Duration::from_secs(5),
+            "loopback I/O watchdog"
+        );
+    }
 }
