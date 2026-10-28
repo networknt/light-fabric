@@ -43,3 +43,41 @@ pub mod owned_runtime;
 
 /// Opt-in qualification bridge; ordinary startup never calls it.
 pub mod qualification_extension_bridge;
+
+/// Qualification-only switches are absent from ordinary builds. Deployable
+/// artifacts must not enable the explicit insecure-test-config feature.
+#[doc(hidden)]
+pub fn insecure_test_flag(name: &str) -> bool {
+    #[cfg(feature = "insecure-test-config")]
+    {
+        std::env::var(name).as_deref() == Ok("1")
+    }
+    #[cfg(not(feature = "insecure-test-config"))]
+    {
+        let _ = name;
+        false
+    }
+}
+
+#[cfg(all(test, not(feature = "insecure-test-config")))]
+mod production_switch_tests {
+    #[test]
+    fn production_build_ignores_insecure_environment_switches() {
+        if std::env::var("REVIEW_SWITCH_CHILD").as_deref() == Ok("1") {
+            for name in [
+                "LIGHT_LAMBDA_ALLOW_INSECURE_TEST_CONFIG",
+                "LIGHT_LAMBDA_ALLOW_INSECURE_TEST_ENDPOINTS",
+            ] {
+                assert_eq!(std::env::var(name).as_deref(), Ok("1"));
+                assert!(!super::insecure_test_flag(name));
+            }
+            return;
+        }
+        assert!(std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "production_switch_tests::production_build_ignores_insecure_environment_switches"])
+            .env("REVIEW_SWITCH_CHILD", "1")
+            .env("LIGHT_LAMBDA_ALLOW_INSECURE_TEST_CONFIG", "1")
+            .env("LIGHT_LAMBDA_ALLOW_INSECURE_TEST_ENDPOINTS", "1")
+            .status().unwrap().success());
+    }
+}

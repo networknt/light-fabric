@@ -3,6 +3,7 @@ use super::*;
 use std::{collections::BTreeMap, ffi::CStr, io::Read, mem::MaybeUninit};
 use unsafe_libyaml as unsafe_yaml;
 pub const REJECTED: &str = "transformer: unsupported rule profile";
+const MALFORMED_YAML: &str = "bounded YAML syntax failure";
 static INTERPOLATION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\$\{([^}]+)\}").expect("fixed variable regex"));
 fn invalid() -> ConfigError {
@@ -340,7 +341,7 @@ fn expanded_preflight(
     for _ in 0..RuleBudget::EVENTS {
         let mut event = MaybeUninit::<unsafe_yaml::yaml_event_t>::uninit();
         if unsafe { unsafe_yaml::yaml_parser_parse(&mut *parser.0, event.as_mut_ptr()) }.fail {
-            return Err(invalid());
+            return Err(ConfigError::Convert(MALFORMED_YAML.into()));
         }
         let event = Event(unsafe { event.assume_init() });
         let (cost, anchor, key_bytes) = unsafe {
@@ -358,6 +359,7 @@ fn expanded_preflight(
                 unsafe_yaml::YAML_STREAM_END_EVENT => {
                     return match root {
                         Some(cost) if stack.is_empty() => Ok(cost),
+                        None if docs == 0 && stack.is_empty() => Ok(Cost::default()),
                         _ => Err(invalid()),
                     };
                 }
@@ -484,7 +486,7 @@ fn expanded_preflight(
     Err(invalid())
 }
 fn parse(raw: &[u8]) -> Result<Value, ConfigError> {
-    preflight(raw)?;
+    preflight(raw).map_err(|_| invalid())?;
     let value = serde_yaml::from_slice(raw).map_err(|_| invalid())?;
     measure(&value)?;
     Ok(value)
@@ -708,7 +710,15 @@ impl ConfigLoader {
         }
         let value = if typed {
             if matches!(text.trim().as_bytes().first(), Some(b'[' | b'{')) {
-                parse(text.as_bytes())?
+                // Syntax failures retain the legacy string fallback. Budget
+                // failures must never fall back or materialize an oversized tree.
+                match preflight(text.as_bytes()) {
+                    Err(ConfigError::Convert(message)) if message == MALFORMED_YAML => {
+                        return copy_checked(&Value::String(text.to_owned()), depth, used);
+                    }
+                    Err(_) => return Err(invalid()),
+                    Ok(()) => parse(text.as_bytes())?,
+                }
             } else {
                 Self::parse_text_scalar(text)
             }
@@ -844,5 +854,39 @@ mod tests {
         assert!(BoundedCaptures::default().read(&values).is_err());
         // Owned scratch only; no repository/evidence cleanup.
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+    #[test]
+    fn comment_only_yaml_is_an_empty_document() {
+        for raw in [
+            b"# comment\n".as_slice(),
+            b"  # values\n# rule\n".as_slice(),
+        ] {
+            assert_eq!(
+                ConfigLoader::parse_captured_config_bounded(raw).unwrap(),
+                Value::Null
+            );
+        }
+    }
+    #[test]
+    fn typed_malformed_collections_match_legacy_without_bypassing_limits() {
+        let loader = ConfigLoader::from_values(HashMap::new(), None, None).unwrap();
+        for text in ["[unfinished", "{unfinished"] {
+            let sources = HashMap::from([("REVIEW_VALUE".into(), Value::String(text.into()))]);
+            let mut value = Value::String("${REVIEW_VALUE}".into());
+            loader.resolve_value_bounded(&mut value, &sources).unwrap();
+            assert_eq!(value, Value::String(text.into()));
+        }
+    }
+    #[test]
+    fn malformed_collection_syntax_is_distinct_from_budget_failure() {
+        assert!(
+            matches!(preflight(b"[unfinished"), Err(ConfigError::Convert(message)) if message == MALFORMED_YAML)
+        );
+        assert!(preflight(format!("[{}]", "1,".repeat(RuleBudget::NODES + 1)).as_bytes()).is_err());
     }
 }

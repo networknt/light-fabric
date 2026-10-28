@@ -573,8 +573,8 @@ impl RequestHandler for Handler {
                 .map_err(|_| HandlerFailure)?;
             headers.insert(name.to_string(), Value::String(value.into()));
         }
-        // Native exact lookup is separate from case-insensitive parameter reads.
-        // Lowercase ingress remains lowercase when the proof says exact absent.
+        // The validator IPC profile uses canonical Content-Type spelling.
+        // The trusted proof follows case-insensitive HTTP ingress and mutations.
         if let Some(value) = exact_media {
             headers.remove("content-type");
             headers.insert(

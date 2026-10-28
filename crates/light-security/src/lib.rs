@@ -334,8 +334,23 @@ pub async fn verify_jwt_token_for_services(
     expiry_mode: JwtExpiryMode,
     service_ids: &[String],
 ) -> Result<AuthPrincipal, HandlerRejection> {
-    verify_jwt_token_for_services_with_deadline(runtime, token, expiry_mode, service_ids, None)
-        .await
+    verify_jwt_token_for_services_policy(
+        runtime,
+        token,
+        expiry_mode,
+        service_ids,
+        None,
+        true,
+        false,
+    )
+    .await
+    .map_err(|error| {
+        if error.message == "unknown key id" {
+            HandlerRejection::unauthorized("JWT key is not configured")
+        } else {
+            error
+        }
+    })
 }
 
 /// Verify with an optional caller budget. Timing out or dropping this future does
@@ -347,8 +362,16 @@ pub async fn verify_jwt_token_for_services_with_deadline(
     service_ids: &[String],
     deadline: Option<tokio::time::Instant>,
 ) -> Result<AuthPrincipal, HandlerRejection> {
-    verify_jwt_token_for_services_policy(runtime, token, expiry_mode, service_ids, deadline, true)
-        .await
+    verify_jwt_token_for_services_policy(
+        runtime,
+        token,
+        expiry_mode,
+        service_ids,
+        deadline,
+        true,
+        true,
+    )
+    .await
 }
 
 /// Signed-claims diagnostic only: never fetch keys or authenticate the caller.
@@ -360,8 +383,16 @@ pub async fn verify_jwt_token_for_services_without_refresh(
     service_ids: &[String],
     deadline: Option<tokio::time::Instant>,
 ) -> Result<AuthPrincipal, HandlerRejection> {
-    verify_jwt_token_for_services_policy(runtime, token, expiry_mode, service_ids, deadline, false)
-        .await
+    verify_jwt_token_for_services_policy(
+        runtime,
+        token,
+        expiry_mode,
+        service_ids,
+        deadline,
+        false,
+        true,
+    )
+    .await
 }
 
 async fn verify_jwt_token_for_services_policy(
@@ -371,6 +402,7 @@ async fn verify_jwt_token_for_services_policy(
     service_ids: &[String],
     deadline: Option<tokio::time::Instant>,
     allow_refresh: bool,
+    lambda_policy: bool,
 ) -> Result<AuthPrincipal, HandlerRejection> {
     if deadline.is_some_and(|end| end <= tokio::time::Instant::now()) {
         return Err(jwks_refresh::deadline_error());
@@ -380,7 +412,8 @@ async fn verify_jwt_token_for_services_policy(
         return Err(HandlerRejection::unauthorized("missing bearer token"));
     }
     let has_service_ids = has_service_ids(service_ids);
-    if !has_service_ids
+    if !lambda_policy
+        && !has_service_ids
         && matches!(expiry_mode, JwtExpiryMode::Enforce)
         && let Some(principal) = cached_principal(runtime, token)
     {
@@ -410,17 +443,18 @@ async fn verify_jwt_token_for_services_policy(
             return Err(error);
         }
     };
-    let validation = validation_for_mode(&runtime.config, header.alg, expiry_mode);
+    let validation = validation_for_mode(&runtime.config, header.alg, expiry_mode, lambda_policy);
     let decoded = match decode::<JsonValue>(token, &key, &validation) {
         Ok(decoded) => decoded,
         Err(error)
             if allow_refresh
-                && !refreshed
+                && (!lambda_policy || !refreshed)
                 && runtime.jwk_source.is_some()
-                && matches!(
-                    error.kind(),
-                    jsonwebtoken::errors::ErrorKind::InvalidSignature
-                ) =>
+                && (!lambda_policy
+                    || matches!(
+                        error.kind(),
+                        jsonwebtoken::errors::ErrorKind::InvalidSignature
+                    )) =>
         {
             refresh_jwks_gated(runtime, service_ids, deadline).await?;
             let (key, _) = decoding_key_for_token(
@@ -464,11 +498,12 @@ fn validation_for_mode(
     config: &SecurityConfig,
     algorithm: Algorithm,
     expiry_mode: JwtExpiryMode,
+    lambda_policy: bool,
 ) -> Validation {
     let mut validation = Validation::new(algorithm);
     validation.leeway = config.jwt.clock_skew_in_seconds;
     validation.validate_aud = false;
-    validation.validate_nbf = true;
+    validation.validate_nbf = lambda_policy;
     if config.ignore_jwt_expiry || matches!(expiry_mode, JwtExpiryMode::Ignore) {
         validation.validate_exp = false;
         validation.required_spec_claims.clear();
@@ -1808,5 +1843,22 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
             let jwks = runtime.jwks.read().await;
             assert!(jwks.contains_key("key_boot_single"));
         }
+    }
+}
+
+#[cfg(test)]
+mod review_compatibility_tests {
+    use super::*;
+    #[test]
+    fn gateway_retains_legacy_nbf_policy_while_lambda_checks_it() {
+        let config = SecurityConfig::default();
+        assert!(
+            !validation_for_mode(&config, Algorithm::HS256, JwtExpiryMode::Enforce, false)
+                .validate_nbf
+        );
+        assert!(
+            validation_for_mode(&config, Algorithm::HS256, JwtExpiryMode::Enforce, true)
+                .validate_nbf
+        );
     }
 }

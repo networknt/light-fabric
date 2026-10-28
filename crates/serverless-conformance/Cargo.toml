@@ -40,3 +40,8 @@ rcgen = "0.14.8"
 rustls = { version = "0.23.37", features = ["ring"] }
 
 bytes.workspace = true
+
+[dev-dependencies]
+# Test targets explicitly activate synthetic insecure prerequisites. Ordinary
+# workspace builds and deployable bootstrap builds do not enable this feature.
+light-lambda-runtime = { path = "../../frameworks/light-lambda-runtime", features = ["insecure-test-config"] }

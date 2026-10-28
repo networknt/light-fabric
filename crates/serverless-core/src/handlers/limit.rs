@@ -261,7 +261,6 @@ impl LimitHandler {
                     .ok_or_else(StatusError::missing_identity)?;
                 principal
                     .client_id()
-                    .or_else(|| inv.headers.get("client-id").and_then(|v| v.to_str().ok()))
                     .map(str::to_owned)
                     .ok_or_else(StatusError::missing_identity)
             }

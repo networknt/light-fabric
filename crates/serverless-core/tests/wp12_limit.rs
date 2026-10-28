@@ -299,15 +299,33 @@ async fn source_resolvers_require_explicit_metadata_and_verified_identity() {
         None,
         serde_json::json!({}),
     ));
+    for label in ["test-only-header", "another-header"] {
+        inv.headers.insert("client-id", label.parse().unwrap());
+        assert!(matches!(
+            h.on_request(&mut inv, &mut state).await.unwrap(),
+            HandlerOutcome::Reject(_)
+        ));
+    }
+    state.principal = Some(Principal::from_verified(
+        "test-only".into(),
+        Some("test-only-header".into()),
+        None,
+        serde_json::json!({}),
+    ));
     assert!(matches!(
         h.on_request(&mut inv, &mut state).await.unwrap(),
         HandlerOutcome::Continue
     ));
+    inv.headers
+        .insert("client-id", "yet-another-header".parse().unwrap());
     assert!(matches!(
         h.on_request(&mut inv, &mut state).await.unwrap(),
         HandlerOutcome::Respond(_)
     ));
-    assert_eq!(state.principal.as_ref().unwrap().client_id(), None);
+    assert_eq!(
+        state.principal.as_ref().unwrap().client_id(),
+        Some("test-only-header")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -1,0 +1,37 @@
+{
+  "schema": "light-lambda-review-amendment/v1",
+  "reason": "HTTP header names are case insensitive; approved review correction preserves archived Java results",
+  "originalSha256": "94d6e5b769124f41c75554b50dc6c670bada151b72ff12a48cf8a9e3f9fbe8d0",
+  "cases": {
+    "header-validator-3.0.3-lowercase-existing-update-upper": {
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1
+    },
+    "header-validator-3.0.3-missing-add-lower": {
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1
+    },
+    "header-validator-3.0.3-uppercase-remove-add-lower": {
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1
+    },
+    "header-validator-3.1.0-lowercase-existing-update-upper": {
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1
+    },
+    "header-validator-3.1.0-missing-add-lower": {
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1
+    },
+    "header-validator-3.1.0-uppercase-remove-add-lower": {
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1
+    }
+  }
+}

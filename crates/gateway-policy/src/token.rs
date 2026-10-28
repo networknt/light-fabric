@@ -246,6 +246,11 @@ impl TokenRuntime {
             }
 
             if now < cached.expired_retry_timeout {
+                if !cached.is_expired(now)
+                    && let Some(token) = cached.token.clone()
+                {
+                    return call.cached(token);
+                }
                 return Err(call.redact(client_credentials_token_not_available()));
             }
 
@@ -304,6 +309,11 @@ impl TokenRuntime {
                     if failure.backoff {
                         cached.expired_retry_timeout =
                             now_millis().saturating_add(options.expired_refresh_retry_delay);
+                    }
+                    if !cached.is_expired(now_millis())
+                        && let Some(token) = cached.token.clone()
+                    {
+                        return call.cached(token);
                     }
                     Err(call.redact(failure.error))
                 }

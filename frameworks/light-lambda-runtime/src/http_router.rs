@@ -44,6 +44,26 @@ fn error(service: &str) -> DispatchError {
         &format!("Failed to invoke HTTP service with serviceId {service}."),
     ))
 }
+// Invocation paths have already been decoded. Serialize them as path data,
+// never parse them as a URL suffix. Reject dot segments before URL normalization.
+fn upstream_url(base: &str, path: &str) -> Result<Url, ()> {
+    if !path.starts_with('/') || path.split('/').any(|s| matches!(s, "." | "..")) {
+        return Err(());
+    }
+    let mut url = Url::parse(base).map_err(|_| ())?;
+    let mut encoded = String::new();
+    for byte in path.bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
+            encoded.push(byte as char);
+        } else {
+            use std::fmt::Write;
+            write!(encoded, "%{byte:02X}").map_err(|_| ())?;
+        }
+    }
+    url.set_path(&format!("{}{}", url.path().trim_end_matches('/'), encoded));
+    Ok(url)
+}
+
 impl HttpRouterBackend {
     /// Only cold-start trusted configuration may populate destinations. No
     /// request field is accepted as a URL, proxy, resolver or redirect policy.
@@ -153,7 +173,7 @@ impl HttpRouterBackend {
         if !["GET", "DELETE", "POST", "PUT", "PATCH"].contains(&method) {
             return Err(error(&target));
         }
-        let mut url = Url::parse(&target).map_err(|_| error(&target))?;
+        let mut url = upstream_url(base, path).map_err(|_| error(&target))?;
         if url.origin() != Url::parse(base).map_err(|_| error(id))?.origin() {
             return Err(error(&target));
         }
@@ -349,5 +369,23 @@ mod tests {
         assert_eq!(counts[0].load(Ordering::Relaxed), 4000);
         assert_eq!(counts[1].load(Ordering::Relaxed), 4000);
         assert_eq!(set.urls, ["one", "two"]);
+    }
+}
+
+#[cfg(test)]
+mod path_serialization_tests {
+    use super::*;
+    #[test]
+    fn decoded_path_cannot_introduce_url_syntax_or_escape_base() {
+        let url = upstream_url("https://example.test/base", "/x?a=1#tail\\z/%2e%2e/雪").unwrap();
+        assert_eq!(
+            url.path(),
+            "/base/x%3Fa%3D1%23tail%5Cz/%252e%252e/%E9%9B%AA"
+        );
+        assert_eq!(url.query(), None);
+        assert_eq!(url.fragment(), None);
+        for path in ["/../escape", "/./escape", "/a/../escape"] {
+            assert!(upstream_url("https://example.test/base", path).is_err());
+        }
     }
 }

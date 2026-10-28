@@ -441,10 +441,9 @@ fn prepare(config: &RuntimeConfig) -> Result<(TokenHandler, Vec<String>), InitEr
         .and_then(Value::as_bool)
         .ok_or_else(invalid)?;
     if enabled {
-        let insecure =
-            std::env::var("LIGHT_LAMBDA_ALLOW_INSECURE_TEST_CONFIG").as_deref() == Ok("1");
+        let insecure = crate::insecure_test_flag("LIGHT_LAMBDA_ALLOW_INSECURE_TEST_CONFIG");
         let test_endpoints =
-            std::env::var("LIGHT_LAMBDA_ALLOW_INSECURE_TEST_ENDPOINTS").as_deref() == Ok("1");
+            crate::insecure_test_flag("LIGHT_LAMBDA_ALLOW_INSECURE_TEST_ENDPOINTS");
         if !client.tls.verify_hostname && !insecure {
             return Err(invalid());
         }

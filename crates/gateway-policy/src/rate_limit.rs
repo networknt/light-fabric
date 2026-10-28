@@ -75,8 +75,8 @@ pub enum LimitKey {
     /// Deployments must sanitize this header at their trusted ingress; it is
     /// never an authentication credential or a verified principal identity.
     Akamai,
-    /// Prefer the verified client ID; otherwise use Client-Id only after a
-    /// verified principal exists. The header remains an unverified quota label.
+    /// Uses the verified client ID. An arbitrary request header cannot create
+    /// new buckets when the authenticated principal has no client ID.
     #[serde(rename = "header-client-id", alias = "headerclientid")]
     HeaderClientId,
 }
@@ -369,20 +369,12 @@ fn rate_limit_key_and_quotas(
                     "verified authentication is required for header client rate limiting",
                 )
             })?;
-            let header;
-            let (client_id, namespace) = if let Some(client_id) = principal.client_id.as_deref() {
-                (client_id, "client")
-            } else {
-                header = request_header(session, "Client-Id")
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| {
-                        HandlerRejection::unauthorized(
-                            "client id is required for header client rate limiting",
-                        )
-                    })?;
-                (header.as_str(), "client-header")
-            };
+            let client_id = principal.client_id.as_deref().ok_or_else(|| {
+                HandlerRejection::unauthorized(
+                    "verified client id is required for client rate limiting",
+                )
+            })?;
+            let namespace = "client";
             let quotas = direct_quotas(&config.client, client_id, request_path)
                 .or_else(|| non_empty(config.rate_limit.as_slice()));
             Ok(quotas.map(|quotas| (format!("{namespace}:{client_id}"), quotas.to_vec())))
@@ -707,11 +699,12 @@ mod tests {
             user_id: Some("verified-user".into()),
             ..Default::default()
         };
-        let key = rate_limit_key_and_quotas(&request, &config, Some(&verified), "/", None)
-            .unwrap()
-            .unwrap()
-            .0;
-        assert_eq!(key, "client-header:caller-label");
+        assert_eq!(
+            rate_limit_key_and_quotas(&request, &config, Some(&verified), "/", None)
+                .unwrap_err()
+                .status,
+            401
+        );
         let missing = IdentityHeaders(http::HeaderMap::new());
         assert_eq!(
             rate_limit_key_and_quotas(&missing, &config, Some(&verified), "/", None)

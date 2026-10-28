@@ -1,4 +1,4 @@
-//! Trusted, invocation-local provenance for the native exact Content-Type lookup.
+//! Trusted, invocation-local provenance for the HTTP case-insensitive Content-Type lookup.
 //! No Deserialize or Debug: neither caller fields nor diagnostics carry proof.
 use crate::HandlerFailure;
 use http::HeaderValue;
@@ -12,8 +12,9 @@ enum State {
     Known(Option<HeaderValue>),
 }
 impl ValidatorMediaProof {
-    /// Trusted adapter projection of the exact native key's current value.
-    /// Preserve absence and spelling provenance; never reconstruct from a bool.
+    /// Trusted adapter projection of the current case-insensitive media header.
+    /// The historical method name is retained for source compatibility.
+    /// Preserve absence and its value; never reconstruct from a bool.
     pub fn exact_content_type(&self) -> Result<Option<&HeaderValue>, HandlerFailure> {
         match &self.0 {
             State::Unknown => Err(HandlerFailure),
@@ -34,12 +35,10 @@ impl ValidatorMediaProof {
                 .is_none_or(|value| value.as_bytes().starts_with(b"application/json"))),
         }
     }
-    /// Native case-insensitive update preserves an existing key's spelling;
-    /// only insertion of an absent key uses the configured spelling.
-    pub fn record_insert(&mut self, name: &str, value: &HeaderValue, existed: bool) {
+    /// Header names are case insensitive, including insertion after removal.
+    pub fn record_insert(&mut self, name: &str, value: &HeaderValue, _existed: bool) {
         if name.eq_ignore_ascii_case("content-type")
             && let State::Known(current) = &mut self.0
-            && (current.is_some() || (!existed && name == "Content-Type"))
         {
             *current = Some(value.clone());
         }

@@ -231,26 +231,32 @@ async fn execute_with_guard(
 
 /// App-owned reservations may only enter an implemented local terminal. An
 /// unrelated/default dispatch mapping cannot claim these operations.
+/// Canonical reservation table shared by runtime admission and application tools.
+pub fn reserved_path(path: &str) -> Option<&'static str> {
+    match path {
+        "/health" => Some("/health"),
+        "/adm/health" => Some("/adm/health"),
+        "/adm/server/info" => Some("/adm/server/info"),
+        "/adm/logger" => Some("/adm/logger"),
+        _ => path
+            .strip_prefix("/adm/cache/")
+            .filter(|name| !name.is_empty() && !name.contains('/'))
+            .map(|_| "/adm/cache/{name}"),
+    }
+}
+
 fn reserved_plan_response(
     inv: &mut Invocation,
     plan: &serverless_core::ExecutionPlan,
 ) -> Option<GatewayResponse> {
     use serverless_core::HandlerId;
-    let (template, expected) = match inv.path.as_str() {
-        "/health" => ("/health", Some(HandlerId::Health)),
-        "/adm/health" => ("/adm/health", Some(HandlerId::Health)),
-        "/adm/server/info" => ("/adm/server/info", Some(HandlerId::Info)),
-        "/adm/logger" if inv.method == http::Method::POST => {
-            ("/adm/logger", Some(HandlerId::SetLogger))
-        }
-        "/adm/logger" => ("/adm/logger", Some(HandlerId::GetLogger)),
-        path if path
-            .strip_prefix("/adm/cache/")
-            .is_some_and(|name| !name.is_empty() && !name.contains('/')) =>
-        {
-            ("/adm/cache/{name}", None)
-        }
-        _ => return None,
+    let template = reserved_path(&inv.path)?;
+    let expected = match template {
+        "/health" | "/adm/health" => Some(HandlerId::Health),
+        "/adm/server/info" => Some(HandlerId::Info),
+        "/adm/logger" if inv.method == http::Method::POST => Some(HandlerId::SetLogger),
+        "/adm/logger" => Some(HandlerId::GetLogger),
+        _ => None,
     };
     let ids = plan.handler_ids(inv);
     let protected = matches!(

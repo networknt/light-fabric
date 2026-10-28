@@ -4,7 +4,7 @@ use light_lambda_runtime::{
     service::RequestGuard,
 };
 use serverless_aws::target::GatewayIdentity;
-use serverless_core::{HandlerId, RouteMatch, StatusError};
+use serverless_core::HandlerId;
 use std::{path::PathBuf, sync::Arc};
 
 pub mod validator_deployment_profile;
@@ -46,43 +46,12 @@ pub fn parse_args(args: &[String]) -> Result<Command, &'static str> {
 /// Phase-1 reservation, applied to the same canonical path selected by the core.
 /// A single nonempty cache-name segment matches {name}; extra/trailing segments do not.
 pub fn reserved_path(path: &str) -> Option<&'static str> {
-    match path {
-        "/health" => Some("/health"),
-        "/adm/health" => Some("/adm/health"),
-        "/adm/server/info" => Some("/adm/server/info"),
-        "/adm/logger" => Some("/adm/logger"),
-        _ => path
-            .strip_prefix("/adm/cache/")
-            .filter(|name| !name.is_empty() && !name.contains('/'))
-            .map(|_| "/adm/cache/{name}"),
-    }
+    light_lambda_runtime::service::reserved_path(path)
 }
+/// Compatibility callback for qualification callers. Reserved-route admission
+/// is owned by service::reserved_plan_response and runs before this callback.
 pub fn phase1_guard() -> RequestGuard {
-    Arc::new(|inv| {
-        let path = reserved_path(&inv.path)?;
-        // The runtime additionally verifies the compiled local terminal. Until
-        // qualified factories/routes exist these GETs still return local404.
-        // The runtime reservation guard first proves the compiled local terminal
-        // and JWT/Security chain. This callback cannot authorize a proxy target.
-        if (inv.method == "GET" && path != "/adm/cache/{name}")
-            || (inv.method == "POST" && path == "/adm/logger")
-        {
-            return None;
-        }
-        inv.route = Some(RouteMatch {
-            template: path.into(),
-            target: None,
-        });
-        Some(
-            StatusError::new(
-                404,
-                "ERR10007",
-                "INVALID_REQUEST_PATH",
-                &format!("Request path {path} cannot be found in the spec."),
-            )
-            .response(),
-        )
-    })
+    Arc::new(|_| None)
 }
 
 /// Function ARN is trusted deployment identity, never derived from an invocation.

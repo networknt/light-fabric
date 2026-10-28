@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+insecure-test-config = []
+
 [dependencies]
 light-lambda-validator = { path = "../../crates/light-lambda-validator" }
 lambda_runtime.workspace = true

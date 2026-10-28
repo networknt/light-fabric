@@ -13,7 +13,8 @@ async fn verify(
     runtime: &SecurityRuntime,
     token: &str,
 ) -> Result<light_security::AuthPrincipal, light_security::HandlerRejection> {
-    verify_jwt_token_for_services(runtime, token, JwtExpiryMode::Enforce, &[]).await
+    verify_jwt_token_for_services_with_deadline(runtime, token, JwtExpiryMode::Enforce, &[], None)
+        .await
 }
 
 #[tokio::test]
@@ -325,7 +326,15 @@ async fn nbf_modes_optional_claim_skew_and_cache_hits() {
             }
             let token = token(Some("known"), SECRET, claims);
             for _ in 0..2 {
-                let result = verify_jwt_token_for_services(&runtime, &token, mode, &[]).await;
+                // Gateway retains its legacy nbf policy; Lambda opts into nbf.
+                assert!(
+                    verify_jwt_token_for_services(&runtime, &token, mode, &[])
+                        .await
+                        .is_ok()
+                );
+                let result =
+                    verify_jwt_token_for_services_with_deadline(&runtime, &token, mode, &[], None)
+                        .await;
                 assert_eq!(result.is_ok(), offset != Some(120));
             }
         }
@@ -552,4 +561,42 @@ async fn expiry_diagnostic_reverifies_resident_signature_issuer_audience_without
         401
     );
     assert_eq!(server.requests(), 2);
+}
+
+#[tokio::test]
+async fn gateway_legacy_refresh_and_missing_key_message_are_preserved() {
+    let server = Server::new("known", false).await;
+    let runtime = runtime(
+        &server,
+        SecurityConfig {
+            bootstrap_from_key_service: true,
+            jwks_refresh_min_interval_secs: 0,
+            ..Default::default()
+        },
+        2000,
+    );
+    runtime.bootstrap().await.unwrap();
+    assert_eq!(server.requests(), 1);
+    let expired = token(Some("known"), SECRET, json!({"exp": now() - 120}));
+    assert!(
+        verify_jwt_token_for_services(&runtime, &expired, JwtExpiryMode::Enforce, &[])
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        server.requests(),
+        2,
+        "Gateway retains refresh on validation errors"
+    );
+    assert!(verify(&runtime, &expired).await.is_err());
+    assert_eq!(
+        server.requests(),
+        2,
+        "Lambda does not refresh for expiry errors"
+    );
+    let error =
+        verify_jwt_token_for_services(&runtime, &valid("missing"), JwtExpiryMode::Enforce, &[])
+            .await
+            .unwrap_err();
+    assert_eq!(error.message, "JWT key is not configured");
 }

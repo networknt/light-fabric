@@ -366,7 +366,7 @@ async fn lambda_waits_for_shared_background_refresh_without_inheriting_policy() 
     seed(&runtime).await;
     assert!(gateway(&runtime).await.unwrap() == "test-only-old");
     server.wait(1).await;
-    assert_eq!(lambda(&runtime).await.unwrap_err().code, "ERR10000");
+    assert_eq!(lambda(&runtime).await.unwrap(), "test-only-old");
     assert!(gateway(&runtime).await.unwrap() == "test-only-old");
     assert_eq!(server.calls.load(Ordering::SeqCst), 2);
 }

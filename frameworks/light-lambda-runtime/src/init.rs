@@ -81,11 +81,9 @@ impl Environment {
                 .map_err(|_| {
                     InitError::InvalidConfiguration("environment: invalid Lambda memory")
                 })?,
-            allow_insecure_test_endpoints: std::env::var(
+            allow_insecure_test_endpoints: crate::insecure_test_flag(
                 "LIGHT_LAMBDA_ALLOW_INSECURE_TEST_ENDPOINTS",
-            )
-            .as_deref()
-                == Ok("1"),
+            ),
         })
     }
 }

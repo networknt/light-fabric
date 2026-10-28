@@ -105,11 +105,11 @@ fn decode_inner(
     let mut headers = HeaderMap::new();
     let mut exact_content_type = None;
     for (key, values) in event.multi_value_headers {
-        let exact = capture_media && key == "Content-Type";
+        let exact = capture_media && key.eq_ignore_ascii_case("content-type");
         let key = HeaderName::from_bytes(key.as_bytes()).map_err(|_| fail(14012))?;
         for (index, value) in values.into_iter().enumerate() {
             let value = HeaderValue::from_str(&value).map_err(|_| fail(14012))?;
-            if exact && index == 0 {
+            if exact && index == 0 && exact_content_type.is_none() {
                 exact_content_type = Some(value.clone());
             }
             headers.append(key.clone(), value);
@@ -256,26 +256,15 @@ pub fn encode(
     force_base64: bool,
     limits: &Limits,
 ) -> Result<Vec<u8>, &'static str> {
-    limits.validate()?;
-    let bytes = serde_json::to_vec(&envelope(response, mode, force_base64)?)
-        .map_err(|_| "ALB serialization failed")?;
-    if bytes.len() <= limits.max_response_bytes {
-        return Ok(bytes);
-    }
-    let mut replacement = status(14016, limits.max_response_bytes).response();
-    if let Some(id) = response
-        .headers
-        .get("x-correlation-id")
-        .filter(|v| v.as_bytes().len() <= 256)
-    {
-        replacement.headers.insert("x-correlation-id", id.clone());
-    }
-    let bytes = serde_json::to_vec(&envelope(&replacement, mode, false)?)
-        .map_err(|_| "ALB serialization failed")?;
-    if bytes.len() > limits.max_response_bytes {
-        return Err("replacement exceeds response limit");
-    }
-    Ok(bytes)
+    prepare_response(response.clone(), mode, force_base64, limits)
+        .map(|prepared| prepared.bytes)
+        .map_err(|error| {
+            if error == "prepared response exceeds response limit" {
+                "replacement exceeds response limit"
+            } else {
+                error
+            }
+        })
 }
 
 /// Exact provider bytes and the response completion observers must see.

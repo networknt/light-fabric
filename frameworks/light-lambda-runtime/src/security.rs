@@ -30,7 +30,7 @@ pub(crate) fn register(
     handler: &Value,
     custom_active: bool,
 ) -> Result<Option<Arc<SecurityRuntime>>, InitError> {
-    let insecure = std::env::var("LIGHT_LAMBDA_ALLOW_INSECURE_TEST_CONFIG").as_deref() == Ok("1");
+    let insecure = crate::insecure_test_flag("LIGHT_LAMBDA_ALLOW_INSECURE_TEST_CONFIG");
     let settings = validate_security(&value(config, "security.yml")?, insecure).map_err(|_| {
         InitError::InvalidConfiguration(
             "security.yml: unsupported, invalid or insecure configuration",

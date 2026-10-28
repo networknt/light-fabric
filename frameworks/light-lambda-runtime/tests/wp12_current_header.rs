@@ -154,8 +154,24 @@ async fn sixteen_native_cases_through_common_init_real_header_ingress_and_warm_p
     let rows: Vec<Value> =
         serde_json::from_str(include_str!("data/wp12-header-validator-java.json")).unwrap();
     assert_eq!(rows.len(), 16);
+    let amendments: Value = serde_json::from_str(include_str!(
+        "data/wp12-header-validator-http-amendment.json"
+    ))
+    .unwrap();
+    use sha2::Digest;
+    assert_eq!(
+        format!(
+            "{:x}",
+            sha2::Sha256::digest(include_bytes!("data/wp12-header-validator-java.json"))
+        ),
+        amendments["originalSha256"].as_str().unwrap()
+    );
+    assert_eq!(amendments["cases"].as_object().unwrap().len(), 6);
     for row in rows {
         let input = &row["input"];
+        let expected = amendments["cases"]
+            .get(input["id"].as_str().unwrap())
+            .unwrap_or(&row["java"]);
         let dir = tempfile::tempdir().unwrap();
         for (file, value) in [
             ("header.yml", &input["files"]["header"]),
@@ -228,16 +244,16 @@ async fn sixteen_native_cases_through_common_init_real_header_ingress_and_warm_p
                     .await
                     .unwrap();
             assert_eq!(
-                response["statusCode"], row["java"]["status"],
+                response["statusCode"], expected["status"],
                 "{}",
                 input["id"]
             );
-            assert_eq!(response["body"], row["java"]["body"], "{}", input["id"]);
+            assert_eq!(response["body"], expected["body"], "{}", input["id"]);
             assert!(!response.to_string().contains("validatorMediaProof"));
         }
         assert_eq!(
             counts.calls.load(Ordering::SeqCst),
-            row["java"]["lambdaCaptures"].as_u64().unwrap() as usize * 2
+            expected["lambdaCaptures"].as_u64().unwrap() as usize * 2
         );
         assert_eq!(counts.finalized.lock().unwrap().len(), 2);
     }
@@ -360,8 +376,10 @@ async fn real_header_sanitizer_repetition_and_failed_mutations_do_not_publish() 
         let mut state = ExchangeState::default();
         state.commit_validator_media(proof);
         let had_exact = inv.original["multiValueHeaders"]
-            .get("Content-Type")
-            .is_some();
+            .as_object()
+            .unwrap()
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("content-type"));
         let result = sanitizer.on_request(&mut inv, &mut state).await.unwrap();
         if malformed {
             assert!(matches!(result, HandlerOutcome::Reject(_)));
@@ -392,7 +410,7 @@ async fn real_transformer_header_patch_commit_repetition_rollback_and_deadline()
         (
             json!({"content-type":["application/json"]}),
             json!({"update":{"Content-Type":"text/plain"}}),
-            true,
+            false,
         ),
         (
             json!({"content-type":["application/json"]}),
@@ -402,7 +420,7 @@ async fn real_transformer_header_patch_commit_repetition_rollback_and_deadline()
         (
             json!({"Content-Type":["application/json"]}),
             json!({"remove":["Content-Type"],"update":{"content-type":"text/plain"}}),
-            true,
+            false,
         ),
     ] {
         let handler = transformer(patch);
@@ -561,7 +579,7 @@ async fn known_missing_empty_and_case_variants_are_isolated_across_warm_invocati
     for (headers, expected) in [
         (json!({"Content-Type":["text/plain"]}), false),
         (json!({}), true),
-        (json!({"content-type":["text/plain"]}), true),
+        (json!({"content-type":["text/plain"]}), false),
         (json!({"Content-Type":[]}), true),
         (
             json!({"Content-Type":["application/json","text/plain"]}),
@@ -650,7 +668,7 @@ async fn real_correlation_traceability_and_token_cache_preserve_media_without_ne
         ),
         (
             json!({"content-type":["text/plain"],"service_id":["test-only"]}),
-            true,
+            false,
         ),
     ] {
         let (mut inv, proof) = decoded(headers, "{}");

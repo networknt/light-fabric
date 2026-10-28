@@ -246,3 +246,59 @@ remote-CI gate and the historical D-08e CI blocker above; earlier failures remai
 as historical evidence. Controlled-clock conformance is not wall-clock latency or
 AWS qualification. Existing broader product/qualification gates remain unchanged.
 The documentation-only follow-up commit requires its own ordinary CI result.
+
+## Twelve-finding review follow-up
+
+The PR returned to draft for this review. The earlier green CI result applies to
+3a937b9, not to the subsequent review corrections. This section supersedes the
+narrow three-repair review as a merge-readiness statement.
+
+| Finding | Resolution |
+| --- | --- |
+| Decoded Router path reinterpreted as URL syntax | Serialize decoded bytes as path data; reject dot segments before normalization. Query/fragment/backslash/percent/Unicode regression covers the configured base prefix. |
+| Content-Type header spelling | HTTP case-insensitive ingress capture, first-value selection, header-mutation proof and validator projection. The user explicitly approved HTTP semantics and contract amendments. |
+| Query ordering and plus decoding | Retain the approved E-04 once-decoding contract: literal plus and repeated-value order are preserved; lexical cross-key order is a deterministic reconstruction from an ALB map, not an original wire-query claim. |
+| Duplicate oversize encoder | Legacy encode delegates to prepare_response; finalization still uses the prepared response outcome. |
+| Comment-only bounded YAML | Empty streams without a document are admitted as null, including comment-only values/rules. |
+| Malformed typed scalar fallback | Distinguish parser syntax failure from resource-budget failure; only syntax failure may fall back to the original string. Oversized collections still fail before materialization. |
+| Lambda early token refresh | Retain an unexpired cached token after refresh failure or shared retry backoff; cached return still checks the invocation deadline and token bounds. |
+| Client identity rate-limit keys | Remove the Client-Id fallback in shared and Lambda implementations. Verified clients share their bucket despite changing caller headers; user-only identities cannot fabricate a client bucket. |
+| Akamai source labels | This remains an explicit opt-in trusted-ingress quota-label mode, never verified identity. True-Client-IP must be overwritten/sanitized at a trusted edge and the origin must prevent bypass. It is unsuitable behind an ALB alone if clients can choose the header. Default server/address/client/user modes do not read True-Client-IP. No Akamai deployment is qualified here. |
+| Shared JWT compatibility | Gateway entry point retains its prior nbf policy, refresh-on-validation-error behavior and missing-key message. Lambda deadline-aware/diagnostic entry points retain stricter nbf and signature-only refresh. Lambda verification does not reuse a Gateway principal-cache result. |
+| Insecure environment switches | Default runtime builds ignore both switches. An explicit insecure-test-config feature is required; conformance enables it only as a dev dependency. Ordinary workspace/bootstrap normal/build dependency graphs do not enable it. |
+| Eager peer-address formatting | Pingora computes the peer-address label only for Address keys. |
+| Duplicate reserved-route guard | Service owns the single reservation table; application tooling delegates to it and the compatibility callback no longer repeats admission. |
+
+The 16 archived Java header characterization rows remain byte-for-byte unchanged.
+The separate wp12-header-validator-http-amendment.json binds their SHA-256 and
+records the six status/body/backend-count differences caused by HTTP header-name
+semantics. The composition test checks the original digest and all 16 cases.
+This is an approved Java/Rust behavior difference, not a claim that Java changed.
+
+Production builds must omit insecure-test-config. Synthetic standalone bootstrap
+qualification that requires HTTP/insecure fixture prerequisites must explicitly
+use `--features insecure-test-config`; that artifact is not deployable evidence.
+The default-build child regression sets both environment switches to 1 and proves
+they have no effect. Fixture content and private credential values are not logged.
+
+Review validation: config-loader/gateway-policy/light-security/serverless-aws/
+serverless-core passed 370 tests across 67 suites. The affected light-lambda,
+light-lambda-runtime, light-pingora and serverless-conformance run passed 1,394
+with 21 existing ignored tests across 109 suites. The default-feature runtime
+library run separately passed 236 with six ignored and included the child-process
+insecure-switch regression. Final Pingora policy parity passed 11/11; final
+serverless-aws passed 34/34. No suite exclusions or fixture-digest edits were used.
+
+Selected strict library Clippy passed for config-loader, gateway-policy,
+serverless-aws, serverless-core, light-lambda-runtime and light-lambda. The ordinary
+bootstrap build (`cargo build --locked -p light-lambda --bin bootstrap
+--no-default-features`) passed; its runtime compiler fingerprint has no
+insecure-test-config feature. Both checks reported the existing deprecated
+usize::max_value call in the vendored validator dependency; no vendor edit or
+warning suppression was applied. Remote full-workspace CI remains pending for
+this review correction. The PR remains draft until that evidence and review of
+the explicit HTTP contract amendments are complete.
+
+The final explicit Gateway compatibility regression also passed: light-security
+completed 64/64 tests, including legacy Gateway refresh/error wording versus
+Lambda expiry-error behavior. Formatting and whitespace checks passed.

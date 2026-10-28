@@ -159,3 +159,21 @@ fn invalid_encoding_and_decoded_byte_limits() {
         }
     }
 }
+
+#[test]
+fn validator_media_capture_is_case_insensitive() {
+    for name in ["content-type", "Content-Type", "CONTENT-TYPE"] {
+        let mut raw = event();
+        raw["multiValueHeaders"] = json!({name: ["text/plain"]});
+        let (inv, proof) =
+            alb::decode_with_validator_media(raw, context(), &Limits::default()).unwrap();
+        let mut state = ExchangeState::default();
+        state.commit_validator_media(proof);
+        assert_eq!(
+            state.validator_content_type().unwrap().unwrap(),
+            "text/plain"
+        );
+        assert!(!state.validator_media_is_json().unwrap());
+        assert_eq!(inv.headers["content-type"], "text/plain");
+    }
+}

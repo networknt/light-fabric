@@ -461,12 +461,23 @@ async fn new_limit_resolvers_are_separate_opt_ins_and_headers_never_authenticate
         };
         let principal = AuthPrincipal {
             user_id: Some("verified-user".into()),
+            client_id: Some("verified-client".into()),
             ..Default::default()
         };
         if key == "header-client-id" {
             let error = check_rate_limit(&session, &adapter, None, "/").unwrap_err();
             assert_eq!(error.status, 401);
             assert_eq!(error.code, "ERR10002");
+            let user_only = AuthPrincipal {
+                user_id: Some("verified-user".into()),
+                ..Default::default()
+            };
+            assert_eq!(
+                check_rate_limit(&session, &adapter, Some(&user_only), "/")
+                    .unwrap_err()
+                    .status,
+                401
+            );
         }
         for request in 0..2 {
             let actual = check_rate_limit(&session, &adapter, Some(&principal), "/");

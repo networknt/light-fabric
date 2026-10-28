@@ -356,8 +356,8 @@ async fn real_application_factory_activates_once_then_service_preserves_ipc_byte
         events[0]["headers"]["Content-Type"],
         "application/json; charset=utf-8"
     );
-    assert!(events[1]["headers"].get("Content-Type").is_none());
-    assert_eq!(events[1]["headers"]["content-type"], "text/plain");
+    assert_eq!(events[1]["headers"]["Content-Type"], "text/plain");
+    assert!(events[1]["headers"].get("content-type").is_none());
     assert_eq!(events[0]["queryStringParameters"]["q"], "first");
 }
 #[tokio::test]

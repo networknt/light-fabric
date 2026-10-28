@@ -20,6 +20,10 @@ path = "src/bin/validator_shutdown_extension.rs"
 test = false
 bench = false
 
+[features]
+default = []
+insecure-test-config = ["light-lambda-runtime/insecure-test-config"]
+
 [dependencies]
 futures-util.workspace = true
 light-lambda-runtime = { path = "../../frameworks/light-lambda-runtime" }
@@ -33,6 +37,7 @@ tokio.workspace = true
 config-embed-build = { path = "../../crates/config-embed-build" }
 
 [dev-dependencies]
+light-lambda-runtime = { path = "../../frameworks/light-lambda-runtime", features = ["insecure-test-config"] }
 light-security = { path = "../../crates/light-security", features = ["conformance-worker"] }
 lambda_runtime.workspace = true
 gateway-policy = { path = "../../crates/gateway-policy" }
