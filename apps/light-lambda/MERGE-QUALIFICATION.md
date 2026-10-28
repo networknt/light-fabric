@@ -211,7 +211,7 @@ zero response entries when execution resumes after the response deadline.
 Local validation: the initial wp13_families run passed 57/57; the final run after
 the concurrent-entry adjustment passed 57/57 in 98.50 seconds. Core deadline and
 deadline_scheduling tests passed 7/7. Workspace formatting and git diff whitespace
-checks passed. Remote full-workspace CI remains pending for this repair.
+checks passed. Remote full-workspace CI subsequently passed at 3a937b9; see final review below.
 
 ## Token-provider timeout fixture cancellation repair
 
@@ -223,3 +223,26 @@ bounded one-second accept wait. Non-timeout denial/redirect branches still requi
 both a connection and request bytes. All status/code, privacy, zero-dispatch,
 response-entry and finalization assertions and the production deadline are kept.
 Local full serverless-core validation passed 192 tests across 36 suites.
+
+## Final CI repair review and remote qualification
+
+Reviewed the three CI repairs from ddd156c through 3a937b9. No blocking finding
+was identified within that scope. The registry loop sends its own command
+responses directly rather than awaiting capacity in the queue it alone drains;
+external producer backpressure remains bounded. Its forced-full-queue regression
+failed under the old behavior and passed with the repair. The conformance clock
+is controlled only in the isolated response-timeout emission worker, and the
+parent retains real timeout/cleanup. Provider EOF/no-connect acceptance is limited
+to the timeout fixture branch, preserving exact response and zero-dispatch checks.
+GitNexus mapped the registry changes as low risk; its index did not map the new
+conformance code, so source review and focused/remote tests supply that evidence.
+This is a review of the three CI repairs, not a new whole-PR parity audit.
+
+GitHub Actions run 40729726762 passed all five jobs at
+3a937b9b03873ba16cb01c31872bdb0424e5a536: rust, postgres,
+host-tool-workflow-access, workflow-retry-and-timer and runner-image-and-manifests.
+The Rust job completed in approximately 22 minutes. This supersedes the pending
+remote-CI gate and the historical D-08e CI blocker above; earlier failures remain
+as historical evidence. Controlled-clock conformance is not wall-clock latency or
+AWS qualification. Existing broader product/qualification gates remain unchanged.
+The documentation-only follow-up commit requires its own ordinary CI result.
