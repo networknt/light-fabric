@@ -31,6 +31,9 @@ use tokio_util::sync::CancellationToken;
 /// Typed boundary for lifecycle-only non-child tests. Tests must not synthesize
 /// successful Candidates or claim Java semantics from scripted observations.
 #[async_trait]
+/// Returns decoded path data, never URL syntax. Captured caller `?`/`#`
+/// characters remain path data. Fixed configuration query replacements are
+/// handled separately by HttpRouterBackend; dynamic query rewriting is unsupported.
 pub trait Rewriter: Send + Sync {
     #[must_use = "the rewrite future must be awaited to perform the operation"]
     async fn rewrite(

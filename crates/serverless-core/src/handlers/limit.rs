@@ -209,6 +209,13 @@ impl LimitHandler {
                 .collect(),
             ..LimitConfig::default()
         });
+        if server_prefixes.len() > gateway_policy::rate_limit::MAX_RATE_LIMIT_BUCKETS
+            || server_prefixes
+                .iter()
+                .any(|key| key.len() > gateway_policy::rate_limit::MAX_RATE_LIMIT_KEY_BYTES)
+        {
+            return Err(invalid());
+        }
         let server_prefixes = java_map_order(&server_prefixes);
         let server_buckets = Arc::new(Mutex::new(super::limit_order::CounterOrder::new(
             &server_prefixes,
@@ -235,7 +242,14 @@ impl LimitHandler {
                     .server_buckets
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
-                Ok(buckets.label(&inv.path))
+                buckets.label(&inv.path).ok_or_else(|| {
+                    StatusError::new(
+                        429,
+                        "ERR10088",
+                        "RATE_LIMIT_EXCEEDED",
+                        "Rate limit capacity exhausted.",
+                    )
+                })
             }
             Key::Address => inv
                 .source
@@ -243,10 +257,9 @@ impl LimitHandler {
                 .map(|ip| ip.to_string())
                 .ok_or_else(StatusError::handler_failure),
             Key::Akamai => inv
-                .headers
-                .get("true-client-ip")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_owned)
+                .source
+                .source_ip
+                .map(|ip| ip.to_string())
                 .ok_or_else(StatusError::handler_failure),
             Key::Client => state
                 .principal

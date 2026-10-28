@@ -717,7 +717,10 @@ impl ConfigLoader {
                         return copy_checked(&Value::String(text.to_owned()), depth, used);
                     }
                     Err(_) => return Err(invalid()),
-                    Ok(()) => parse(text.as_bytes())?,
+                    Ok(()) => match serde_yaml::from_str::<Value>(text) {
+                        Ok(value) => value,
+                        Err(_) => Value::String(text.to_owned()),
+                    },
                 }
             } else {
                 Self::parse_text_scalar(text)
@@ -875,12 +878,24 @@ mod review_regressions {
     #[test]
     fn typed_malformed_collections_match_legacy_without_bypassing_limits() {
         let loader = ConfigLoader::from_values(HashMap::new(), None, None).unwrap();
-        for text in ["[unfinished", "{unfinished"] {
+        for text in ["[unfinished", "{unfinished", "{a: 1, a: 2}"] {
             let sources = HashMap::from([("REVIEW_VALUE".into(), Value::String(text.into()))]);
             let mut value = Value::String("${REVIEW_VALUE}".into());
             loader.resolve_value_bounded(&mut value, &sources).unwrap();
             assert_eq!(value, Value::String(text.into()));
         }
+    }
+    #[test]
+    fn captured_comment_only_values_are_empty_for_both_source_views() {
+        let dir = crate::tests::TempDir::new("comment-values-review");
+        std::fs::write(
+            dir.path().join("values.yml"),
+            "# owned comment-only layer\n",
+        )
+        .unwrap();
+        let sources = BoundedLocalSources::capture(&[], None, dir.path(), dir.path()).unwrap();
+        assert!(sources.values(false).unwrap().is_empty());
+        assert!(sources.values(true).unwrap().is_empty());
     }
     #[test]
     fn malformed_collection_syntax_is_distinct_from_budget_failure() {

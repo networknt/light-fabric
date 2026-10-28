@@ -564,7 +564,7 @@ async fn expiry_diagnostic_reverifies_resident_signature_issuer_audience_without
 }
 
 #[tokio::test]
-async fn gateway_legacy_refresh_and_missing_key_message_are_preserved() {
+async fn gateway_legacy_refresh_and_single_key_fallback_are_preserved() {
     let server = Server::new("known", false).await;
     let runtime = runtime(
         &server,
@@ -594,9 +594,14 @@ async fn gateway_legacy_refresh_and_missing_key_message_are_preserved() {
         2,
         "Lambda does not refresh for expiry errors"
     );
-    let error =
-        verify_jwt_token_for_services(&runtime, &valid("missing"), JwtExpiryMode::Enforce, &[])
+    let mismatched = valid("missing");
+    assert!(
+        verify_jwt_token_for_services(&runtime, &mismatched, JwtExpiryMode::Enforce, &[])
             .await
-            .unwrap_err();
-    assert_eq!(error.message, "JWT key is not configured");
+            .is_ok()
+    );
+    assert_eq!(
+        verify(&runtime, &mismatched).await.unwrap_err().message,
+        "unknown key id"
+    );
 }

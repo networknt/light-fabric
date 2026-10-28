@@ -340,18 +340,37 @@ impl CounterOrder {
         }
         Self(table)
     }
-    pub(super) fn label(&mut self, path: &str) -> String {
+    pub(super) fn label(&mut self, path: &str) -> Option<String> {
+        if path.len() > gateway_policy::rate_limit::MAX_RATE_LIMIT_KEY_BYTES {
+            return None;
+        }
         if let Some(key) = self.0.keys().find(|key| path.starts_with(key)) {
-            return key.to_owned();
+            return Some(key.to_owned());
+        }
+        if self.0.size >= gateway_policy::rate_limit::MAX_RATE_LIMIT_BUCKETS {
+            return None;
         }
         self.0.insert(path.to_owned());
-        path.to_owned()
+        Some(path.to_owned())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn traversal_growth_is_bounded_without_forgetting_existing_labels() {
+        let mut counters = CounterOrder::new(&[]);
+        for i in 0..gateway_policy::rate_limit::MAX_RATE_LIMIT_BUCKETS {
+            assert!(counters.label(&format!("/pressure/{i}/")).is_some());
+        }
+        assert!(counters.label("/new-identity/").is_none());
+        assert_eq!(counters.label("/pressure/0/"), Some("/pressure/0/".into()));
+        assert_eq!(
+            counters.0.size,
+            gateway_policy::rate_limit::MAX_RATE_LIMIT_BUCKETS
+        );
+    }
     #[test]
     fn quota_and_counter_traversal_match_preserved_java25_component_traces() {
         let observations: serde_json::Value = serde_json::from_str(include_str!(
@@ -383,7 +402,7 @@ mod tests {
             );
             for step in case["steps"].as_array().unwrap() {
                 assert_eq!(
-                    counters.label(step["path"].as_str().unwrap()),
+                    counters.label(step["path"].as_str().unwrap()).unwrap(),
                     step["label"].as_str().unwrap(),
                     "label {}",
                     case["name"]

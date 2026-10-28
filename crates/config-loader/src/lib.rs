@@ -605,12 +605,12 @@ mod tests {
 
     static ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
-    struct TempDir {
+    pub(super) struct TempDir {
         path: PathBuf,
     }
 
     impl TempDir {
-        fn new(label: &str) -> Self {
+        pub(super) fn new(label: &str) -> Self {
             let suffix = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("time")
@@ -620,7 +620,7 @@ mod tests {
             Self { path }
         }
 
-        fn path(&self) -> &Path {
+        pub(super) fn path(&self) -> &Path {
             &self.path
         }
     }

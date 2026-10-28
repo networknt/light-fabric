@@ -265,8 +265,9 @@ async fn source_resolvers_require_explicit_metadata_and_verified_identity() {
         HandlerOutcome::Reject(_)
     ));
     let h = handler(
-        "enabled: true\nkey: address\naddressKeyResolver: com.networknt.limit.key.AkamaiAddressKeyResolver\nrateLimit: 1/m\naddress: {'test-only-label': '1/m'}\n",
+        "enabled: true\nkey: address\naddressKeyResolver: com.networknt.limit.key.AkamaiAddressKeyResolver\nrateLimit: 1/m\naddress: {'192.0.2.8': '1/m'}\n",
     );
+    inv.source.source_ip = Some("192.0.2.8".parse().unwrap());
     inv.headers
         .insert("true-client-ip", "test-only-label".parse().unwrap());
     assert!(matches!(
@@ -275,6 +276,8 @@ async fn source_resolvers_require_explicit_metadata_and_verified_identity() {
             .unwrap(),
         HandlerOutcome::Continue
     ));
+    inv.headers
+        .insert("true-client-ip", "different-label".parse().unwrap());
     assert!(matches!(
         h.on_request(&mut inv, &mut ExchangeState::default())
             .await

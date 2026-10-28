@@ -302,3 +302,61 @@ the explicit HTTP contract amendments are complete.
 The final explicit Gateway compatibility regression also passed: light-security
 completed 64/64 tests, including legacy Gateway refresh/error wording versus
 Lambda expiry-error behavior. Formatting and whitespace checks passed.
+
+## Residual review-gap correction
+
+This supersedes the preceding Akamai prerequisite-only disposition. Akamai's
+compatibility resolver name now uses trusted transport/source metadata rather than
+True-Client-IP: Pingora uses its socket peer, Lambda its admitted source_ip. Header
+rotation cannot obtain fresh buckets. Behind proxies this deliberately groups
+traffic under the admitted proxy/source identity; forwarded-header per-client
+identity is not inferred. Existing default resolver choices are unchanged.
+
+The shared limiter now permits at most 4,096 active buckets and 4,096 bytes per
+stored key. Under pressure it rejects new identities rather than evicting active
+counters and resetting quotas. Configured quotas/windows continue to govern each
+bucket's event history; no lower per-bucket throughput ceiling is introduced.
+Expired counter buckets can be reclaimed. Lambda's insertion-only traversal
+metadata is separately capped at 4,096 labels; its existing labels are not
+forgotten, so saturation can continue rejecting new labels until the snapshot is
+replaced. Oversized configured server-prefix sets are rejected at Init. These are
+explicit safety ceilings, not performance or deployment memory qualification.
+Tests cover capacity, live-counter preservation, expiry recovery, traversal
+growth and header rotation with a stable trusted source.
+
+Gateway key selection now retains its legacy single/service-key fallback on kid
+mismatch; Lambda remains strict. Real verification and service-scoped cached-key
+regressions distinguish those entry points. No globally weaker Lambda lookup was
+introduced. BoundedLocalSources::capture/values now has comment-only layer coverage
+for full and bootstrap-only views. Typed scalar fallback also covers YAML accepted
+by libyaml but rejected by serde_yaml, including duplicate mapping keys, after the
+bounded streaming preflight. Resource-budget errors still reject before allocation.
+
+Fixed literal configuration replacements may carry a query: the replacement path
+is serialized as data and the separately configured query is set explicitly.
+Caller paths and dynamic Rewriter/Candidate outputs remain decoded path-only data;
+`?` and `#` are not URL authority/query syntax there. Dynamic query rewriting is
+not supported by that interface. The wire regression proves distinct targets for
+fixed configuration queries and decoded caller question marks, without re-parsing
+the combined untrusted URL. This does not claim arbitrary Java URL-rewrite parity.
+
+Validation for the residual correction: the broad eight-package run passed 1,737
+with 21 existing ignored tests across 165 suites. A final four-package run after
+retaining the original per-bucket quota throughput passed 341 tests across 56
+suites. Child-process selections account for the two reported filtered tests;
+no dependency-boundary exclusion or failure waiver was used. All three router
+serialization tests passed, including the bounded real HTTP wire test. The new
+key-selection, captured-values, duplicate-key scalar and quota-pressure tests run
+in these suites. Original characterization/fixture JSON and digests are unchanged.
+
+Strict library Clippy passed for config-loader, light-security, gateway-policy,
+serverless-core and light-lambda-runtime. Including light-pingora failed with 53
+errors in unchanged patches/pingora-core (async-trait must_use and other lints).
+That broader result remains non-green; no suppression or unrelated patch repair
+was applied. The unchanged vendored validator usize::max_value deprecation warning
+also remains. Formatting/whitespace checks passed. Remote full-workspace CI for
+this new correction is pending, and the PR remains draft for review.
+
+The ordinary bootstrap build with --no-default-features passed for this correction;
+its latest runtime compiler fingerprint again lists only the default feature.
+The insecure qualification feature remains absent from that production build.

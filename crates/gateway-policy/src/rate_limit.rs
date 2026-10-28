@@ -71,9 +71,8 @@ pub enum LimitKey {
     Address,
     Client,
     User,
-    /// Explicit opt-in to True-Client-IP as an unverified source-quota label.
-    /// Deployments must sanitize this header at their trusted ingress; it is
-    /// never an authentication credential or a verified principal identity.
+    /// Compatibility resolver name using trusted transport identity. The
+    /// unverified True-Client-IP header never selects quota buckets.
     Akamai,
     /// Uses the verified client ID. An arbitrary request header cannot create
     /// new buckets when the authenticated principal has no client ID.
@@ -162,7 +161,35 @@ impl<'de> Deserialize<'de> for LimitQuota {
 #[derive(Clone)]
 pub struct RateLimitRuntime {
     pub config: LimitConfig,
-    state: Arc<Mutex<BTreeMap<String, VecDeque<u64>>>>,
+    state: Arc<Mutex<BTreeMap<String, Bucket>>>,
+}
+
+/// Fail closed on new identities under pressure; never evict active counters.
+pub const MAX_RATE_LIMIT_BUCKETS: usize = 4096;
+pub const MAX_RATE_LIMIT_KEY_BYTES: usize = 4096;
+#[derive(Default)]
+struct Bucket {
+    entries: VecDeque<u64>,
+    expires_at: u64,
+}
+fn bucket_entries(
+    state: &mut BTreeMap<String, Bucket>,
+    key: String,
+    now: u64,
+    window: u64,
+) -> Option<&mut VecDeque<u64>> {
+    if key.len() > MAX_RATE_LIMIT_KEY_BYTES {
+        return None;
+    }
+    if !state.contains_key(&key) && state.len() >= MAX_RATE_LIMIT_BUCKETS {
+        state.retain(|_, bucket| bucket.expires_at > now);
+        if state.len() >= MAX_RATE_LIMIT_BUCKETS {
+            return None;
+        }
+    }
+    let bucket = state.entry(key).or_default();
+    bucket.expires_at = bucket.expires_at.max(now.saturating_add(window.max(1)));
+    Some(&mut bucket.entries)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,7 +225,19 @@ pub fn check_rate_limit(
         .state
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    let entries = state.entry(key).or_default();
+    let window = quotas
+        .iter()
+        .map(|quota| quota.window_seconds)
+        .max()
+        .unwrap_or(1);
+    let entries = bucket_entries(&mut state, key, now, window).ok_or_else(|| {
+        HandlerRejection::new(
+            config.error_code,
+            "ERR10077",
+            "rate limit capacity exhausted",
+        )
+        .with_header(RETRY_AFTER, "1")
+    })?;
     if let Some((quota, count)) = evaluate_counter(entries, &quotas, now, false) {
         let headers = headers_for_quota(*quota, count, entries, now, true);
         return Err(
@@ -240,7 +279,18 @@ pub fn check_selected_rate_limit(
         .state
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    let entries = state.entry(format!("lambda-selected:{label}")).or_default();
+    let Some(entries) = bucket_entries(
+        &mut state,
+        format!("lambda-selected:{label}"),
+        now,
+        quota.window_seconds,
+    ) else {
+        return SelectedQuotaDecision {
+            allowed: false,
+            count: quota.limit,
+            reset: Some(1),
+        };
+    };
     let quotas = [quota];
     if let Some((_, count)) = evaluate_counter(entries, &quotas, now, true) {
         let reset = if quota.window_seconds == 1 {
@@ -355,10 +405,9 @@ fn rate_limit_key_and_quotas(
             Ok(quotas.map(|quotas| (format!("user:{user_id}"), quotas.to_vec())))
         }
         LimitKey::Akamai => {
-            let address = request_header(session, "True-Client-IP")
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "unknown".to_string());
+            // The historical resolver name must not turn caller-controlled
+            // True-Client-IP into an unlimited supply of new quota identities.
+            let address = peer_address.unwrap_or("unknown").to_owned();
             let quotas = direct_quotas(&config.address, &address, request_path)
                 .or_else(|| non_empty(config.rate_limit.as_slice()));
             Ok(quotas.map(|quotas| (format!("akamai:{address}"), quotas.to_vec())))
@@ -715,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn akamai_source_label_handles_missing_and_repeated_case_insensitive_values() {
+    fn akamai_ignores_spoofable_headers_without_peer_metadata() {
         let config = LimitConfig {
             key: LimitKey::Akamai,
             rate_limit: vec![LimitQuota {
@@ -740,8 +789,26 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0,
-            "akamai:192.0.2.10"
+            "akamai:unknown"
         );
+        let mut config = config.clone();
+        config.enabled = true;
+        let runtime = RateLimitRuntime::new(config);
+        for (label, allowed) in [("first", true), ("changed", false)] {
+            let mut headers = http::HeaderMap::new();
+            headers.insert("true-client-ip", label.parse().unwrap());
+            assert_eq!(
+                check_rate_limit(
+                    &IdentityHeaders(headers),
+                    &runtime,
+                    None,
+                    "/",
+                    Some("192.0.2.8")
+                )
+                .is_ok(),
+                allowed
+            );
+        }
         for name in ["server", "address", "client", "user"] {
             let key: LimitKey = serde_yaml::from_str(name).unwrap();
             assert_eq!(serde_json::to_value(key).unwrap(), name);
@@ -777,5 +844,30 @@ server:
         assert_eq!(32, configured.queue_size);
 
         assert!(serde_yaml::from_str::<LimitConfig>("queueSize: -2\n").is_err());
+    }
+}
+
+#[cfg(test)]
+mod bucket_bound_tests {
+    use super::*;
+    #[test]
+    fn capacity_preserves_live_counters_and_reclaims_only_expired_buckets() {
+        let mut state = BTreeMap::new();
+        for i in 0..MAX_RATE_LIMIT_BUCKETS {
+            bucket_entries(&mut state, i.to_string(), 100, 60)
+                .unwrap()
+                .push_back(100);
+        }
+        assert!(bucket_entries(&mut state, "new".into(), 101, 60).is_none());
+        assert_eq!(state.len(), MAX_RATE_LIMIT_BUCKETS);
+        assert_eq!(
+            bucket_entries(&mut state, "0".into(), 101, 60)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(bucket_entries(&mut state, "new".into(), 160, 60).is_some());
+        assert_eq!(state.len(), 2);
+        assert_eq!(state["0"].entries.len(), 1);
     }
 }

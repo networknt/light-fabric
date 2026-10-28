@@ -434,6 +434,7 @@ async fn verify_jwt_token_for_services_policy(
         service_ids,
         deadline,
         allow_refresh,
+        lambda_policy,
     )
     .await
     {
@@ -464,6 +465,7 @@ async fn verify_jwt_token_for_services_policy(
                 service_ids,
                 deadline,
                 false,
+                lambda_policy,
             )
             .await?;
             decode::<JsonValue>(token, &key, &validation).map_err(|_| {
@@ -609,9 +611,17 @@ async fn decoding_key_for_token(
     service_ids: &[String],
     deadline: Option<tokio::time::Instant>,
     allow_refresh: bool,
+    strict_kid: bool,
 ) -> Result<(DecodingKey, bool), HandlerRejection> {
-    let (key, refreshed) =
-        decoding_key_from_jwk(runtime, kid, service_ids, deadline, allow_refresh).await?;
+    let (key, refreshed) = decoding_key_from_jwk(
+        runtime,
+        kid,
+        service_ids,
+        deadline,
+        allow_refresh,
+        strict_kid,
+    )
+    .await?;
     key.map(|key| (key, refreshed))
         .ok_or_else(|| HandlerRejection::unauthorized("JWT key is not configured"))
 }
@@ -622,9 +632,17 @@ async fn decoding_key_from_jwk(
     service_ids: &[String],
     deadline: Option<tokio::time::Instant>,
     allow_refresh: bool,
+    strict_kid: bool,
 ) -> Result<(Option<DecodingKey>, bool), HandlerRejection> {
-    let (jwk, refreshed) =
-        jwk_for_services(runtime, kid, service_ids, deadline, allow_refresh).await?;
+    let (jwk, refreshed) = jwk_for_services_policy(
+        runtime,
+        kid,
+        service_ids,
+        deadline,
+        allow_refresh,
+        strict_kid,
+    )
+    .await?;
     let key = jwk
         .map(|jwk| {
             DecodingKey::from_jwk(&jwk)
@@ -634,6 +652,7 @@ async fn decoding_key_from_jwk(
     Ok((key, refreshed))
 }
 
+#[cfg(test)]
 async fn jwk_for_services(
     runtime: &SecurityRuntime,
     kid: Option<&str>,
@@ -641,25 +660,46 @@ async fn jwk_for_services(
     deadline: Option<tokio::time::Instant>,
     allow_refresh: bool,
 ) -> Result<(Option<Jwk>, bool), HandlerRejection> {
+    jwk_for_services_policy(runtime, kid, service_ids, deadline, allow_refresh, true).await
+}
+
+async fn jwk_for_services_policy(
+    runtime: &SecurityRuntime,
+    kid: Option<&str>,
+    service_ids: &[String],
+    deadline: Option<tokio::time::Instant>,
+    allow_refresh: bool,
+    strict_kid: bool,
+) -> Result<(Option<Jwk>, bool), HandlerRejection> {
     if runtime.jwk_source.is_none() {
         return Ok((None, false));
     }
-    if let Some(jwk) = cached_jwk_for_services(runtime, kid, service_ids).await {
+    if let Some(jwk) = cached_jwk_for_services_policy(runtime, kid, service_ids, strict_kid).await {
         return Ok((Some(jwk), false));
     }
     if allow_refresh {
         refresh_jwks_gated(runtime, service_ids, deadline).await?;
     }
-    let jwk = cached_jwk_for_services(runtime, kid, service_ids)
+    let jwk = cached_jwk_for_services_policy(runtime, kid, service_ids, strict_kid)
         .await
         .ok_or_else(|| HandlerRejection::unauthorized("unknown key id"))?;
     Ok((Some(jwk), allow_refresh))
 }
 
+#[cfg(any(test, feature = "conformance-worker"))]
 async fn cached_jwk_for_services(
     runtime: &SecurityRuntime,
     kid: Option<&str>,
     service_ids: &[String],
+) -> Option<Jwk> {
+    cached_jwk_for_services_policy(runtime, kid, service_ids, true).await
+}
+
+async fn cached_jwk_for_services_policy(
+    runtime: &SecurityRuntime,
+    kid: Option<&str>,
+    service_ids: &[String],
+    strict_kid: bool,
 ) -> Option<Jwk> {
     let service_ids = normalized_service_ids(service_ids);
     let jwks = runtime.jwks.read().await;
@@ -689,7 +729,9 @@ async fn cached_jwk_for_services(
                 return Some(jwk.clone());
             }
         }
-        return None;
+        if strict_kid {
+            return None;
+        }
     }
     if !service_ids.is_empty() {
         for service_id in &service_ids {
@@ -1503,6 +1545,27 @@ passThroughClaims: 'client_id=x-client-id,sub=x-user-id'
             error.message,
             "JWK serviceId discovery requires portal registry to be enabled"
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_gateway_key_fallback_does_not_change_lambda_selection() {
+        for (stored, services) in [("known", vec![]), ("svc:known", vec!["svc".to_owned()])] {
+            let runtime = test_runtime_with_client(ClientTokenConfig::default());
+            let jwk: Jwk =
+                serde_json::from_value(serde_json::json!({"kty":"oct","kid":"known","k":"dGVzdA"}))
+                    .unwrap();
+            runtime.jwks.write().await.insert(stored.into(), jwk);
+            assert!(
+                cached_jwk_for_services_policy(&runtime, Some("missing"), &services, false)
+                    .await
+                    .is_some()
+            );
+            assert!(
+                cached_jwk_for_services_policy(&runtime, Some("missing"), &services, true)
+                    .await
+                    .is_none()
+            );
+        }
     }
 
     #[tokio::test]

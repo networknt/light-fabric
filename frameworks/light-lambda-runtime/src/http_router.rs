@@ -64,6 +64,19 @@ fn upstream_url(base: &str, path: &str) -> Result<Url, ()> {
     Ok(url)
 }
 
+/// Only a fixed configuration replacement has trusted query syntax. Dynamic
+/// rewriter results are decoded path data, including captured question marks.
+fn configured_rewrite_url(base: &str, replacement: &str) -> Result<Url, ()> {
+    let (path, query) = replacement
+        .split_once('?')
+        .map_or((replacement, None), |(path, query)| (path, Some(query)));
+    let mut url = upstream_url(base, path)?;
+    if let Some(query) = query {
+        url.set_query(Some(query));
+    }
+    Ok(url)
+}
+
 impl HttpRouterBackend {
     /// Only cold-start trusted configuration may populate destinations. No
     /// request field is accepted as a URL, proxy, resolver or redirect policy.
@@ -158,12 +171,16 @@ impl HttpRouterBackend {
         {
             return Err(error(id));
         }
-        let path = rewritten.unwrap_or_else(|| {
-            self.literal_rewrites
-                .iter()
-                .find(|(from, _)| from == &inv.path)
-                .map_or(inv.path.as_str(), |(_, to)| to.as_str())
-        });
+        let configured_rewrite = rewritten
+            .is_none()
+            .then(|| {
+                self.literal_rewrites
+                    .iter()
+                    .find(|(from, _)| from == &inv.path)
+            })
+            .flatten();
+        let path = rewritten
+            .unwrap_or_else(|| configured_rewrite.map_or(inv.path.as_str(), |(_, to)| to.as_str()));
         let target = format!("{base}{path}");
         // JDK HttpRequest.Builder.timeout rejects zero before send, inside
         // Java Router's transport catch. Do not invent a new Init restriction.
@@ -173,7 +190,12 @@ impl HttpRouterBackend {
         if !["GET", "DELETE", "POST", "PUT", "PATCH"].contains(&method) {
             return Err(error(&target));
         }
-        let mut url = upstream_url(base, path).map_err(|_| error(&target))?;
+        let mut url = if configured_rewrite.is_some() {
+            configured_rewrite_url(base, path)
+        } else {
+            upstream_url(base, path)
+        }
+        .map_err(|_| error(&target))?;
         if url.origin() != Url::parse(base).map_err(|_| error(id))?.origin() {
             return Err(error(&target));
         }
@@ -375,6 +397,47 @@ mod tests {
 #[cfg(test)]
 mod path_serialization_tests {
     use super::*;
+    #[tokio::test]
+    async fn fixed_query_and_decoded_caller_delimiter_reach_distinct_wire_targets() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}/base", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                for target in ["/base/dest?fixed=1", "/base/source%3Fcaller%3Devil"] {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    loop {
+                        let mut byte = [0];
+                        stream.read_exact(&mut byte).await.unwrap();
+                        request.push(byte[0]);
+                        if request.ends_with(b"\r\n\r\n") { break; }
+                        assert!(request.len() < 8192);
+                    }
+                    assert!(String::from_utf8(request).unwrap().starts_with(&format!("GET {target} HTTP/1.1\r\n")));
+                    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").await.unwrap();
+                }
+            });
+            let backend = HttpRouterBackend::new(BTreeMap::from([("test".into(), base)]), &ClientFactory::from_config(&light_client::ClientConfig::default()), Duration::from_secs(2), &serverless_aws::limits::Limits::default()).unwrap()
+                .with_literal_rewrites(vec![("/source".into(), "/dest?fixed=1".into())]);
+            for path in ["/source", "/source%3Fcaller=evil"] {
+                let now = Instant::now();
+                let inv = serverless_aws::alb::decode(serde_json::json!({"requestContext":{"elb":{"targetGroupArn":"test-only"}},"httpMethod":"GET","path":path,"multiValueHeaders":{}}), serverless_aws::alb::DecodeContext {request_id:"test-only".into(), deadline:now+Duration::from_secs(2), response_deadline:now+Duration::from_secs(3), cancel:tokio_util::sync::CancellationToken::new()}, &serverless_aws::limits::Limits::default()).unwrap();
+                assert_eq!(backend.dispatch(&inv, &ExchangeState::default(), &Target::HttpService("test".into())).await.unwrap().status, 200);
+            }
+            server.await.unwrap();
+        }).await.expect("bounded router wire regression");
+    }
+    #[test]
+    fn configured_queries_are_syntax_but_dynamic_path_delimiters_are_data() {
+        let configured =
+            configured_rewrite_url("https://example.test/base", "/pets?x=1&x=2").unwrap();
+        assert_eq!(configured.path(), "/base/pets");
+        assert_eq!(configured.query(), Some("x=1&x=2"));
+        let dynamic = upstream_url("https://example.test/base", "/pets?x=1").unwrap();
+        assert_eq!(dynamic.path(), "/base/pets%3Fx%3D1");
+        assert_eq!(dynamic.query(), None);
+    }
     #[test]
     fn decoded_path_cannot_introduce_url_syntax_or_escape_base() {
         let url = upstream_url("https://example.test/base", "/x?a=1#tail\\z/%2e%2e/雪").unwrap();
