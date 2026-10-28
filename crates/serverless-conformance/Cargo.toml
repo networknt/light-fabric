@@ -19,7 +19,7 @@ serverless-aws = { path = "../serverless-aws" }
 lambda_runtime.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
 axum.workspace = true
 http.workspace = true

@@ -184,3 +184,31 @@ All 62 security tests passed. No production code, fixture, expectation, dependen
 retry, serialization or deadline expansion was introduced. The separate D-08e
 wall-clock contract remains unresolved. Existing strict security Clippy findings
 in unchanged dual_identity.rs and token_purpose.rs remain recorded without waiver.
+
+## D-08e controlled-clock fixture repair
+
+Run 40720066462 passed all 39 portal-registry tests, including the repaired
+command-flood regression. Rust CI then reached wp13_families: 55 passed and two
+D-08e consumers failed with zero response-probe entries. Their timing witnesses
+showed service return at 51-53 ms against a 50 ms invocation budget, without an
+Invoke receipt or response entry witness.
+
+The isolated emission child now controls Tokio time for the existing
+`response-100ms-v1` recipe. Time remains stationary while the real SDK traverses
+the loopback dependency and until every caller enters the actual response probe.
+Tokio then advances through the original deadline and cancels the 100 ms probe.
+A runnable driver prevents idle auto-advance during socket IO. The parent retains
+its real 15-second child timeout and kill/reap behavior for missing probe entries.
+Clock control ends before subsequent observations. Fixture bytes, digests,
+expectations, budgets and production service code are unchanged.
+
+This qualifies response-timeout semantics under a controlled monotonic clock;
+it does not qualify wall-clock SDK/loopback latency. The timing witness and EMF
+wall timestamps remain actual wall observations and must not be interpreted as
+virtual elapsed time. The existing core scheduling regression continues to cover
+zero response entries when execution resumes after the response deadline.
+
+Local validation: the initial wp13_families run passed 57/57; the final run after
+the concurrent-entry adjustment passed 57/57 in 98.50 seconds. Core deadline and
+deadline_scheduling tests passed 7/7. Workspace formatting and git diff whitespace
+checks passed. Remote full-workspace CI remains pending for this repair.

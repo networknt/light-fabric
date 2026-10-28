@@ -703,6 +703,26 @@ pub async fn run(f: &Value, revision: &str) -> Result<Value> {
                 if let Some(work) = &work {
                     work.timing.begin(remaining);
                 }
+                // The isolated response-timeout recipe measures pipeline semantics,
+                // not OS/loopback scheduling latency. Keep virtual time stationary
+                // until the response probe has actually entered; otherwise Tokio's
+                // idle auto-advance could expire the SDK deadline during socket IO.
+                let controlled_response_clock = f["boundedWorkProbe"] == "response-100ms-v1"
+                    && crate::emission_worker::needed(f)
+                    && std::env::var("LIGHT_LAMBDA_EMISSION_WORKER").as_deref() == Ok("1");
+                let clock_driver = if controlled_response_clock {
+                    tokio::time::pause();
+                    let work = work.as_ref().context("response timeout work")?.clone();
+                    let expected_entries =
+                        work.entries() + f["concurrentCopies"].as_u64().unwrap_or(1) as usize;
+                    Some(tokio::spawn(async move {
+                        while work.entries() < expected_entries {
+                            tokio::task::yield_now().await;
+                        }
+                    }))
+                } else {
+                    None
+                };
                 context.deadline = (SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis()
                     as u64)
                     .checked_add(remaining)
@@ -734,7 +754,12 @@ pub async fn run(f: &Value, revision: &str) -> Result<Value> {
                 }))
                 .await
                 .into_iter()
-                .collect::<Result<Vec<_>>>()?;
+                .collect::<Result<Vec<_>>>();
+                if let Some(driver) = clock_driver {
+                    driver.abort();
+                    tokio::time::resume();
+                }
+                let responses = responses?;
                 if let Some(work) = &work {
                     work.timing.record("service-return");
                     bounded_work_timing.push(work.timing.observation(index));
