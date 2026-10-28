@@ -32,6 +32,13 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Keep complete workspace checks within hosted-runner disk/memory limits.
+    # These affect symbols/caches only; debug assertions and test scope remain on.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@v7
       - name: Checkout public Workflow admin fixtures
@@ -80,6 +87,8 @@ jobs:
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: light-fabric-ci-debug0-v1
       - name: Formatting
         run: cargo fmt --all --check
       - name: Compile all targets

@@ -105,3 +105,9 @@ Seven hermetic regression tests cover active/shadow checkouts, drift, missing
 and unregistered templates, sibling repositories and write targeting. They pass
 on the repair and fail on the old script. CI runs these tests before parity.
 The failed remote run remains preserved; this tooling fix requires a new CI run.
+
+The next remote run passed four jobs but the Rust job exhausted disk during
+linking, before test assertions. Its logs are retained. The Rust CI job now
+uses the locally qualified no-debug-symbol/nonincremental settings and two build
+jobs, with a separate cache prefix to avoid restoring large debug-enabled caches.
+Debug assertions, test selection, fixture expectations and deadlines are unchanged.
