@@ -360,3 +360,64 @@ this new correction is pending, and the PR remains draft for review.
 The ordinary bootstrap build with --no-default-features passed for this correction;
 its latest runtime compiler fingerprint again lists only the default feature.
 The insecure qualification feature remains absent from that production build.
+
+## Forwarded-address spoofing and CDN identity correction
+
+This supersedes the previous transport-only Akamai disposition. The common
+transport-neutral TrustedProxyPolicy compiles the optional trustedProxyCidrs
+allowlist at configuration load/Init. Address mode ignores XFF from untrusted
+peers and walks trusted chains right-to-left. Akamai mode requires an explicit
+allowlist and accepts only one valid True-Client-IP from an allowlisted,
+sanitizing peer; untrusted peers and malformed/missing assertions fail closed.
+There is no transport-address fallback in Akamai mode, including for stale or
+unknown CDN egress ranges. Direct clients should use Address mode. Untrusted direct
+peers cannot use either header to choose bucket identities. Pingora passes a
+typed socket IP without eagerly formatting/parsing it. Lambda uses admitted ALB
+source metadata under the existing append-mode prerequisite.
+
+Both application templates expose limit.trustedProxyCidrs, and the real Lambda
+configuration test covers values.yml through the embedded template, offline
+validation and startup. CIDR parsing uses the already-locked ipnet package, adding
+one pure IP-parsing dependency edge; no provider SDK or transport dependency was
+introduced into the shared policy. Allowlist size is capped at 64, catch-all /0
+ranges are rejected, and trusted XFF work is bounded to 64 hops/8 KiB. Operators
+must supply reviewed proxy egress ranges and enforce sanitization/origin access;
+no actual production CIDRs or deployment were changed here.
+
+The new pressure regression sends more than 4,096 arbitrary XFF labels from one
+untrusted peer: only one bucket exists and another peer is still admitted.
+Additional regressions cover two client IPs behind one trusted edge, source
+normalization/IPv6, malformed/repeated assertions, trusted chain boundaries and
+offline/startup parity. The real Pingora test fixture now installs the same
+socket digest as the production listener rather than supplying a metadata-free
+raw TCP stream. Real ALB/service composition dispatches twice for two clients,
+returns 429 for the exhausted client and performs no dispatch for missing trusted
+identity. Original native direct-fallback quota semantics remain unchanged.
+
+An initial broader run reported two unchanged L1 assertions (Init outcome log
+and JWKS request count); both passed focused without changes, and a later complete
+run passed 1,653 tests with 21 existing ignored. Sanitized L1 evidence is retained
+under /tmp/light-fabric-proxy-trust-full-20261028 and
+/tmp/light-fabric-proxy-trust-l1-focused. That passing run does not establish the
+cause of the earlier intermittent failures, and no assertion or timeout was
+relaxed. Final validation after the template/typed-IP wiring follows below.
+
+Parent bcc3305 passed all five jobs in remote CI run 40754203613. That result
+predates this proxy-trust change and is not qualification of the new head.
+The initial local L1 assertion output is retained at
+/tmp/light-fabric-proxy-trust-initial-l1-failure.log in addition to the passing
+sanitized fixture evidence named above. No source change to those L1 fixtures,
+JWT policy, Runtime API reporting or timeouts was made in this correction.
+
+Final proxy-trust validation passed 1,656 tests across 155 suites, with 21 existing
+ignored tests and no suite exclusions. Sanitized L1 evidence is retained under
+/tmp/light-fabric-proxy-trust-trusted-only-final-20261028. Selected strict library
+Clippy passed for gateway-policy, serverless-core, light-lambda-runtime and
+light-lambda. The ordinary bootstrap build passed with only the default runtime
+feature in its compiler fingerprint; the insecure qualification feature remains
+absent. Both checks retained the unchanged vendored validator deprecation warning.
+Workspace formatting/whitespace checks and mdBook build passed; mdBook retained
+its existing large-search-index warning. Inclusive Pingora/patch Clippy remains
+the separately recorded non-green gate, without a new waiver or unrelated edit.
+No shared stack, production allowlist, AWS resource or live CDN was changed.
+New-head remote full-workspace CI is pending.

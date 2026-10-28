@@ -9,3 +9,8 @@ server: ${limit.server:{}}
 address: ${limit.address:{}}
 client: ${limit.client:{}}
 user: ${limit.user:{}}
+
+# No forwarded client-address header is trusted by default. List only proxies
+# that sanitize/overwrite those headers and prevent origin bypass.
+# AkamaiAddressKeyResolver/key: akamai requires an explicit allowlist.
+trustedProxyCidrs: ${limit.trustedProxyCidrs:[]}

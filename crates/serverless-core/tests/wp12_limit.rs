@@ -265,11 +265,11 @@ async fn source_resolvers_require_explicit_metadata_and_verified_identity() {
         HandlerOutcome::Reject(_)
     ));
     let h = handler(
-        "enabled: true\nkey: address\naddressKeyResolver: com.networknt.limit.key.AkamaiAddressKeyResolver\nrateLimit: 1/m\naddress: {'192.0.2.8': '1/m'}\n",
+        "enabled: true\nkey: address\naddressKeyResolver: com.networknt.limit.key.AkamaiAddressKeyResolver\ntrustedProxyCidrs: ['203.0.113.0/24']\nrateLimit: 1/m\naddress: {'192.0.2.8': '1/m'}\n",
     );
-    inv.source.source_ip = Some("192.0.2.8".parse().unwrap());
+    inv.source.source_ip = Some("203.0.113.9".parse().unwrap());
     inv.headers
-        .insert("true-client-ip", "test-only-label".parse().unwrap());
+        .insert("true-client-ip", "192.0.2.8".parse().unwrap());
     assert!(matches!(
         h.on_request(&mut inv, &mut ExchangeState::default())
             .await
@@ -277,7 +277,7 @@ async fn source_resolvers_require_explicit_metadata_and_verified_identity() {
         HandlerOutcome::Continue
     ));
     inv.headers
-        .insert("true-client-ip", "different-label".parse().unwrap());
+        .insert("true-client-ip", "::ffff:192.0.2.8".parse().unwrap());
     assert!(matches!(
         h.on_request(&mut inv, &mut ExchangeState::default())
             .await
@@ -492,4 +492,47 @@ async fn concurrent_different_buckets_grow_then_deny_warm_repeats_without_cross_
     assert_eq!(response.status, 200);
     assert_eq!(n(&fresh.backend), 1);
     assert_eq!(n(&fresh.finalized), 1);
+}
+
+#[tokio::test]
+async fn trusted_cdn_clients_share_an_edge_but_not_lambda_quotas() {
+    let config = "enabled: true\nkey: address\naddressKeyResolver: com.networknt.limit.key.AkamaiAddressKeyResolver\ntrustedProxyCidrs: ['203.0.113.0/24']\nrateLimit: 1/m\naddress: {'198.51.100.1': '1/m', '198.51.100.2': '1/m'}\n";
+    let h = handler(config);
+    for (client, allowed) in [
+        ("198.51.100.1", true),
+        ("198.51.100.2", true),
+        ("198.51.100.1", false),
+    ] {
+        let mut inv = invocation();
+        inv.source.source_ip = Some("203.0.113.9".parse().unwrap());
+        inv.headers
+            .insert("true-client-ip", client.parse().unwrap());
+        let result = h
+            .on_request(&mut inv, &mut ExchangeState::default())
+            .await
+            .unwrap();
+        assert_eq!(matches!(result, HandlerOutcome::Continue), allowed);
+    }
+    let mut inv = invocation();
+    inv.source.source_ip = Some("203.0.113.9".parse().unwrap());
+    assert!(matches!(
+        h.on_request(&mut inv, &mut ExchangeState::default())
+            .await
+            .unwrap(),
+        HandlerOutcome::Reject(_)
+    ));
+}
+#[test]
+fn akamai_activation_requires_a_bounded_explicit_proxy_allowlist() {
+    let prefix = "enabled: true\nkey: address\naddressKeyResolver: com.networknt.limit.key.AkamaiAddressKeyResolver\nrateLimit: 1/m\n";
+    for suffix in [
+        "",
+        "trustedProxyCidrs: ['invalid']\n",
+        "trustedProxyCidrs: ['0.0.0.0/0']\n",
+    ] {
+        assert!(
+            LimitHandler::from_yaml(serde_yaml::from_str(&format!("{prefix}{suffix}")).unwrap())
+                .is_err()
+        );
+    }
 }

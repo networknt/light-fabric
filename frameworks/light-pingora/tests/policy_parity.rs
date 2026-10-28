@@ -51,9 +51,22 @@ async fn session(wire: &str) -> (Session, TcpStream) {
         .unwrap();
     let (server, _) = listener.accept().await.unwrap();
     client.write_all(wire.as_bytes()).await.unwrap();
-    let mut session = Session::new_h1(Box::new(pingora::protocols::l4::stream::Stream::from(
-        server,
-    )));
+    // Mirror the production listener: raw Stream::from(TcpStream) alone has
+    // no socket digest and intentionally supplies no trusted peer identity.
+    use pingora::protocols::{GetSocketDigest, SocketDigest};
+    let mut transport = pingora::protocols::l4::stream::Stream::from(server);
+    #[cfg(unix)]
+    let digest = {
+        use std::os::fd::AsRawFd;
+        SocketDigest::from_raw_fd(transport.as_raw_fd())
+    };
+    #[cfg(windows)]
+    let digest = {
+        use std::os::windows::io::AsRawSocket;
+        SocketDigest::from_raw_socket(transport.as_raw_socket())
+    };
+    transport.set_socket_digest(digest);
+    let mut session = Session::new_h1(Box::new(transport));
     assert!(session.as_downstream_mut().read_request().await.unwrap());
     (session, client)
 }
@@ -407,7 +420,7 @@ async fn rate_limit_warm_state_and_verified_identity_match_without_network_depen
                 &core_runtime,
                 Some(&principal),
                 "/api",
-                None,
+                Some("127.0.0.1"),
             );
             assert_eq!(actual.is_ok(), request < 2);
             assert_eq!(actual.is_ok(), expected.is_ok());
@@ -435,7 +448,7 @@ async fn rate_limit_warm_state_and_verified_identity_match_without_network_depen
                 &core_runtime,
                 None,
                 "/api",
-                None,
+                Some("127.0.0.1"),
             )
             .unwrap_err();
             assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
@@ -449,12 +462,12 @@ async fn new_limit_resolvers_are_separate_opt_ins_and_headers_never_authenticate
     use light_pingora::{AuthPrincipal, LimitConfig, RateLimitRuntime, check_rate_limit};
     for key in ["akamai", "header-client-id"] {
         let config: LimitConfig = serde_yaml::from_str(&format!(
-            "enabled: true\nheadersAlwaysSet: true\nrateLimit: 1/h\nkey: {key}\n"
+            "enabled: true\nheadersAlwaysSet: true\nrateLimit: 1/h\nkey: {key}\ntrustedProxyCidrs: ['127.0.0.1/32']\n"
         ))
         .unwrap();
         let adapter = RateLimitRuntime::new(config.clone());
         let core = RateLimitRuntime::new(config);
-        let (session, _client) = session("GET / HTTP/1.1\r\nHost: localhost\r\ntRuE-cLiEnT-iP: 192.0.2.10\r\nTrue-Client-IP: 192.0.2.11\r\nClient-Id: header-client\r\n\r\n").await;
+        let (session, _client) = session("GET / HTTP/1.1\r\nHost: localhost\r\ntRuE-cLiEnT-iP: 192.0.2.10\r\nClient-Id: header-client\r\n\r\n").await;
         let neutral = NeutralRequest {
             headers: session.req_header().headers.clone(),
             method: Method::GET,
@@ -486,7 +499,7 @@ async fn new_limit_resolvers_are_separate_opt_ins_and_headers_never_authenticate
                 &core,
                 Some(&principal),
                 "/",
-                None,
+                Some("127.0.0.1"),
             );
             assert_eq!(actual.is_ok(), request == 0);
             assert_eq!(actual.is_ok(), expected.is_ok());
@@ -786,4 +799,53 @@ async fn token_adapter_and_core_preserve_headers_cache_and_dependency_errors() {
     );
     assert_eq!(neutral.headers, before);
     assert_eq!(transport.req_header().headers, before);
+}
+
+#[tokio::test]
+async fn trusted_cdn_sessions_use_distinct_end_client_quotas() {
+    use light_pingora::{LimitConfig, RateLimitRuntime, check_rate_limit};
+    let config: LimitConfig = serde_yaml::from_str(
+        "enabled: true\nrateLimit: 1/m\nkey: akamai\ntrustedProxyCidrs: ['127.0.0.1/32']\n",
+    )
+    .unwrap();
+    let runtime = RateLimitRuntime::new(config);
+    for (client, allowed) in [
+        ("198.51.100.1", true),
+        ("198.51.100.2", true),
+        ("198.51.100.1", false),
+    ] {
+        let (session, _client) = session(&format!(
+            "GET / HTTP/1.1\r\nHost: localhost\r\nTrue-Client-IP: {client}\r\n\r\n"
+        ))
+        .await;
+        assert_eq!(
+            check_rate_limit(&session, &runtime, None, "/").is_ok(),
+            allowed
+        );
+    }
+    let (session, _client) = session("GET / HTTP/1.1\r\nHost: localhost\r\nTrue-Client-IP: 198.51.100.3\r\nTrue-Client-IP: 198.51.100.4\r\n\r\n").await;
+    assert_eq!(
+        check_rate_limit(&session, &runtime, None, "/")
+            .unwrap_err()
+            .status,
+        400
+    );
+}
+#[tokio::test]
+async fn untrusted_forwarded_labels_do_not_create_fresh_pingora_quotas() {
+    use light_pingora::{LimitConfig, RateLimitRuntime, check_rate_limit};
+    let runtime = RateLimitRuntime::new(
+        serde_yaml::from_str::<LimitConfig>("enabled: true\nrateLimit: 1/m\nkey: address\n")
+            .unwrap(),
+    );
+    for i in 0..4 {
+        let (session, _client) = session(&format!(
+            "GET / HTTP/1.1\r\nHost: localhost\r\nX-Forwarded-For: 198.51.100.{i}\r\n\r\n"
+        ))
+        .await;
+        assert_eq!(
+            check_rate_limit(&session, &runtime, None, "/").is_ok(),
+            i == 0
+        );
+    }
 }

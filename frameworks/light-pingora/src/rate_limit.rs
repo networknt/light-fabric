@@ -22,6 +22,9 @@ pub fn load_rate_limit_runtime(
         Err(error) => return Err(error),
     };
 
+    config
+        .source_trust()
+        .map_err(|message| RuntimeError::Config(message.into()))?;
     runtime_config.module_registry.register_loaded_config(
         LIMIT_MODULE_ID,
         LIMIT_CONFIG_NAME,
@@ -42,30 +45,18 @@ pub fn check_rate_limit(
     principal: Option<&AuthPrincipal>,
     request_path: &str,
 ) -> Result<Option<RateLimitHeaders>, HandlerRejection> {
-    let needs_peer_address = matches!(runtime.config.key, LimitKey::Akamai)
-        || (matches!(runtime.config.key, LimitKey::Address)
-            && session
-                .req_header()
-                .headers
-                .get("x-forwarded-for")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.split(',').next())
-                .is_none_or(|value| value.trim().is_empty()));
+    let needs_peer_address = matches!(runtime.config.key, LimitKey::Address | LimitKey::Akamai);
     let peer_address = needs_peer_address
         .then(|| session.as_downstream().client_addr())
         .flatten()
-        .map(|address| {
-            address
-                .as_inet()
-                .map(|address| address.ip().to_string())
-                .unwrap_or_else(|| address.to_string())
-        });
-    gateway_policy::rate_limit::check_rate_limit(
+        .and_then(|address| address.as_inet())
+        .map(|address| address.ip());
+    gateway_policy::rate_limit::check_rate_limit_with_source_ip(
         &PolicyRequestRef(session),
         runtime,
         principal,
         request_path,
-        peer_address.as_deref(),
+        peer_address,
     )
 }
 pub fn apply_rate_limit_headers(

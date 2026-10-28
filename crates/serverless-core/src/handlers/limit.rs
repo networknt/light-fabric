@@ -27,6 +27,7 @@ enum Key {
 pub struct LimitHandler {
     enabled: bool,
     key: Key,
+    source_trust: gateway_policy::rate_limit::TrustedProxyPolicy,
     status: u16,
     runtime: RateLimitRuntime,
     server_prefixes: Vec<String>,
@@ -88,6 +89,7 @@ impl LimitHandler {
             "clientIdKeyResolver",
             "addressKeyResolver",
             "userIdKeyResolver",
+            "trustedProxyCidrs",
         ];
         if map
             .keys()
@@ -163,6 +165,12 @@ impl LimitHandler {
         map.insert(Value::from("concurrentRequest"), Value::from(0));
         map.insert(Value::from("queueSize"), Value::from(0));
         let config: LimitConfig = serde_yaml::from_value(value).map_err(|_| invalid())?;
+        let source_trust =
+            gateway_policy::rate_limit::TrustedProxyPolicy::new(&config.trusted_proxy_cidrs)
+                .map_err(|_| invalid())?;
+        if config.enabled && matches!(key, Key::Akamai) && source_trust.is_empty() {
+            return Err(invalid());
+        }
         if config.error_code != 0 && !(400..600).contains(&config.error_code) {
             return Err(invalid());
         }
@@ -222,6 +230,7 @@ impl LimitHandler {
         )));
         Ok(Self {
             enabled: config.enabled,
+            source_trust,
             key,
             status: if config.error_code == 0 {
                 429
@@ -251,16 +260,15 @@ impl LimitHandler {
                     )
                 })
             }
-            Key::Address => inv
-                .source
-                .source_ip
-                .map(|ip| ip.to_string())
-                .ok_or_else(StatusError::handler_failure),
-            Key::Akamai => inv
-                .source
-                .source_ip
-                .map(|ip| ip.to_string())
-                .ok_or_else(StatusError::handler_failure),
+            Key::Address | Key::Akamai => self
+                .source_trust
+                .resolve(
+                    &inv.headers,
+                    inv.source.source_ip,
+                    matches!(self.key, Key::Akamai),
+                )
+                .map(|address| address.to_string())
+                .map_err(|_| StatusError::handler_failure()),
             Key::Client => state
                 .principal
                 .as_ref()

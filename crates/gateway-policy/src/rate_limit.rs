@@ -1,4 +1,3 @@
-use crate::config_util::request_header;
 use crate::security::{AuthPrincipal, HandlerRejection};
 use crate::{HeaderWriter, RequestRead};
 use serde::de::{Error as DeError, MapAccess, SeqAccess, Visitor};
@@ -8,6 +7,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+mod source;
+pub use source::TrustedProxyPolicy;
 
 pub const LIMIT_FILE: &str = "limit.yml";
 pub const LIMIT_MODULE_ID: &str = "light-pingora/limit";
@@ -35,6 +36,9 @@ pub struct LimitConfig {
     pub headers_always_set: bool,
     #[serde(default)]
     pub key: LimitKey,
+    /// Only these transport peers may assert forwarded client addresses.
+    #[serde(default)]
+    pub trusted_proxy_cidrs: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_quota_map")]
     pub server: BTreeMap<String, Vec<LimitQuota>>,
     #[serde(default, deserialize_with = "deserialize_quota_map")]
@@ -55,11 +59,22 @@ impl Default for LimitConfig {
             rate_limit: Vec::new(),
             headers_always_set: false,
             key: LimitKey::Server,
+            trusted_proxy_cidrs: Vec::new(),
             server: BTreeMap::new(),
             address: BTreeMap::new(),
             client: BTreeMap::new(),
             user: BTreeMap::new(),
         }
+    }
+}
+
+impl LimitConfig {
+    pub fn source_trust(&self) -> Result<TrustedProxyPolicy, &'static str> {
+        let trust = TrustedProxyPolicy::new(&self.trusted_proxy_cidrs)?;
+        if self.enabled && matches!(self.key, LimitKey::Akamai) && trust.is_empty() {
+            return Err("limit.yml: Akamai requires trustedProxyCidrs");
+        }
+        Ok(trust)
     }
 }
 
@@ -71,8 +86,8 @@ pub enum LimitKey {
     Address,
     Client,
     User,
-    /// Compatibility resolver name using trusted transport identity. The
-    /// unverified True-Client-IP header never selects quota buckets.
+    /// True-Client-IP is accepted only from an explicitly trusted proxy that
+    /// sanitizes it. Direct peers cannot select identities with this header.
     Akamai,
     /// Uses the verified client ID. An arbitrary request header cannot create
     /// new buckets when the authenticated principal has no client ID.
@@ -162,6 +177,7 @@ impl<'de> Deserialize<'de> for LimitQuota {
 pub struct RateLimitRuntime {
     pub config: LimitConfig,
     state: Arc<Mutex<BTreeMap<String, Bucket>>>,
+    source_trust: Result<TrustedProxyPolicy, &'static str>,
 }
 
 /// Fail closed on new identities under pressure; never evict active counters.
@@ -207,12 +223,39 @@ pub fn check_rate_limit(
     request_path: &str,
     peer_address: Option<&str>,
 ) -> Result<Option<RateLimitHeaders>, HandlerRejection> {
+    check_rate_limit_with_source_ip(
+        session,
+        runtime,
+        principal,
+        request_path,
+        peer_address.and_then(|peer| peer.parse().ok()),
+    )
+}
+
+/// Adapter entry point with a typed trusted transport address, avoiding string
+/// formatting/parsing before deciding whether forwarded headers are trusted.
+pub fn check_rate_limit_with_source_ip(
+    session: &impl RequestRead,
+    runtime: &RateLimitRuntime,
+    principal: Option<&AuthPrincipal>,
+    request_path: &str,
+    peer_address: Option<std::net::IpAddr>,
+) -> Result<Option<RateLimitHeaders>, HandlerRejection> {
     let config = &runtime.config;
     if !config.enabled {
         return Ok(None);
     }
-    let Some((key, quotas)) =
-        rate_limit_key_and_quotas(session, config, principal, request_path, peer_address)?
+    let Some((key, quotas)) = rate_limit_key_and_quotas_with_trust(
+        session,
+        config,
+        principal,
+        request_path,
+        peer_address,
+        runtime
+            .source_trust
+            .as_ref()
+            .map_err(|message| HandlerRejection::new(500, "ERR10002", *message))?,
+    )?
     else {
         return Ok(None);
     };
@@ -361,12 +404,34 @@ pub fn apply_rate_limit_headers<W: HeaderWriter>(
     Ok(())
 }
 
+#[cfg(test)]
 fn rate_limit_key_and_quotas(
     session: &impl RequestRead,
     config: &LimitConfig,
     principal: Option<&AuthPrincipal>,
     request_path: &str,
     peer_address: Option<&str>,
+) -> Result<Option<(String, Vec<LimitQuota>)>, HandlerRejection> {
+    let trust = config
+        .source_trust()
+        .map_err(|message| HandlerRejection::new(500, "ERR10002", message))?;
+    rate_limit_key_and_quotas_with_trust(
+        session,
+        config,
+        principal,
+        request_path,
+        peer_address.and_then(|peer| peer.parse().ok()),
+        &trust,
+    )
+}
+
+fn rate_limit_key_and_quotas_with_trust(
+    session: &impl RequestRead,
+    config: &LimitConfig,
+    principal: Option<&AuthPrincipal>,
+    request_path: &str,
+    peer_address: Option<std::net::IpAddr>,
+    trust: &TrustedProxyPolicy,
 ) -> Result<Option<(String, Vec<LimitQuota>)>, HandlerRejection> {
     match config.key {
         LimitKey::Server => {
@@ -375,11 +440,10 @@ fn rate_limit_key_and_quotas(
             Ok(quotas.map(|quotas| ("server".to_string(), quotas.to_vec())))
         }
         LimitKey::Address => {
-            let address = request_header(session, "x-forwarded-for")
-                .and_then(|value| value.split(',').next().map(str::trim).map(str::to_string))
-                .filter(|value| !value.is_empty())
-                .or_else(|| peer_address.map(str::to_string))
-                .unwrap_or_else(|| "unknown".to_string());
+            let address = trust
+                .resolve(session.req_header().headers, peer_address, false)
+                .map_err(|message| HandlerRejection::new(400, "ERR10002", message))?
+                .to_string();
             let quotas = direct_quotas(&config.address, &address, request_path)
                 .or_else(|| non_empty(config.rate_limit.as_slice()));
             Ok(quotas.map(|quotas| (format!("address:{address}"), quotas.to_vec())))
@@ -405,9 +469,10 @@ fn rate_limit_key_and_quotas(
             Ok(quotas.map(|quotas| (format!("user:{user_id}"), quotas.to_vec())))
         }
         LimitKey::Akamai => {
-            // The historical resolver name must not turn caller-controlled
-            // True-Client-IP into an unlimited supply of new quota identities.
-            let address = peer_address.unwrap_or("unknown").to_owned();
+            let address = trust
+                .resolve(session.req_header().headers, peer_address, true)
+                .map_err(|message| HandlerRejection::new(400, "ERR10002", message))?
+                .to_string();
             let quotas = direct_quotas(&config.address, &address, request_path)
                 .or_else(|| non_empty(config.rate_limit.as_slice()));
             Ok(quotas.map(|quotas| (format!("akamai:{address}"), quotas.to_vec())))
@@ -696,6 +761,7 @@ where
 impl RateLimitRuntime {
     pub fn new(config: LimitConfig) -> Self {
         Self {
+            source_trust: config.source_trust(),
             config,
             state: Arc::new(Mutex::new(BTreeMap::new())),
         }
@@ -764,8 +830,9 @@ mod tests {
     }
 
     #[test]
-    fn akamai_ignores_spoofable_headers_without_peer_metadata() {
-        let config = LimitConfig {
+    fn akamai_requires_trust_and_rejects_untrusted_peers() {
+        let mut config = LimitConfig {
+            enabled: true,
             key: LimitKey::Akamai,
             rate_limit: vec![LimitQuota {
                 limit: 1,
@@ -773,28 +840,10 @@ mod tests {
             }],
             ..Default::default()
         };
-        let missing = IdentityHeaders(http::HeaderMap::new());
-        assert_eq!(
-            rate_limit_key_and_quotas(&missing, &config, None, "/", None)
-                .unwrap()
-                .unwrap()
-                .0,
-            "akamai:unknown"
-        );
-        let mut headers = http::HeaderMap::new();
-        headers.append("tRuE-cLiEnT-iP", "192.0.2.10".parse().unwrap());
-        headers.append("True-Client-IP", "192.0.2.11".parse().unwrap());
-        assert_eq!(
-            rate_limit_key_and_quotas(&IdentityHeaders(headers), &config, None, "/", None)
-                .unwrap()
-                .unwrap()
-                .0,
-            "akamai:unknown"
-        );
-        let mut config = config.clone();
-        config.enabled = true;
+        assert!(config.source_trust().is_err());
+        config.trusted_proxy_cidrs = vec!["203.0.113.0/24".into()];
         let runtime = RateLimitRuntime::new(config);
-        for (label, allowed) in [("first", true), ("changed", false)] {
+        for label in ["first", "changed"] {
             let mut headers = http::HeaderMap::new();
             headers.insert("true-client-ip", label.parse().unwrap());
             assert_eq!(
@@ -805,16 +854,83 @@ mod tests {
                     "/",
                     Some("192.0.2.8")
                 )
-                .is_ok(),
-                allowed
+                .unwrap_err()
+                .status,
+                400
             );
         }
-        for name in ["server", "address", "client", "user"] {
-            let key: LimitKey = serde_yaml::from_str(name).unwrap();
-            assert_eq!(serde_json::to_value(key).unwrap(), name);
-        }
+        assert!(runtime.state.lock().unwrap().is_empty());
     }
-
+    #[test]
+    fn spoofed_forwarded_for_cannot_fill_capacity_or_block_another_peer() {
+        let runtime = RateLimitRuntime::new(LimitConfig {
+            enabled: true,
+            key: LimitKey::Address,
+            rate_limit: vec![LimitQuota {
+                limit: 1,
+                window_seconds: 60,
+            }],
+            ..Default::default()
+        });
+        for i in 0..MAX_RATE_LIMIT_BUCKETS + 32 {
+            let mut headers = http::HeaderMap::new();
+            headers.insert("x-forwarded-for", format!("spoof-{i}").parse().unwrap());
+            assert_eq!(
+                check_rate_limit(
+                    &IdentityHeaders(headers),
+                    &runtime,
+                    None,
+                    "/",
+                    Some("198.51.100.1")
+                )
+                .is_ok(),
+                i == 0
+            );
+        }
+        assert_eq!(runtime.state.lock().unwrap().len(), 1);
+        assert!(
+            check_rate_limit(
+                &IdentityHeaders(http::HeaderMap::new()),
+                &runtime,
+                None,
+                "/",
+                Some("198.51.100.2")
+            )
+            .is_ok()
+        );
+        assert_eq!(runtime.state.lock().unwrap().len(), 2);
+    }
+    #[test]
+    fn trusted_cdn_clients_have_independent_buckets_behind_one_edge() {
+        let runtime = RateLimitRuntime::new(LimitConfig {
+            enabled: true,
+            key: LimitKey::Akamai,
+            trusted_proxy_cidrs: vec!["203.0.113.0/24".into()],
+            rate_limit: vec![LimitQuota {
+                limit: 1,
+                window_seconds: 60,
+            }],
+            ..Default::default()
+        });
+        for round in 0..2 {
+            for client in ["198.51.100.1", "198.51.100.2"] {
+                let mut headers = http::HeaderMap::new();
+                headers.insert("true-client-ip", client.parse().unwrap());
+                assert_eq!(
+                    check_rate_limit(
+                        &IdentityHeaders(headers),
+                        &runtime,
+                        None,
+                        "/",
+                        Some("203.0.113.9")
+                    )
+                    .is_ok(),
+                    round == 0
+                );
+            }
+        }
+        assert_eq!(runtime.state.lock().unwrap().len(), 2);
+    }
     #[test]
     fn parses_java_limit_strings() {
         let config: LimitConfig = serde_yaml::from_str(

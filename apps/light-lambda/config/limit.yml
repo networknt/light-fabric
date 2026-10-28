@@ -54,3 +54,8 @@ clientIdKeyResolver: ${limit.clientIdKeyResolver:com.networknt.limit.key.JwtClie
 addressKeyResolver: ${limit.addressKeyResolver:com.networknt.limit.key.RemoteAddressKeyResolver}
 # User Id Key Resolver.
 userIdKeyResolver: ${limit.userIdKeyResolver:com.networknt.limit.key.JwtUserIdKeyResolver}
+
+# No forwarded client-address header is trusted by default. List only proxies
+# that sanitize/overwrite those headers and prevent origin bypass.
+# AkamaiAddressKeyResolver/key: akamai requires an explicit allowlist.
+trustedProxyCidrs: ${limit.trustedProxyCidrs:[]}

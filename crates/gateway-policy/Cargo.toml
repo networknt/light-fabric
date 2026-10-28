@@ -5,6 +5,7 @@ edition.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
+ipnet = { workspace = true }
 async-trait = { workspace = true }
 light-client = { path = "../light-client" }
 reqwest = { workspace = true }

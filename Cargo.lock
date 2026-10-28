@@ -2768,6 +2768,7 @@ dependencies = [
  "chrono",
  "hex",
  "http 1.4.0",
+ "ipnet",
  "light-client",
  "light-runtime",
  "light-security",
