@@ -187,6 +187,7 @@ pub trait LifecycleParticipant: Send + Sync {
 
     /// Stops admission to participant-owned background work before the
     /// transport drains requests that were already accepted.
+    #[must_use = "the quiesce future must be awaited to perform the operation"]
     async fn quiesce(
         &self,
         _config: &RuntimeConfig,
@@ -195,6 +196,7 @@ pub trait LifecycleParticipant: Send + Sync {
         Ok(())
     }
 
+    #[must_use = "the shutdown future must be awaited to perform the operation"]
     async fn shutdown(
         &self,
         config: &RuntimeConfig,
@@ -235,6 +237,10 @@ impl LifecycleRegistry {
             .expect("lifecycle lock")
             .participants
             .len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub async fn shutdown(

@@ -10567,11 +10567,27 @@ endpointRules:
     }
 
     fn free_tcp_port() -> u16 {
-        std::net::TcpListener::bind("127.0.0.1:0")
-            .expect("bind free port")
-            .local_addr()
-            .expect("free port address")
-            .port()
+        // Runtime startup binds after this probe closes. Never hand the same
+        // address to another test in this process during that startup window.
+        static SELECTED: std::sync::OnceLock<Mutex<std::collections::HashSet<u16>>> =
+            std::sync::OnceLock::new();
+        let mut selected = SELECTED
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        loop {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind free port");
+            let port = listener.local_addr().expect("free port address").port();
+            if selected.insert(port) {
+                return port;
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_fixture_ports_are_unique_across_startup_windows() {
+        let ports: std::collections::HashSet<_> = (0..512).map(|_| free_tcp_port()).collect();
+        assert_eq!(ports.len(), 512);
     }
 
     async fn raw_http_exchange(address: std::net::SocketAddr, request: &str) -> Vec<u8> {
@@ -10727,6 +10743,11 @@ aliases: {}
             async move {
                 while let Ok((mut socket, _)) = upstream.accept().await {
                     let request = read_complete_http_request(&mut socket).await;
+                    // A readiness/closed idle TCP connection is not an HTTP call.
+                    // Nonempty incomplete requests still fail the header assertion.
+                    if request.is_empty() {
+                        continue;
+                    }
                     upstream_requests.fetch_add(1, Ordering::SeqCst);
                     let header_end = request
                         .windows(4)
@@ -10756,6 +10777,14 @@ aliases: {}
                 }
             }
         });
+
+        // Prove the fixture tolerates a zero-byte probe without recording a
+        // business request; all existing downstream counts remain unchanged.
+        drop(
+            TcpStream::connect(upstream_address)
+                .await
+                .expect("empty TCP probe"),
+        );
 
         let config_dir = TempDir::new().expect("config temp dir");
         let external_dir = TempDir::new().expect("external temp dir");

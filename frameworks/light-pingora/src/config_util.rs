@@ -366,13 +366,3 @@ pub(crate) fn request_header(session: &pingora::prelude::Session, name: &str) ->
         .and_then(|value| value.to_str().ok())
         .map(str::to_string)
 }
-
-pub(crate) fn best_prefix<'a, T>(
-    values: &'a BTreeMap<String, T>,
-    path: &str,
-) -> Option<(&'a String, &'a T)> {
-    values
-        .iter()
-        .filter(|(prefix, _)| path.starts_with(prefix.as_str()))
-        .max_by_key(|(prefix, _)| prefix.len())
-}

@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "ownerDisposition": "2026-10-17 huge-count exact ERR11004 amendment C",
+  "cases": [
+    {
+      "id": "huge-count-min-items-1e1000000000000000000000000",
+      "sourceEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/pointer-context-20261017T171423Z/huge-count-meta-v2/min-items",
+      "expectedStatus": 400,
+      "expectedDispatches": 0,
+      "expectedBody": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have at least 1e+1000000000000000000000000 items but found 0\",\"severity\":\"ERROR\"}",
+      "decodedDescription": "Schema Validation Error - /v: must have at least 1e+1000000000000000000000000 items but found 0",
+      "intentionalChange": "Exact integral count admission and violation; preserve historical native metaschema failure. Exponent is not expanded."
+    },
+    {
+      "id": "huge-count-max-items-1e1000000000000000000000000",
+      "sourceEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/pointer-context-20261017T171423Z/huge-count-meta-v2/max-items",
+      "expectedStatus": 200,
+      "expectedDispatches": 1,
+      "intentionalChange": "Mathematically valid maximum; no exponent expansion."
+    }
+  ]
+}

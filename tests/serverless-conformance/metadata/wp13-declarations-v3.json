@@ -1,0 +1,2601 @@
+{
+  "schema": "light-lambda-declaration-reviews/v1",
+  "reviews": [
+    {
+      "id": "B-01-oauth-denial-loopback-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/b/B-01-oauth-denial-loopback-multi-contract-v1.json",
+      "fixtureDigest": "56c75e5a65c2276c92534ed47c15c3ca9dc47cc7834f7f5bc1d52c82a8e51622",
+      "fixtureBytesSha256": "8cad9d5153f956585c726e77767016c3630935a20b56b4ac2a75abd2232d84b2",
+      "originalDeclared": [
+        "header:content-type"
+      ],
+      "observed": [],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            }
+          ],
+          "initialization": null,
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "B-01",
+        "CFG-02",
+        "CFG-04",
+        "C-04",
+        "E-06a",
+        "E-10",
+        "E-10e"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/B-01-oauth-denial-loopback-multi-contract-v1.json",
+      "javaSha256": "623eb441b9329fdc879259cbfe25b1e59db637c0f694e939c17ca084bad9a996",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/B-01-oauth-denial-loopback-multi-contract-v1.json",
+      "rustSha256": "a2507fd590bebdc63e44ac96439f27770264e2301431fbf0470a2da9c6c76ff5",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "C-03-warm-jwt-principal-not-reused-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/c/C-03-warm-jwt-principal-not-reused-multi-contract-v1.json",
+      "fixtureDigest": "622839f84cb12856fd9eb35d57e2980425ef9959902e880435a8124294f3827e",
+      "fixtureBytesSha256": "f9d955326d2dd72398c09126f73cde16a2d3abe3a272496af1c94876f5891bfa",
+      "originalDeclared": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "body",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": "ok",
+              "rustExpected": "ok"
+            },
+            {
+              "step": 1,
+              "javaExpected": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}",
+              "rustExpected": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}"
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "header:x-backend",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "synthetic"
+              ],
+              "rustExpected": [
+                "synthetic"
+              ]
+            },
+            {
+              "step": 1,
+              "javaExpected": null,
+              "rustExpected": null
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "status",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 200,
+              "rustExpected": 200
+            },
+            {
+              "step": 1,
+              "javaExpected": 401,
+              "rustExpected": 401
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "C-03",
+        "S-01",
+        "S-13",
+        "E-10",
+        "E-02",
+        "E-06a"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/C-03-warm-jwt-principal-not-reused-multi-contract-v1.json",
+      "javaSha256": "fc34b5c5b926166e92227112473b333fd1eb9c2a9bd33a1f297ad117ed5cca06",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/C-03-warm-jwt-principal-not-reused-multi-contract-v1.json",
+      "rustSha256": "c5ff5bab941740d7fd8aad8ea0f06e5e672adb4dc0607646599261c69e50b61c",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "L-02-remote-address-explicit-identity-xff-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/l/L-02-remote-address-explicit-identity-xff-multi-contract-v1.json",
+      "fixtureDigest": "a4a781e4fc0896d83b6a7d17f8b36a9946f12a6a2ad6549133a7cc35c839ecdf",
+      "fixtureBytesSha256": "bf44fe06498bdf262d4ba60bb930669057af75497128342ea0fb89d11a22b839",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type",
+        "header:ratelimit-limit",
+        "header:ratelimit-remaining",
+        "header:ratelimit-reset"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type",
+        "header:ratelimit-limit",
+        "header:ratelimit-remaining",
+        "header:ratelimit-reset"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "header:ratelimit-limit",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "1/MINUTES"
+              ],
+              "rustExpected": [
+                "1/MINUTES"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "header:ratelimit-remaining",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "0"
+              ],
+              "rustExpected": [
+                "0"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "header:ratelimit-reset",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "60s"
+              ],
+              "rustExpected": [
+                "60s"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "L-02",
+        "L-01",
+        "E-13",
+        "E-11",
+        "E-10",
+        "E-10e",
+        "E-06a"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/L-02-remote-address-explicit-identity-xff-multi-contract-v1.json",
+      "javaSha256": "a7234ea9a52081b101d279e91d1045f142aa1d5584a0e3e2102f16f555edaa7c",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/L-02-remote-address-explicit-identity-xff-multi-contract-v1.json",
+      "rustSha256": "3da319bc08fef01ca40295005061cd8106236bfff53e46cfb37e3739d55f8fa3",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-01-valid-jks-init-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-01-valid-jks-init-v1.json",
+      "fixtureDigest": "75e6bc22b4281c5b15ba15233971f5b3cb068a730ea294fbdc43024a9d101073",
+      "fixtureBytesSha256": "7be04e48f9fbab687b580ffe984c8e0f931cd27a52f6b9de73466122b6d78cc9",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "bodyBase64",
+        "header:x-backend",
+        "outcome",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0
+            }
+          ],
+          "initialization": null,
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-01",
+        "E-06",
+        "E-08",
+        "CFG-02",
+        "CFG-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-01-valid-jks-init-v1.json",
+      "javaSha256": "308ae6507d0041978750953c930621e34f2369d8fe1fd3afc6eeb65893cbf6f2",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-01-valid-jks-init-v1.json",
+      "rustSha256": "fc1c8ec91ed3141c42dbe937c30e550cf9277716fa38284b7ed92f861f9ec910",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-02-expired-jks-init-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-02-expired-jks-init-v1.json",
+      "fixtureDigest": "d3ec312bbf0dc513bfc23af6c98b6207909104479ef08c778856c83699af05ff",
+      "fixtureBytesSha256": "c018114a060eeeff18913a9bacce3d90d880ecf139f51ed7cb12a9d8270ba3f3",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:content-type"
+      ],
+      "observed": [
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "outcome",
+        "status"
+      ],
+      "remove": [
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": []
+            }
+          ],
+          "initialization": null,
+          "establishedEqual": true
+        },
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0
+            }
+          ],
+          "initialization": null,
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-02",
+        "CFG-02",
+        "CFG-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-02-expired-jks-init-v1.json",
+      "javaSha256": "fa98a19bd87a81695bfd85b167f96b5c2fa4c7378fd6ef634b5e9f755d377a27",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-02-expired-jks-init-v1.json",
+      "rustSha256": "8ca7ab2d8d35f05917bff98fa88f9fee4c68af3dd7fb5b20040802e0867a5460",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-03-malformed-0-jks-init-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-03-malformed-0-jks-init-v1.json",
+      "fixtureDigest": "f903c2379960ec62647ad5844c37c0f918097a591271a3111a26ddfccbd52763",
+      "fixtureBytesSha256": "36dcf2a23cc5325f39f364cbeb5e18795414b631f155ea2f47c2ce32fe9069c6",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:content-type"
+      ],
+      "observed": [
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "outcome",
+        "status"
+      ],
+      "remove": [
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": []
+            }
+          ],
+          "initialization": null,
+          "establishedEqual": true
+        },
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0
+            }
+          ],
+          "initialization": null,
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-03",
+        "S-08",
+        "CFG-02",
+        "CFG-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-03-malformed-0-jks-init-v1.json",
+      "javaSha256": "39f214bbff0107c1b5c991255fe38bb00b8104a905cc81e5d186830155ace697",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-03-malformed-0-jks-init-v1.json",
+      "rustSha256": "85c3b80c1ef452546e724e0552b1485d85961f653cea7e6aa53d2a22865f25c1",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-03-malformed-1-jks-init-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-03-malformed-1-jks-init-v1.json",
+      "fixtureDigest": "edcfaa96bade184bfd2d43f15b60e1b97dc5007646ae7bb67e94c7d17ac17101",
+      "fixtureBytesSha256": "973bc57f743952d7dc66e80b075c9d92dd80a5c08445037963f130a414280dc9",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:content-type"
+      ],
+      "observed": [
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "outcome",
+        "status"
+      ],
+      "remove": [
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": []
+            }
+          ],
+          "initialization": null,
+          "establishedEqual": true
+        },
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0
+            }
+          ],
+          "initialization": null,
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-03",
+        "S-08",
+        "CFG-02",
+        "CFG-04",
+        "E-01"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-03-malformed-1-jks-init-v1.json",
+      "javaSha256": "fe16a0fc7c4360c053f3c03cab1592e4714ba19c4ada590ae8cfa76469eef77d",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-03-malformed-1-jks-init-v1.json",
+      "rustSha256": "0108433f06e2acde1e637d31fa3739b75490c46a9c7f8fd0e2772a41d3c5d95d",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-03-malformed-2-jks-init-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-03-malformed-2-jks-init-v1.json",
+      "fixtureDigest": "69208e9f9cb783199b14b525863248aad934142a9fc4eacc1f4b4af643622584",
+      "fixtureBytesSha256": "b8deb7e9d2fb4346953b7546faeee67561a86154a1760b2b10f07dbc46425047",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:content-type"
+      ],
+      "observed": [
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "outcome",
+        "status"
+      ],
+      "remove": [
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": []
+            }
+          ],
+          "initialization": null,
+          "establishedEqual": true
+        },
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0
+            }
+          ],
+          "initialization": null,
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-03",
+        "S-08",
+        "CFG-02",
+        "CFG-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-03-malformed-2-jks-init-v1.json",
+      "javaSha256": "075f6ed3a1c24ba4180a7b970d53a7553fe98b131c5a5e1c0d647b7f06dedc7e",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-03-malformed-2-jks-init-v1.json",
+      "rustSha256": "5cddf645319e15b5494be3be5eabc528d7d7fa04c5ddab5147b3b81c220b0024",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-03-rs512-jks-init-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-03-rs512-jks-init-v1.json",
+      "fixtureDigest": "2e7104d345a2cd3d6bfa4214aa05b10dc899bfa4b77f930f204ac8a82f8ab75a",
+      "fixtureBytesSha256": "791f787c52ea2da8299cf5d80231bdcb80577da854fbd538c80465bddf22ce53",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "bodyBase64",
+        "header:x-backend",
+        "outcome",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0
+            }
+          ],
+          "initialization": null,
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-03",
+        "CFG-02",
+        "CFG-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-03-rs512-jks-init-v1.json",
+      "javaSha256": "62d7e3b502b706640acabfc01e74bb3088f9d83e43b63b5aeadacada67105263",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-03-rs512-jks-init-v1.json",
+      "rustSha256": "c3fa59e3f8021ff6e286b350ce1b47322742a6dd1fe973ab2dad4e89a2a2b569",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-03-wrong-key-jks-init-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-03-wrong-key-jks-init-v1.json",
+      "fixtureDigest": "819a5469243937a10e4d7ee6fa02e05f65db4267a770efb05c6bbb54aa8120a3",
+      "fixtureBytesSha256": "dbe8d23ae1c75748135b617cd140106c2cb8284da111b82f08c4d535ec3cb4a2",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:content-type"
+      ],
+      "observed": [
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "outcome",
+        "status"
+      ],
+      "remove": [
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": []
+            }
+          ],
+          "initialization": null,
+          "establishedEqual": true
+        },
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0
+            }
+          ],
+          "initialization": null,
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-03",
+        "CFG-02",
+        "CFG-04",
+        "E-01"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-03-wrong-key-jks-init-v1.json",
+      "javaSha256": "d8366cdccb59fc5192f22083e9f0f1fe283ca3c64e0d4e96128f05f83ec8d9dd",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-03-wrong-key-jks-init-v1.json",
+      "rustSha256": "86c5312a55f906073dc4d92172391c2fa408034405e3b3b781e9e93afb7c5f48",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-04-issuer-not-enforced-jks-init-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-04-issuer-not-enforced-jks-init-v1.json",
+      "fixtureDigest": "837daed1e1dec2f38d3ee6fa790d731cfd2ddf55aa6614e97cfd15d77b9c5b31",
+      "fixtureBytesSha256": "b48766bab191a141fd5d6599031de251d642f803039cd4856a97f902ee05f5ba",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:x-backend"
+      ],
+      "observed": [
+        "backendCalls",
+        "body",
+        "bodyBase64",
+        "header:x-backend",
+        "outcome",
+        "status"
+      ],
+      "remove": [
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0
+            }
+          ],
+          "initialization": null,
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-04",
+        "CFG-02",
+        "CFG-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-04-issuer-not-enforced-jks-init-v1.json",
+      "javaSha256": "df14903fcd46d11fb47df3a5a82ecfcf78d67b92de8154fd1cc344a741471342",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-04-issuer-not-enforced-jks-init-v1.json",
+      "rustSha256": "6cd2f6bb365160f67e4042133eb8b7d4b2967a6184eb70cd9f5be8c0bf6d9d64",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-04-provider-explicit-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-04-provider-explicit-multi-contract-v1.json",
+      "fixtureDigest": "bb858be6f985da35bf1fed829093fb2ef7b99e63785b1f06c58164d8fa6be52a",
+      "fixtureBytesSha256": "bc1f02fbed980af4897f3e97537b1ec7978770bd18e520cb665cd7edd5b70bd3",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-04",
+        "S-12",
+        "CFG-02",
+        "CFG-04",
+        "E-10",
+        "E-10e",
+        "E-06a"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-04-provider-explicit-multi-contract-v1.json",
+      "javaSha256": "d99a5e42274a1492a665e6cf04d9519c62a0fbeeaf1221e25f65c3181f08d3d8",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-04-provider-explicit-multi-contract-v1.json",
+      "rustSha256": "4d702c48167edabe284a6d9e0d4a43f54e88d50b8bd2c7d212f4ebfed55dd8e2",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-04-provider-path-0-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-04-provider-path-0-multi-contract-v1.json",
+      "fixtureDigest": "26bed11739b94ef2c59601dfb748a7a1409d2f9e8aed4c0eab12a30d6eb6c02d",
+      "fixtureBytesSha256": "f3f7e3f45600042f7693f970240f8fadce74704abcf1562e22833e50a6dfb574",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-04",
+        "CFG-02",
+        "CFG-04",
+        "E-10",
+        "E-10e",
+        "E-06a"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-04-provider-path-0-multi-contract-v1.json",
+      "javaSha256": "596542a6cd0d958ca649227e7958ee331125a5fb5477855acbc3756169da371e",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-04-provider-path-0-multi-contract-v1.json",
+      "rustSha256": "2edf234d0140ade0cc0279775f2d337ee22c3c8f947c5bb5709f946325169d8c",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-04-provider-path-1-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-04-provider-path-1-multi-contract-v1.json",
+      "fixtureDigest": "6ee0897cfa21db69d4f085b20a3af64727c20159cbf493b4b58af4b8944790d2",
+      "fixtureBytesSha256": "934e2fdd8bb1a438e3b24d20bf33c8aceb86d289a0d99bdf3ec93d152221528e",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-04",
+        "CFG-02",
+        "CFG-04",
+        "E-10",
+        "E-10e",
+        "E-06a"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-04-provider-path-1-multi-contract-v1.json",
+      "javaSha256": "3b4b61fbf5194d0cf4bb68054ff262848170bfbaf8de4b28d367c1cf5ea06dd1",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-04-provider-path-1-multi-contract-v1.json",
+      "rustSha256": "8ebe9253d7330709ff97a5e359fde2bb5dc724514cb4adb3d9476e067bcfd036",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-04-provider-path-2-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-04-provider-path-2-multi-contract-v1.json",
+      "fixtureDigest": "ea8204146169959d8a602223efb112f6d6e6f4d72242887b8d2043d51f7c1412",
+      "fixtureBytesSha256": "051afb7788f4d3f1756f6add266d982576f05b7b56c6315958204db9a663be65",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [],
+      "remove": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": []
+            }
+          ],
+          "initialization": {
+            "javaExpected": [],
+            "rustExpected": []
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-04",
+        "CFG-02",
+        "CFG-04",
+        "E-10",
+        "E-10e",
+        "E-06a"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-04-provider-path-2-multi-contract-v1.json",
+      "javaSha256": "7656837220eca10da5c2d0de9ddf6ec048619e071962b1b86571a3031f76369a",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-04-provider-path-2-multi-contract-v1.json",
+      "rustSha256": "5666dec1c90a5d733a31603512f07e474d3281747f413ad484ff65841045a75e",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-04-wrong-audience-jks-init-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-04-wrong-audience-jks-init-v1.json",
+      "fixtureDigest": "b449f053f15baa660fe92bd614d2088d907de5e4128301cc1bfca7dc18a0c097",
+      "fixtureBytesSha256": "bb6e4253986e3f4aadea98098fd18e31c98ae01eaeb9996e4816cbc69223791f",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:content-type"
+      ],
+      "observed": [
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "outcome",
+        "status"
+      ],
+      "remove": [
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": []
+            }
+          ],
+          "initialization": null,
+          "establishedEqual": true
+        },
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0
+            }
+          ],
+          "initialization": null,
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-04",
+        "CFG-02",
+        "CFG-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-04-wrong-audience-jks-init-v1.json",
+      "javaSha256": "eb9006dd18350d0f9ed7b749c03c0fc2bbe23daac223da4215e19caf8b4cfb7c",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-04-wrong-audience-jks-init-v1.json",
+      "rustSha256": "c4c08e1793033e47704dd968d37cb304c3d58f132a0dc98e96be4b92c862aad5",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-04-wrong-audience-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-04-wrong-audience-multi-contract-v1.json",
+      "fixtureDigest": "31605a512353459159bb4488d2cec443f05f173b3ba36519a18c9e0b095fce35",
+      "fixtureBytesSha256": "1584bae29135f324a8b718af4d6f96eeb31bf4d2bf1ab0fc99726f5b5cbbaac1",
+      "originalDeclared": [
+        "header:content-type"
+      ],
+      "observed": [],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-04",
+        "S-13",
+        "E-06a"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-04-wrong-audience-multi-contract-v1.json",
+      "javaSha256": "461917a851323539d24289b00609766d92d6ac816f30984b6cc593bae4306782",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-04-wrong-audience-multi-contract-v1.json",
+      "rustSha256": "f895b2cb0fa369d2ebd9ea6f11511354195bc8601f565849728f6c3e08fd5b58",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-04a-matching-issuer-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-04a-matching-issuer-multi-contract-v1.json",
+      "fixtureDigest": "0c8695111905ddf17ef2cf0bfbab6478166c2ed85bff925123e2261694aea6f2",
+      "fixtureBytesSha256": "df3f5f613db0e897fff11941ba4dc0ade2167ad4e33f96d2bb9d349a5867b788",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-04a",
+        "S-04",
+        "S-13",
+        "E-10",
+        "E-06a"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-04a-matching-issuer-multi-contract-v1.json",
+      "javaSha256": "408c6d6e220d971547af32799916dba2ff6b5ea56f95c43815b97551745a3601",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-04a-matching-issuer-multi-contract-v1.json",
+      "rustSha256": "a851aa8c16dc496d97ac0703c4267646552ff01819e6de541ab6c4c1fa79bcd0",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-06-secondary-0-dual-token-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-06-secondary-0-dual-token-multi-contract-v1.json",
+      "fixtureDigest": "dd525c396e843cba462578f38f807b252e2749e0ae47fd2599f109793ddde5ea",
+      "fixtureBytesSha256": "bcc66fd77dd67384b6e81e35baa1a2e51ca7b7a94743642cb70e25328259c52a",
+      "originalDeclared": [
+        "header:content-type",
+        "backendCalls"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-06",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "CFG-02",
+        "CFG-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-06-secondary-0-dual-token-multi-contract-v1.json",
+      "javaSha256": "16709f25e05a00d6ffd2feec3ab816a8d01f086978efeaa4cd2d0f9eaaea4a12",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-06-secondary-0-dual-token-multi-contract-v1.json",
+      "rustSha256": "037856bd1dbdb56d44ae807fcea9fb378e5ecc07622511c3fa53373af813025e",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-06-secondary-1-dual-token-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-06-secondary-1-dual-token-multi-contract-v1.json",
+      "fixtureDigest": "53920e3aee9c23bb2e2fde1a9660819ed4e861f1e2952d203efcc30e403ea07d",
+      "fixtureBytesSha256": "6e1bb5edbf6110ec6fc5e36ede8e483c4a2764001d8d85632cbf918317b875e9",
+      "originalDeclared": [
+        "header:content-type",
+        "backendCalls"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-06",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "CFG-02",
+        "CFG-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-06-secondary-1-dual-token-multi-contract-v1.json",
+      "javaSha256": "267b5d945796e2e1129f83eda628bea41d883394e8bbded91abeec3e8908dfd6",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-06-secondary-1-dual-token-multi-contract-v1.json",
+      "rustSha256": "6c5ca890a7f04d3845ac7759c0f77eda1f4ddc6cee46cc53bdb994c0e7ff3682",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-06-secondary-invalid-1-dual-token-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-06-secondary-invalid-1-dual-token-multi-contract-v1.json",
+      "fixtureDigest": "894ede6313557076361b143a6bb26cf4a354cd11d86feb9c2ecf046aab70987b",
+      "fixtureBytesSha256": "fcd3000a0e7b7bd548f80d52071201d3fed6135a9ade1dac54aca244b40f0557",
+      "originalDeclared": [
+        "header:content-type",
+        "backendCalls"
+      ],
+      "observed": [],
+      "remove": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": []
+            }
+          ],
+          "initialization": {
+            "javaExpected": [],
+            "rustExpected": []
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-06",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "C-02",
+        "CFG-02",
+        "CFG-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-06-secondary-invalid-1-dual-token-multi-contract-v1.json",
+      "javaSha256": "e28ece519150b956ba9749b4db957e07354b3e94e6ec355473a8b5618058aae5",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-06-secondary-invalid-1-dual-token-multi-contract-v1.json",
+      "rustSha256": "ab2f106244e829db43befd89dcc71b295a0fafd44db03ba56539dc3c25ed9b3f",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-06-secondary-scope-list-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-06-secondary-scope-list-multi-contract-v1.json",
+      "fixtureDigest": "0baa96a90d6c1906156302e90725b54372afab3408c160be4a7c4e925f51eb3e",
+      "fixtureBytesSha256": "3709b49d26af84ce3fbc7ffba3b73fad2fa16292afe1ac3125914edc117a5ffb",
+      "originalDeclared": [
+        "header:content-type",
+        "backendCalls"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-06",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "CFG-02",
+        "CFG-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-06-secondary-scope-list-multi-contract-v1.json",
+      "javaSha256": "86911baa738fc7c61ac0c23885ad2e2ef9cd85453b75bf3151a39e6d3a53d8fe",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-06-secondary-scope-list-multi-contract-v1.json",
+      "rustSha256": "e223ada8d6a7755d15c3d90f8345140f4784eb409f2b6377e4e178a54df748a3",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-06-secondary-scope-string-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-06-secondary-scope-string-multi-contract-v1.json",
+      "fixtureDigest": "a2418e62178d432a50bdd58ddd9cc68eac9b0e19e2447f947aa72bc70ffcfd42",
+      "fixtureBytesSha256": "b4284a2f22ddaa56e6b7ebcbdf19e880f304c54ba0d97f0f0ddeffd1be0ed63d",
+      "originalDeclared": [
+        "header:content-type",
+        "backendCalls"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-06",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "CFG-02",
+        "CFG-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-06-secondary-scope-string-multi-contract-v1.json",
+      "javaSha256": "8e10a326153940a4196f840f7ae65ad9a7fad14af16f7cb3b8164321fe0c90af",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-06-secondary-scope-string-multi-contract-v1.json",
+      "rustSha256": "40dac843804b4b0c036a84f9922ecbca5d2a121aa50939ba90566cdc9ffed252",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-06-secondary-scp-string-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-06-secondary-scp-string-multi-contract-v1.json",
+      "fixtureDigest": "db96d219529f98f26ef6184bcb1b284711bdd6edc7821a4a11e0a271d5969fe6",
+      "fixtureBytesSha256": "64bc3f09794d31c8a32a3508233e14929d424581d20ceb06c2b61c8104331841",
+      "originalDeclared": [
+        "header:content-type",
+        "backendCalls"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-06",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "CFG-02",
+        "CFG-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-06-secondary-scp-string-multi-contract-v1.json",
+      "javaSha256": "b49a10000941a69bb9179127fc644132a424410838212d8351e0099fe822b6a6",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-06-secondary-scp-string-multi-contract-v1.json",
+      "rustSha256": "5eadad06ab5192cfe70a8d492466e987518cfafa7681dd4be82278d8470e84f1",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-12-jwt-apikey-authorization-precedence-warm-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-12-jwt-apikey-authorization-precedence-warm-multi-contract-v1.json",
+      "fixtureDigest": "73c6666948f89cb159969129146af1d9e91156a7619044c12269ca8429c921d3",
+      "fixtureBytesSha256": "1eac129ead648179f2685ef62f2ee9971c9dd7ce0d6669e38d559dfdcbb62ad6",
+      "originalDeclared": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "body",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": "ok",
+              "rustExpected": "ok"
+            },
+            {
+              "step": 1,
+              "javaExpected": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}",
+              "rustExpected": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}"
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "header:x-backend",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "synthetic"
+              ],
+              "rustExpected": [
+                "synthetic"
+              ]
+            },
+            {
+              "step": 1,
+              "javaExpected": null,
+              "rustExpected": null
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "status",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 200,
+              "rustExpected": 200
+            },
+            {
+              "step": 1,
+              "javaExpected": 401,
+              "rustExpected": 401
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "C-03",
+        "S-01",
+        "S-13",
+        "E-10",
+        "E-02",
+        "E-06a",
+        "S-12",
+        "S-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-12-jwt-apikey-authorization-precedence-warm-multi-contract-v1.json",
+      "javaSha256": "930d4695f813cd2788e3cbfea60faf367809bbf411d9f2daf835f34bc2c11b79",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-12-jwt-apikey-authorization-precedence-warm-multi-contract-v1.json",
+      "rustSha256": "35174c349d34b82a7a3da012950397d6e36b130a4963ddc152ace6e134160df0",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-12-unified-jwt-valid-missing-warm-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-12-unified-jwt-valid-missing-warm-multi-contract-v1.json",
+      "fixtureDigest": "7c4437c1e7a19122329e0379ecdda4878cc47a91ac146356e6e227d1c15cd2c2",
+      "fixtureBytesSha256": "e737d1601017714292522f7a09921df7afb55dd22abc46290881f35502f7af2f",
+      "originalDeclared": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "body",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": "ok",
+              "rustExpected": "ok"
+            },
+            {
+              "step": 1,
+              "javaExpected": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}",
+              "rustExpected": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}"
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "header:x-backend",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "synthetic"
+              ],
+              "rustExpected": [
+                "synthetic"
+              ]
+            },
+            {
+              "step": 1,
+              "javaExpected": null,
+              "rustExpected": null
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "status",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 200,
+              "rustExpected": 200
+            },
+            {
+              "step": 1,
+              "javaExpected": 401,
+              "rustExpected": 401
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "C-03",
+        "S-01",
+        "S-13",
+        "E-10",
+        "E-02",
+        "E-06a",
+        "S-12",
+        "S-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-12-unified-jwt-valid-missing-warm-multi-contract-v1.json",
+      "javaSha256": "3331eba61eb381f7ae3c8a108ef15ded120549568273e1b45fb114fce28efaf9",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-12-unified-jwt-valid-missing-warm-multi-contract-v1.json",
+      "rustSha256": "52b053f5d6419fd40a7a4f36afdb4270c723ad8b29225d9b6b76b465ab9da934",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-13-S-18-rotation-retention-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-13-S-18-rotation-retention-multi-contract-v1.json",
+      "fixtureDigest": "fac8b2aac53add0f9fef11e48cfb0e1c20746ba88728f808b00cfd0005ab3135",
+      "fixtureBytesSha256": "02b21d93df228f0aac70d09e2a3c63776084a89758a834f7cefa382888fb06c3",
+      "originalDeclared": [
+        "header:content-type",
+        "backendCalls"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            },
+            {
+              "step": 1,
+              "javaExpected": null,
+              "rustExpected": null
+            },
+            {
+              "step": 2,
+              "javaExpected": null,
+              "rustExpected": null
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-13",
+        "S-18",
+        "E-06a",
+        "E-10"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-13-S-18-rotation-retention-multi-contract-v1.json",
+      "javaSha256": "e7e59e9c10d21795f0edbd021ed5cbd52196e2d43c522d010b45fb486f44f335",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-13-S-18-rotation-retention-multi-contract-v1.json",
+      "rustSha256": "75bdf5bfd0bea2516541c33df88215a32afcfb8bd29804577243602e649591c7",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-13-algorithm-hmac-no-refresh-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-13-algorithm-hmac-no-refresh-multi-contract-v1.json",
+      "fixtureDigest": "2bdc46cbdba3a63dbee6a533941b631df6b9c6dae757088f9acecc20fdda0048",
+      "fixtureBytesSha256": "75d02f2fec5a0f2cce46b8b69515f2c8a65455d759a0084d7672e70fc9c577dd",
+      "originalDeclared": [
+        "header:content-type"
+      ],
+      "observed": [],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-03",
+        "S-13",
+        "E-06a"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-13-algorithm-hmac-no-refresh-multi-contract-v1.json",
+      "javaSha256": "8205ffa105fdd8428e54ec2acff7ecc3cf9841fc4680c1ced57bd14edd768ef2",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-13-algorithm-hmac-no-refresh-multi-contract-v1.json",
+      "rustSha256": "d477eeab41e049dc92b450a9a4247bbe2e91d06ba0700379665877edcb6480bc",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-13a-bootstrap-records-cooldown-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-13a-bootstrap-records-cooldown-multi-contract-v1.json",
+      "fixtureDigest": "e6dd071ecb268a6cdc692715bb82109cf01f408619da4190e83c018f5fad34d4",
+      "fixtureBytesSha256": "ddf01de85069365bc36d957c8bf8a561e5260b9e828484e4b524413bd64c9ec5",
+      "originalDeclared": [
+        "jwksFetches",
+        "header:content-type"
+      ],
+      "observed": [
+        "jwksFetches"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-13",
+        "S-13a",
+        "E-06a"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-13a-bootstrap-records-cooldown-multi-contract-v1.json",
+      "javaSha256": "d9773749f223907a9ca2084da4485db8f2484e01359af1c81fca897cc315bf1f",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-13a-bootstrap-records-cooldown-multi-contract-v1.json",
+      "rustSha256": "3049a96717dc30e5e0ff8ca45c8b33eb7a17b3d0a8cf3cc7e3a74cba3e691c3d",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-13a-failed-refresh-cooldown-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-13a-failed-refresh-cooldown-multi-contract-v1.json",
+      "fixtureDigest": "47a5f862878126a3691b23d0491293282d520d81c5b2010fb92a55941f399fa5",
+      "fixtureBytesSha256": "213726a3ca790cac4f951d8eeebeb0138ff4a4f039ba1f4c009f7b1ddbfa0a05",
+      "originalDeclared": [
+        "jwksFetches",
+        "header:content-type"
+      ],
+      "observed": [
+        "jwksFetches"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-13",
+        "S-13a",
+        "E-06a"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-13a-failed-refresh-cooldown-multi-contract-v1.json",
+      "javaSha256": "42b10f018c9b18df78ebf2698000f0a6b8f9503ba8226afa13187ef7562b8d0a",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-13a-failed-refresh-cooldown-multi-contract-v1.json",
+      "rustSha256": "dfef5ff417cd858a039b35bf94c2fbc22eaf3b2f2d087ed9d919ffe5e01259d1",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-13a-successful-fetch-cooldown-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-13a-successful-fetch-cooldown-multi-contract-v1.json",
+      "fixtureDigest": "a6b76fca9ed26253f7d3795987298b5a7c944028c8466fef6b08a1d5973b3d4a",
+      "fixtureBytesSha256": "4ee11acd360ac064c92a733f22286e31206b794c67ccf582c780fcf3a23d144e",
+      "originalDeclared": [
+        "header:content-type",
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "observed": [
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-13",
+        "S-13a",
+        "E-10",
+        "E-06a"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-13a-successful-fetch-cooldown-multi-contract-v1.json",
+      "javaSha256": "53e8eb687b5066c8594a44cf24ab47762c93ddbfbcde699398a33f1010584fc1",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-13a-successful-fetch-cooldown-multi-contract-v1.json",
+      "rustSha256": "09e5ddb8ca5800128221f985602c022382b1f340ebae00e56f7be7598bbf449f",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-17-absent-nbf-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-17-absent-nbf-multi-contract-v1.json",
+      "fixtureDigest": "668c5e261bb0ab9d3144a7d125a6685f2ca5e901c1c53d3fbe79ab19e827af94",
+      "fixtureBytesSha256": "1c250c4f7dd42abbdd3a3aae0571f17ce7d740b52627631547230c265bb6b0ad",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "backendCalls"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "body",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": "ok",
+              "rustExpected": "ok"
+            },
+            {
+              "step": 1,
+              "javaExpected": "ok",
+              "rustExpected": "ok"
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            },
+            {
+              "step": 1,
+              "javaExpected": null,
+              "rustExpected": null
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "header:x-backend",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "synthetic"
+              ],
+              "rustExpected": [
+                "synthetic"
+              ]
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "synthetic"
+              ],
+              "rustExpected": [
+                "synthetic"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "status",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 200,
+              "rustExpected": 200
+            },
+            {
+              "step": 1,
+              "javaExpected": 200,
+              "rustExpected": 200
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-17",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "S-18",
+        "CFG-02",
+        "CFG-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-17-absent-nbf-multi-contract-v1.json",
+      "javaSha256": "87ed1132370310683cf07cb65094a1f79a335a7457080f5a698dc05dbed171a3",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-17-absent-nbf-multi-contract-v1.json",
+      "rustSha256": "785b8e0cb3e464161602d7cda02f140044e11a36d163a49d3382bec115e1bb50",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-17-far-future-nbf-jks-init-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-17-far-future-nbf-jks-init-v1.json",
+      "fixtureDigest": "e7247ee66862ad289e6479cbdebc1ca645f931e60b0f6355b79ddc202e71fd25",
+      "fixtureBytesSha256": "fb6405bc051be50f5be9e9c64bc99dd692c625f6ae4e7f2ac3d5207a78ff1d85",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "jwksFetches",
+        "header:content-type"
+      ],
+      "observed": [
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "outcome",
+        "status"
+      ],
+      "remove": [
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": []
+            }
+          ],
+          "initialization": null,
+          "establishedEqual": true
+        },
+        {
+          "field": "jwksFetches",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 0,
+              "rustExpected": 0
+            }
+          ],
+          "initialization": null,
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-17",
+        "CFG-02",
+        "CFG-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-17-far-future-nbf-jks-init-v1.json",
+      "javaSha256": "b8b1e6e86ea55e37d71cd009d944de269bb684e4752183a68876d015e6f7f7ac",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-17-far-future-nbf-jks-init-v1.json",
+      "rustSha256": "ed60a9779c6e97ee0e7ef4aad45043c7a98c32f334534342712bf1cd9f295aec",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-17-future-nbf-30-skew60-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-17-future-nbf-30-skew60-multi-contract-v1.json",
+      "fixtureDigest": "ab2bcd99f471aa7c112304422d80974a58e5177e0c8b44c8d395b9eb6f6f8a7b",
+      "fixtureBytesSha256": "23f0c399adeb9bdd44ab8ede303fb8d3eb696706ff647172f405c805974c4f1d",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "backendCalls"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "body",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": "ok",
+              "rustExpected": "ok"
+            },
+            {
+              "step": 1,
+              "javaExpected": "ok",
+              "rustExpected": "ok"
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            },
+            {
+              "step": 1,
+              "javaExpected": null,
+              "rustExpected": null
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "header:x-backend",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "synthetic"
+              ],
+              "rustExpected": [
+                "synthetic"
+              ]
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "synthetic"
+              ],
+              "rustExpected": [
+                "synthetic"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "status",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 200,
+              "rustExpected": 200
+            },
+            {
+              "step": 1,
+              "javaExpected": 200,
+              "rustExpected": 200
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-17",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "S-18",
+        "CFG-02",
+        "CFG-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-17-future-nbf-30-skew60-multi-contract-v1.json",
+      "javaSha256": "bc09e8b962bc116434cd6ab5e94cab6b40181189a40a89c5f4152a90f7e9501a",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-17-future-nbf-30-skew60-multi-contract-v1.json",
+      "rustSha256": "099d8d7493874bbff9238354724e698daae7a0bdd7ed027b5a52842da3222125",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "S-18-cached-expiry-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-18-cached-expiry-multi-contract-v1.json",
+      "fixtureDigest": "0ae7d5948ff0b41139526ac693fbb626e3c80804ba71b732deab73722d8cbdeb",
+      "fixtureBytesSha256": "ddd25e13f6077fc1a12ad565a008ff11d8765008ac260e6099de9d3b24908c70",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "backendCalls"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "proof": [
+        {
+          "field": "body",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": "ok",
+              "rustExpected": "ok"
+            },
+            {
+              "step": 1,
+              "javaExpected": "{\"statusCode\":401,\"code\":\"ERR10001\",\"message\":\"AUTH_TOKEN_EXPIRED\",\"description\":\"Jwt token in authorization header expired\",\"severity\":\"ERROR\"}",
+              "rustExpected": "{\"statusCode\":401,\"code\":\"ERR10001\",\"message\":\"AUTH_TOKEN_EXPIRED\",\"description\":\"Jwt token in authorization header expired\",\"severity\":\"ERROR\"}"
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            },
+            {
+              "step": 1,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "header:x-backend",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "synthetic"
+              ],
+              "rustExpected": [
+                "synthetic"
+              ]
+            },
+            {
+              "step": 1,
+              "javaExpected": null,
+              "rustExpected": null
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "status",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": 200,
+              "rustExpected": 200
+            },
+            {
+              "step": 1,
+              "javaExpected": 401,
+              "rustExpected": 401
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "S-18",
+        "E-06a",
+        "E-10",
+        "E-02",
+        "S-02",
+        "CFG-02",
+        "CFG-04"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-18-cached-expiry-multi-contract-v1.json",
+      "javaSha256": "4a8f287dfe1158ca7a4cd2e463193fc1fd2a0bd15aef95ed4c5826a2a02c5396",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/S-18-cached-expiry-multi-contract-v1.json",
+      "rustSha256": "3a2f10245a59373a1dbf66853701bbcc0acb3ea48f2c40fb58d36c9e71b46671",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "T-01-deny-native-cel-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/t/T-01-deny-native-cel-multi-contract-v1.json",
+      "fixtureDigest": "935b7ebe8d6a309790e1bad06c592f3c839d6893e763c2c01a046bb1e88627c8",
+      "fixtureBytesSha256": "d95e92efcd7dd3da23d59255e1afa7fcdb327688e22bf7723e6f89b00eaf1c4c",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [],
+      "remove": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "backendCalls",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [],
+              "rustExpected": []
+            }
+          ],
+          "initialization": {
+            "javaExpected": [],
+            "rustExpected": []
+          },
+          "establishedEqual": true
+        },
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "T-01",
+        "C-02",
+        "T-03",
+        "CFG-04",
+        "T-02",
+        "E-10",
+        "E-10e",
+        "E-06a"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/T-01-deny-native-cel-multi-contract-v1.json",
+      "javaSha256": "c35b7074b1de68ef96ddfd334e5e18ddd16be51af8b806a4f9ef4458c0790ad6",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/T-01-deny-native-cel-multi-contract-v1.json",
+      "rustSha256": "6eaffb7694bf4a7df1ecc07883da26eedb6ab17f7cd62bdcaaec928ad23f439e",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "T-01-local-native-cel-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/t/T-01-local-native-cel-multi-contract-v1.json",
+      "fixtureDigest": "da7dd471fb7de3720711de5c1392670d677c31158cea6fd285072ad0e4aa2dc8",
+      "fixtureBytesSha256": "8b92e0e9d81b7b0b7ff6cf255bb2479665fa7345a4d654c08fe33bb6e520e033",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": [
+                "application/json"
+              ],
+              "rustExpected": [
+                "application/json"
+              ]
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "T-01",
+        "C-04",
+        "T-03",
+        "CFG-04",
+        "T-02",
+        "E-10",
+        "E-10e",
+        "E-06a"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/T-01-local-native-cel-multi-contract-v1.json",
+      "javaSha256": "6bc561a2cc311fbce1834603930fdd7ca1411c62c86f09ead00f643b7a52dfbc",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/T-01-local-native-cel-multi-contract-v1.json",
+      "rustSha256": "28018777cb367f50ed1f3f7f661dc2ba83bc81c37f1f4e58a2cbe07aa0de67b0",
+      "decision": "correct-metadata"
+    },
+    {
+      "id": "T-01-metadata-native-cel-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/t/T-01-metadata-native-cel-multi-contract-v1.json",
+      "fixtureDigest": "97e63101fd09ed5c20000961513f14807bbaf04312deade161f5247ae486ed26",
+      "fixtureBytesSha256": "d073bb9e39cfe8368e8d883dfe7bc415e16cea71083cf024e5569e0721eaae9a",
+      "originalDeclared": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "observed": [
+        "backendCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "proof": [
+        {
+          "field": "header:content-type",
+          "steps": [
+            {
+              "step": 0,
+              "javaExpected": null,
+              "rustExpected": null
+            }
+          ],
+          "initialization": {
+            "javaExpected": null,
+            "rustExpected": null
+          },
+          "establishedEqual": true
+        }
+      ],
+      "ledger": [
+        "T-01",
+        "D-02",
+        "T-03",
+        "CFG-04",
+        "T-02",
+        "E-10",
+        "E-10e",
+        "E-06a"
+      ],
+      "authority": "CP1 fixture contracts and unchanged original per-runner expectation equality; fresh native Java and real Rust Init/service execution. Metadata only; no expectation or behavior change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/T-01-metadata-native-cel-multi-contract-v1.json",
+      "javaSha256": "c1970cd76b6005ba7098462337d56c256ab7dc0dabda29ae3c3e2ec14f5f1fb3",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-final-02/T-01-metadata-native-cel-multi-contract-v1.json",
+      "rustSha256": "0bd75b614bf1e0b15d65bef1f9793560fd8a5e581e1ee9edfd54a878dfbb182f",
+      "decision": "correct-metadata"
+    }
+  ]
+}

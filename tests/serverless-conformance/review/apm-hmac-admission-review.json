@@ -1,0 +1,45 @@
+[
+  {
+    "fixture": "M-02-apm-loopback-sink-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/M-02-apm-loopback-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "M-01",
+      "M-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "M-02",
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Reviewed ApmMetricsTest/ApmScheduledTest and owner-approved closed metric assertion. Actual metrics registry/report sender and finite loopback sink run. Exact five stable names/types and request/success count=1; only three measurement strings checked as nonnegative ordered integers. Actual complete body retained. Explicit source report invokes reporter; natural source waits real one-minute schedule with bound75s and fixture JVM bound100s. No manual report in scheduled mode. Deferred APM binding rejects Rust Init, no Rust metrics execution.",
+    "validation": "passed focused workflow 20261011T005840.904838Z"
+  },
+  {
+    "fixture": "M-02-natural-scheduled-report-sink-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/M-02-natural-scheduled-report-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "M-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "M-02",
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Reviewed ApmMetricsTest/ApmScheduledTest and owner-approved closed metric assertion. Actual metrics registry/report sender and finite loopback sink run. Exact five stable names/types and request/success count=1; only three measurement strings checked as nonnegative ordered integers. Actual complete body retained. Explicit source report invokes reporter; natural source waits real one-minute schedule with bound75s and fixture JVM bound100s. No manual report in scheduled mode. Deferred APM binding rejects Rust Init, no Rust metrics execution.",
+    "validation": "passed focused workflow 20261011T005840.904838Z"
+  },
+  {
+    "fixture": "S-03-hmac-rsa-rejection-generated-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-03-hmac-rsa-rejection-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "S-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "CFG-02",
+      "CFG-04"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "JwtCacheTest HS256 token with kid k1 against RSA verification is rejected as exact ERR10000. Secret generated in memory at execution, never fixture/evidence. Relative time recipe avoids historical wall epoch. Original Java service/JKS declarations retained, so Rust rejects Init; no algorithm-policy coverage credited.",
+    "validation": "passed focused workflow 20261011T005840.904838Z"
+  }
+]

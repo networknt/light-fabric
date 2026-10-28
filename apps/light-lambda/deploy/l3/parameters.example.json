@@ -1,0 +1,14 @@
+[
+  {
+    "ParameterKey": "ArtifactBucket",
+    "ParameterValue": "REQUIRED_FOR_IAC_ONLY"
+  },
+  {
+    "ParameterKey": "BootstrapKey",
+    "ParameterValue": "light-lambda-direct-trial/d095e89c/bootstrap.zip"
+  },
+  {
+    "ParameterKey": "LayerKey",
+    "ParameterValue": "light-lambda-direct-trial/69803908/layer.zip"
+  }
+]

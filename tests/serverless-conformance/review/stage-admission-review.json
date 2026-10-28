@@ -1,0 +1,864 @@
+[
+  {
+    "fixture": "B-01-fetch-cache-secondary-represented-v1",
+    "fixturePath": "fixtures/v1/b/B-01-fetch-cache-secondary-represented-v1.json",
+    "originalSha256": "7e8e2e7e16af108901736d13d661f2e91a23d10c413e6c9027d789048caadf72",
+    "preservedInput": "review/stage-before-review/B-01-fetch-cache-secondary-represented-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "B-01-malformed-oauth-error-represented-v1",
+    "fixturePath": "fixtures/v1/b/B-01-malformed-oauth-error-represented-v1.json",
+    "originalSha256": "2167b408405b7a2056cab06f29bb69f66123a502425e8cd1fabd661e01c41f41",
+    "preservedInput": "review/stage-before-review/B-01-malformed-oauth-error-represented-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "B-01-no-service-represented-v1",
+    "fixturePath": "fixtures/v1/b/B-01-no-service-represented-v1.json",
+    "originalSha256": "4f6a451c5f60b842624b8cd8429e1e7a0ea75966839450e4d29437dcb3ec1d2c",
+    "preservedInput": "review/stage-before-review/B-01-no-service-represented-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "B-01-oauth-denial-represented-v1",
+    "fixturePath": "fixtures/v1/b/B-01-oauth-denial-represented-v1.json",
+    "originalSha256": "f51d9a4c500bd6e1b57d3a2928c57a6fe37fc3bc14be6296250f58baac07118a",
+    "preservedInput": "review/stage-before-review/B-01-oauth-denial-represented-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "B-03-lowercase-origin-represented-v1",
+    "fixturePath": "fixtures/v1/b/B-03-lowercase-origin-represented-v1.json",
+    "originalSha256": "bf93d0b9aba322e56e8487a2633048c20d156dff5b39571c5c1cf0518d8362b4",
+    "preservedInput": "review/stage-before-review/B-03-lowercase-origin-represented-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "C-01-whole-invocation-listeners-init-v1",
+    "fixturePath": "fixtures/v1/c/C-01-whole-invocation-listeners-init-v1.json",
+    "originalSha256": "36d4a7376dbc28233272a3d145d5a17a106177cc11cead5e8d2b547de1301ede",
+    "preservedInput": "review/stage-before-review/C-01-whole-invocation-listeners-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [
+      "explicit Java test plugin declaration: com.networknt.aws.lambda.characterization.CharacterizationSupport$Listeners@h0"
+    ],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "C-02-warning-severity-listeners-init-v1",
+    "fixturePath": "fixtures/v1/c/C-02-warning-severity-listeners-init-v1.json",
+    "originalSha256": "3dd2f98303dd48c353fdb68a060972ee6810ad63b9e47d5939fab0cdc25c5eb6",
+    "preservedInput": "review/stage-before-review/C-02-warning-severity-listeners-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [
+      "explicit Java test plugin declaration: com.networknt.aws.lambda.characterization.ExchangeEdgesTest$Edge@h0"
+    ],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "C-03-listener-exception-listeners-init-v1",
+    "fixturePath": "fixtures/v1/c/C-03-listener-exception-listeners-init-v1.json",
+    "originalSha256": "a096fe3d0fe95658f272da6916890dd38ab9b8366c958af3e0da0d17c738470a",
+    "preservedInput": "review/stage-before-review/C-03-listener-exception-listeners-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [
+      "explicit Java test plugin declaration: com.networknt.aws.lambda.characterization.ExchangeEdgesTest$Edge@h0"
+    ],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "C-03-repeat-finalization-listeners-init-v1",
+    "fixturePath": "fixtures/v1/c/C-03-repeat-finalization-listeners-init-v1.json",
+    "originalSha256": "26330fba19f873de86b3690dac30d9b83591112cf120444ba477c6b2f6d27e2a",
+    "preservedInput": "review/stage-before-review/C-03-repeat-finalization-listeners-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [
+      "explicit Java test plugin declaration: com.networknt.aws.lambda.characterization.ExchangeEdgesTest$Edge@h0"
+    ],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "C-04-fail-open-listeners-init-v1",
+    "fixturePath": "fixtures/v1/c/C-04-fail-open-listeners-init-v1.json",
+    "originalSha256": "36b1bc323ba111cb45d4ac62ced37590f0e01c6bf69c809dbd70c1f2b934603b",
+    "preservedInput": "review/stage-before-review/C-04-fail-open-listeners-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [
+      "explicit Java test plugin declaration: com.networknt.aws.lambda.characterization.CharacterizationSupport$Throwing@h0"
+    ],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "C-04-null-status-listeners-init-v1",
+    "fixturePath": "fixtures/v1/c/C-04-null-status-listeners-init-v1.json",
+    "originalSha256": "d18078a41f9ff3fdcd03c91cf24b432dd77fb98f0857284d79d2bcfa9cee2406",
+    "preservedInput": "review/stage-before-review/C-04-null-status-listeners-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [
+      "explicit Java test plugin declaration: com.networknt.aws.lambda.characterization.ExchangeEdgesTest$Edge@h0"
+    ],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "C-05-retained-response-listeners-init-v1",
+    "fixturePath": "fixtures/v1/c/C-05-retained-response-listeners-init-v1.json",
+    "originalSha256": "577fa083fd1a020d5626ed89c28602c0c91e1f3cbb8e5bcbe9bb9ff537241f7e",
+    "preservedInput": "review/stage-before-review/C-05-retained-response-listeners-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [
+      "explicit Java test plugin declaration: com.networknt.aws.lambda.characterization.ExchangeEdgesTest$Edge@h0"
+    ],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "E-03-body-off-0-listeners-init-v1",
+    "fixturePath": "fixtures/v1/e/E-03-body-off-0-listeners-init-v1.json",
+    "originalSha256": "ca4d193d97a977dd4be4ca3ae286cf4cb758849b289a30883e50d0924682c6ef",
+    "preservedInput": "review/stage-before-review/E-03-body-off-0-listeners-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [
+      "explicit Java test plugin declaration: com.networknt.aws.lambda.characterization.CharacterizationSupport$Listeners@h0"
+    ],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "E-03-body-off-1-listeners-init-v1",
+    "fixturePath": "fixtures/v1/e/E-03-body-off-1-listeners-init-v1.json",
+    "originalSha256": "32a611d05f0a36abd002f4809acf17754390fda1ba0e418fd10ef87145b86f85",
+    "preservedInput": "review/stage-before-review/E-03-body-off-1-listeners-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [
+      "explicit Java test plugin declaration: com.networknt.aws.lambda.characterization.CharacterizationSupport$Listeners@h0"
+    ],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "E-03-body-off-2-listeners-init-v1",
+    "fixturePath": "fixtures/v1/e/E-03-body-off-2-listeners-init-v1.json",
+    "originalSha256": "cc5b328b04425d3b0661ba2247fb9ebd8c078d876910fe67717bfdf7a87c50ca",
+    "preservedInput": "review/stage-before-review/E-03-body-off-2-listeners-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [
+      "explicit Java test plugin declaration: com.networknt.aws.lambda.characterization.CharacterizationSupport$Listeners@h0"
+    ],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "E-03-body-off-3-listeners-init-v1",
+    "fixturePath": "fixtures/v1/e/E-03-body-off-3-listeners-init-v1.json",
+    "originalSha256": "6237852adbe1cf5401ab719186ee6ebcac15356de68d877dc408b7fd5e94ee64",
+    "preservedInput": "review/stage-before-review/E-03-body-off-3-listeners-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [
+      "explicit Java test plugin declaration: com.networknt.aws.lambda.characterization.CharacterizationSupport$Listeners@h0"
+    ],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "E-03-body-off-4-listeners-init-v1",
+    "fixturePath": "fixtures/v1/e/E-03-body-off-4-listeners-init-v1.json",
+    "originalSha256": "ffde21b198046e7488d2e15b86ca0c0b7f20ce737eaab64861796846623696d1",
+    "preservedInput": "review/stage-before-review/E-03-body-off-4-listeners-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [
+      "explicit Java test plugin declaration: com.networknt.aws.lambda.characterization.CharacterizationSupport$Listeners@h0"
+    ],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "E-04-raw-encoded-query-listeners-init-v1",
+    "fixturePath": "fixtures/v1/e/E-04-raw-encoded-query-listeners-init-v1.json",
+    "originalSha256": "91271c63a82cb0c77999d784a8553b046bbdd3172b9acb97d21a5be01afd668b",
+    "preservedInput": "review/stage-before-review/E-04-raw-encoded-query-listeners-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [
+      "explicit Java test plugin declaration: com.networknt.aws.lambda.characterization.CharacterizationSupport$Listeners@h0"
+    ],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "E-13-multi-auth-invisible-represented-v1",
+    "fixturePath": "fixtures/v1/e/E-13-multi-auth-invisible-represented-v1.json",
+    "originalSha256": "b34e65d9e7159427a0286f2b068651c3b868a68ae88ba376c122207c005e4def",
+    "preservedInput": "review/stage-before-review/E-13-multi-auth-invisible-represented-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "H-01-no-service-loopback-v1",
+    "fixturePath": "fixtures/v1/h/H-01-no-service-loopback-v1.json",
+    "originalSha256": "973320a7a0ca67495ad60283029205f528c29843ee5e2a7913fa00a48f36c77e",
+    "preservedInput": "review/stage-before-review/H-01-no-service-loopback-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "H-03-http-0-loopback-v1",
+    "fixturePath": "fixtures/v1/h/H-03-http-0-loopback-v1.json",
+    "originalSha256": "352e2accbf432033a957f7a5c74926e3512a3dcbc1a725f0d1284b66ca17ee75",
+    "preservedInput": "review/stage-before-review/H-03-http-0-loopback-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "H-03-http-1-loopback-v1",
+    "fixturePath": "fixtures/v1/h/H-03-http-1-loopback-v1.json",
+    "originalSha256": "25c57f92485f9d0d9abccb03a32cc3f047f8bdb147f072feb05549b51687d43f",
+    "preservedInput": "review/stage-before-review/H-03-http-1-loopback-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "H-03-http-2-loopback-v1",
+    "fixturePath": "fixtures/v1/h/H-03-http-2-loopback-v1.json",
+    "originalSha256": "585a402dfd7363e968bba53bff8b076776c74ddd8df50ac009369f473cc4cd25",
+    "preservedInput": "review/stage-before-review/H-03-http-2-loopback-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "H-03-http-3-loopback-v1",
+    "fixturePath": "fixtures/v1/h/H-03-http-3-loopback-v1.json",
+    "originalSha256": "ae8148bbc7dae0c69539b27fcd45d935fa57448a6f74a5548aa723e11dbc5dfe",
+    "preservedInput": "review/stage-before-review/H-03-http-3-loopback-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "H-03-http-4-loopback-v1",
+    "fixturePath": "fixtures/v1/h/H-03-http-4-loopback-v1.json",
+    "originalSha256": "95ca0d5ad80313df2a38c27e3f038134741b68c318fbc66e1c58bd729daa006c",
+    "preservedInput": "review/stage-before-review/H-03-http-4-loopback-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "H-04-method-HEAD-loopback-v1",
+    "fixturePath": "fixtures/v1/h/H-04-method-HEAD-loopback-v1.json",
+    "originalSha256": "6bf46acdb967d98a1001a63519c09a5ac1eda611f9e2172f8758a450502a7d10",
+    "preservedInput": "review/stage-before-review/H-04-method-HEAD-loopback-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "H-04-method-get-loopback-v1",
+    "fixturePath": "fixtures/v1/h/H-04-method-get-loopback-v1.json",
+    "originalSha256": "a3102714cabe093b444eec3f703fdaaf8761243d49f72e944860a744d0aff8c7",
+    "preservedInput": "review/stage-before-review/H-04-method-get-loopback-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "H-04-unknown-service-loopback-v1",
+    "fixturePath": "fixtures/v1/h/H-04-unknown-service-loopback-v1.json",
+    "originalSha256": "0207fb9aef5cbcc92c6daba263e9b00d16261c9530acb4b609dd5f455f3aa295",
+    "preservedInput": "review/stage-before-review/H-04-unknown-service-loopback-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-01-valid-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-01-valid-jks-init-v1.json",
+    "originalSha256": "7c3982b146a66981bff234120d81e5c457df840f9112f81e98ea63e5998f9c4c",
+    "preservedInput": "review/stage-before-review/S-01-valid-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-02-expired-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-02-expired-jks-init-v1.json",
+    "originalSha256": "b2d35c93ba0379ed5b95cf308d480a78132759daa7ce1006a34f792b7a72449c",
+    "preservedInput": "review/stage-before-review/S-02-expired-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-02-ignore-expiry-warm-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-02-ignore-expiry-warm-warm-jks-init-v1.json",
+    "originalSha256": "c440079a2a9d9dc5558b831232d05182ce62cf57271f17e887098d89f51d3b2b",
+    "preservedInput": "review/stage-before-review/S-02-ignore-expiry-warm-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-02-skew-0-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-02-skew-0-warm-jks-init-v1.json",
+    "originalSha256": "c85be23ab31d82ece2c0fe261b6b10eb7195ce98dcbe6decb344caf400e9d16c",
+    "preservedInput": "review/stage-before-review/S-02-skew-0-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-02-skew-1-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-02-skew-1-warm-jks-init-v1.json",
+    "originalSha256": "7787b03de8de12206900016f9246156cdda7a63e3d713fafd1f05fdfd2086132",
+    "preservedInput": "review/stage-before-review/S-02-skew-1-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-03-malformed-0-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-03-malformed-0-jks-init-v1.json",
+    "originalSha256": "242e71a3b040481d7477ee51ee625633aab1b7b74e4a322419185c0d65d49639",
+    "preservedInput": "review/stage-before-review/S-03-malformed-0-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-03-malformed-1-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-03-malformed-1-jks-init-v1.json",
+    "originalSha256": "59c589ffd76c06737a8d7c31b9d98f29f6f3f52cffce9f015c081602e990ea19",
+    "preservedInput": "review/stage-before-review/S-03-malformed-1-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-03-malformed-2-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-03-malformed-2-jks-init-v1.json",
+    "originalSha256": "0770917cf39d02c9baa22f6cec78e9f7b6ab8ce9d93dc8a8387c11a6986e3e56",
+    "preservedInput": "review/stage-before-review/S-03-malformed-2-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-03-rs512-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-03-rs512-jks-init-v1.json",
+    "originalSha256": "970d80edc8710016e52171594cbe0d0e22d5288ce56b2affaf88c7c7d79106c9",
+    "preservedInput": "review/stage-before-review/S-03-rs512-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-03-wrong-key-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-03-wrong-key-jks-init-v1.json",
+    "originalSha256": "9cc488107d614142ee1a6d86a41b65d7760edaa648e818714370380aac1bc703",
+    "preservedInput": "review/stage-before-review/S-03-wrong-key-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-04-issuer-not-enforced-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-04-issuer-not-enforced-jks-init-v1.json",
+    "originalSha256": "48c235da1f6c6ceaac8f51159775e57d4b164fd5992e998fde4369ad9d22a318",
+    "preservedInput": "review/stage-before-review/S-04-issuer-not-enforced-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-04-provider-explicit-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-04-provider-explicit-warm-jks-init-v1.json",
+    "originalSha256": "74a3a4072a702315f599a399a4dfcbd126d7ad6a720375ec1b6b714d830af862",
+    "preservedInput": "review/stage-before-review/S-04-provider-explicit-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-04-provider-path-0-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-04-provider-path-0-warm-jks-init-v1.json",
+    "originalSha256": "f75253e076c471fb991d82d1b13d040abc7cb63ce32317fedd18b5819f8763b5",
+    "preservedInput": "review/stage-before-review/S-04-provider-path-0-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-04-provider-path-1-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-04-provider-path-1-warm-jks-init-v1.json",
+    "originalSha256": "1af74482d1ff5d1d55b53160061e6fa6f3b60d8564da9e1b2ed623531503357f",
+    "preservedInput": "review/stage-before-review/S-04-provider-path-1-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-04-provider-path-2-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-04-provider-path-2-warm-jks-init-v1.json",
+    "originalSha256": "d432ce528bf445c97121ea1ee16896f35f6a2d90aa6633b98ad480e8d926328b",
+    "preservedInput": "review/stage-before-review/S-04-provider-path-2-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-04-wrong-audience-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-04-wrong-audience-jks-init-v1.json",
+    "originalSha256": "2300fefe1d93e2683a1b116dd64107baa6edcfae68282b4e8e2049fbd32455f5",
+    "preservedInput": "review/stage-before-review/S-04-wrong-audience-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-05-primary-0-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-05-primary-0-warm-jks-init-v1.json",
+    "originalSha256": "b1f0fa4d1094b86bcc1fb4c962fe4eeee92a9f544c07eb3acedba13ee2b1a3fd",
+    "preservedInput": "review/stage-before-review/S-05-primary-0-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-05-primary-1-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-05-primary-1-warm-jks-init-v1.json",
+    "originalSha256": "6b9da5de39ced105c8f1f86a694561f439ecc0cf24e6907e0a96f34de9fc0673",
+    "preservedInput": "review/stage-before-review/S-05-primary-1-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-05-primary-2-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-05-primary-2-warm-jks-init-v1.json",
+    "originalSha256": "ca98cdc0806f91acbcf8f62b1649651f171b49b176fcef05f5483cc43b338f4b",
+    "preservedInput": "review/stage-before-review/S-05-primary-2-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-05-primary-3-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-05-primary-3-warm-jks-init-v1.json",
+    "originalSha256": "1fc17227d84d901ef88a51d1e720f238049b211891f5d2695c524e188e05012d",
+    "preservedInput": "review/stage-before-review/S-05-primary-3-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-06-secondary-0-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-06-secondary-0-warm-jks-init-v1.json",
+    "originalSha256": "996640612638e281c9c35a6e7f0afbae417b5efcc5af8a71263025bcc3cde936",
+    "preservedInput": "review/stage-before-review/S-06-secondary-0-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-06-secondary-1-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-06-secondary-1-warm-jks-init-v1.json",
+    "originalSha256": "3c8fdc7d9cf0472c2ab9a100df5fc754aa0793827326a62ef430bf63255306b0",
+    "preservedInput": "review/stage-before-review/S-06-secondary-1-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-06-secondary-invalid-0-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-06-secondary-invalid-0-warm-jks-init-v1.json",
+    "originalSha256": "020dd8c084e2d1ffe4f79d9d1774eae7d0ea7c06707ebd8114b5260b7fd7e5de",
+    "preservedInput": "review/stage-before-review/S-06-secondary-invalid-0-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-06-secondary-invalid-1-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-06-secondary-invalid-1-warm-jks-init-v1.json",
+    "originalSha256": "c725a196ea4001d16d5ad2579383ffd40554e9edce3ef54a343bee8e145f9d52",
+    "preservedInput": "review/stage-before-review/S-06-secondary-invalid-1-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-12-alias-apikey-init-v1",
+    "fixturePath": "fixtures/v1/s/S-12-alias-apikey-init-v1.json",
+    "originalSha256": "1ee0dcdc96a458bd10683351e53c9152adf85010e3dc2dee2ebea7d03b952eb3",
+    "preservedInput": "review/stage-before-review/S-12-alias-apikey-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-12-alias-basic-init-v1",
+    "fixturePath": "fixtures/v1/s/S-12-alias-basic-init-v1.json",
+    "originalSha256": "ade519f8ca29de72aa3900982cc63c49dbbe2ac78cb4d2cddef5d0fe268f5957",
+    "preservedInput": "review/stage-before-review/S-12-alias-basic-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-12-alias-jwt-init-v1",
+    "fixturePath": "fixtures/v1/s/S-12-alias-jwt-init-v1.json",
+    "originalSha256": "139ff62687c3be988a4ea3901bf4e8e0ec1ab30381797311783c6a303c8aa684",
+    "preservedInput": "review/stage-before-review/S-12-alias-jwt-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-12-alias-swt-init-v1",
+    "fixturePath": "fixtures/v1/s/S-12-alias-swt-init-v1.json",
+    "originalSha256": "743f0b15fd5adff2934dde56f6697d8b126b0ffb7946df0c02f93826bb9d800a",
+    "preservedInput": "review/stage-before-review/S-12-alias-swt-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-12-anonymous-prefix-warm-init-v1",
+    "fixturePath": "fixtures/v1/s/S-12-anonymous-prefix-warm-init-v1.json",
+    "originalSha256": "d0486fe812d36f529d1a0c7ca637785933d3e4833d91cfb737b6c606ff6ed84c",
+    "preservedInput": "review/stage-before-review/S-12-anonymous-prefix-warm-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-12-basic-before-apikey-warm-init-v1",
+    "fixturePath": "fixtures/v1/s/S-12-basic-before-apikey-warm-init-v1.json",
+    "originalSha256": "cfeea46b75330c9f1a24d3335a0ad2cc38a4ac85069f3cdb0605c05a466ff7fc",
+    "preservedInput": "review/stage-before-review/S-12-basic-before-apikey-warm-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-12-denied-unknown-warm-init-v1",
+    "fixturePath": "fixtures/v1/s/S-12-denied-unknown-warm-init-v1.json",
+    "originalSha256": "da7447c7e6766e36f312c49646c693220a490abfea29f595258c0204afd72b88",
+    "preservedInput": "review/stage-before-review/S-12-denied-unknown-warm-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-12-denied-x-warm-init-v1",
+    "fixturePath": "fixtures/v1/s/S-12-denied-x-warm-init-v1.json",
+    "originalSha256": "bc56ba7b0104702d0e6981a4f0f5cdfbc3f48649195bf7944e0f8677da43ce24",
+    "preservedInput": "review/stage-before-review/S-12-denied-x-warm-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-12-disabled-selected-basic-warm-init-v1",
+    "fixturePath": "fixtures/v1/s/S-12-disabled-selected-basic-warm-init-v1.json",
+    "originalSha256": "7c59f2122e5e25c1a76dd7e8cab71a302631c5b382d25fd20886edb0d4ef9b0a",
+    "preservedInput": "review/stage-before-review/S-12-disabled-selected-basic-warm-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-12-missing-basic-alias-warm-init-v1",
+    "fixturePath": "fixtures/v1/s/S-12-missing-basic-alias-warm-init-v1.json",
+    "originalSha256": "97c1edcf7838fc0e6bf93af249ec4cd29d6e86c0031d708207bcaf8d57607099",
+    "preservedInput": "review/stage-before-review/S-12-missing-basic-alias-warm-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-13-key-rotation-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-13-key-rotation-warm-jks-init-v1.json",
+    "originalSha256": "f95e2eb17399ad939d17647a69894cc04ff05781e523e7e0fe2bd0ac4f6d12b4",
+    "preservedInput": "review/stage-before-review/S-13-key-rotation-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-17-cold-and-cached-nbf-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-17-cold-and-cached-nbf-warm-jks-init-v1.json",
+    "originalSha256": "ef0cf5aea8d598b641f8ae8555f838efa356098158f86c7e1c4cd258ecad8619",
+    "preservedInput": "review/stage-before-review/S-17-cold-and-cached-nbf-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-17-controlled-cached-nbf-mutation-v1",
+    "fixturePath": "fixtures/v1/s/S-17-controlled-cached-nbf-mutation-v1.json",
+    "originalSha256": "f6cd1f8c5704198bcd29c724d163b50fd9b12dcebdb5fb44ea32e8257e69fa86",
+    "preservedInput": "review/stage-before-review/S-17-controlled-cached-nbf-mutation-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-17-far-future-nbf-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-17-far-future-nbf-jks-init-v1.json",
+    "originalSha256": "3e6ae1f700d3c91ed4328a1149136a907409cab50f9a330843d3792d72dff21c",
+    "preservedInput": "review/stage-before-review/S-17-far-future-nbf-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-18-cached-expiry-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-18-cached-expiry-warm-jks-init-v1.json",
+    "originalSha256": "d1085a9faf5a6d52860e2af954dd5ca3295dcc92b2e276ed74bfb4d3c13d3d39",
+    "preservedInput": "review/stage-before-review/S-18-cached-expiry-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "S-18-removed-key-warm-warm-jks-init-v1",
+    "fixturePath": "fixtures/v1/s/S-18-removed-key-warm-warm-jks-init-v1.json",
+    "originalSha256": "6a65328f58226b379ba0bbc901568b0b92ec67481d95f8521a1b42bb60aa080e",
+    "preservedInput": "review/stage-before-review/S-18-removed-key-warm-warm-jks-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "X-01-admin-health-denied-warm-init-v1",
+    "fixturePath": "fixtures/v1/x/X-01-admin-health-denied-warm-init-v1.json",
+    "originalSha256": "50b36a2b035f5e56a1f42e78eae925c460b48c7a8eeade8aadfe577da841ef0f",
+    "preservedInput": "review/stage-before-review/X-01-admin-health-denied-warm-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "X-01-admin-health-warm-init-v1",
+    "fixturePath": "fixtures/v1/x/X-01-admin-health-warm-init-v1.json",
+    "originalSha256": "60814a4aaa1984745c828ed79135edecc546adcffff1508618b2ca600c31b379",
+    "preservedInput": "review/stage-before-review/X-01-admin-health-warm-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "X-01-local-health-warm-init-v1",
+    "fixturePath": "fixtures/v1/x/X-01-local-health-warm-init-v1.json",
+    "originalSha256": "f520c8a7c560870efd40faa1d30e6de242905802d1ac42ba269bb8b4bd3aed24",
+    "preservedInput": "review/stage-before-review/X-01-local-health-warm-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "X-03-get-logger-warm-init-v1",
+    "fixturePath": "fixtures/v1/x/X-03-get-logger-warm-init-v1.json",
+    "originalSha256": "1a080fa8e7a805dd25ad01d48bad11ae8987415ca175125c15f928be130f5a40",
+    "preservedInput": "review/stage-before-review/X-03-get-logger-warm-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "X-04-empty-body-warm-init-v1",
+    "fixturePath": "fixtures/v1/x/X-04-empty-body-warm-init-v1.json",
+    "originalSha256": "cf0afb5acbba5a670f683541af5d0e8947049e3bf012565c15ad7a4937a824b1",
+    "preservedInput": "review/stage-before-review/X-04-empty-body-warm-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "X-04-set-logger-warm-init-v1",
+    "fixturePath": "fixtures/v1/x/X-04-set-logger-warm-init-v1.json",
+    "originalSha256": "ca4c72ad86f7ace6739d0a2af244b792bc79bd3c6031c39ae68975f2e08d61c2",
+    "preservedInput": "review/stage-before-review/X-04-set-logger-warm-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "X-05-cache-contents-warm-init-v1",
+    "fixturePath": "fixtures/v1/x/X-05-cache-contents-warm-init-v1.json",
+    "originalSha256": "98399ae9613bfd073b473d1e722409987c650b3bd86be900ff1fcaaea19e7601",
+    "preservedInput": "review/stage-before-review/X-05-cache-contents-warm-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  },
+  {
+    "fixture": "X-05-missing-manager-warm-init-v1",
+    "fixturePath": "fixtures/v1/x/X-05-missing-manager-warm-init-v1.json",
+    "originalSha256": "441798b3e46a03573aab86242dd3c1b9ce01915ba4a4363d818e82c07152575f",
+    "preservedInput": "review/stage-before-review/X-05-missing-manager-warm-init-v1.json",
+    "decision": "Separately declared shared synthetic stage test-only supplies plan 5.3 required startup metadata. Original case does not test missing/empty stage. Request and both reviewed expectations remain unchanged; no per-runner input transformation.",
+    "javaImpact": "Only Rust metadata value is added; Java stage/requestContext are not synthesized. Focused replay must confirm exact previous Java assertions.",
+    "remainingInitDeclarations": [],
+    "specificInitCauseCoverage": "Only independently established invalid declarations may be counted; InvalidConfiguration alone does not prove validation precedence.",
+    "validation": "pending focused replay"
+  }
+]

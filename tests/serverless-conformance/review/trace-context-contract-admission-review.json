@@ -1,0 +1,18 @@
+[
+  {
+    "fixture": "Q-01a-warm-trace-context-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "Q-01",
+      "Q-01a"
+    ],
+    "proposedRustBehaviorReached": [
+      "Q-01",
+      "Q-01a"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Read-only actual MDC/attachment capture. Source-reviewed String.class attachment-key collision preserves Java gateway ID on the second request; Java MDC retains trace. Rust request-local empty context remains authored contract, no execution.",
+    "javaRun": "20261011T050844.828187Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T050844.828187Z"
+  }
+]

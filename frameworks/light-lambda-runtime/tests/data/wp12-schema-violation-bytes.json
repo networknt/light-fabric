@@ -1,0 +1,265 @@
+[
+  {
+    "input": {
+      "id": "exclusiveMinimum4",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "number",
+            "exclusiveMinimum": 5
+          }
+        }
+      },
+      "value": {
+        "v": 4
+      }
+    },
+    "result": {
+      "id": "exclusiveMinimum4",
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have an exclusive minimum value of 5\",\"severity\":\"ERROR\"}",
+      "valid": false,
+      "lambdaCaptures": 0
+    }
+  },
+  {
+    "input": {
+      "id": "exclusiveMinimum5",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "number",
+            "exclusiveMinimum": 5
+          }
+        }
+      },
+      "value": {
+        "v": 5
+      }
+    },
+    "result": {
+      "id": "exclusiveMinimum5",
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have an exclusive minimum value of 5\",\"severity\":\"ERROR\"}",
+      "valid": false,
+      "lambdaCaptures": 0
+    }
+  },
+  {
+    "input": {
+      "id": "exclusiveMinimum6",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "number",
+            "exclusiveMinimum": 5
+          }
+        }
+      },
+      "value": {
+        "v": 6
+      }
+    },
+    "result": {
+      "id": "exclusiveMinimum6",
+      "body": null,
+      "valid": true,
+      "lambdaCaptures": 0
+    }
+  },
+  {
+    "input": {
+      "id": "exclusiveMaximum4",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "number",
+            "exclusiveMaximum": 5
+          }
+        }
+      },
+      "value": {
+        "v": 4
+      }
+    },
+    "result": {
+      "id": "exclusiveMaximum4",
+      "body": null,
+      "valid": true,
+      "lambdaCaptures": 0
+    }
+  },
+  {
+    "input": {
+      "id": "exclusiveMaximum5",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "number",
+            "exclusiveMaximum": 5
+          }
+        }
+      },
+      "value": {
+        "v": 5
+      }
+    },
+    "result": {
+      "id": "exclusiveMaximum5",
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have an exclusive maximum value of 5\",\"severity\":\"ERROR\"}",
+      "valid": false,
+      "lambdaCaptures": 0
+    }
+  },
+  {
+    "input": {
+      "id": "exclusiveMaximum6",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "number",
+            "exclusiveMaximum": 5
+          }
+        }
+      },
+      "value": {
+        "v": 6
+      }
+    },
+    "result": {
+      "id": "exclusiveMaximum6",
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have an exclusive maximum value of 5\",\"severity\":\"ERROR\"}",
+      "valid": false,
+      "lambdaCaptures": 0
+    }
+  },
+  {
+    "input": {
+      "id": "minLength",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string",
+            "minLength": 3
+          }
+        }
+      },
+      "value": {
+        "v": "a"
+      }
+    },
+    "result": {
+      "id": "minLength",
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at least 3 characters long\",\"severity\":\"ERROR\"}",
+      "valid": false,
+      "lambdaCaptures": 0
+    }
+  },
+  {
+    "input": {
+      "id": "required",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "object",
+            "required": [
+              "name"
+            ]
+          }
+        }
+      },
+      "value": {
+        "v": {}
+      }
+    },
+    "result": {
+      "id": "required",
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: required property 'name' not found\",\"severity\":\"ERROR\"}",
+      "valid": false,
+      "lambdaCaptures": 0
+    }
+  },
+  {
+    "input": {
+      "id": "enum",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "enum": [
+              "a",
+              "b"
+            ]
+          }
+        }
+      },
+      "value": {
+        "v": "c"
+      }
+    },
+    "result": {
+      "id": "enum",
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: does not have a value in the enumeration [\"a\", \"b\"]\",\"severity\":\"ERROR\"}",
+      "valid": false,
+      "lambdaCaptures": 0
+    }
+  },
+  {
+    "input": {
+      "id": "anyOf",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          }
+        }
+      },
+      "value": {
+        "v": true
+      }
+    },
+    "result": {
+      "id": "anyOf",
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: boolean found, string expected\",\"severity\":\"ERROR\"}",
+      "valid": false,
+      "lambdaCaptures": 0
+    }
+  },
+  {
+    "input": {
+      "id": "multipleOf",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "number",
+            "multipleOf": 0.25
+          }
+        }
+      },
+      "value": {
+        "v": 1.26
+      }
+    },
+    "result": {
+      "id": "multipleOf",
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be multiple of 0.25\",\"severity\":\"ERROR\"}",
+      "valid": false,
+      "lambdaCaptures": 0
+    }
+  }
+]

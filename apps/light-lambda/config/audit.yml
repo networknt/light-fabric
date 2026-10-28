@@ -1,0 +1,13 @@
+# WP12 qualified safe selectors/stdout. Preserve explicit opt-in activation.
+enabled: ${audit.enabled:false}
+mask: ${audit.mask:true}
+statusCode: ${audit.statusCode:true}
+responseTime: ${audit.responseTime:true}
+auditOnError: ${audit.auditOnError:true}
+auditStackTrace: ${audit.auditStackTrace:false}
+logLevelIsError: ${audit.logLevelIsError:false}
+timestampFormat: ${audit.timestampFormat:null}
+headers: ${audit.headers:["X-Correlation-Id", "X-Traceability-Id", "caller_id"]}
+audit: ${audit.audit:["client_id", "user_id", "scope_client_id", "endpoint", "serviceId", "toolName"]}
+requestBodyMaxSize: ${audit.requestBodyMaxSize:4096}
+responseBodyMaxSize: ${audit.responseBodyMaxSize:4096}

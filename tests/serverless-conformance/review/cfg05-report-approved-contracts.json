@@ -1,0 +1,39 @@
+{
+  "invalidConfiguration": {
+    "endpoint": "/2018-06-01/runtime/init/error",
+    "reportCount": 1,
+    "exitCode": 1,
+    "header": {
+      "Lambda-Runtime-Function-Error-Type": "Runtime.InitError"
+    },
+    "body": {
+      "errorType": "InvalidConfiguration",
+      "errorMessage": "configuration: missing light-lambda.stage"
+    },
+    "maxBodyBytes": 1024,
+    "forbiddenBodyValues": [
+      "test-only-secret-sentinel",
+      "test-only-password-sentinel"
+    ],
+    "invocationLoopEntered": false
+  },
+  "initPanic": {
+    "endpoint": "/2018-06-01/runtime/init/error",
+    "reportCount": 1,
+    "exitCode": 1,
+    "header": {
+      "Lambda-Runtime-Function-Error-Type": "Runtime.InitError"
+    },
+    "body": {
+      "errorType": "Runtime.InitPanic",
+      "errorMessage": "prepare_local_config: synthetic Init panic"
+    },
+    "maxBodyBytes": 1024,
+    "forbiddenBodyValues": [
+      "test-only-secret-sentinel",
+      "test-only-password-sentinel"
+    ],
+    "invocationLoopEntered": false
+  },
+  "executionOwner": "WP9/WP13; no Rust execution in WP3"
+}

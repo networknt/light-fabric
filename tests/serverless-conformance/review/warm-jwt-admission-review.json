@@ -1,0 +1,51 @@
+[
+  {
+    "fixture": "S-02-ignore-expiry-warm-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-02-ignore-expiry-warm-cp1-e02-accepted.json",
+    "sourceSha256": "020cf2c392bebaa5c8804d39ebd820ddbfa31ec161fed0195299b7269b72cbf8",
+    "review": "JwtIgnoreExpiryTest, JwtSkewTest, JwtTest and JwtCacheTest source/setup reviewed per named case. All recorded warm steps remain in one initialized gateway. Exact bodies/header values and fetch/call counts retained. Explicit JWKS publication changes reconstructed from source. Cached expiry signs its 2s token after Init, then waits 3100ms. Explicit non-default JKS causes one proposed Rust Init rejection; every request step is notExecuted, not a fake HTTP response. No Rust downstream coverage counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-02-skew-0-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-02-skew-0-cp1-e02-accepted.json",
+    "sourceSha256": "62a62a508f0fab2a7226f24e0e365823f4ba12e6a5886e191e91d69efa5bb305",
+    "review": "JwtIgnoreExpiryTest, JwtSkewTest, JwtTest and JwtCacheTest source/setup reviewed per named case. All recorded warm steps remain in one initialized gateway. Exact bodies/header values and fetch/call counts retained. Explicit JWKS publication changes reconstructed from source. Cached expiry signs its 2s token after Init, then waits 3100ms. Explicit non-default JKS causes one proposed Rust Init rejection; every request step is notExecuted, not a fake HTTP response. No Rust downstream coverage counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-02-skew-1-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-02-skew-1-cp1-e02-accepted.json",
+    "sourceSha256": "b8d7c7d671d1ea7d1333ce231844ef9774b2d06ff7e381d651c9b85badb0306a",
+    "review": "JwtIgnoreExpiryTest, JwtSkewTest, JwtTest and JwtCacheTest source/setup reviewed per named case. All recorded warm steps remain in one initialized gateway. Exact bodies/header values and fetch/call counts retained. Explicit JWKS publication changes reconstructed from source. Cached expiry signs its 2s token after Init, then waits 3100ms. Explicit non-default JKS causes one proposed Rust Init rejection; every request step is notExecuted, not a fake HTTP response. No Rust downstream coverage counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-17-cold-and-cached-nbf-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-17-cold-and-cached-nbf-cp1-e02-accepted.json",
+    "sourceSha256": "1ce60221e61006d500b9bb4e515b8e461ddeda93bd8c5d43d6d12296203890b4",
+    "review": "JwtIgnoreExpiryTest, JwtSkewTest, JwtTest and JwtCacheTest source/setup reviewed per named case. All recorded warm steps remain in one initialized gateway. Exact bodies/header values and fetch/call counts retained. Explicit JWKS publication changes reconstructed from source. Cached expiry signs its 2s token after Init, then waits 3100ms. Explicit non-default JKS causes one proposed Rust Init rejection; every request step is notExecuted, not a fake HTTP response. No Rust downstream coverage counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-18-removed-key-warm-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-18-removed-key-warm-cp1-e02-accepted.json",
+    "sourceSha256": "7f5857051da869e1739b70f57e11c18d8f2b471e8d114bb0aac55d37f34b61dc",
+    "review": "JwtIgnoreExpiryTest, JwtSkewTest, JwtTest and JwtCacheTest source/setup reviewed per named case. All recorded warm steps remain in one initialized gateway. Exact bodies/header values and fetch/call counts retained. Explicit JWKS publication changes reconstructed from source. Cached expiry signs its 2s token after Init, then waits 3100ms. Explicit non-default JKS causes one proposed Rust Init rejection; every request step is notExecuted, not a fake HTTP response. No Rust downstream coverage counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-18-cached-expiry-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-18-cached-expiry-cp1-e02-accepted.json",
+    "sourceSha256": "0bd7862dc2175ed38b608f852e7a494a0c8fd084061aa924f7d3637d963229fa",
+    "review": "JwtIgnoreExpiryTest, JwtSkewTest, JwtTest and JwtCacheTest source/setup reviewed per named case. All recorded warm steps remain in one initialized gateway. Exact bodies/header values and fetch/call counts retained. Explicit JWKS publication changes reconstructed from source. Cached expiry signs its 2s token after Init, then waits 3100ms. Explicit non-default JKS causes one proposed Rust Init rejection; every request step is notExecuted, not a fake HTTP response. No Rust downstream coverage counted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-13-key-rotation-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-13-key-rotation-cp1-e02-accepted.json",
+    "sourceSha256": "008119802b5183aa38ae876ba59805c1dbfccdbb8d1403f951017370f368b08e",
+    "review": "JwtIgnoreExpiryTest, JwtSkewTest, JwtTest and JwtCacheTest source/setup reviewed per named case. All recorded warm steps remain in one initialized gateway. Exact bodies/header values and fetch/call counts retained. Explicit JWKS publication changes reconstructed from source. Cached expiry signs its 2s token after Init, then waits 3100ms. Explicit non-default JKS causes one proposed Rust Init rejection; every request step is notExecuted, not a fake HTTP response. No Rust downstream coverage counted.",
+    "rustExecutionEvidence": null
+  }
+]

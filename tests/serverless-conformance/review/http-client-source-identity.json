@@ -1,0 +1,6 @@
+{
+  "path": "/home/steve/.m2/repository/com/networknt/http-client/2.4.1-SNAPSHOT/http-client-2.4.1-SNAPSHOT-sources.jar",
+  "sha256": "295d756987a74914bfcf3f1e60bf90a239359d5b8837be80e1d74357fb9e0960",
+  "introducedDependency": false,
+  "purpose": "Read existing OAuth request composer source; local source artifact identity only, no build/deployed provenance"
+}

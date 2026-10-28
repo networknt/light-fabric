@@ -1,0 +1,117 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "E-01-status-metadata-escaping-configured-init-v1",
+  "title": "E-01-status-metadata-escaping exact body bytes through Java chain",
+  "ledger": [
+    "E-01",
+    "C-10"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "lambda-proxy": {
+        "enabled": true,
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@options": "FnX"
+        }
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.conformance.ConformanceStatusMetadataMiddleware@deny"
+        ],
+        "chains": {
+          "request": [
+            "deny"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      },
+      "service": {
+        "singletons": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Runtime generated token recipes, synthetic loopback HTTP dependencies and fixed dependency response Date; no virtual verifier clock."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "expectRustInit": {
+    "outcome": "initError",
+    "code": "InvalidConfiguration",
+    "backendCalls": [],
+    "jwksFetches": 0
+  },
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls",
+    "header:content-type",
+    "statusSerialization"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {},
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false
+      },
+      "backend": [],
+      "expectJava": {
+        "outcome": "response",
+        "status": null,
+        "headers": [],
+        "headersAbsent": [],
+        "body": null,
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "statusSerialization": {
+          "utf8": "{\"statusCode\":418,\"code\":\"TEST_ONLY\",\"message\":\"quoted \"value\"\",\"description\":\"snow\u96ea\nnewline\",\"metadata\":{\"quoted\":\"a\\\"b\",\"nullValue\":null},\"severity\":\"ERROR\"}",
+          "parsesAsJson": false
+        }
+      },
+      "expect": {
+        "outcome": "notExecuted",
+        "reason": "initError",
+        "backendCalls": [],
+        "jwksFetches": 0
+      },
+      "observeStatusSerialization": true
+    }
+  ]
+}

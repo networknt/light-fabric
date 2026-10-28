@@ -1,0 +1,25 @@
+[
+  {
+    "fixture": "R-01a-wildcard-longest-multi-contract-v1",
+    "javaBehaviorAsserted": [
+      "R-01",
+      "R-01a",
+      "R-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "R-01",
+      "R-01a",
+      "R-03"
+    ],
+    "review": "Approved R-01a wildcard/deeper-template contrast; exact target and capture assertions. Shared input, configuration and synthetic response; no executed Rust evidence.",
+    "remainingContractAssertions": [],
+    "rustExecutionEvidence": [],
+    "javaRun": "20261011T172339.255782Z",
+    "validation": "Java passed; final result schema validation pending; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T172339.255782Z",
+    "fixturePath": "fixtures/v1/r/R-01a-wildcard-longest-multi-contract-v1.json",
+    "kind": "intentional-difference",
+    "contextualLedgerReferencesNotCounted": [
+      "E-10"
+    ]
+  }
+]

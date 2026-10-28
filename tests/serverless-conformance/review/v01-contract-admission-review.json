@@ -1,0 +1,32 @@
+[
+  {
+    "fixture": "V-01-path-multi-contract-v1",
+    "source": "V-01-spec-denial-0/1 WP2 observations",
+    "javaBehaviorAsserted": [
+      "V-01",
+      "E-06a"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-01",
+      "E-06a"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Approved V-01 exact path/method rejection; supported shared multi-value ingress; E-06a changes response casing only.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T015550.792097Z"
+  },
+  {
+    "fixture": "V-01-method-multi-contract-v1",
+    "source": "V-01-spec-denial-0/1 WP2 observations",
+    "javaBehaviorAsserted": [
+      "V-01",
+      "E-06a"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-01",
+      "E-06a"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Approved V-01 exact path/method rejection; supported shared multi-value ingress; E-06a changes response casing only.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T015550.792097Z"
+  }
+]

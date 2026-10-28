@@ -1,0 +1,216 @@
+{
+  "schema": "light-lambda-declaration-reviews/v1",
+  "reviews": [
+    {
+      "id": "S-14-enableMockJwt-init-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-14-enableMockJwt-init-contract-v1.json",
+      "fixtureDigest": "c9907e1a78b7d388647344c19359dab06b01ae51b436906c6d21be119a6295bc",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls"
+      ],
+      "remove": [],
+      "add": [
+        "jwksFetches"
+      ],
+      "originalRustInit": {
+        "outcome": "initError",
+        "code": "InvalidConfiguration",
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "jwksCalls": []
+      },
+      "originalJavaInit": {
+        "outcome": "initSuccess",
+        "backendCalls": [],
+        "jwksFetches": 1,
+        "jwksCalls": [
+          {
+            "target": "jwks",
+            "method": "GET",
+            "uri": "/jwks"
+          }
+        ]
+      },
+      "authority": "S-14 approved production-policy rejection; unchanged original typed Init contracts explicitly assert Java bootstrap 1 and Rust rejection before fetching 0. Metadata omission only; no expectation change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-14-enableMockJwt-init-contract-v1.json",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-checkpoint-final-05/S-14-enableMockJwt-init-contract-v1.json"
+    },
+    {
+      "id": "S-14-ignoreJwtExpiry-init-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-14-ignoreJwtExpiry-init-contract-v1.json",
+      "fixtureDigest": "b9e7211c93076a11f77d5d89f079385aea8db404a475f2d7275b3ce2766be689",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls"
+      ],
+      "remove": [],
+      "add": [
+        "jwksFetches"
+      ],
+      "originalRustInit": {
+        "outcome": "initError",
+        "code": "InvalidConfiguration",
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "jwksCalls": []
+      },
+      "originalJavaInit": {
+        "outcome": "initSuccess",
+        "backendCalls": [],
+        "jwksFetches": 1,
+        "jwksCalls": [
+          {
+            "target": "jwks",
+            "method": "GET",
+            "uri": "/jwks"
+          }
+        ]
+      },
+      "authority": "S-14 approved production-policy rejection; unchanged original typed Init contracts explicitly assert Java bootstrap 1 and Rust rejection before fetching 0. Metadata omission only; no expectation change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-14-ignoreJwtExpiry-init-contract-v1.json",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-checkpoint-final-05/S-14-ignoreJwtExpiry-init-contract-v1.json"
+    },
+    {
+      "id": "S-14-logJwtToken-init-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-14-logJwtToken-init-contract-v1.json",
+      "fixtureDigest": "b390fe0b33d607d8120cc99843e55adfc7756075927c3ae710d8ec0c4b38d362",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls"
+      ],
+      "remove": [],
+      "add": [
+        "jwksFetches"
+      ],
+      "originalRustInit": {
+        "outcome": "initError",
+        "code": "InvalidConfiguration",
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "jwksCalls": []
+      },
+      "originalJavaInit": {
+        "outcome": "initSuccess",
+        "backendCalls": [],
+        "jwksFetches": 1,
+        "jwksCalls": [
+          {
+            "target": "jwks",
+            "method": "GET",
+            "uri": "/jwks"
+          }
+        ]
+      },
+      "authority": "S-14 approved production-policy rejection; unchanged original typed Init contracts explicitly assert Java bootstrap 1 and Rust rejection before fetching 0. Metadata omission only; no expectation change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/java-current-01/S-14-logJwtToken-init-contract-v1.json",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-families-20261018T173503Z/rust-checkpoint-final-05/S-14-logJwtToken-init-contract-v1.json"
+    },
+    {
+      "id": "L-02-verified-client-counter-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/l/L-02-verified-client-counter-multi-contract-v1.json",
+      "fixtureDigest": "505b7a5d292c0eec14a65f224a505d9424d79b0b3ed34240e0e1943c3035c437",
+      "fixtureBytesSha256": "3a38cda101eb060c46efb3f7f95d7ada4b0396d8d6a56c465aefd616c6b17fcf",
+      "originalDeclared": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:ratelimit-limit",
+        "header:ratelimit-remaining",
+        "header:ratelimit-reset",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "body",
+        "header:content-type",
+        "header:ratelimit-limit",
+        "header:ratelimit-remaining",
+        "header:ratelimit-reset",
+        "header:x-backend",
+        "status"
+      ],
+      "authority": "Original Java/Rust expectation equality, including Init where declared. Fresh native and real Rust results confirm equality after production repair. No expectation change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-nine-cases-20261018T181113Z/native-fresh-03/results/L-02-verified-client-counter-multi-contract-v1.json",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-nine-cases-20261018T181113Z/focused-rust/L-02-verified-client-counter-multi-contract-v1.json"
+    },
+    {
+      "id": "L-02-verified-user-counter-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/l/L-02-verified-user-counter-multi-contract-v1.json",
+      "fixtureDigest": "cff885e9f08653e9fad935917416555619d9aef9ba14023cc82bd88d59f4b732",
+      "fixtureBytesSha256": "9becb7f78c6c40c85601a1aee84fccf561fb5bc655f0d2514fc982c29d892ad4",
+      "originalDeclared": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "header:ratelimit-limit",
+        "header:ratelimit-remaining",
+        "header:ratelimit-reset",
+        "header:x-backend",
+        "status"
+      ],
+      "remove": [
+        "body",
+        "header:content-type",
+        "header:ratelimit-limit",
+        "header:ratelimit-remaining",
+        "header:ratelimit-reset",
+        "header:x-backend",
+        "status"
+      ],
+      "authority": "Original Java/Rust expectation equality, including Init where declared. Fresh native and real Rust results confirm equality after production repair. No expectation change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-nine-cases-20261018T181113Z/native-fresh-03/results/L-02-verified-user-counter-multi-contract-v1.json",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-nine-cases-20261018T181113Z/focused-rust/L-02-verified-user-counter-multi-contract-v1.json"
+    },
+    {
+      "id": "S-06-secondary-invalid-0-dual-token-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-06-secondary-invalid-0-dual-token-multi-contract-v1.json",
+      "fixtureDigest": "b60842e08a425a338b132398193dc4353c657fda458e59bb65ec34605c1113b2",
+      "fixtureBytesSha256": "2ab025c3748cdec7aeb084f154029734fc166246cfcefe27c2a4ea5f6d067be1",
+      "originalDeclared": [
+        "header:content-type",
+        "backendCalls"
+      ],
+      "remove": [
+        "backendCalls",
+        "header:content-type"
+      ],
+      "authority": "Original Java/Rust expectation equality, including Init where declared. Fresh native and real Rust results confirm equality after production repair. No expectation change.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-nine-cases-20261018T181113Z/native-fresh-03/results/S-06-secondary-invalid-0-dual-token-multi-contract-v1.json",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-nine-cases-20261018T181113Z/focused-rust/S-06-secondary-invalid-0-dual-token-multi-contract-v1.json"
+    },
+    {
+      "id": "H-04-loopback-test-refused-represented-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/h/H-04-loopback-test-refused-represented-v1.json",
+      "fixtureDigest": "cf9d3cbd3d92fae4cbc464fd38e5ec725b5c7b9646c1c17a4a07e17b711135fd",
+      "fixtureBytesSha256": "31ba4f4f757e13037c0f462613715d88c9404e6470becb0e205aeebe4278453a",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "header:date",
+        "header:content-length",
+        "httpCalls"
+      ],
+      "remove": [
+        "header:content-length",
+        "header:date",
+        "httpCalls"
+      ],
+      "authority": "Both original expectations have zero HTTP calls and neither expects Date or Content-Length. Exact original contract equality is re-proved; fresh native refusal and real Rust Init rejection confirm no observed difference in these fields. Admission-only Rust coverage, no transport parity.",
+      "javaEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-nine-cases-20261018T181113Z/native-fresh-03/results/H-04-loopback-test-refused-represented-v1.json",
+      "rustEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-nine-cases-20261018T181113Z/rust-final/H-04-loopback-test-refused-represented-v1.json"
+    }
+  ]
+}

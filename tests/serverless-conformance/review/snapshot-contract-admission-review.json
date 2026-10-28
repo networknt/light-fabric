@@ -1,0 +1,21 @@
+[
+  {
+    "fixture": "CFG-05-immutable-valid-snapshot-multi-contract-v1",
+    "source": "CFG-05-static-init-retention-warm-config-v1",
+    "javaBehaviorAsserted": [
+      "CFG-05",
+      "C-10"
+    ],
+    "proposedRustBehaviorReached": [
+      "CFG-05",
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Valid standard proxy and shared ALB multimap eliminate prior unsupported class/unknown option Init rejection. Both steps assert FnA exactly despite owned warm config changing to FnB, establishing immutable snapshot clause only; invalid/missing configuration and runtime Init-error-report clauses remain separately open.",
+    "remainingContractAssertions": [
+      "CFG-05: missing/invalid required config and exact /init/error once then exit1 still require fixture contract representation"
+    ],
+    "javaRun": "20261011T051008.904365Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T051008.904365Z"
+  }
+]

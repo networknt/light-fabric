@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "handlers": [
+    "com.networknt.aws.lambda.handler.middleware.security.JwtVerifyMiddleware@jwt",
+    "com.networknt.aws.lambda.handler.logger.LoggerGetHandler@getLogger",
+    "com.networknt.aws.lambda.handler.logger.LoggerSetHandler@setLogger",
+    "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy"
+  ],
+  "paths": [
+    {"path":"/qualification/logger","method":"post","exec":["jwt","setLogger"]},
+    {"path":"/qualification/logger","method":"get","exec":["jwt","getLogger"]}
+  ],
+  "defaultHandlers": ["proxy"]
+}

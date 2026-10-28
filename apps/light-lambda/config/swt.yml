@@ -1,0 +1,2 @@
+# Unavailable in Phase 1; enabling this policy fails Init.
+enabled: ${swt.enabled:false}

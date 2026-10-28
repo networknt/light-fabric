@@ -1,0 +1,49 @@
+{
+  "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/E-01-exact-status-bytes-cp1-e02-accepted.json",
+  "sourceSha256": "034f0fa74b534cfe09907f437da50dae0dfe174d29601577ee6e8bc8a75ea2f4",
+  "defaultStatusMappings": {
+    "ERR10000": "S-03-wrong-key-jks-init-v1",
+    "ERR10002": "S-03-malformed-1-jks-init-v1",
+    "ERR10086": "D-01-sdk-exception-v1",
+    "ERR10092": "B-02-denied-cp1-e02-accepted",
+    "ERR10075": "S-11-unmatched-prefix-cp1-e02-accepted"
+  },
+  "changes": [
+    {
+      "fixture": "S-03-wrong-key-jks-init-v1",
+      "originalSha256": "6e8185eb484a6384b53ccd7c79d17c8a24e35705b8f589e3cd671d06126c5d7c",
+      "preservedInput": "review/secondary-before-review/S-03-wrong-key-jks-init-v1.json"
+    },
+    {
+      "fixture": "S-03-malformed-1-jks-init-v1",
+      "originalSha256": "fc59084da5a1bda2fe96787a0034dc30babba0b6e850132a39887d0bd6932f36",
+      "preservedInput": "review/secondary-before-review/S-03-malformed-1-jks-init-v1.json"
+    },
+    {
+      "fixture": "D-01-sdk-exception-v1",
+      "originalSha256": "6143ac33e7f2446c60540084e5394c41101f548e78d522b9b23c34b2c9dd520d",
+      "preservedInput": "review/secondary-before-review/D-01-sdk-exception-v1.json"
+    },
+    {
+      "fixture": "B-02-denied-cp1-e02-accepted",
+      "originalSha256": "ad19639c2e6ed79bc46054c74065a17b8148d56bc7adae5c74ba72729b705d57",
+      "preservedInput": "review/secondary-before-review/B-02-denied-cp1-e02-accepted.json"
+    },
+    {
+      "fixture": "S-11-unmatched-prefix-cp1-e02-accepted",
+      "originalSha256": "f0f867a64eecabfe9397770acc671aa0874083196a007f350dca4cdbc8eeb730",
+      "preservedInput": "review/secondary-before-review/S-11-unmatched-prefix-cp1-e02-accepted.json"
+    },
+    {
+      "fixture": "E-10-mapped-metadata-cp1-e02-accepted",
+      "originalSha256": "6166a393c0802f02bf2cdeda2480770323a9838bbe1d36957e4b045c233caff9",
+      "preservedInput": "review/secondary-before-review/E-10-mapped-metadata-cp1-e02-accepted.json"
+    },
+    {
+      "fixture": "S-01-valid-jks-init-v1",
+      "originalSha256": "ce85d29337d550a78f8c9ffbffcc75aadd22954cb4e9938f7960cef6e2acbb1e",
+      "preservedInput": "review/secondary-before-review/S-01-valid-jks-init-v1.json"
+    }
+  ],
+  "validation": "pending focused replay"
+}

@@ -1,0 +1,16 @@
+# WP12: local closed CloudWatch EMF output; APM/Influx sinks remain deferred.
+enabled: ${metrics.enabled:true}
+productName: ${metrics.productName:http-sidecar}
+sendScopeClientId: ${metrics.sendScopeClientId:false}
+sendCallerId: ${metrics.sendCallerId:false}
+sendIssuer: ${metrics.sendIssuer:false}
+issuerRegex: ${metrics.issuerRegex:}
+enableJVMMonitor: ${metrics.enableJVMMonitor:false}
+serverProtocol: ${metrics.serverProtocol:http}
+serverHost: ${metrics.serverHost:localhost}
+serverPath: ${metrics.serverPath:/apm/metricFeed}
+serverPort: ${metrics.serverPort:8086}
+serverName: ${metrics.serverName:metrics}
+serverUser: ${metrics.serverUser:admin}
+serverPass: ${metrics.serverPass:admin}
+reportInMinutes: ${metrics.reportInMinutes:1}

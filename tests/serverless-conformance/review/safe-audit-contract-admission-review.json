@@ -1,0 +1,21 @@
+[
+  {
+    "fixture": "A-01-safe-selected-stdout-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "A-01",
+      "C-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "A-01",
+      "C-03"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared safe selected audit fields, no Java-only attachment plugin, exact one stdout record and selected field values. Bounded/redacted unsafe-selection clauses are not credited.",
+    "remainingContractAssertions": [
+      "A-01/A-02: unsafe selectors, bounds, redaction and no-secret logging still need explicit contracts"
+    ],
+    "javaRun": "20261011T051126.206438Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T051126.206438Z"
+  }
+]

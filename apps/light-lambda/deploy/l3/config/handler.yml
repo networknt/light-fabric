@@ -1,0 +1,79 @@
+{
+  "enabled": true,
+  "handlers": [
+    "com.networknt.aws.lambda.handler.middleware.metrics.APMMetricsMiddleware@metrics",
+    "com.networknt.aws.lambda.handler.middleware.limit.LimitMiddleware@limit",
+    "com.networknt.aws.lambda.handler.middleware.correlation.CorrelationMiddleware@correlation",
+    "com.networknt.aws.lambda.handler.middleware.cors.RequestCorsMiddleware@requestCors",
+    "com.networknt.aws.lambda.handler.middleware.header.RequestHeaderMiddleware@requestHeader",
+    "com.networknt.aws.lambda.handler.middleware.transformer.RequestTransformerMiddleware@requestTransformer",
+    "com.networknt.aws.lambda.handler.middleware.audit.AuditMiddleware@audit",
+    "com.networknt.aws.lambda.handler.middleware.token.TokenMiddleware@token",
+    "com.networknt.aws.lambda.handler.middleware.router.LambdaRouterMiddleware@router",
+    "com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware@specification",
+    "com.networknt.aws.lambda.handler.middleware.security.UnifiedSecurityMiddleware@security",
+    "com.networknt.aws.lambda.handler.middleware.sanitizer.SanitizerMiddleware@sanitizer",
+    "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+    "com.networknt.aws.lambda.handler.middleware.header.ResponseHeaderMiddleware@responseHeader",
+    "com.networknt.aws.lambda.handler.middleware.cors.ResponseCorsMiddleware@responseCors",
+    "com.networknt.aws.lambda.handler.middleware.transformer.ResponseTransformerMiddleware@responseTransformer",
+    "com.networknt.aws.lambda.handler.health.HealthCheckHandler@health",
+    "com.networknt.aws.lambda.handler.info.ServerInfoHandler@info",
+    "com.networknt.aws.lambda.handler.logger.LoggerGetHandler@getLogger"
+  ],
+  "chains": {
+    "request": [
+      "metrics",
+      "limit",
+      "correlation",
+      "requestCors",
+      "requestHeader",
+      "requestTransformer",
+      "audit",
+      "router",
+      "specification",
+      "security",
+      "sanitizer"
+    ],
+    "response": [
+      "responseHeader",
+      "responseCors",
+      "responseTransformer"
+    ],
+    "admin": [
+      "correlation",
+      "specification",
+      "security"
+    ]
+  },
+  "defaultHandlers": [
+    "request",
+    "proxy",
+    "response"
+  ],
+  "paths": [
+    {
+      "path": "/health",
+      "method": "get",
+      "exec": [
+        "health"
+      ]
+    },
+    {
+      "path": "/adm/server/info",
+      "method": "get",
+      "exec": [
+        "admin",
+        "info"
+      ]
+    },
+    {
+      "path": "/adm/logger",
+      "method": "get",
+      "exec": [
+        "admin",
+        "getLogger"
+      ]
+    }
+  ]
+}

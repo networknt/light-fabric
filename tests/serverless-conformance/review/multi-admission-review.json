@@ -1,0 +1,86 @@
+[
+  {
+    "fixture": "C-06-body-on-0-multi-v1",
+    "source": "/home/steve/workspace/light-fabric-light-lambda/tests/serverless-conformance/fixtures/v1/c/C-06-body-on-0-cp1-e02-accepted.json",
+    "javaReview": "Exact archived Base64Test body/flag expectations; production Jackson forwarding omits null fields and preserves empty multi maps.",
+    "proposedRustReview": "Plan 5.3 empty maps serialize null, required configured stage; 5.6 exact body bytes/flags. Multi ingress reaches dispatch.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "C-06-body-on-1-multi-v1",
+    "source": "/home/steve/workspace/light-fabric-light-lambda/tests/serverless-conformance/fixtures/v1/c/C-06-body-on-1-v1.json",
+    "javaReview": "Exact archived Base64Test body/flag expectations; production Jackson forwarding omits null fields and preserves empty multi maps.",
+    "proposedRustReview": "Plan 5.3 empty maps serialize null, required configured stage; 5.6 exact body bytes/flags. Multi ingress reaches dispatch.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "C-06-body-on-2-multi-v1",
+    "source": "/home/steve/workspace/light-fabric-light-lambda/tests/serverless-conformance/fixtures/v1/c/C-06-body-on-2-v1.json",
+    "javaReview": "Exact archived Base64Test body/flag expectations; production Jackson forwarding omits null fields and preserves empty multi maps.",
+    "proposedRustReview": "Plan 5.3 empty maps serialize null, required configured stage; 5.6 exact body bytes/flags. Multi ingress reaches dispatch.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "C-06-body-on-3-multi-v1",
+    "source": "/home/steve/workspace/light-fabric-light-lambda/tests/serverless-conformance/fixtures/v1/c/C-06-body-on-3-v1.json",
+    "javaReview": "Exact archived Base64Test body/flag expectations; production Jackson forwarding omits null fields and preserves empty multi maps.",
+    "proposedRustReview": "Plan 5.3 empty maps serialize null, required configured stage; 5.6 exact body bytes/flags. Multi ingress reaches dispatch.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "C-06-body-on-4-multi-v1",
+    "source": "/home/steve/workspace/light-fabric-light-lambda/tests/serverless-conformance/fixtures/v1/c/C-06-body-on-4-v1.json",
+    "javaReview": "Exact archived Base64Test body/flag expectations; production Jackson forwarding omits null fields and preserves empty multi maps.",
+    "proposedRustReview": "Plan 5.3 empty maps serialize null, required configured stage; 5.6 exact body bytes/flags. Multi ingress reaches dispatch.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "E-03-response-off-0-multi-v1",
+    "source": "/home/steve/workspace/light-fabric-light-lambda/tests/serverless-conformance/fixtures/v1/e/E-03-response-off-0-cp1-e02-accepted.json",
+    "javaReview": "Exact archived Base64Test body/flag expectations; production Jackson forwarding omits null fields and preserves empty multi maps.",
+    "proposedRustReview": "Plan 5.3 empty maps serialize null, required configured stage; 5.6 exact body bytes/flags. Multi ingress reaches dispatch.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "E-03-response-off-1-multi-v1",
+    "source": "/home/steve/workspace/light-fabric-light-lambda/tests/serverless-conformance/fixtures/v1/e/E-03-response-off-1-cp1-e02-accepted.json",
+    "javaReview": "Exact archived Base64Test body/flag expectations; production Jackson forwarding omits null fields and preserves empty multi maps.",
+    "proposedRustReview": "Plan 5.3 empty maps serialize null, required configured stage; 5.6 exact body bytes/flags. Multi ingress reaches dispatch.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "E-03-response-off-2-multi-v1",
+    "source": "/home/steve/workspace/light-fabric-light-lambda/tests/serverless-conformance/fixtures/v1/e/E-03-response-off-2-cp1-e02-accepted.json",
+    "javaReview": "Exact archived Base64Test body/flag expectations; production Jackson forwarding omits null fields and preserves empty multi maps.",
+    "proposedRustReview": "Plan 5.3 empty maps serialize null, required configured stage; 5.6 exact body bytes/flags. Multi ingress reaches dispatch.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "E-03-response-off-3-multi-v1",
+    "source": "/home/steve/workspace/light-fabric-light-lambda/tests/serverless-conformance/fixtures/v1/e/E-03-response-off-3-cp1-e02-accepted.json",
+    "javaReview": "Exact archived Base64Test body/flag expectations; production Jackson forwarding omits null fields and preserves empty multi maps.",
+    "proposedRustReview": "Plan 5.3 empty maps serialize null, required configured stage; 5.6 exact body bytes/flags. Multi ingress reaches dispatch.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "E-03-response-off-4-multi-v1",
+    "source": "/home/steve/workspace/light-fabric-light-lambda/tests/serverless-conformance/fixtures/v1/e/E-03-response-off-4-v1.json",
+    "javaReview": "Exact archived Base64Test body/flag expectations; production Jackson forwarding omits null fields and preserves empty multi maps.",
+    "proposedRustReview": "Plan 5.3 empty maps serialize null, required configured stage; 5.6 exact body bytes/flags. Multi ingress reaches dispatch.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "R-01-literal-multi-v1",
+    "source": "WP2 RoutingTest R01/R03/R04 and Handler.getChain source",
+    "javaReview": "Valid config, literal has no parameter writes; template writes null query map before dispatch and throws NPE.",
+    "proposedRustReview": "Approved R-04 null normalization and R-03 parameter copying. Same raw input; no per-runner transformations.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "R-04-template-null-multi-v1",
+    "source": "WP2 RoutingTest R01/R03/R04 and Handler.getChain source",
+    "javaReview": "Valid config, literal has no parameter writes; template writes null query map before dispatch and throws NPE.",
+    "proposedRustReview": "Approved R-04 null normalization and R-03 parameter copying. Same raw input; no per-runner transformations.",
+    "rustExecutionEvidence": null
+  }
+]

@@ -1,0 +1,96 @@
+{
+  "schema": "light-lambda-declaration-review/v1",
+  "reviews": [
+    {
+      "id": "S-17-controlled-cached-nbf-mutation-v1",
+      "fixtureDigest": "2dcb0077c23b52d53484cba2ab64005e0d0a456828c9ec05b380822a04b2b1d1",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "cacheActions",
+        "header:x-backend",
+        "header:content-type"
+      ],
+      "remove": [],
+      "reason": "Preserved original contracts under the approved case-insensitive header and admission/bootstrap rules; native evidence independently qualifies. No observation normalization or expectation amendment.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-final-adapters-20261018T210720Z/java-final/S-17-controlled-cached-nbf-mutation-v1.json",
+      "nativeSha256": "4c7c85990fc2603b4e743a98bf7a12989f14b18e77970a2f72f302563eb18b0f",
+      "add": [
+        "jwksFetches"
+      ],
+      "originalRustInit": {
+        "outcome": "initError",
+        "code": "InvalidConfiguration",
+        "backendCalls": [],
+        "jwksFetches": 0
+      },
+      "bootstrapProof": {
+        "javaInitialization": {
+          "outcome": "initSuccess",
+          "backendCalls": [],
+          "jwksFetches": 1
+        },
+        "approval": "Plan WP6 bootstrap and existing Init-admission contract; bootstrap is one fetch, never a per-request fetch"
+      }
+    },
+    {
+      "id": "S-13b-active-refresh-join-multi-contract-v1",
+      "fixtureDigest": "6bd7fd1d0b990534d171d686a7fd637cdcdf32a1cbe5fe614dda6df7d70475c6",
+      "originalDeclared": [
+        "jwksFetches",
+        "responses"
+      ],
+      "remove": [
+        "responses"
+      ],
+      "reason": "Preserved original contracts under the approved case-insensitive header and admission/bootstrap rules; native evidence independently qualifies. No observation normalization or expectation amendment.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-final-adapters-20261018T210720Z/java-final/S-13b-active-refresh-join-multi-contract-v1.json",
+      "nativeSha256": "d6eb59fe7257b015d48841e9df21894ed8408b5e8029431e9a3c3861526fcf66"
+    },
+    {
+      "id": "CFG-02-sdk-netty-trust-boundary-represented-v1",
+      "fixtureDigest": "fd5b3d06f875a6e4ee00b53b67d719c519a49f86e8b8d128064c0a5519ab7e24",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "header:date",
+        "header:content-length",
+        "httpCalls"
+      ],
+      "remove": [
+        "header:content-length",
+        "header:date",
+        "httpCalls"
+      ],
+      "reason": "Preserved original contracts under the approved case-insensitive header and admission/bootstrap rules; native evidence independently qualifies. No observation normalization or expectation amendment.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-final-adapters-20261018T210720Z/java-final/CFG-02-sdk-netty-trust-boundary-represented-v1.json",
+      "nativeSha256": "3797da0ee3415b4b65ff2b4af467886adc87b0220778c020bf22bebaf21a9bd7"
+    },
+    {
+      "id": "CFG-02-loopback-jks-tls-represented-v1",
+      "fixtureDigest": "4eab4dc9f12fca54d8b66170cc348b7e0e2deca72e04ace96abcc45af0d3f1b9",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "header:date",
+        "header:content-length",
+        "httpCalls"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Preserved original contracts under the approved case-insensitive header and admission/bootstrap rules; native evidence independently qualifies. No observation normalization or expectation amendment.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-final-adapters-20261018T210720Z/java-final/CFG-02-loopback-jks-tls-represented-v1.json",
+      "nativeSha256": "b96c2855165954ff5e61ff5c5a50980caeee0f2a10100cd40e8f6d49779e6bbd"
+    }
+  ]
+}

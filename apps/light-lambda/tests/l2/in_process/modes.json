@@ -1,0 +1,603 @@
+{
+  "success": {
+    "http": 200,
+    "payload": {
+      "statusCode": 200,
+      "body": "hello from business",
+      "headers": {
+        "x-business": "yes"
+      },
+      "isBase64Encoded": false
+    },
+    "functionError": null,
+    "expected": {
+      "status": 200,
+      "code": null,
+      "body": "hello from business",
+      "headers": {
+        "x-business": [
+          "yes"
+        ]
+      },
+      "isBase64Encoded": false
+    }
+  },
+  "backend-http500": {
+    "http": 200,
+    "payload": {
+      "statusCode": 500,
+      "body": "PUBLIC_BACKEND_500",
+      "headers": {
+        "x-business": "http500"
+      }
+    },
+    "functionError": null,
+    "expected": {
+      "status": 500,
+      "code": null,
+      "body": "PUBLIC_BACKEND_500",
+      "headers": {
+        "x-business": [
+          "http500"
+        ]
+      },
+      "isBase64Encoded": false
+    }
+  },
+  "backend-http403": {
+    "http": 200,
+    "payload": {
+      "statusCode": 403,
+      "body": "PUBLIC_BACKEND_DENIED"
+    },
+    "functionError": null,
+    "expected": {
+      "status": 403,
+      "code": null,
+      "body": "PUBLIC_BACKEND_DENIED",
+      "headers": {},
+      "isBase64Encoded": false
+    }
+  },
+  "function-handled": {
+    "http": 200,
+    "payload": {
+      "errorType": "SyntheticFailure",
+      "errorMessage": "SYNTHETIC-PRIVATE-DETAIL-9a04",
+      "stackTrace": [
+        "SYNTHETIC-PRIVATE-DETAIL-9a04"
+      ]
+    },
+    "functionError": "Handled",
+    "expected": {
+      "status": 502,
+      "code": "ERR14014"
+    }
+  },
+  "function-unhandled": {
+    "http": 200,
+    "payload": {
+      "errorType": "SyntheticFailure",
+      "errorMessage": "SYNTHETIC-PRIVATE-DETAIL-9a04",
+      "stackTrace": [
+        "SYNTHETIC-PRIVATE-DETAIL-9a04"
+      ]
+    },
+    "functionError": "Unhandled",
+    "expected": {
+      "status": 502,
+      "code": "ERR14014"
+    }
+  },
+  "function-error-wins-valid-envelope": {
+    "http": 200,
+    "payload": {
+      "statusCode": 200,
+      "body": "SYNTHETIC-PRIVATE-DETAIL-9a04"
+    },
+    "functionError": "Unhandled",
+    "expected": {
+      "status": 502,
+      "code": "ERR14014"
+    }
+  },
+  "function-error-wins-invalid-json": {
+    "http": 200,
+    "payload": null,
+    "functionError": "Unhandled",
+    "expected": {
+      "status": 502,
+      "code": "ERR14014"
+    },
+    "rawBase64": "U1lOVEhFVElDLVBSSVZBVEUtREVUQUlMLTlhMDQ="
+  },
+  "empty-payload": {
+    "http": 200,
+    "payload": null,
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    },
+    "rawBase64": ""
+  },
+  "malformed-json": {
+    "http": 200,
+    "payload": null,
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    },
+    "rawBase64": "e2JhZCBTWU5USEVUSUMtUFJJVkFURS1ERVRBSUwtOWEwNA=="
+  },
+  "invalid-utf8": {
+    "http": 200,
+    "payload": null,
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    },
+    "rawBase64": "/1NZTlRIRVRJQy1QUklWQVRFLURFVEFJTC05YTA0"
+  },
+  "null-payload": {
+    "http": 200,
+    "payload": null,
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "array-payload": {
+    "http": 200,
+    "payload": [],
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "string-payload": {
+    "http": 200,
+    "payload": "SYNTHETIC-PRIVATE-DETAIL-9a04",
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "missing-status": {
+    "http": 200,
+    "payload": {
+      "body": "SYNTHETIC-PRIVATE-DETAIL-9a04"
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "null-status": {
+    "http": 200,
+    "payload": {
+      "statusCode": null,
+      "body": "SYNTHETIC-PRIVATE-DETAIL-9a04"
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "string-status": {
+    "http": 200,
+    "payload": {
+      "statusCode": "200",
+      "body": "SYNTHETIC-PRIVATE-DETAIL-9a04"
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "fractional-status": {
+    "http": 200,
+    "payload": {
+      "statusCode": 200.5,
+      "body": "SYNTHETIC-PRIVATE-DETAIL-9a04"
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "low-status": {
+    "http": 200,
+    "payload": {
+      "statusCode": 99,
+      "body": "SYNTHETIC-PRIVATE-DETAIL-9a04"
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "high-status": {
+    "http": 200,
+    "payload": {
+      "statusCode": 600,
+      "body": "SYNTHETIC-PRIVATE-DETAIL-9a04"
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "negative-status": {
+    "http": 200,
+    "payload": {
+      "statusCode": -1,
+      "body": "SYNTHETIC-PRIVATE-DETAIL-9a04"
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "body-object": {
+    "http": 200,
+    "payload": {
+      "statusCode": 200,
+      "body": {
+        "nested": "SYNTHETIC-PRIVATE-DETAIL-9a04"
+      }
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "body-array": {
+    "http": 200,
+    "payload": {
+      "statusCode": 200,
+      "body": [
+        "SYNTHETIC-PRIVATE-DETAIL-9a04"
+      ]
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "invalid-base64": {
+    "http": 200,
+    "payload": {
+      "statusCode": 200,
+      "body": "%%%SYNTHETIC-PRIVATE-DETAIL-9a04",
+      "isBase64Encoded": true
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "string-base64-flag": {
+    "http": 200,
+    "payload": {
+      "statusCode": 200,
+      "body": "SYNTHETIC-PRIVATE-DETAIL-9a04",
+      "isBase64Encoded": "true"
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "invalid-header-name": {
+    "http": 200,
+    "payload": {
+      "statusCode": 200,
+      "headers": {
+        "bad name": "SYNTHETIC-PRIVATE-DETAIL-9a04"
+      }
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "invalid-header-value": {
+    "http": 200,
+    "payload": {
+      "statusCode": 200,
+      "headers": {
+        "x-business": "bad\nSYNTHETIC-PRIVATE-DETAIL-9a04"
+      }
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "invalid-multi-header-value": {
+    "http": 200,
+    "payload": {
+      "statusCode": 200,
+      "multiValueHeaders": {
+        "x-business": [
+          "bad\nSYNTHETIC-PRIVATE-DETAIL-9a04"
+        ]
+      }
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "invalid-multi-header-type": {
+    "http": 200,
+    "payload": {
+      "statusCode": 200,
+      "multiValueHeaders": {
+        "x-business": "SYNTHETIC-PRIVATE-DETAIL-9a04"
+      }
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "invalid-discarded-scalar-header": {
+    "http": 200,
+    "payload": {
+      "statusCode": 200,
+      "headers": {
+        "X-Business": "bad\nSYNTHETIC-PRIVATE-DETAIL-9a04"
+      },
+      "multiValueHeaders": {
+        "x-business": [
+          "valid"
+        ]
+      }
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14015"
+    }
+  },
+  "invoke-access-denied": {
+    "http": 403,
+    "payload": {
+      "Type": "User",
+      "message": "SYNTHETIC-PRIVATE-DETAIL-9a04",
+      "__type": "AccessDeniedException"
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14019"
+    }
+  },
+  "invoke-not-found": {
+    "http": 404,
+    "payload": {
+      "Type": "User",
+      "message": "SYNTHETIC-PRIVATE-DETAIL-9a04",
+      "__type": "ResourceNotFoundException"
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14019"
+    }
+  },
+  "invoke-service500": {
+    "http": 500,
+    "payload": {
+      "Type": "User",
+      "message": "SYNTHETIC-PRIVATE-DETAIL-9a04",
+      "__type": "ServiceException"
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14014"
+    }
+  },
+  "invoke-service503": {
+    "http": 503,
+    "payload": {
+      "Type": "User",
+      "message": "SYNTHETIC-PRIVATE-DETAIL-9a04",
+      "__type": "ServiceException"
+    },
+    "functionError": null,
+    "expected": {
+      "status": 502,
+      "code": "ERR14014"
+    }
+  },
+  "invoke-throttled": {
+    "http": 429,
+    "payload": {
+      "Type": "User",
+      "message": "SYNTHETIC-PRIVATE-DETAIL-9a04",
+      "__type": "TooManyRequestsException"
+    },
+    "functionError": null,
+    "expected": {
+      "status": 429,
+      "code": "ERR14018"
+    }
+  },
+  "binary-response": {
+    "http": 200,
+    "payload": {
+      "statusCode": 200,
+      "body": "AAH/",
+      "isBase64Encoded": true,
+      "headers": {
+        "content-type": "application/octet-stream"
+      }
+    },
+    "functionError": null,
+    "expected": {
+      "status": 200,
+      "code": null,
+      "body": "AAH/",
+      "headers": {
+        "content-type": [
+          "application/octet-stream"
+        ]
+      },
+      "isBase64Encoded": true
+    }
+  },
+  "absent-body": {
+    "http": 200,
+    "payload": {
+      "statusCode": 200
+    },
+    "functionError": null,
+    "expected": {
+      "status": 200,
+      "code": null,
+      "body": null,
+      "headers": {},
+      "isBase64Encoded": false
+    }
+  },
+  "null-body": {
+    "http": 200,
+    "payload": {
+      "statusCode": 200,
+      "body": null
+    },
+    "functionError": null,
+    "expected": {
+      "status": 200,
+      "code": null,
+      "body": null,
+      "headers": {},
+      "isBase64Encoded": false
+    }
+  },
+  "empty-body": {
+    "http": 200,
+    "payload": {
+      "statusCode": 200,
+      "body": ""
+    },
+    "functionError": null,
+    "expected": {
+      "status": 200,
+      "code": null,
+      "body": "",
+      "headers": {},
+      "isBase64Encoded": false
+    }
+  },
+  "null-base64-flag": {
+    "http": 200,
+    "payload": {
+      "statusCode": 200,
+      "body": "plain",
+      "isBase64Encoded": null
+    },
+    "functionError": null,
+    "expected": {
+      "status": 200,
+      "code": null,
+      "body": "plain",
+      "headers": {},
+      "isBase64Encoded": false
+    }
+  },
+  "nested-status-text": {
+    "http": 200,
+    "payload": {
+      "statusCode": 200,
+      "body": "{\"nested\":{\"statusCode\":\"not-a-status\"}}"
+    },
+    "functionError": null,
+    "expected": {
+      "status": 200,
+      "code": null,
+      "body": "{\"nested\":{\"statusCode\":\"not-a-status\"}}",
+      "headers": {},
+      "isBase64Encoded": false
+    }
+  },
+  "headers-multimap-overlap": {
+    "http": 200,
+    "payload": {
+      "statusCode": 201,
+      "headers": {
+        "Content-Type": "ignored",
+        "X-Scalar": "yes",
+        "SET-COOKIE": "ignored"
+      },
+      "multiValueHeaders": {
+        "content-type": [
+          "text/plain"
+        ],
+        "Set-Cookie": [
+          "a=1",
+          "b=2"
+        ]
+      },
+      "body": "created"
+    },
+    "functionError": null,
+    "expected": {
+      "status": 201,
+      "code": null,
+      "body": "created",
+      "headers": {
+        "content-type": [
+          "text/plain"
+        ],
+        "x-scalar": [
+          "yes"
+        ],
+        "set-cookie": [
+          "a=1",
+          "b=2"
+        ]
+      },
+      "isBase64Encoded": false
+    }
+  },
+  "status599": {
+    "http": 200,
+    "payload": {
+      "statusCode": 599,
+      "body": "PUBLIC_STATUS599"
+    },
+    "functionError": null,
+    "expected": {
+      "status": 599,
+      "code": null,
+      "body": "PUBLIC_STATUS599",
+      "headers": {},
+      "isBase64Encoded": false
+    }
+  }
+}

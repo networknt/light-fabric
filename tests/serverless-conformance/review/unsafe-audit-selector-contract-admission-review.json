@@ -1,0 +1,20 @@
+[
+  {
+    "fixture": "A-02-unsafe-authorization-selector-init-contract-v1",
+    "source": "A-01-safe-selected-stdout-multi-contract-v1",
+    "javaBehaviorAsserted": [
+      "A-02",
+      "A-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "A-02"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Supported shared policy configuration selects raw Authorization for audit. Java preserves exact synthetic secret-bearing stdout record; Rust rejects this unsafe selector at Init as required by A02 ledger, before any business dispatch. This intentional validation gate is target behavior, not incidental unsupported-plugin rejection. No runtime redaction/bounds or secret-free trace/log-tail claim.",
+    "remainingContractAssertions": [
+      "A-02: runtime redaction, bounded content, no raw business error/log-tail/bearer logging still require explicit assertions"
+    ],
+    "javaRun": "20261011T051337.335992Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T051337.335992Z"
+  }
+]

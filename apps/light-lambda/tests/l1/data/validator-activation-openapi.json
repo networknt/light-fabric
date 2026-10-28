@@ -1,0 +1,21 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "Owned Validator activation qualification", "version": "1"},
+  "servers": [{"url": "https://synthetic.invalid/v1"}],
+  "paths": {
+    "/decimal": {"post": {"requestBody": {"content": {"application/json": {"schema": {
+      "type": "object", "required": ["n"], "properties": {"n": {"type": "number", "multipleOf": 0.1}}
+    }}}}, "responses": {"200": {"description": "owned fake backend"}}}},
+    "/integer": {"post": {"requestBody": {"content": {"application/json": {"schema": {
+      "type": "object", "required": ["n"], "properties": {"n": {"type": "integer", "minimum": 9007199254740993, "maximum": 9007199254740993}}
+    }}}}, "responses": {"200": {"description": "owned fake backend"}}}},
+    "/pets/{petId}": {"get": {
+      "parameters": [
+        {"in": "path", "name": "petId", "required": true, "schema": {"type": "integer", "minimum": 1}},
+        {"in": "query", "name": "limit", "required": true, "schema": {"type": "integer", "minimum": 1}},
+        {"in": "header", "name": "x-required", "required": true, "schema": {"type": "string", "minLength": 1}}
+      ],
+      "responses": {"200": {"description": "owned fake backend"}}
+    }}
+  }
+}

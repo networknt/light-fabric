@@ -1,0 +1,226 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "E-02a-overlap-casing-conflicts-cookies-cp1-e02-accepted",
+  "title": "Overlapping backend response maps: exact Java versus CP1-approved multimap precedence",
+  "ledger": [
+    "E-02a"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only",
+      "light-lambda.accountId": "000000000000",
+      "light-lambda.apiId": "test-only",
+      "light-lambda.domainName": "test.example",
+      "light-lambda.resourceId": "test-only"
+    },
+    "files": {
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy"
+        ],
+        "chains": {
+          "request": [],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {},
+  "tokens": {},
+  "headerMode": "multi",
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "GET",
+    "path": "/x",
+    "body": null,
+    "isBase64Encoded": false,
+    "multiValueHeaders": {},
+    "multiValueQueryStringParameters": {}
+  },
+  "backend": [
+    {
+      "match": {
+        "target": "FnX"
+      },
+      "respond": {
+        "functionError": null,
+        "payload": {
+          "statusCode": 200,
+          "headers": {
+            "Set-Cookie": "single=1",
+            "X-Conflict": "single-conflict",
+            "x-single": "only-single"
+          },
+          "multiValueHeaders": {
+            "set-cookie": [
+              "a=1",
+              "b=2"
+            ],
+            "x-CONFLICT": [
+              "multi-first",
+              "multi-second"
+            ],
+            "x-multi": [
+              "only-multi"
+            ]
+          },
+          "body": "ok",
+          "isBase64Encoded": false
+        }
+      }
+    }
+  ],
+  "expectJava": {
+    "status": 200,
+    "headers": [
+      [
+        "Set-Cookie",
+        "single=1"
+      ],
+      [
+        "X-Conflict",
+        "single-conflict"
+      ],
+      [
+        "x-single",
+        "only-single"
+      ],
+      [
+        "set-cookie",
+        "a=1"
+      ],
+      [
+        "set-cookie",
+        "b=2"
+      ],
+      [
+        "x-CONFLICT",
+        "multi-first"
+      ],
+      [
+        "x-CONFLICT",
+        "multi-second"
+      ],
+      [
+        "x-multi",
+        "only-multi"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "ok",
+    "bodyBase64": false,
+    "backendCalls": [
+      {
+        "target": "FnX",
+        "event": {
+          "httpMethod": "GET",
+          "path": "/x"
+        }
+      }
+    ],
+    "jwksFetches": 0,
+    "outcome": "response",
+    "responseMaps": {
+      "headers": {
+        "Set-Cookie": "single=1",
+        "X-Conflict": "single-conflict",
+        "x-single": "only-single"
+      },
+      "multiValueHeaders": {
+        "set-cookie": [
+          "a=1",
+          "b=2"
+        ],
+        "x-CONFLICT": [
+          "multi-first",
+          "multi-second"
+        ],
+        "x-multi": [
+          "only-multi"
+        ]
+      }
+    }
+  },
+  "expect": {
+    "status": 200,
+    "headers": [
+      [
+        "x-single",
+        "only-single"
+      ],
+      [
+        "set-cookie",
+        "a=1"
+      ],
+      [
+        "set-cookie",
+        "b=2"
+      ],
+      [
+        "x-conflict",
+        "multi-first"
+      ],
+      [
+        "x-conflict",
+        "multi-second"
+      ],
+      [
+        "x-multi",
+        "only-multi"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "ok",
+    "bodyBase64": false,
+    "backendCalls": [
+      {
+        "target": "FnX",
+        "event": {
+          "httpMethod": "GET",
+          "path": "/x"
+        }
+      }
+    ],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "differences": [
+    "header:set-cookie",
+    "header:x-conflict"
+  ],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "substitutions": []
+}

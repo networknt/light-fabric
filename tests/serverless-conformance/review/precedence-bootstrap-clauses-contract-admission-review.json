@@ -1,0 +1,32 @@
+[
+  {
+    "fixture": "V-03-ignore-beats-explicit-encode-multi-contract-v1",
+    "javaRun": "20261011T151042.850037Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Explicit identical selected/ignored attribute names: ignore wins for body ignore and header x-ignore, while selected value and x-encode are encoded. Exact body serialization and both header maps preserved; outer JSON trim remains reviewed. No normalization.",
+    "source": "Approved sanitizer order/ignore and JWKS bootstrap gate contracts; real focused Java observations",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T151042.850037Z"
+  },
+  {
+    "fixture": "S-13a-bootstrap-records-cooldown-multi-contract-v1",
+    "javaRun": "20261011T151219.803974Z",
+    "javaBehaviorAsserted": [
+      "S-13",
+      "S-13a"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-13",
+      "S-13a"
+    ],
+    "review": "Ungated Init bootstrap actually fetches once and records attempt; immediate unknownkid calls stay401/no dispatch. Java exact one fetch each; authored Rust cooldown suppresses both request fetches. Readiness and Init fetch assertions separated from request counts.",
+    "source": "Approved sanitizer order/ignore and JWKS bootstrap gate contracts; real focused Java observations",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T151219.803974Z"
+  }
+]

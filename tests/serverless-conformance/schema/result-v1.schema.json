@@ -1,0 +1,5477 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:light-lambda:result:v1",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "light-lambda-conformance/result/v1"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "runner": {
+      "enum": [
+        "java",
+        "rust"
+      ]
+    },
+    "runnerRevision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "fixtureDigest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "execution": {
+      "enum": [
+        "passed",
+        "failed",
+        "skipped",
+        "runnerError"
+      ]
+    },
+    "durationMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "reason": {
+      "type": "string"
+    },
+    "observations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/expect"
+      }
+    },
+    "assertionErrors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "initialization": {
+      "$ref": "#/$defs/initExpect"
+    },
+    "completionProbeExceptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "step",
+          "requestException",
+          "responseException"
+        ],
+        "properties": {
+          "step": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "requestException": {
+            "type": "string"
+          },
+          "responseException": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "tokenSigningEpochs": {
+      "description": "Optional Rust fixture-signing witness for exact E-08 authorizer assertions; no tokens or keys. Raw observations remain unchanged.",
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["step", "epochs"],
+        "properties": {
+          "step": {"type": "integer", "minimum": 0},
+          "epochs": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+        }
+      }
+    },
+    "boundedWorkTiming": {
+      "description": "Optional bounded runner phase timings; not response equality or SDK-wire proof.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "step",
+          "budgetMs",
+          "events"
+        ],
+        "properties": {
+          "step": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "budgetMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 900000
+          },
+          "events": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "phase",
+                "elapsedUs"
+              ],
+              "properties": {
+                "phase": {
+                  "enum": [
+                    "service-start",
+                    "invoke-received",
+                    "invoke-response-ready",
+                    "response-enter",
+                    "response-complete",
+                    "service-return"
+                  ]
+                },
+                "elapsedUs": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "invocationWindows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "step",
+          "startEpochMs",
+          "endEpochMs"
+        ],
+        "properties": {
+          "step": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "startEpochMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "endEpochMs": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "securityLogEvidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "step",
+          "messages"
+        ],
+        "properties": {
+          "step": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "faultEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "diagnosticLines",
+        "elapsedAfterInitFailureMs"
+      ],
+      "properties": {
+        "diagnosticLines": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "maxLength": 2048,
+            "not": {
+              "pattern": "test-only-secret-sentinel|test-only-password-sentinel"
+            }
+          }
+        },
+        "elapsedAfterInitFailureMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3000
+        }
+      }
+    },
+    "gatePanicEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "barrierEvents",
+        "callerWaitsMs",
+        "callerErrors",
+        "networkRequests"
+      ],
+      "properties": {
+        "barrierEvents": {
+          "const": [
+            "attempt-recorded-active-published",
+            "two-joiners-attached",
+            "release-panic",
+            "all-waiters-settled",
+            "cooldown-elapsed",
+            "release-recovery"
+          ]
+        },
+        "callerWaitsMs": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000
+          }
+        },
+        "callerErrors": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1024
+          }
+        },
+        "networkRequests": {
+          "const": [
+            {
+              "target": "jwks",
+              "method": "GET",
+              "uri": "/jwks"
+            }
+          ]
+        }
+      }
+    },
+    "configurationDiagnosticEvidence": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2048
+      }
+    },
+    "configurationWarningEvidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "key",
+          "message"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "runner",
+    "runnerRevision",
+    "fixtureDigest",
+    "execution",
+    "durationMs",
+    "observations",
+    "assertionErrors"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "expect": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "const": "response"
+            },
+            "status": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "headers": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                ],
+                "items": false,
+                "minItems": 2,
+                "maxItems": 2
+              }
+            },
+            "headersAbsent": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "body": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "bodyBase64": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "backendCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "target": {
+                    "type": "string"
+                  },
+                  "event": {
+                    "type": "object"
+                  },
+                  "invoke": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "logType": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "invocationType": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    }
+                  },
+                  "sdkHttp": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "method",
+                      "uri",
+                      "endpoint"
+                    ],
+                    "properties": {
+                      "method": {
+                        "const": "POST"
+                      },
+                      "uri": {
+                        "type": "string",
+                        "pattern": "^/2015-03-31/functions/[A-Za-z0-9_-]+/invocations$"
+                      },
+                      "endpoint": {
+                        "type": "string",
+                        "pattern": "^https?://127\\.0\\.0\\.1:[0-9]+$"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "target",
+                  "event"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "jwksFetches": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "responseMaps": {
+              "type": "object",
+              "properties": {
+                "headers": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "additionalProperties": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "multiValueHeaders": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              },
+              "required": [
+                "headers",
+                "multiValueHeaders"
+              ],
+              "additionalProperties": false
+            },
+            "httpCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri",
+                  "body",
+                  "serviceId"
+                ],
+                "properties": {
+                  "target": {
+                    "type": "string"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "serviceId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "servedBody": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "cacheActions": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "jwtCachedNbf"
+                      },
+                      "tokenRecipe": {
+                        "type": "string"
+                      },
+                      "nbfOffsetSec": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 400000000
+                      },
+                      "entryFound": {
+                        "const": true
+                      },
+                      "written": {
+                        "const": true
+                      },
+                      "nbfEpochSec": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "tokenRecipe",
+                      "nbfOffsetSec",
+                      "entryFound",
+                      "written"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "stringCachePut"
+                      },
+                      "cacheName": {
+                        "const": "test-only"
+                      },
+                      "key": {
+                        "type": "string",
+                        "pattern": "^synthetic-[A-Za-z0-9_-]+$"
+                      },
+                      "value": {
+                        "type": "string"
+                      },
+                      "written": {
+                        "const": true
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "cacheName",
+                      "key",
+                      "value",
+                      "written"
+                    ]
+                  }
+                ]
+              }
+            },
+            "completions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "finalizationProbe": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "requestException": {
+                  "const": "com.networknt.aws.lambda.exception.LambdaExchangeStateException"
+                },
+                "responseException": {
+                  "const": "com.networknt.aws.lambda.exception.LambdaExchangeStateException"
+                },
+                "completionCountBefore": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "completionCountAfter": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "requestException",
+                "responseException",
+                "completionCountBefore",
+                "completionCountAfter"
+              ]
+            },
+            "auditRecords": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "data",
+                  "message"
+                ],
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "timestamp": {
+                        "type": "string",
+                        "const": "synthetic-time"
+                      },
+                      "statusCode": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "serviceId": {
+                        "type": "string"
+                      },
+                      "requestBody": {
+                        "type": "string"
+                      },
+                      "responseBody": {
+                        "type": "string"
+                      },
+                      "x-test-header": {
+                        "type": "string"
+                      },
+                      "late-field": {
+                        "type": "string"
+                      },
+                      "x-test-mask": {
+                        "type": "string"
+                      },
+                      "queryParameters": {
+                        "type": "string"
+                      },
+                      "pathParameters": {
+                        "type": "string"
+                      },
+                      "authorization": {
+                        "const": "Bearer test-only-audit-secret"
+                      }
+                    }
+                  },
+                  "message": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "statusSerialization": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "utf8",
+                "parsesAsJson"
+              ],
+              "properties": {
+                "utf8": {
+                  "type": "string"
+                },
+                "parsesAsJson": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "invocationDurationMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "ldapBinds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "backendDiagnostics": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "logger",
+                  "level",
+                  "message"
+                ],
+                "properties": {
+                  "logger": {
+                    "type": "string"
+                  },
+                  "level": {
+                    "enum": [
+                      "TRACE",
+                      "DEBUG",
+                      "INFO",
+                      "WARN",
+                      "ERROR"
+                    ]
+                  },
+                  "message": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "completionProbeResult": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "order",
+                "countBeforeRepeat",
+                "countAfterRepeat",
+                "requestRepeatRejected",
+                "responseRepeatRejected"
+              ],
+              "properties": {
+                "order": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "countBeforeRepeat": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "countAfterRepeat": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "requestRepeatRejected": {
+                  "const": true
+                },
+                "responseRepeatRejected": {
+                  "const": true
+                }
+              }
+            },
+            "failureProbeResult": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "mode",
+                "executions"
+              ],
+              "properties": {
+                "mode": {
+                  "oneOf": [
+                    {
+                      "enum": [
+                        "throw-test-exception",
+                        "return-null-status"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "executions": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "emf": {
+              "type": "object",
+              "properties": {
+                "rawLines": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "invocationStartUnixMs": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "invocationEndUnixMs": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "rawLines",
+                "invocationStartUnixMs",
+                "invocationEndUnixMs"
+              ],
+              "additionalProperties": false
+            },
+            "boundedWorkProbeExecutions": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2
+            },
+            "jwksCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri"
+                ],
+                "properties": {
+                  "target": {
+                    "const": "jwks"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "blockingLease": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "capacity",
+                "atResponse",
+                "afterReturn",
+                "lateResultsDiscarded"
+              ],
+              "properties": {
+                "capacity": {
+                  "const": 1
+                },
+                "atResponse": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "started",
+                    "completed",
+                    "active",
+                    "permitsHeld"
+                  ],
+                  "properties": {
+                    "started": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "completed": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "active": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "permitsHeld": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1
+                    }
+                  }
+                },
+                "afterReturn": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "started",
+                    "completed",
+                    "active",
+                    "permitsHeld"
+                  ],
+                  "properties": {
+                    "started": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "completed": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "active": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "permitsHeld": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1
+                    }
+                  }
+                },
+                "lateResultsDiscarded": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
+            },
+            "traceContext": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "captures",
+                "logContextTraceabilityId",
+                "exchangeTraceabilityId"
+              ],
+              "properties": {
+                "captures": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "logContextTraceabilityId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "exchangeTraceabilityId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "responsePolicyObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "handler",
+                "entries",
+                "completions",
+                "finalizations"
+              ],
+              "properties": {
+                "handler": {
+                  "enum": [
+                    "response0",
+                    "fixtureWork"
+                  ]
+                },
+                "entries": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "completions": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "finalizations": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "ruleInputObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "executions",
+                "input"
+              ],
+              "properties": {
+                "executions": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "input": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "requestHeaders",
+                        "responseHeaders",
+                        "queryParameters",
+                        "pathParameters",
+                        "method",
+                        "requestPath",
+                        "requestBody",
+                        "responseBody",
+                        "auditInfo",
+                        "statusCode"
+                      ],
+                      "properties": {
+                        "requestHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "responseHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "queryParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "pathParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "method": {
+                          "type": "string"
+                        },
+                        "requestPath": {
+                          "type": "string"
+                        },
+                        "requestBody": {
+                          "type": "string"
+                        },
+                        "responseBody": {
+                          "type": "string"
+                        },
+                        "auditInfo": {
+                          "type": "null"
+                        },
+                        "statusCode": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "ruleFailuresCaught": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "securityLogObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "fullTokenExposed",
+                "tokenFragmentExposed",
+                "sensitiveClaimExposed"
+              ],
+              "properties": {
+                "fullTokenExposed": {
+                  "type": "boolean"
+                },
+                "tokenFragmentExposed": {
+                  "type": "boolean"
+                },
+                "sensitiveClaimExposed": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "configurationDiagnostics": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "multiValueRequiredLogs"
+              ],
+              "properties": {
+                "multiValueRequiredLogs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
+            }
+          },
+          "required": [
+            "outcome",
+            "status",
+            "headers",
+            "headersAbsent",
+            "body",
+            "bodyBase64",
+            "backendCalls",
+            "jwksFetches"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "const": "exception"
+            },
+            "phase": {
+              "enum": [
+                "init",
+                "invocation"
+              ]
+            },
+            "class": {
+              "type": "string"
+            },
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "backendCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "target": {
+                    "type": "string"
+                  },
+                  "event": {
+                    "type": "object"
+                  },
+                  "invoke": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "logType": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "invocationType": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    }
+                  },
+                  "sdkHttp": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "method",
+                      "uri",
+                      "endpoint"
+                    ],
+                    "properties": {
+                      "method": {
+                        "const": "POST"
+                      },
+                      "uri": {
+                        "type": "string",
+                        "pattern": "^/2015-03-31/functions/[A-Za-z0-9_-]+/invocations$"
+                      },
+                      "endpoint": {
+                        "type": "string",
+                        "pattern": "^https?://127\\.0\\.0\\.1:[0-9]+$"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "target",
+                  "event"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "jwksFetches": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "httpCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri",
+                  "body",
+                  "serviceId"
+                ],
+                "properties": {
+                  "target": {
+                    "type": "string"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "serviceId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "servedBody": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "cacheActions": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "jwtCachedNbf"
+                      },
+                      "tokenRecipe": {
+                        "type": "string"
+                      },
+                      "nbfOffsetSec": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 400000000
+                      },
+                      "entryFound": {
+                        "const": true
+                      },
+                      "written": {
+                        "const": true
+                      },
+                      "nbfEpochSec": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "tokenRecipe",
+                      "nbfOffsetSec",
+                      "entryFound",
+                      "written"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "stringCachePut"
+                      },
+                      "cacheName": {
+                        "const": "test-only"
+                      },
+                      "key": {
+                        "type": "string",
+                        "pattern": "^synthetic-[A-Za-z0-9_-]+$"
+                      },
+                      "value": {
+                        "type": "string"
+                      },
+                      "written": {
+                        "const": true
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "cacheName",
+                      "key",
+                      "value",
+                      "written"
+                    ]
+                  }
+                ]
+              }
+            },
+            "completions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "finalizationProbe": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "requestException": {
+                  "const": "com.networknt.aws.lambda.exception.LambdaExchangeStateException"
+                },
+                "responseException": {
+                  "const": "com.networknt.aws.lambda.exception.LambdaExchangeStateException"
+                },
+                "completionCountBefore": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "completionCountAfter": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "requestException",
+                "responseException",
+                "completionCountBefore",
+                "completionCountAfter"
+              ]
+            },
+            "auditRecords": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "data",
+                  "message"
+                ],
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "timestamp": {
+                        "type": "string",
+                        "const": "synthetic-time"
+                      },
+                      "statusCode": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "serviceId": {
+                        "type": "string"
+                      },
+                      "requestBody": {
+                        "type": "string"
+                      },
+                      "responseBody": {
+                        "type": "string"
+                      },
+                      "x-test-header": {
+                        "type": "string"
+                      },
+                      "late-field": {
+                        "type": "string"
+                      },
+                      "x-test-mask": {
+                        "type": "string"
+                      },
+                      "queryParameters": {
+                        "type": "string"
+                      },
+                      "pathParameters": {
+                        "type": "string"
+                      },
+                      "authorization": {
+                        "const": "Bearer test-only-audit-secret"
+                      }
+                    }
+                  },
+                  "message": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "statusSerialization": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "utf8",
+                "parsesAsJson"
+              ],
+              "properties": {
+                "utf8": {
+                  "type": "string"
+                },
+                "parsesAsJson": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "invocationDurationMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "boundedWorkProbeExecutions": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2
+            },
+            "jwksCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri"
+                ],
+                "properties": {
+                  "target": {
+                    "const": "jwks"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "ruleInputObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "executions",
+                "input"
+              ],
+              "properties": {
+                "executions": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "input": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "requestHeaders",
+                        "responseHeaders",
+                        "queryParameters",
+                        "pathParameters",
+                        "method",
+                        "requestPath",
+                        "requestBody",
+                        "responseBody",
+                        "auditInfo",
+                        "statusCode"
+                      ],
+                      "properties": {
+                        "requestHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "responseHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "queryParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "pathParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "method": {
+                          "type": "string"
+                        },
+                        "requestPath": {
+                          "type": "string"
+                        },
+                        "requestBody": {
+                          "type": "string"
+                        },
+                        "responseBody": {
+                          "type": "string"
+                        },
+                        "auditInfo": {
+                          "type": "null"
+                        },
+                        "statusCode": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "required": [
+            "outcome",
+            "phase",
+            "class",
+            "message",
+            "backendCalls",
+            "jwksFetches"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "const": "initError"
+            },
+            "code": {
+              "type": "string",
+              "minLength": 1
+            },
+            "backendCalls": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "jwksFetches": {
+              "const": 0
+            },
+            "httpCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri",
+                  "body",
+                  "serviceId"
+                ],
+                "properties": {
+                  "target": {
+                    "type": "string"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "serviceId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "servedBody": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "cacheActions": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "completions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 0
+            },
+            "finalizationProbe": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "requestException": {
+                  "const": "com.networknt.aws.lambda.exception.LambdaExchangeStateException"
+                },
+                "responseException": {
+                  "const": "com.networknt.aws.lambda.exception.LambdaExchangeStateException"
+                },
+                "completionCountBefore": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "completionCountAfter": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "requestException",
+                "responseException",
+                "completionCountBefore",
+                "completionCountAfter"
+              ]
+            },
+            "auditRecords": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "ldapBinds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "boundedWorkProbeExecutions": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2
+            },
+            "jwksCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri"
+                ],
+                "properties": {
+                  "target": {
+                    "const": "jwks"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "initFailureReporting": {
+              "oneOf": [
+                {
+                  "const": {
+                    "endpoint": "/2018-06-01/runtime/init/error",
+                    "reportCount": 1,
+                    "exitCode": 1,
+                    "header": {
+                      "Lambda-Runtime-Function-Error-Type": "Runtime.InitError"
+                    },
+                    "body": {
+                      "errorType": "InvalidConfiguration",
+                      "errorMessage": "configuration: missing light-lambda.stage"
+                    },
+                    "maxBodyBytes": 1024,
+                    "forbiddenBodyValues": [
+                      "test-only-secret-sentinel",
+                      "test-only-password-sentinel"
+                    ],
+                    "invocationLoopEntered": false
+                  }
+                },
+                {
+                  "enum": [
+  {
+    "endpoint": "/2018-06-01/runtime/init/error",
+    "reportCount": 1,
+    "exitCode": 1,
+    "header": {
+      "Lambda-Runtime-Function-Error-Type": "Runtime.InitError"
+    },
+    "body": {
+      "errorType": "Runtime.InitPanic",
+      "errorMessage": "prepare_local_config: synthetic Init panic"
+    },
+    "maxBodyBytes": 1024,
+    "forbiddenBodyValues": [
+      "test-only-secret-sentinel",
+      "test-only-password-sentinel"
+    ],
+    "invocationLoopEntered": false
+  },
+  {
+    "endpoint": "/2018-06-01/runtime/init/error",
+    "reportCount": 1,
+    "exitCode": 1,
+    "header": {
+      "Lambda-Runtime-Function-Error-Type": "Runtime.InitPanic"
+    },
+    "body": {
+      "errorType": "Runtime.InitPanic",
+      "errorMessage": "initialization: panic"
+    },
+    "maxBodyBytes": 1024,
+    "forbiddenBodyValues": [
+      "test-only-secret-sentinel",
+      "test-only-password-sentinel"
+    ],
+    "invocationLoopEntered": false
+  }
+]
+                },
+                {
+                  "const": {
+                    "endpoint": "/2018-06-01/runtime/init/error",
+                    "reportCount": 1,
+                    "exitCode": 1
+                  }
+                }
+              ]
+            },
+            "ruleInputObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "executions",
+                "input"
+              ],
+              "properties": {
+                "executions": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "input": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "requestHeaders",
+                        "responseHeaders",
+                        "queryParameters",
+                        "pathParameters",
+                        "method",
+                        "requestPath",
+                        "requestBody",
+                        "responseBody",
+                        "auditInfo",
+                        "statusCode"
+                      ],
+                      "properties": {
+                        "requestHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "responseHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "queryParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "pathParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "method": {
+                          "type": "string"
+                        },
+                        "requestPath": {
+                          "type": "string"
+                        },
+                        "requestBody": {
+                          "type": "string"
+                        },
+                        "responseBody": {
+                          "type": "string"
+                        },
+                        "auditInfo": {
+                          "type": "null"
+                        },
+                        "statusCode": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "required": [
+            "outcome",
+            "code",
+            "backendCalls",
+            "jwksFetches"
+          ],
+          "additionalProperties": false,
+          "not": {
+            "required": [
+              "finalizationProbe"
+            ]
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "outcome": {
+              "const": "initSuccess"
+            },
+            "backendCalls": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "jwksFetches": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "httpCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri",
+                  "body",
+                  "serviceId"
+                ],
+                "properties": {
+                  "target": {
+                    "type": "string"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "serviceId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "servedBody": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "cacheActions": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "jwtCachedNbf"
+                      },
+                      "tokenRecipe": {
+                        "type": "string"
+                      },
+                      "nbfOffsetSec": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 400000000
+                      },
+                      "entryFound": {
+                        "const": true
+                      },
+                      "written": {
+                        "const": true
+                      },
+                      "nbfEpochSec": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "tokenRecipe",
+                      "nbfOffsetSec",
+                      "entryFound",
+                      "written"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "stringCachePut"
+                      },
+                      "cacheName": {
+                        "const": "test-only"
+                      },
+                      "key": {
+                        "type": "string",
+                        "pattern": "^synthetic-[A-Za-z0-9_-]+$"
+                      },
+                      "value": {
+                        "type": "string"
+                      },
+                      "written": {
+                        "const": true
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "cacheName",
+                      "key",
+                      "value",
+                      "written"
+                    ]
+                  }
+                ]
+              }
+            },
+            "completions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "finalizationProbe": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "requestException": {
+                  "const": "com.networknt.aws.lambda.exception.LambdaExchangeStateException"
+                },
+                "responseException": {
+                  "const": "com.networknt.aws.lambda.exception.LambdaExchangeStateException"
+                },
+                "completionCountBefore": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "completionCountAfter": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "requestException",
+                "responseException",
+                "completionCountBefore",
+                "completionCountAfter"
+              ]
+            },
+            "auditRecords": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "configurationObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "format",
+                "decrypted"
+              ],
+              "properties": {
+                "format": {
+                  "const": "CRYPT:salt:iv:ciphertext"
+                },
+                "decrypted": {
+                  "type": "string"
+                }
+              }
+            },
+            "dynamoObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operations"
+              ],
+              "properties": {
+                "operations": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "operation",
+                      "request"
+                    ],
+                    "properties": {
+                      "operation": {
+                        "enum": [
+                          "ListTables",
+                          "UpdateItem",
+                          "GetItem",
+                          "DeleteItem",
+                          "CreateTable",
+                          "DescribeTable",
+                          "DeleteTable"
+                        ]
+                      },
+                      "request": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                },
+                "getSize": {
+                  "const": 0
+                }
+              }
+            },
+            "boundedWorkProbeExecutions": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2
+            },
+            "jwksCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri"
+                ],
+                "properties": {
+                  "target": {
+                    "const": "jwks"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "ruleInputObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "executions",
+                "input"
+              ],
+              "properties": {
+                "executions": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "input": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "requestHeaders",
+                        "responseHeaders",
+                        "queryParameters",
+                        "pathParameters",
+                        "method",
+                        "requestPath",
+                        "requestBody",
+                        "responseBody",
+                        "auditInfo",
+                        "statusCode"
+                      ],
+                      "properties": {
+                        "requestHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "responseHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "queryParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "pathParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "method": {
+                          "type": "string"
+                        },
+                        "requestPath": {
+                          "type": "string"
+                        },
+                        "requestBody": {
+                          "type": "string"
+                        },
+                        "responseBody": {
+                          "type": "string"
+                        },
+                        "auditInfo": {
+                          "type": "null"
+                        },
+                        "statusCode": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "configurationWarningObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "key",
+                "mode",
+                "warningCount",
+                "ignored"
+              ],
+              "properties": {
+                "key": {
+                  "const": "handler.reportHandlerDuration"
+                },
+                "mode": {
+                  "enum": [
+                    "absent",
+                    "default-false"
+                  ]
+                },
+                "warningCount": {
+                  "const": 1
+                },
+                "ignored": {
+                  "const": true
+                }
+              }
+            }
+          },
+          "required": [
+            "outcome",
+            "backendCalls",
+            "jwksFetches"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "outcome": {
+              "const": "notExecuted"
+            },
+            "reason": {
+              "const": "initError"
+            },
+            "backendCalls": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "jwksFetches": {
+              "const": 0
+            },
+            "httpCalls": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "cacheActions": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "completions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 0
+            },
+            "finalizationProbe": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "requestException": {
+                  "const": "com.networknt.aws.lambda.exception.LambdaExchangeStateException"
+                },
+                "responseException": {
+                  "const": "com.networknt.aws.lambda.exception.LambdaExchangeStateException"
+                },
+                "completionCountBefore": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "completionCountAfter": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "requestException",
+                "responseException",
+                "completionCountBefore",
+                "completionCountAfter"
+              ]
+            },
+            "auditRecords": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "boundedWorkProbeExecutions": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2
+            },
+            "jwksCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri"
+                ],
+                "properties": {
+                  "target": {
+                    "const": "jwks"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "ruleInputObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "executions",
+                "input"
+              ],
+              "properties": {
+                "executions": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "input": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "requestHeaders",
+                        "responseHeaders",
+                        "queryParameters",
+                        "pathParameters",
+                        "method",
+                        "requestPath",
+                        "requestBody",
+                        "responseBody",
+                        "auditInfo",
+                        "statusCode"
+                      ],
+                      "properties": {
+                        "requestHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "responseHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "queryParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "pathParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "method": {
+                          "type": "string"
+                        },
+                        "requestPath": {
+                          "type": "string"
+                        },
+                        "requestBody": {
+                          "type": "string"
+                        },
+                        "responseBody": {
+                          "type": "string"
+                        },
+                        "auditInfo": {
+                          "type": "null"
+                        },
+                        "statusCode": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "required": [
+            "outcome",
+            "reason",
+            "backendCalls",
+            "jwksFetches"
+          ],
+          "not": {
+            "required": [
+              "finalizationProbe"
+            ]
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "outcome",
+            "outputBase64",
+            "outputBytes",
+            "chainExecutions",
+            "backendCalls",
+            "jwksFetches"
+          ],
+          "properties": {
+            "outcome": {
+              "const": "streamOutput"
+            },
+            "outputBase64": {
+              "type": "string",
+              "contentEncoding": "base64"
+            },
+            "outputBytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "chainExecutions": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "backendCalls": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "jwksFetches": {
+              "const": 0
+            },
+            "boundedWorkProbeExecutions": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2
+            },
+            "jwksCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri"
+                ],
+                "properties": {
+                  "target": {
+                    "const": "jwks"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "ruleInputObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "executions",
+                "input"
+              ],
+              "properties": {
+                "executions": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "input": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "requestHeaders",
+                        "responseHeaders",
+                        "queryParameters",
+                        "pathParameters",
+                        "method",
+                        "requestPath",
+                        "requestBody",
+                        "responseBody",
+                        "auditInfo",
+                        "statusCode"
+                      ],
+                      "properties": {
+                        "requestHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "responseHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "queryParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "pathParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "method": {
+                          "type": "string"
+                        },
+                        "requestPath": {
+                          "type": "string"
+                        },
+                        "requestBody": {
+                          "type": "string"
+                        },
+                        "responseBody": {
+                          "type": "string"
+                        },
+                        "auditInfo": {
+                          "type": "null"
+                        },
+                        "statusCode": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "outcome",
+            "responses",
+            "backendCalls",
+            "jwksFetches"
+          ],
+          "properties": {
+            "outcome": {
+              "const": "parallelResponses"
+            },
+            "responses": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "outcome": {
+                    "const": "response"
+                  },
+                  "status": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "headers": {
+                    "type": "array",
+                    "items": {
+                      "type": "array",
+                      "prefixItems": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      ],
+                      "items": false,
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  },
+                  "body": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "bodyBase64": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "ldapBinds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "boundedWorkProbeExecutions": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 2
+                  },
+                  "responsePolicyObservation": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "handler",
+                      "entries",
+                      "completions",
+                      "finalizations"
+                    ],
+                    "properties": {
+                      "handler": {
+                        "enum": [
+                          "response0",
+                          "fixtureWork"
+                        ]
+                      },
+                      "entries": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "completions": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "finalizations": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    }
+                  },
+                  "ruleInputObservation": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "executions",
+                      "input"
+                    ],
+                    "properties": {
+                      "executions": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      "input": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "requestHeaders",
+                              "responseHeaders",
+                              "queryParameters",
+                              "pathParameters",
+                              "method",
+                              "requestPath",
+                              "requestBody",
+                              "responseBody",
+                              "auditInfo",
+                              "statusCode"
+                            ],
+                            "properties": {
+                              "requestHeaders": {
+                                "type": [
+                                  "object",
+                                  "null"
+                                ],
+                                "additionalProperties": {
+                                  "type": "string"
+                                }
+                              },
+                              "responseHeaders": {
+                                "type": [
+                                  "object",
+                                  "null"
+                                ],
+                                "additionalProperties": {
+                                  "type": "string"
+                                }
+                              },
+                              "queryParameters": {
+                                "type": [
+                                  "object",
+                                  "null"
+                                ],
+                                "additionalProperties": {
+                                  "type": "string"
+                                }
+                              },
+                              "pathParameters": {
+                                "type": [
+                                  "object",
+                                  "null"
+                                ],
+                                "additionalProperties": {
+                                  "type": "string"
+                                }
+                              },
+                              "method": {
+                                "type": "string"
+                              },
+                              "requestPath": {
+                                "type": "string"
+                              },
+                              "requestBody": {
+                                "type": "string"
+                              },
+                              "responseBody": {
+                                "type": "string"
+                              },
+                              "auditInfo": {
+                                "type": "null"
+                              },
+                              "statusCode": {
+                                "type": "integer"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "outcome",
+                  "status",
+                  "headers",
+                  "body",
+                  "bodyBase64"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "backendCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "target": {
+                    "type": "string"
+                  },
+                  "event": {
+                    "type": "object"
+                  },
+                  "invoke": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "logType": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "invocationType": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    }
+                  },
+                  "sdkHttp": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "method",
+                      "uri",
+                      "endpoint"
+                    ],
+                    "properties": {
+                      "method": {
+                        "const": "POST"
+                      },
+                      "uri": {
+                        "type": "string",
+                        "pattern": "^/2015-03-31/functions/[A-Za-z0-9_-]+/invocations$"
+                      },
+                      "endpoint": {
+                        "type": "string",
+                        "pattern": "^https?://127\\.0\\.0\\.1:[0-9]+$"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "target",
+                  "event"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 2
+            },
+            "jwksFetches": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "boundedWorkProbeExecutions": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2
+            },
+            "jwksCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri"
+                ],
+                "properties": {
+                  "target": {
+                    "const": "jwks"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "ruleInputObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "executions",
+                "input"
+              ],
+              "properties": {
+                "executions": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "input": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "requestHeaders",
+                        "responseHeaders",
+                        "queryParameters",
+                        "pathParameters",
+                        "method",
+                        "requestPath",
+                        "requestBody",
+                        "responseBody",
+                        "auditInfo",
+                        "statusCode"
+                      ],
+                      "properties": {
+                        "requestHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "responseHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "queryParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "pathParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "method": {
+                          "type": "string"
+                        },
+                        "requestPath": {
+                          "type": "string"
+                        },
+                        "requestBody": {
+                          "type": "string"
+                        },
+                        "responseBody": {
+                          "type": "string"
+                        },
+                        "auditInfo": {
+                          "type": "null"
+                        },
+                        "statusCode": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "blockingLease": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "capacity",
+                "atResponse",
+                "afterReturn",
+                "lateResultsDiscarded"
+              ],
+              "properties": {
+                "capacity": {
+                  "const": 1
+                },
+                "atResponse": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "started",
+                    "completed",
+                    "active",
+                    "permitsHeld"
+                  ],
+                  "properties": {
+                    "started": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "completed": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "active": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "permitsHeld": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1
+                    }
+                  }
+                },
+                "afterReturn": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "started",
+                    "completed",
+                    "active",
+                    "permitsHeld"
+                  ],
+                  "properties": {
+                    "started": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "completed": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "active": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "permitsHeld": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1
+                    }
+                  }
+                },
+                "lateResultsDiscarded": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "outcome",
+            "exitCode",
+            "stdout",
+            "source",
+            "logbackResourceExists",
+            "backendCalls",
+            "jwksFetches"
+          ],
+          "properties": {
+            "outcome": {
+              "const": "bootstrap"
+            },
+            "exitCode": {
+              "type": "integer"
+            },
+            "stdout": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "logbackResourceExists": {
+              "type": "boolean"
+            },
+            "backendCalls": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "jwksFetches": {
+              "const": 0
+            },
+            "boundedWorkProbeExecutions": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2
+            },
+            "jwksCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri"
+                ],
+                "properties": {
+                  "target": {
+                    "const": "jwks"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "ruleInputObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "executions",
+                "input"
+              ],
+              "properties": {
+                "executions": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "input": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "requestHeaders",
+                        "responseHeaders",
+                        "queryParameters",
+                        "pathParameters",
+                        "method",
+                        "requestPath",
+                        "requestBody",
+                        "responseBody",
+                        "auditInfo",
+                        "statusCode"
+                      ],
+                      "properties": {
+                        "requestHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "responseHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "queryParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "pathParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "method": {
+                          "type": "string"
+                        },
+                        "requestPath": {
+                          "type": "string"
+                        },
+                        "requestBody": {
+                          "type": "string"
+                        },
+                        "responseBody": {
+                          "type": "string"
+                        },
+                        "auditInfo": {
+                          "type": "null"
+                        },
+                        "statusCode": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "outcome",
+            "stdout",
+            "stderr",
+            "fileWrites",
+            "processWindow"
+          ],
+          "properties": {
+            "outcome": {
+              "const": "initLogging"
+            },
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "fileWrites": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "processWindow": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "startEpochMs",
+                "endEpochMs"
+              ],
+              "properties": {
+                "startEpochMs": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "endEpochMs": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "outcome",
+            "prerequisiteReady",
+            "backendCalls",
+            "jwksFetches",
+            "jwksCalls",
+            "gate"
+          ],
+          "properties": {
+            "outcome": {
+              "const": "jwksGateCancellation"
+            },
+            "prerequisiteReady": {
+              "type": "boolean"
+            },
+            "backendCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "target": {
+                    "type": "string"
+                  },
+                  "event": {
+                    "type": "object"
+                  },
+                  "invoke": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "logType": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "invocationType": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    }
+                  },
+                  "sdkHttp": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "method",
+                      "uri",
+                      "endpoint"
+                    ],
+                    "properties": {
+                      "method": {
+                        "const": "POST"
+                      },
+                      "uri": {
+                        "type": "string",
+                        "pattern": "^/2015-03-31/functions/[A-Za-z0-9_-]+/invocations$"
+                      },
+                      "endpoint": {
+                        "type": "string",
+                        "pattern": "^https?://127\\.0\\.0\\.1:[0-9]+$"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "target",
+                  "event"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "jwksFetches": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "jwksCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri"
+                ],
+                "properties": {
+                  "target": {
+                    "const": "jwks"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "gate": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "fetchStarted",
+                "fetchCancelled",
+                "active",
+                "attemptRecordedBeforeIo",
+                "cooldownRecorded",
+                "followupUnknownKid"
+              ],
+              "properties": {
+                "fetchStarted": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "fetchCancelled": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "active": {
+                  "type": "boolean"
+                },
+                "attemptRecordedBeforeIo": {
+                  "type": "boolean"
+                },
+                "cooldownRecorded": {
+                  "type": "boolean"
+                },
+                "followupUnknownKid": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "outcome",
+                    "code",
+                    "jwksFetches"
+                  ],
+                  "properties": {
+                    "outcome": {
+                      "enum": [
+                        "verificationRejected",
+                        "verificationSucceeded"
+                      ]
+                    },
+                    "code": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "jwksFetches": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "outcome",
+            "status",
+            "code",
+            "body",
+            "failedState",
+            "exchangeState",
+            "backendCalls",
+            "jwksFetches",
+            "httpCalls"
+          ],
+          "properties": {
+            "outcome": {
+              "const": "handlerStatus"
+            },
+            "status": {
+              "type": "integer"
+            },
+            "code": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "failedState": {
+              "type": "boolean"
+            },
+            "exchangeState": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "backendCalls": {
+              "type": "array",
+              "items": {}
+            },
+            "jwksFetches": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "httpCalls": {
+              "type": "array",
+              "items": {}
+            }
+          }
+        },
+        {
+          "const": {
+            "outcome": "initReportTransportFailure",
+            "code": "InvalidConfiguration",
+            "backendCalls": [],
+            "jwksFetches": 0,
+            "reporting": {
+              "attempts": 0,
+              "receivedPosts": 0,
+              "retries": 0,
+              "invocationPolls": 0,
+              "endpoint": "/2018-06-01/runtime/init/error",
+              "header": {
+                "Lambda-Runtime-Function-Error-Type": "Runtime.InitError"
+              },
+              "body": {
+                "errorType": "InvalidConfiguration",
+                "errorMessage": "configuration: missing light-lambda.stage"
+              },
+              "maxBodyBytes": 1024,
+              "connectionAttempts": 0,
+              "acceptedConnections": 0,
+              "runtimeApiConfigured": false,
+              "prerequisiteReady": true
+            },
+            "processExit": {
+              "code": 1,
+              "maxAfterInitFailureMs": 3000
+            },
+            "diagnosticContract": {
+              "requiredMessage": "configuration: missing light-lambda.stage",
+              "requiredLevel": "error",
+              "transportDiagnostic": "runtime-api-unset-v1",
+              "forbiddenValues": [
+                "test-only-secret-sentinel",
+                "test-only-password-sentinel"
+              ],
+              "forbidConfigurationValues": true
+            }
+          }
+        },
+        {
+          "const": {
+            "outcome": "initReportTransportFailure",
+            "code": "InvalidConfiguration",
+            "backendCalls": [],
+            "jwksFetches": 0,
+            "reporting": {
+              "attempts": 1,
+              "receivedPosts": 0,
+              "retries": 0,
+              "invocationPolls": 0,
+              "endpoint": "/2018-06-01/runtime/init/error",
+              "header": {
+                "Lambda-Runtime-Function-Error-Type": "Runtime.InitError"
+              },
+              "body": {
+                "errorType": "InvalidConfiguration",
+                "errorMessage": "configuration: missing light-lambda.stage"
+              },
+              "maxBodyBytes": 1024,
+              "connectionAttempts": 1,
+              "acceptedConnections": 0,
+              "runtimeApiConfigured": true,
+              "prerequisiteReady": true
+            },
+            "processExit": {
+              "code": 1,
+              "maxAfterInitFailureMs": 3000
+            },
+            "diagnosticContract": {
+              "requiredMessage": "configuration: missing light-lambda.stage",
+              "requiredLevel": "error",
+              "transportDiagnostic": "loopback-connection-refused-v1",
+              "forbiddenValues": [
+                "test-only-secret-sentinel",
+                "test-only-password-sentinel"
+              ],
+              "forbidConfigurationValues": true
+            }
+          }
+        },
+        {
+          "const": {
+            "outcome": "initReportTransportFailure",
+            "code": "InvalidConfiguration",
+            "backendCalls": [],
+            "jwksFetches": 0,
+            "reporting": {
+              "attempts": 1,
+              "receivedPosts": 1,
+              "retries": 0,
+              "invocationPolls": 0,
+              "endpoint": "/2018-06-01/runtime/init/error",
+              "header": {
+                "Lambda-Runtime-Function-Error-Type": "Runtime.InitError"
+              },
+              "body": {
+                "errorType": "InvalidConfiguration",
+                "errorMessage": "configuration: missing light-lambda.stage"
+              },
+              "maxBodyBytes": 1024,
+              "connectionAttempts": 1,
+              "acceptedConnections": 1,
+              "runtimeApiConfigured": true,
+              "prerequisiteReady": true
+            },
+            "processExit": {
+              "code": 1,
+              "maxAfterInitFailureMs": 3000
+            },
+            "diagnosticContract": {
+              "requiredMessage": "configuration: missing light-lambda.stage",
+              "requiredLevel": "error",
+              "transportDiagnostic": "loopback-http-503-v1",
+              "forbiddenValues": [
+                "test-only-secret-sentinel",
+                "test-only-password-sentinel"
+              ],
+              "forbidConfigurationValues": true
+            }
+          }
+        },
+        {
+          "const": {
+            "outcome": "initReportTransportFailure",
+            "code": "InvalidConfiguration",
+            "backendCalls": [],
+            "jwksFetches": 0,
+            "reporting": {
+              "attempts": 1,
+              "receivedPosts": 1,
+              "retries": 0,
+              "invocationPolls": 0,
+              "endpoint": "/2018-06-01/runtime/init/error",
+              "header": {
+                "Lambda-Runtime-Function-Error-Type": "Runtime.InitError"
+              },
+              "body": {
+                "errorType": "InvalidConfiguration",
+                "errorMessage": "configuration: missing light-lambda.stage"
+              },
+              "maxBodyBytes": 1024,
+              "connectionAttempts": 1,
+              "acceptedConnections": 1,
+              "runtimeApiConfigured": true,
+              "prerequisiteReady": true
+            },
+            "processExit": {
+              "code": 1,
+              "maxAfterInitFailureMs": 3000
+            },
+            "diagnosticContract": {
+              "requiredMessage": "configuration: missing light-lambda.stage",
+              "requiredLevel": "error",
+              "transportDiagnostic": "loopback-response-withheld-v1",
+              "forbiddenValues": [
+                "test-only-secret-sentinel",
+                "test-only-password-sentinel"
+              ],
+              "forbidConfigurationValues": true
+            }
+          }
+        },
+        {
+          "enum": [
+  {
+    "outcome": "jwksGatePanicRecovery",
+    "prerequisiteReady": true,
+    "backendCalls": [],
+    "jwksFetches": 1,
+    "jwksCalls": [
+      {
+        "target": "jwks",
+        "method": "GET",
+        "uri": "/jwks"
+      }
+    ],
+    "failure": {
+      "taskStarts": 1,
+      "joinersAttached": 2,
+      "networkRequests": 0,
+      "waitersTerminated": 3,
+      "verifiedPrincipals": 0,
+      "attemptRecordedBeforeTask": true,
+      "activePublishedBeforePanic": true,
+      "activeAfterCleanup": false,
+      "cooldownRetained": true,
+      "callerBudgetMs": 1000,
+      "publicErrorMapping": "unspecified-by-approved-contract"
+    },
+    "recovery": {
+      "afterCooldown": true,
+      "taskStarts": 1,
+      "joinersAttached": 0,
+      "networkRequests": 1,
+      "verifiedPrincipals": 1,
+      "cachePublished": true,
+      "activeAfterCompletion": false
+    }
+  },
+  {
+    "outcome": "jwksGatePanicRecovery",
+    "prerequisiteReady": true,
+    "backendCalls": [],
+    "jwksFetches": 1,
+    "jwksCalls": [
+      {
+        "target": "jwks",
+        "method": "GET",
+        "uri": "/jwks"
+      }
+    ],
+    "failure": {
+      "taskStarts": 1,
+      "joinersAttached": 2,
+      "networkRequests": 0,
+      "waitersTerminated": 3,
+      "verifiedPrincipals": 0,
+      "attemptRecordedBeforeTask": true,
+      "activePublishedBeforePanic": true,
+      "activeAfterCleanup": false,
+      "cooldownRetained": true,
+      "callerBudgetMs": 1000,
+      "publicErrorMapping": "unspecified-by-approved-contract"
+    },
+    "recovery": {
+      "afterCooldown": true,
+      "taskStarts": 1,
+      "joinersAttached": 0,
+      "networkRequests": 1,
+      "verifiedPrincipals": 1,
+      "cachePublished": false,
+      "activeAfterCompletion": false
+    }
+  },
+{
+  "outcome": "jwksGatePanicRecovery",
+  "prerequisiteReady": true,
+  "backendCalls": [],
+  "jwksFetches": 1,
+  "jwksCalls": [
+    {
+      "target": "jwks",
+      "method": "GET",
+      "uri": "/jwks"
+    }
+  ],
+  "failure": {
+    "taskStarts": 1,
+    "joinersAttached": 2,
+    "networkRequests": 0,
+    "waitersTerminated": 3,
+    "verifiedPrincipals": 0,
+    "attemptRecordedBeforeTask": true,
+    "activePublishedBeforePanic": true,
+    "activeAfterCleanup": false,
+    "cooldownRetained": true,
+    "callerBudgetMs": 1000,
+    "publicErrorMapping": "unspecified-by-approved-contract"
+  },
+  "recovery": {
+    "afterCooldown": true,
+    "taskStarts": 1,
+    "joinersAttached": 0,
+    "networkRequests": 1,
+    "verifiedPrincipals": 1,
+    "cachePublished": false,
+    "activeAfterCompletion": false,
+    "scopedPrincipalCachePublished": false,
+    "jwksPublished": true,
+    "reuse": {
+      "verifiedPrincipals": 1,
+      "taskStarts": 0,
+      "joinersAttached": 0,
+      "networkRequests": 0,
+      "residentKeyUnchanged": true
+    }
+  }
+}
+]
+        }
+      ]
+    },
+    "initExpect": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "const": "exception"
+            },
+            "phase": {
+              "const": "init"
+            },
+            "class": {
+              "type": "string"
+            },
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "backendCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "target": {
+                    "type": "string"
+                  },
+                  "event": {
+                    "type": "object"
+                  },
+                  "invoke": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "logType": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "invocationType": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    }
+                  },
+                  "eventAbsent": {
+                    "type": "array",
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "pattern": "^/(?:[^~]|~[01])*$"
+                    }
+                  },
+                  "eventExact": {
+                    "type": "object"
+                  },
+                  "sdkHttp": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "method",
+                      "uri",
+                      "endpoint"
+                    ],
+                    "properties": {
+                      "method": {
+                        "const": "POST"
+                      },
+                      "uri": {
+                        "type": "string",
+                        "pattern": "^/2015-03-31/functions/[A-Za-z0-9_-]+/invocations$"
+                      },
+                      "endpoint": {
+                        "const": "${dependency:invoke}"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "target",
+                  "event"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "jwksFetches": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "httpCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri",
+                  "serviceId"
+                ],
+                "properties": {
+                  "target": {
+                    "type": "string"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "serviceId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "apmMetrics": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "product",
+                      "gateway",
+                      "endpoint",
+                      "client",
+                      "count"
+                    ],
+                    "properties": {
+                      "product": {
+                        "enum": [
+                          "test-only-product",
+                          "test-only-scheduled"
+                        ]
+                      },
+                      "gateway": {
+                        "const": "test-only-gateway"
+                      },
+                      "endpoint": {
+                        "enum": [
+                          "test-endpoint",
+                          "test-only-scheduled-endpoint"
+                        ]
+                      },
+                      "client": {
+                        "enum": [
+                          "test-client",
+                          "test-only-client"
+                        ]
+                      },
+                      "count": {
+                        "const": 1
+                      }
+                    }
+                  }
+                },
+                "oneOf": [
+                  {
+                    "required": [
+                      "body"
+                    ],
+                    "not": {
+                      "required": [
+                        "apmMetrics"
+                      ]
+                    }
+                  },
+                  {
+                    "required": [
+                      "apmMetrics"
+                    ],
+                    "not": {
+                      "required": [
+                        "body"
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            "cacheActions": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "jwtCachedNbf"
+                      },
+                      "tokenRecipe": {
+                        "type": "string"
+                      },
+                      "nbfOffsetSec": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 400000000
+                      },
+                      "entryFound": {
+                        "const": true
+                      },
+                      "written": {
+                        "const": true
+                      },
+                      "nbfEpochSec": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "tokenRecipe",
+                      "nbfOffsetSec",
+                      "entryFound",
+                      "written"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "stringCachePut"
+                      },
+                      "cacheName": {
+                        "const": "test-only"
+                      },
+                      "key": {
+                        "type": "string",
+                        "pattern": "^synthetic-[A-Za-z0-9_-]+$"
+                      },
+                      "value": {
+                        "type": "string"
+                      },
+                      "written": {
+                        "const": true
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "cacheName",
+                      "key",
+                      "value",
+                      "written"
+                    ]
+                  }
+                ]
+              }
+            },
+            "completions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "finalizationProbe": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "requestException": {
+                  "const": "com.networknt.aws.lambda.exception.LambdaExchangeStateException"
+                },
+                "responseException": {
+                  "const": "com.networknt.aws.lambda.exception.LambdaExchangeStateException"
+                },
+                "completionCountBefore": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "completionCountAfter": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "requestException",
+                "responseException",
+                "completionCountBefore",
+                "completionCountAfter"
+              ]
+            },
+            "auditRecords": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "data"
+                ],
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "timestamp": {
+                        "type": "string",
+                        "const": "synthetic-time"
+                      },
+                      "statusCode": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "serviceId": {
+                        "type": "string"
+                      },
+                      "requestBody": {
+                        "type": "string"
+                      },
+                      "responseBody": {
+                        "type": "string"
+                      },
+                      "x-test-header": {
+                        "type": "string"
+                      },
+                      "late-field": {
+                        "type": "string"
+                      },
+                      "x-test-mask": {
+                        "type": "string"
+                      },
+                      "queryParameters": {
+                        "type": "string"
+                      },
+                      "pathParameters": {
+                        "type": "string"
+                      },
+                      "authorization": {
+                        "const": "Bearer test-only-audit-secret"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "statusSerialization": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "utf8",
+                "parsesAsJson"
+              ],
+              "properties": {
+                "utf8": {
+                  "type": "string"
+                },
+                "parsesAsJson": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "invocationTiming": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "minimumMs",
+                "maximumMs"
+              ],
+              "properties": {
+                "minimumMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 10000
+                },
+                "maximumMs": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 30000
+                }
+              }
+            },
+            "boundedWorkProbeExecutions": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2
+            },
+            "jwksCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri"
+                ],
+                "properties": {
+                  "target": {
+                    "const": "jwks"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "ruleInputObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "executions",
+                "input"
+              ],
+              "properties": {
+                "executions": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "input": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "requestHeaders",
+                        "responseHeaders",
+                        "queryParameters",
+                        "pathParameters",
+                        "method",
+                        "requestPath",
+                        "requestBody",
+                        "responseBody",
+                        "auditInfo",
+                        "statusCode"
+                      ],
+                      "properties": {
+                        "requestHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "responseHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "queryParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "pathParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "method": {
+                          "type": "string"
+                        },
+                        "requestPath": {
+                          "type": "string"
+                        },
+                        "requestBody": {
+                          "type": "string"
+                        },
+                        "responseBody": {
+                          "type": "string"
+                        },
+                        "auditInfo": {
+                          "type": "null"
+                        },
+                        "statusCode": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "configurationWarningObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "key",
+                "mode",
+                "warningCount",
+                "ignored"
+              ],
+              "properties": {
+                "key": {
+                  "const": "handler.reportHandlerDuration"
+                },
+                "mode": {
+                  "enum": [
+                    "absent",
+                    "default-false"
+                  ]
+                },
+                "warningCount": {
+                  "const": 1
+                },
+                "ignored": {
+                  "const": true
+                }
+              }
+            }
+          },
+          "required": [
+            "outcome",
+            "phase",
+            "class",
+            "backendCalls",
+            "jwksFetches"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "const": "initError"
+            },
+            "code": {
+              "type": "string",
+              "minLength": 1
+            },
+            "backendCalls": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "jwksFetches": {
+              "const": 0
+            },
+            "httpCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri",
+                  "serviceId"
+                ],
+                "properties": {
+                  "target": {
+                    "type": "string"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "serviceId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "apmMetrics": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "product",
+                      "gateway",
+                      "endpoint",
+                      "client",
+                      "count"
+                    ],
+                    "properties": {
+                      "product": {
+                        "enum": [
+                          "test-only-product",
+                          "test-only-scheduled"
+                        ]
+                      },
+                      "gateway": {
+                        "const": "test-only-gateway"
+                      },
+                      "endpoint": {
+                        "enum": [
+                          "test-endpoint",
+                          "test-only-scheduled-endpoint"
+                        ]
+                      },
+                      "client": {
+                        "enum": [
+                          "test-client",
+                          "test-only-client"
+                        ]
+                      },
+                      "count": {
+                        "const": 1
+                      }
+                    }
+                  }
+                },
+                "oneOf": [
+                  {
+                    "required": [
+                      "body"
+                    ],
+                    "not": {
+                      "required": [
+                        "apmMetrics"
+                      ]
+                    }
+                  },
+                  {
+                    "required": [
+                      "apmMetrics"
+                    ],
+                    "not": {
+                      "required": [
+                        "body"
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            "cacheActions": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "completions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 0
+            },
+            "finalizationProbe": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "requestException": {
+                  "const": "com.networknt.aws.lambda.exception.LambdaExchangeStateException"
+                },
+                "responseException": {
+                  "const": "com.networknt.aws.lambda.exception.LambdaExchangeStateException"
+                },
+                "completionCountBefore": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "completionCountAfter": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "requestException",
+                "responseException",
+                "completionCountBefore",
+                "completionCountAfter"
+              ]
+            },
+            "auditRecords": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "ldapBinds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "boundedWorkProbeExecutions": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2
+            },
+            "jwksCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri"
+                ],
+                "properties": {
+                  "target": {
+                    "const": "jwks"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "initFailureReporting": {
+              "oneOf": [
+                {
+                  "const": {
+                    "endpoint": "/2018-06-01/runtime/init/error",
+                    "reportCount": 1,
+                    "exitCode": 1,
+                    "header": {
+                      "Lambda-Runtime-Function-Error-Type": "Runtime.InitError"
+                    },
+                    "body": {
+                      "errorType": "InvalidConfiguration",
+                      "errorMessage": "configuration: missing light-lambda.stage"
+                    },
+                    "maxBodyBytes": 1024,
+                    "forbiddenBodyValues": [
+                      "test-only-secret-sentinel",
+                      "test-only-password-sentinel"
+                    ],
+                    "invocationLoopEntered": false
+                  }
+                },
+                {
+                  "enum": [
+  {
+    "endpoint": "/2018-06-01/runtime/init/error",
+    "reportCount": 1,
+    "exitCode": 1,
+    "header": {
+      "Lambda-Runtime-Function-Error-Type": "Runtime.InitError"
+    },
+    "body": {
+      "errorType": "Runtime.InitPanic",
+      "errorMessage": "prepare_local_config: synthetic Init panic"
+    },
+    "maxBodyBytes": 1024,
+    "forbiddenBodyValues": [
+      "test-only-secret-sentinel",
+      "test-only-password-sentinel"
+    ],
+    "invocationLoopEntered": false
+  },
+  {
+    "endpoint": "/2018-06-01/runtime/init/error",
+    "reportCount": 1,
+    "exitCode": 1,
+    "header": {
+      "Lambda-Runtime-Function-Error-Type": "Runtime.InitPanic"
+    },
+    "body": {
+      "errorType": "Runtime.InitPanic",
+      "errorMessage": "initialization: panic"
+    },
+    "maxBodyBytes": 1024,
+    "forbiddenBodyValues": [
+      "test-only-secret-sentinel",
+      "test-only-password-sentinel"
+    ],
+    "invocationLoopEntered": false
+  }
+]
+                },
+                {
+                  "const": {
+                    "endpoint": "/2018-06-01/runtime/init/error",
+                    "reportCount": 1,
+                    "exitCode": 1
+                  }
+                }
+              ]
+            },
+            "ruleInputObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "executions",
+                "input"
+              ],
+              "properties": {
+                "executions": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "input": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "requestHeaders",
+                        "responseHeaders",
+                        "queryParameters",
+                        "pathParameters",
+                        "method",
+                        "requestPath",
+                        "requestBody",
+                        "responseBody",
+                        "auditInfo",
+                        "statusCode"
+                      ],
+                      "properties": {
+                        "requestHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "responseHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "queryParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "pathParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "method": {
+                          "type": "string"
+                        },
+                        "requestPath": {
+                          "type": "string"
+                        },
+                        "requestBody": {
+                          "type": "string"
+                        },
+                        "responseBody": {
+                          "type": "string"
+                        },
+                        "auditInfo": {
+                          "type": "null"
+                        },
+                        "statusCode": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "required": [
+            "outcome",
+            "code",
+            "backendCalls",
+            "jwksFetches"
+          ],
+          "additionalProperties": false,
+          "not": {
+            "required": [
+              "finalizationProbe"
+            ]
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "outcome": {
+              "const": "initSuccess"
+            },
+            "backendCalls": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "jwksFetches": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "httpCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri",
+                  "serviceId"
+                ],
+                "properties": {
+                  "target": {
+                    "type": "string"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "serviceId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "apmMetrics": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "product",
+                      "gateway",
+                      "endpoint",
+                      "client",
+                      "count"
+                    ],
+                    "properties": {
+                      "product": {
+                        "enum": [
+                          "test-only-product",
+                          "test-only-scheduled"
+                        ]
+                      },
+                      "gateway": {
+                        "const": "test-only-gateway"
+                      },
+                      "endpoint": {
+                        "enum": [
+                          "test-endpoint",
+                          "test-only-scheduled-endpoint"
+                        ]
+                      },
+                      "client": {
+                        "enum": [
+                          "test-client",
+                          "test-only-client"
+                        ]
+                      },
+                      "count": {
+                        "const": 1
+                      }
+                    }
+                  }
+                },
+                "oneOf": [
+                  {
+                    "required": [
+                      "body"
+                    ],
+                    "not": {
+                      "required": [
+                        "apmMetrics"
+                      ]
+                    }
+                  },
+                  {
+                    "required": [
+                      "apmMetrics"
+                    ],
+                    "not": {
+                      "required": [
+                        "body"
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            "cacheActions": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "jwtCachedNbf"
+                      },
+                      "tokenRecipe": {
+                        "type": "string"
+                      },
+                      "nbfOffsetSec": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 400000000
+                      },
+                      "entryFound": {
+                        "const": true
+                      },
+                      "written": {
+                        "const": true
+                      },
+                      "nbfEpochSec": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "tokenRecipe",
+                      "nbfOffsetSec",
+                      "entryFound",
+                      "written"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "stringCachePut"
+                      },
+                      "cacheName": {
+                        "const": "test-only"
+                      },
+                      "key": {
+                        "type": "string",
+                        "pattern": "^synthetic-[A-Za-z0-9_-]+$"
+                      },
+                      "value": {
+                        "type": "string"
+                      },
+                      "written": {
+                        "const": true
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "cacheName",
+                      "key",
+                      "value",
+                      "written"
+                    ]
+                  }
+                ]
+              }
+            },
+            "completions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "finalizationProbe": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "requestException": {
+                  "const": "com.networknt.aws.lambda.exception.LambdaExchangeStateException"
+                },
+                "responseException": {
+                  "const": "com.networknt.aws.lambda.exception.LambdaExchangeStateException"
+                },
+                "completionCountBefore": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "completionCountAfter": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "requestException",
+                "responseException",
+                "completionCountBefore",
+                "completionCountAfter"
+              ]
+            },
+            "auditRecords": {
+              "type": "array",
+              "maxItems": 0
+            },
+            "configurationObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "format",
+                "decrypted"
+              ],
+              "properties": {
+                "format": {
+                  "const": "CRYPT:salt:iv:ciphertext"
+                },
+                "decrypted": {
+                  "type": "string"
+                }
+              }
+            },
+            "dynamoObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "operations"
+              ],
+              "properties": {
+                "operations": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "operation",
+                      "request"
+                    ],
+                    "properties": {
+                      "operation": {
+                        "enum": [
+                          "ListTables",
+                          "UpdateItem",
+                          "GetItem",
+                          "DeleteItem",
+                          "CreateTable",
+                          "DescribeTable",
+                          "DeleteTable"
+                        ]
+                      },
+                      "request": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                },
+                "getSize": {
+                  "const": 0
+                }
+              }
+            },
+            "boundedWorkProbeExecutions": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2
+            },
+            "jwksCalls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "target",
+                  "method",
+                  "uri"
+                ],
+                "properties": {
+                  "target": {
+                    "const": "jwks"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "ruleInputObservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "executions",
+                "input"
+              ],
+              "properties": {
+                "executions": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "input": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "requestHeaders",
+                        "responseHeaders",
+                        "queryParameters",
+                        "pathParameters",
+                        "method",
+                        "requestPath",
+                        "requestBody",
+                        "responseBody",
+                        "auditInfo",
+                        "statusCode"
+                      ],
+                      "properties": {
+                        "requestHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "responseHeaders": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "queryParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "pathParameters": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "method": {
+                          "type": "string"
+                        },
+                        "requestPath": {
+                          "type": "string"
+                        },
+                        "requestBody": {
+                          "type": "string"
+                        },
+                        "responseBody": {
+                          "type": "string"
+                        },
+                        "auditInfo": {
+                          "type": "null"
+                        },
+                        "statusCode": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "required": [
+            "outcome",
+            "backendCalls",
+            "jwksFetches"
+          ]
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "execution": {
+            "const": "skipped"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "observations": {
+            "maxItems": 0
+          },
+          "assertionErrors": {
+            "maxItems": 0
+          }
+        }
+      },
+      "else": {
+        "if": {
+          "properties": {
+            "execution": {
+              "const": "passed"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "observations": {
+              "minItems": 1
+            },
+            "assertionErrors": {
+              "maxItems": 0
+            }
+          }
+        },
+        "else": {
+          "properties": {
+            "assertionErrors": {
+              "minItems": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "runner": {
+            "const": "java"
+          }
+        },
+        "required": [
+          "runner"
+        ]
+      },
+      "then": {
+        "properties": {
+          "initialization": {
+            "not": {
+              "required": [
+                "initFailureReporting"
+              ]
+            }
+          },
+          "observations": {
+            "items": {
+              "not": {
+                "required": [
+                  "initFailureReporting"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "initialization": {
+            "required": [
+              "initFailureReporting"
+            ]
+          }
+        },
+        "required": [
+          "initialization"
+        ]
+      },
+      "then": {
+        "properties": {
+          "runner": {
+            "const": "rust"
+          },
+          "observations": {
+            "items": {
+              "not": {
+                "required": [
+                  "initFailureReporting"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "observations": {
+            "contains": {
+              "required": [
+                "initFailureReporting"
+              ]
+            }
+          }
+        },
+        "required": [
+          "observations"
+        ]
+      },
+      "then": {
+        "properties": {
+          "runner": {
+            "const": "rust"
+          },
+          "observations": {
+            "maxItems": 1
+          },
+          "initialization": {
+            "not": {
+              "required": [
+                "initFailureReporting"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "observations": {
+            "contains": {
+              "properties": {
+                "outcome": {
+                  "const": "initLogging"
+                }
+              },
+              "required": [
+                "outcome"
+              ]
+            }
+          }
+        },
+        "required": [
+          "observations"
+        ]
+      },
+      "then": {
+        "properties": {
+          "runner": {
+            "const": "rust"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "observations"
+        ],
+        "properties": {
+          "observations": {
+            "contains": {
+              "required": [
+                "outcome"
+              ],
+              "properties": {
+                "outcome": {
+                  "const": "initReportTransportFailure"
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "faultEvidence"
+        ],
+        "properties": {
+          "runner": {
+            "const": "rust"
+          },
+          "observations": {
+            "minItems": 1,
+            "maxItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "faultEvidence"
+        ]
+      },
+      "then": {
+        "required": [
+          "observations"
+        ],
+        "properties": {
+          "observations": {
+            "contains": {
+              "required": [
+                "outcome"
+              ],
+              "properties": {
+                "outcome": {
+                  "const": "initReportTransportFailure"
+                }
+              }
+            }
+          },
+          "runner": {
+            "const": "rust"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "observations"
+        ],
+        "properties": {
+          "observations": {
+            "contains": {
+              "required": [
+                "outcome"
+              ],
+              "properties": {
+                "outcome": {
+                  "const": "jwksGatePanicRecovery"
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "gatePanicEvidence"
+        ],
+        "properties": {
+          "runner": {
+            "const": "rust"
+          },
+          "observations": {
+            "minItems": 1,
+            "maxItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "gatePanicEvidence"
+        ]
+      },
+      "then": {
+        "required": [
+          "observations"
+        ],
+        "properties": {
+          "observations": {
+            "contains": {
+              "required": [
+                "outcome"
+              ],
+              "properties": {
+                "outcome": {
+                  "const": "jwksGatePanicRecovery"
+                }
+              }
+            }
+          },
+          "runner": {
+            "const": "rust"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "observations"
+        ],
+        "properties": {
+          "observations": {
+            "contains": {
+              "required": [
+                "configurationDiagnostics"
+              ]
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "configurationDiagnosticEvidence"
+        ],
+        "properties": {
+          "runner": {
+            "const": "rust"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "observations"
+        ],
+        "properties": {
+          "observations": {
+            "contains": {
+              "required": [
+                "configurationWarningObservation"
+              ]
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "configurationWarningEvidence"
+        ],
+        "properties": {
+          "runner": {
+            "const": "rust"
+          }
+        }
+      }
+    }
+  ]
+}

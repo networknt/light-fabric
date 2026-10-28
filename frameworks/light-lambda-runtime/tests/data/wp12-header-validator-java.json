@@ -1,0 +1,1630 @@
+[
+  {
+    "input": {
+      "id": "header-validator-3.0.3-baseline",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "minLength": 3
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        },
+        "header": {
+          "enabled": true,
+          "request": {
+            "remove": [],
+            "update": {}
+          },
+          "response": {
+            "remove": [],
+            "update": {}
+          },
+          "pathPrefixHeader": {}
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\":\"x\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "header-validator-3.0.3-baseline",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at least 3 characters long\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0,
+      "headersAtValidator": {
+        "Content-Type": "application/json"
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "header-validator-3.0.3-uppercase-existing-update-lower",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "minLength": 3
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        },
+        "header": {
+          "enabled": true,
+          "request": {
+            "remove": [],
+            "update": {
+              "content-type": "application/json"
+            }
+          },
+          "response": {
+            "remove": [],
+            "update": {}
+          },
+          "pathPrefixHeader": {}
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "text/plain"
+        },
+        "body": "{\"v\":\"x\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "header-validator-3.0.3-uppercase-existing-update-lower",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at least 3 characters long\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0,
+      "headersAtValidator": {
+        "Content-Type": "application/json"
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "header-validator-3.0.3-lowercase-existing-update-upper",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "minLength": 3
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        },
+        "header": {
+          "enabled": true,
+          "request": {
+            "remove": [],
+            "update": {
+              "Content-Type": "text/plain"
+            }
+          },
+          "response": {
+            "remove": [],
+            "update": {}
+          },
+          "pathPrefixHeader": {}
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"v\":\"x\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "header-validator-3.0.3-lowercase-existing-update-upper",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at least 3 characters long\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0,
+      "headersAtValidator": {
+        "content-type": "text/plain"
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "header-validator-3.0.3-uppercase-existing-update-upper",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "minLength": 3
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        },
+        "header": {
+          "enabled": true,
+          "request": {
+            "remove": [],
+            "update": {
+              "Content-Type": "text/plain"
+            }
+          },
+          "response": {
+            "remove": [],
+            "update": {}
+          },
+          "pathPrefixHeader": {}
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\":\"x\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "header-validator-3.0.3-uppercase-existing-update-upper",
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1,
+      "headersAtValidator": {
+        "Content-Type": "text/plain"
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "header-validator-3.0.3-missing-add-upper",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "minLength": 3
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        },
+        "header": {
+          "enabled": true,
+          "request": {
+            "remove": [],
+            "update": {
+              "Content-Type": "text/plain"
+            }
+          },
+          "response": {
+            "remove": [],
+            "update": {}
+          },
+          "pathPrefixHeader": {}
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {},
+        "body": "{\"v\":\"x\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "header-validator-3.0.3-missing-add-upper",
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1,
+      "headersAtValidator": {
+        "Content-Type": "text/plain"
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "header-validator-3.0.3-missing-add-lower",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "minLength": 3
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        },
+        "header": {
+          "enabled": true,
+          "request": {
+            "remove": [],
+            "update": {
+              "content-type": "text/plain"
+            }
+          },
+          "response": {
+            "remove": [],
+            "update": {}
+          },
+          "pathPrefixHeader": {}
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {},
+        "body": "{\"v\":\"x\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "header-validator-3.0.3-missing-add-lower",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at least 3 characters long\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0,
+      "headersAtValidator": {
+        "content-type": "text/plain"
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "header-validator-3.0.3-uppercase-remove-add-lower",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "minLength": 3
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        },
+        "header": {
+          "enabled": true,
+          "request": {
+            "remove": [
+              "content-type"
+            ],
+            "update": {
+              "content-type": "text/plain"
+            }
+          },
+          "response": {
+            "remove": [],
+            "update": {}
+          },
+          "pathPrefixHeader": {}
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\":\"x\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "header-validator-3.0.3-uppercase-remove-add-lower",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at least 3 characters long\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0,
+      "headersAtValidator": {
+        "content-type": "text/plain"
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "header-validator-3.0.3-lowercase-remove-add-upper",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "minLength": 3
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        },
+        "header": {
+          "enabled": true,
+          "request": {
+            "remove": [
+              "Content-Type"
+            ],
+            "update": {
+              "Content-Type": "text/plain"
+            }
+          },
+          "response": {
+            "remove": [],
+            "update": {}
+          },
+          "pathPrefixHeader": {}
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"v\":\"x\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "header-validator-3.0.3-lowercase-remove-add-upper",
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1,
+      "headersAtValidator": {
+        "Content-Type": "text/plain"
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "header-validator-3.1.0-baseline",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "minLength": 3
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        },
+        "header": {
+          "enabled": true,
+          "request": {
+            "remove": [],
+            "update": {}
+          },
+          "response": {
+            "remove": [],
+            "update": {}
+          },
+          "pathPrefixHeader": {}
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\":\"x\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "header-validator-3.1.0-baseline",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at least 3 characters long\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0,
+      "headersAtValidator": {
+        "Content-Type": "application/json"
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "header-validator-3.1.0-uppercase-existing-update-lower",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "minLength": 3
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        },
+        "header": {
+          "enabled": true,
+          "request": {
+            "remove": [],
+            "update": {
+              "content-type": "application/json"
+            }
+          },
+          "response": {
+            "remove": [],
+            "update": {}
+          },
+          "pathPrefixHeader": {}
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "text/plain"
+        },
+        "body": "{\"v\":\"x\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "header-validator-3.1.0-uppercase-existing-update-lower",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at least 3 characters long\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0,
+      "headersAtValidator": {
+        "Content-Type": "application/json"
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "header-validator-3.1.0-lowercase-existing-update-upper",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "minLength": 3
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        },
+        "header": {
+          "enabled": true,
+          "request": {
+            "remove": [],
+            "update": {
+              "Content-Type": "text/plain"
+            }
+          },
+          "response": {
+            "remove": [],
+            "update": {}
+          },
+          "pathPrefixHeader": {}
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"v\":\"x\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "header-validator-3.1.0-lowercase-existing-update-upper",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at least 3 characters long\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0,
+      "headersAtValidator": {
+        "content-type": "text/plain"
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "header-validator-3.1.0-uppercase-existing-update-upper",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "minLength": 3
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        },
+        "header": {
+          "enabled": true,
+          "request": {
+            "remove": [],
+            "update": {
+              "Content-Type": "text/plain"
+            }
+          },
+          "response": {
+            "remove": [],
+            "update": {}
+          },
+          "pathPrefixHeader": {}
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\":\"x\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "header-validator-3.1.0-uppercase-existing-update-upper",
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1,
+      "headersAtValidator": {
+        "Content-Type": "text/plain"
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "header-validator-3.1.0-missing-add-upper",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "minLength": 3
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        },
+        "header": {
+          "enabled": true,
+          "request": {
+            "remove": [],
+            "update": {
+              "Content-Type": "text/plain"
+            }
+          },
+          "response": {
+            "remove": [],
+            "update": {}
+          },
+          "pathPrefixHeader": {}
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {},
+        "body": "{\"v\":\"x\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "header-validator-3.1.0-missing-add-upper",
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1,
+      "headersAtValidator": {
+        "Content-Type": "text/plain"
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "header-validator-3.1.0-missing-add-lower",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "minLength": 3
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        },
+        "header": {
+          "enabled": true,
+          "request": {
+            "remove": [],
+            "update": {
+              "content-type": "text/plain"
+            }
+          },
+          "response": {
+            "remove": [],
+            "update": {}
+          },
+          "pathPrefixHeader": {}
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {},
+        "body": "{\"v\":\"x\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "header-validator-3.1.0-missing-add-lower",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at least 3 characters long\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0,
+      "headersAtValidator": {
+        "content-type": "text/plain"
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "header-validator-3.1.0-uppercase-remove-add-lower",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "minLength": 3
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        },
+        "header": {
+          "enabled": true,
+          "request": {
+            "remove": [
+              "content-type"
+            ],
+            "update": {
+              "content-type": "text/plain"
+            }
+          },
+          "response": {
+            "remove": [],
+            "update": {}
+          },
+          "pathPrefixHeader": {}
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\":\"x\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "header-validator-3.1.0-uppercase-remove-add-lower",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at least 3 characters long\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0,
+      "headersAtValidator": {
+        "content-type": "text/plain"
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "header-validator-3.1.0-lowercase-remove-add-upper",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "minLength": 3
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        },
+        "header": {
+          "enabled": true,
+          "request": {
+            "remove": [
+              "Content-Type"
+            ],
+            "update": {
+              "Content-Type": "text/plain"
+            }
+          },
+          "response": {
+            "remove": [],
+            "update": {}
+          },
+          "pathPrefixHeader": {}
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"v\":\"x\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "header-validator-3.1.0-lowercase-remove-add-upper",
+      "status": 200,
+      "body": "ok",
+      "lambdaCaptures": 1,
+      "headersAtValidator": {
+        "Content-Type": "text/plain"
+      }
+    }
+  }
+]

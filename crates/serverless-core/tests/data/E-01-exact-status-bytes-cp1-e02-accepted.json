@@ -1,0 +1,13 @@
+{
+  "id" : "E-01-exact-status-bytes-cp1-e02-accepted",
+  "ledger" : [ "E-01" ],
+  "observation" : {
+    "ERR10000" : "{\"statusCode\":401,\"code\":\"ERR10000\",\"message\":\"INVALID_AUTH_TOKEN\",\"description\":\"Incorrect signature or malformed token in authorization header\",\"severity\":\"ERROR\"}",
+    "ERR10002" : "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}",
+    "ERR10086" : "{\"statusCode\":400,\"code\":\"ERR10086\",\"message\":\"FAILED_TO_INVOKE_LAMBDA\",\"description\":\"Failed to invoke lambda function FnX.\",\"severity\":\"ERROR\"}",
+    "ERR10092" : "{\"statusCode\":403,\"code\":\"ERR10092\",\"message\":\"CORS_PREFLIGHT_REQUEST_FAILED\",\"description\":\"CORS preflight request failed. Origin not allowed or method/headers unsupported..\",\"severity\":\"ERROR\"}",
+    "ERR10075" : "{\"statusCode\":401,\"code\":\"ERR10075\",\"message\":\"API_KEY_MISMATCH\",\"description\":\"Could not find matched APIKEY for request path /x.\",\"severity\":\"ERROR\"}"
+  },
+  "tokens" : { },
+  "schemaGap" : "Status serialization is a component byte contract; fixture v1 has no direct component expectation"
+}

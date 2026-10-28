@@ -1,0 +1,51 @@
+[
+  {
+    "fixture": "A-01-mask-error-parameters-sink-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/A-01-mask-error-parameters-cp1-e02-accepted.json",
+    "sourceSha256": "2318cdce24079422b98bf52d967e090374f9d25facb7fe75fd4622e1eef0e237",
+    "review": "AuditMaskErrorTest exact two warm invocations reconstructed from declared source assertions: success produces zero records; error produces one exactly masked record; Invoke inputs retain unmasked request and component-injected path parameters. Explicit public Parameters plugin causes proposed Rust Init rejection. Literal timestamp configuration is synthetic and not a default-clock claim.",
+    "javaBehaviorAsserted": [
+      "A-01",
+      "A-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "A-01-response-body-finalization-exception-sink-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/A-01-response-body-finalization-exception-cp1-e02-accepted.json",
+    "sourceSha256": "c9e981e0f3beedb8e1f9970625856d35a79d20ea947e8c0704b8b17bf131af23",
+    "review": "AuditResponseBodyTest exact exception class and one prior dispatch, with no audit record written when the completion callback accesses finalized response. Supported audit configuration with shared single-value ingress reaches only E-13 in proposed Rust; no Rust audit/downstream coverage counted.",
+    "javaBehaviorAsserted": [
+      "A-01",
+      "C-03",
+      "D-08e"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-13"
+    ],
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null,
+    "ownerAmendments": [
+      {
+        "date": "2026-10-13",
+        "review": "review/audit-wp12-owner-amendments-admission-review.json",
+        "currentRustContract": {
+          "outcome": "initError",
+          "code": "InvalidConfiguration",
+          "backendCalls": [],
+          "jwksFetches": 0
+        },
+        "currentProposedRustBehaviorReached": [
+          "A-02",
+          "CFG-04",
+          "C-10"
+        ],
+        "historicalFieldsPreserved": true
+      }
+    ]
+  }
+]

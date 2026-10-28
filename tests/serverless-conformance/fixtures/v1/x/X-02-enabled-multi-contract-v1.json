@@ -1,0 +1,2280 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {},
+  "tokens": {},
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "id": "X-02-enabled-multi-contract-v1",
+  "title": "Enabled ServerInfo with supported declarations",
+  "ledger": [
+    "X-02",
+    "X-02a",
+    "E-06a"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.correlation.CorrelationMiddleware@correlation",
+          "com.networknt.aws.lambda.handler.middleware.security.BasicAuthMiddleware@security",
+          "com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware@specification",
+          "com.networknt.aws.lambda.handler.middleware.validator.ValidatorMiddleware@validator",
+          "com.networknt.aws.lambda.handler.health.HealthCheckHandler@health",
+          "com.networknt.aws.lambda.handler.info.ServerInfoHandler@info",
+          "com.networknt.aws.lambda.handler.logger.LoggerGetHandler@getLogger"
+        ],
+        "chains": {
+          "admin": [
+            "correlation",
+            "specification",
+            "validator"
+          ]
+        },
+        "paths": [
+          {
+            "path": "/health",
+            "method": "get",
+            "exec": [
+              "health"
+            ]
+          },
+          {
+            "path": "/adm/health",
+            "method": "get",
+            "exec": [
+              "admin",
+              "health"
+            ]
+          },
+          {
+            "path": "/adm/server/info",
+            "method": "get",
+            "exec": [
+              "admin",
+              "info"
+            ]
+          },
+          {
+            "path": "/adm/logger",
+            "method": "get",
+            "exec": [
+              "admin",
+              "getLogger"
+            ]
+          }
+        ],
+        "defaultHandlers": []
+      },
+      "correlation": {
+        "enabled": true,
+        "autogenCorrelationID": false
+      },
+      "health": {
+        "enabled": true,
+        "downstreamEnabled": true,
+        "useJson": true
+      },
+      "info": {
+        "enableServerInfo": true
+      },
+      "logging": {
+        "enabled": true
+      },
+      "basic-auth": {
+        "enabled": true,
+        "allowAnonymous": false,
+        "users": [
+          {
+            "username": "test-user",
+            "password": "test-only-password",
+            "paths": [
+              "/adm"
+            ]
+          }
+        ]
+      },
+      "openapi": {
+        "openapi": "3.0.3",
+        "info": {
+          "title": "test-only-characterization",
+          "version": "1.0.0"
+        },
+        "paths": {
+          "/adm/health": {
+            "get": {
+              "responses": {
+                "200": {
+                  "description": "synthetic response"
+                }
+              }
+            }
+          },
+          "/adm/server/info": {
+            "get": {
+              "responses": {
+                "200": {
+                  "description": "synthetic response"
+                }
+              }
+            }
+          },
+          "/adm/logger": {
+            "get": {
+              "responses": {
+                "200": {
+                  "description": "synthetic response"
+                }
+              }
+            },
+            "post": {
+              "responses": {
+                "200": {
+                  "description": "synthetic response"
+                }
+              }
+            }
+          }
+        }
+      },
+      "openapi-inject": {},
+      "openapi-handler": {
+        "enabled": true
+      },
+      "openapi-validator": {
+        "enabled": true,
+        "validateRequest": true
+      }
+    }
+  },
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/adm/server/info",
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {
+          "authorization": [
+            "Basic test-user:test-only-password"
+          ]
+        },
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response",
+        "bodyJson": {
+          "kind": "serverInfoJavaHeap",
+          "stable": {
+            "deployment": {
+              "apiVersion": "SNAPSHOT"
+            },
+            "environment": {
+              "host": {
+                "ip": "127.0.1.1",
+                "hostname": "hope"
+              },
+              "runtime": {
+                "availableProcessors": 24
+              },
+              "system": {
+                "javaVendor": "Amazon.com Inc.",
+                "javaVersion": "25.0.3",
+                "osName": "Linux",
+                "osVersion": "7.0.0-38-generic",
+                "userTimezone": "America/Toronto"
+              }
+            },
+            "security": {},
+            "component": {
+              "basic-auth": {
+                "allowAnonymous": false,
+                "enabled": true,
+                "users": [
+                  {
+                    "password": "*",
+                    "paths": [
+                      "/adm"
+                    ],
+                    "username": "test-user"
+                  }
+                ]
+              },
+              "correlation": {
+                "autogenCorrelationID": false,
+                "enabled": true
+              },
+              "handler": {
+                "chains": {
+                  "admin": [
+                    "correlation",
+                    "specification",
+                    "validator"
+                  ]
+                },
+                "defaultHandlers": [],
+                "enabled": true,
+                "handlers": [
+                  "com.networknt.aws.lambda.handler.health.HealthCheckHandler@health",
+                  "com.networknt.aws.lambda.handler.info.ServerInfoHandler@info",
+                  "com.networknt.aws.lambda.handler.logger.LoggerGetHandler@getLogger",
+                  "com.networknt.aws.lambda.handler.middleware.correlation.CorrelationMiddleware@correlation",
+                  "com.networknt.aws.lambda.handler.middleware.security.BasicAuthMiddleware@security",
+                  "com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware@specification",
+                  "com.networknt.aws.lambda.handler.middleware.validator.ValidatorMiddleware@validator"
+                ],
+                "paths": [
+                  {
+                    "exec": [
+                      "health"
+                    ],
+                    "method": "get",
+                    "path": "/health"
+                  },
+                  {
+                    "exec": [
+                      "admin",
+                      "health"
+                    ],
+                    "method": "get",
+                    "path": "/adm/health"
+                  },
+                  {
+                    "exec": [
+                      "admin",
+                      "info"
+                    ],
+                    "method": "get",
+                    "path": "/adm/server/info"
+                  },
+                  {
+                    "exec": [
+                      "admin",
+                      "getLogger"
+                    ],
+                    "method": "get",
+                    "path": "/adm/logger"
+                  }
+                ]
+              },
+              "health": {
+                "downstreamEnabled": true,
+                "enabled": true,
+                "useJson": true
+              },
+              "info": {
+                "enableServerInfo": true
+              },
+              "lambda-app": {
+                "encodeBase64Request": false,
+                "encodeBase64Response": false,
+                "lambdaAppId": "test-only-gateway"
+              },
+              "logging": {
+                "enabled": true
+              },
+              "openapi-handler": {
+                "enabled": true
+              },
+              "openapi-validator": {
+                "enabled": true,
+                "validateRequest": true
+              },
+              "server": {
+                "allowUnescapedCharactersInUrl": false,
+                "alwaysSetDate": false,
+                "backlog": 10000,
+                "bootstrapStoreName": "bootstrap.truststore",
+                "bootstrapStorePass": "*",
+                "bufferSize": 16384,
+                "buildNumber": "latest",
+                "dynamicPort": false,
+                "enableHttp": false,
+                "enableHttp2": true,
+                "enableHttps": true,
+                "enableRegistry": false,
+                "enableTwoWayTls": false,
+                "httpPort": 8080,
+                "httpsPort": 8443,
+                "ioThreads": 4,
+                "ip": "0.0.0.0",
+                "keyPass": "*",
+                "keystoreName": "server.keystore",
+                "keystorePass": "*",
+                "maskConfigProperties": true,
+                "maxPort": 2500,
+                "maxTransferFileSize": 1000000,
+                "minPort": 2400,
+                "serverString": "L",
+                "serviceId": "com.networknt.petstore-1.0.0",
+                "serviceName": "petstore",
+                "shutdownGracefulPeriod": 2000,
+                "startOnRegistryFailure": false,
+                "truststoreName": "server.truststore",
+                "truststorePass": "*",
+                "workerThreads": 200
+              },
+              "service": {},
+              "status": {
+                "ERR10000": {
+                  "code": "ERR10000",
+                  "description": "Incorrect signature or malformed token in authorization header",
+                  "message": "INVALID_AUTH_TOKEN",
+                  "statusCode": 401
+                },
+                "ERR10001": {
+                  "code": "ERR10001",
+                  "description": "Jwt token in authorization header expired",
+                  "message": "AUTH_TOKEN_EXPIRED",
+                  "statusCode": 401
+                },
+                "ERR10002": {
+                  "code": "ERR10002",
+                  "description": "No Authorization header or the token is not bearer type",
+                  "message": "MISSING_AUTH_TOKEN",
+                  "statusCode": 401
+                },
+                "ERR10003": {
+                  "code": "ERR10003",
+                  "description": "Incorrect signature or malformed token in X-Scope-Token header",
+                  "message": "INVALID_SCOPE_TOKEN",
+                  "statusCode": 401
+                },
+                "ERR10004": {
+                  "code": "ERR10004",
+                  "description": "Jwt token in X-Scope-Token expired",
+                  "message": "SCOPE_TOKEN_EXPIRED",
+                  "statusCode": 401
+                },
+                "ERR10005": {
+                  "code": "ERR10005",
+                  "description": "Scopes %s in authorization token and specification scopes %s are not matched",
+                  "message": "AUTH_TOKEN_SCOPE_MISMATCH",
+                  "statusCode": 403
+                },
+                "ERR10006": {
+                  "code": "ERR10006",
+                  "description": "Scopes %s in scope token and specification scopes %s are not matched",
+                  "message": "SCOPE_TOKEN_SCOPE_MISMATCH",
+                  "statusCode": 403
+                },
+                "ERR10007": {
+                  "code": "ERR10007",
+                  "description": "Request path %s cannot be found in the spec.",
+                  "message": "INVALID_REQUEST_PATH",
+                  "statusCode": 404
+                },
+                "ERR10008": {
+                  "code": "ERR10008",
+                  "description": "Request method %s cannot be found in the path %s.",
+                  "message": "METHOD_NOT_ALLOWED",
+                  "statusCode": 405
+                },
+                "ERR10009": {
+                  "code": "ERR10009",
+                  "description": "Could not get client credentials token in client module",
+                  "message": "CLIENT_CREDENTIALS_TOKEN_NOT_AVAILABLE",
+                  "statusCode": 408
+                },
+                "ERR10010": {
+                  "code": "ERR10010",
+                  "description": "Unexpected runtime exception",
+                  "message": "RUNTIME_EXCEPTION",
+                  "statusCode": 500
+                },
+                "ERR10011": {
+                  "code": "ERR10011",
+                  "description": "Uncaught exception",
+                  "message": "UNCAUGHT_EXCEPTION",
+                  "statusCode": 400
+                },
+                "ERR10012": {
+                  "code": "ERR10012",
+                  "description": "SwaggerHandler or JwtVerifyHandler needs to be enabled",
+                  "message": "MISSING_SWAGGER_OPERATION",
+                  "statusCode": 400
+                },
+                "ERR10013": {
+                  "code": "ERR10013",
+                  "description": "Server info handler is disabled in info.json",
+                  "message": "SERVER_INFO_DISABLED",
+                  "statusCode": 404
+                },
+                "ERR10014": {
+                  "code": "ERR10014",
+                  "description": "Generic Exception %s.",
+                  "message": "GENERIC_EXCEPTION",
+                  "statusCode": 400
+                },
+                "ERR10015": {
+                  "code": "ERR10015",
+                  "description": "Either the Content-Type header %s does not match the body, or the body was serialized incorrectly.",
+                  "message": "CONTENT_TYPE_MISMATCH",
+                  "statusCode": 400
+                },
+                "ERR10016": {
+                  "code": "ERR10016",
+                  "description": "Could not find the handler for the endpoint %s.",
+                  "message": "MISSING_HANDlER",
+                  "statusCode": 400
+                },
+                "ERR10017": {
+                  "code": "ERR10017",
+                  "description": "Sql Exception %s.",
+                  "message": "SQL_EXCEPTION",
+                  "statusCode": 400
+                },
+                "ERR10018": {
+                  "code": "ERR10018",
+                  "description": "Failed to create registry for url %s",
+                  "message": "CREATE_REGISTRY_ERROR",
+                  "statusCode": 500
+                },
+                "ERR10019": {
+                  "code": "ERR10019",
+                  "description": "parse direct url error, invalid direct registry address %s, address should be ip1:port1,ip2:port2 ...",
+                  "message": "PARSE_DIRECT_URL_ERROR",
+                  "statusCode": 500
+                },
+                "ERR10020": {
+                  "code": "ERR10020",
+                  "description": "Class %s fails to register %s to %s",
+                  "message": "REGISTER_ERROR",
+                  "statusCode": 500
+                },
+                "ERR10021": {
+                  "code": "ERR10021",
+                  "description": "Class %s fails to unregister %s to %s",
+                  "message": "UNREGISTER_ERROR",
+                  "statusCode": 500
+                },
+                "ERR10022": {
+                  "code": "ERR10022",
+                  "description": "Class %s fails to subscribe %s to %s",
+                  "message": "SUBSCRIBE_ERROR",
+                  "statusCode": 500
+                },
+                "ERR10023": {
+                  "code": "ERR10023",
+                  "description": "Class %s fails to unsubscribe %s to %s",
+                  "message": "UNSUBSCRIBE_ERROR",
+                  "statusCode": 500
+                },
+                "ERR10024": {
+                  "code": "ERR10024",
+                  "description": "Registry must not be null",
+                  "message": "REGISTRY_IS_NULL",
+                  "statusCode": 500
+                },
+                "ERR10025": {
+                  "code": "ERR10025",
+                  "description": "Weight must be integer between 1 and 100 but the actual value is %s",
+                  "message": "WEIGHT_OUT_OF_RANGE",
+                  "statusCode": 500
+                },
+                "ERR10026": {
+                  "code": "ERR10026",
+                  "description": "Failed to get nodeTypePath, url %s type %s",
+                  "message": "GET_NODETYPEPATH_ERROR",
+                  "statusCode": 500
+                },
+                "ERR10027": {
+                  "code": "ERR10027",
+                  "description": "Failed to subscribe service %s to zookeeper(%s), cause %s",
+                  "message": "SUBSCRIBE_ZOOKEEPER_SERVICE_ERROR",
+                  "statusCode": 500
+                },
+                "ERR10028": {
+                  "code": "ERR10028",
+                  "description": "Failed to subscribe command %s to zookeeper(%s), cause %s",
+                  "message": "SUBSCRIBE_ZOOKEEPER_COMMAND_ERROR",
+                  "statusCode": 500
+                },
+                "ERR10029": {
+                  "code": "ERR10029",
+                  "description": "Failed to unsubscribe service %s to zookeeper(%s), cause %s",
+                  "message": "UNSUBSCRIBE_ZOOKEEPER_SERVICE_ERROR",
+                  "statusCode": 500
+                },
+                "ERR10030": {
+                  "code": "ERR10030",
+                  "description": "Failed to unsubscribe command %s to zookeeper(%s), cause %s",
+                  "message": "UNSUBSCRIBE_ZOOKEEPER_COMMAND_ERROR",
+                  "statusCode": 500
+                },
+                "ERR10031": {
+                  "code": "ERR10031",
+                  "description": "Failed to discover service %s from zookeeper(%s), cause %s",
+                  "message": "DISCOVER_ZOOKEEPER_SERVICE_ERROR",
+                  "statusCode": 500
+                },
+                "ERR10032": {
+                  "code": "ERR10032",
+                  "description": "Failed to discover command %s from zookeeper(%s), cause %s",
+                  "message": "DISCOVER_ZOOKEEPER_COMMAND_ERROR",
+                  "statusCode": 500
+                },
+                "ERR10033": {
+                  "code": "ERR10033",
+                  "description": "Failed to register %s to zookeeper(%s), cause %s",
+                  "message": "REGISTER_ZOOKEEPER_ERROR",
+                  "statusCode": 500
+                },
+                "ERR10034": {
+                  "code": "ERR10034",
+                  "description": "Failed to unregister %s to zookeeper(%s), cause %s",
+                  "message": "UNREGISTER_ZOOKEEPER_ERROR",
+                  "statusCode": 500
+                },
+                "ERR10035": {
+                  "code": "ERR10035",
+                  "description": "Authorization code is missing when calling AuthHandler",
+                  "message": "AUTHORIZATION_CODE_MISSING",
+                  "statusCode": 400
+                },
+                "ERR10036": {
+                  "code": "ERR10036",
+                  "description": "X-CSRF-TOKEN header is missing in Middleware CsrfHandler",
+                  "message": "CSRF_HEADER_MISSING",
+                  "statusCode": 400
+                },
+                "ERR10037": {
+                  "code": "ERR10037",
+                  "description": "Empty response returned from OAuth 2.0 provider while using refresh token to get access token",
+                  "message": "REFRESH_TOKEN_RESPONSE_EMPTY",
+                  "statusCode": 400
+                },
+                "ERR10038": {
+                  "code": "ERR10038",
+                  "description": "CSRF token is missing in JWT token while StatelessAuthHandler is enabled",
+                  "message": "CSRF_TOKEN_MISSING_IN_JWT",
+                  "statusCode": 400
+                },
+                "ERR10039": {
+                  "code": "ERR10039",
+                  "description": "CSRF token %s in header is not matched with CSRF token %s in JWT",
+                  "message": "HEADER_CSRF_JWT_CSRF_NOT_MATCH",
+                  "statusCode": 400
+                },
+                "ERR10040": {
+                  "code": "ERR10040",
+                  "description": "JWT token cannot be found in cookies set by StatelessAuthHandler",
+                  "message": "JWT_NOT_FOUND_IN_COOKIES",
+                  "statusCode": 400
+                },
+                "ERR10041": {
+                  "code": "ERR10041",
+                  "description": "AuditInfo could not be found in exchange attachment. Ensure that OpenApiHandler or SwaggerHandler is used",
+                  "message": "AUDIT_INFO_NOT_FOUND",
+                  "statusCode": 400
+                },
+                "ERR10042": {
+                  "code": "ERR10042",
+                  "description": "Error code %s is not defined in status.yml file",
+                  "message": "ERROR_NOT_DEFINED",
+                  "statusCode": 400
+                },
+                "ERR10043": {
+                  "code": "ERR10043",
+                  "description": "Authenticate class %s defined for the client could not be found",
+                  "message": "CLIENT_AUTHENTICATE_CLASS_NOT_FOUND",
+                  "statusCode": 400
+                },
+                "ERR10044": {
+                  "code": "ERR10044",
+                  "description": "OAuth 2.0 provider returns empty response with de-reference token request for token %s",
+                  "message": "EMPTY_TOKEN_DEREFERENCE_RESPONSE",
+                  "statusCode": 400
+                },
+                "ERR10045": {
+                  "code": "ERR10045",
+                  "description": "Token de-reference from OAuth 2.0 provider returns error %s",
+                  "message": "TOKEN_DEREFERENCE_ERROR",
+                  "statusCode": 400
+                },
+                "ERR10046": {
+                  "code": "ERR10046",
+                  "description": "Invalid basic authentication header %s",
+                  "message": "INVALID_BASIC_HEADER",
+                  "statusCode": 401
+                },
+                "ERR10047": {
+                  "code": "ERR10047",
+                  "description": "Invalid username or password for basic authentication",
+                  "message": "INVALID_USERNAME_OR_PASSWORD",
+                  "statusCode": 401
+                },
+                "ERR10048": {
+                  "code": "ERR10048",
+                  "description": "No handler defined for path '%s' and method %s",
+                  "message": "PATH_NOT_IMPLEMENTED",
+                  "statusCode": 404
+                },
+                "ERR10049": {
+                  "code": "ERR10049",
+                  "description": "Peer IP %s is not in the whitelist for the endpoint %s",
+                  "message": "INVALID_IP_FOR_PATH",
+                  "statusCode": 403
+                },
+                "ERR10050": {
+                  "code": "ERR10050",
+                  "description": "No encoding handler for the required encoder.",
+                  "message": "NO_ENCODING_HANDLER",
+                  "statusCode": 406
+                },
+                "ERR10051": {
+                  "code": "ERR10051",
+                  "description": "Fail to send request to target server.",
+                  "message": "FAIL_TO_SEND_REQUEST",
+                  "statusCode": 401
+                },
+                "ERR10052": {
+                  "code": "ERR10052",
+                  "description": "Cannot get valid token %s.",
+                  "message": "GET_TOKEN_ERROR",
+                  "statusCode": 401
+                },
+                "ERR10053": {
+                  "code": "ERR10053",
+                  "description": "Cannot establish connection for url %s.",
+                  "message": "ESTABLISH_CONNECTION_ERROR",
+                  "statusCode": 401
+                },
+                "ERR10054": {
+                  "code": "ERR10054",
+                  "description": "Cannot get valid token, probably due to a timeout.",
+                  "message": "GET_TOKEN_TIMEOUT",
+                  "statusCode": 401
+                },
+                "ERR10055": {
+                  "code": "ERR10055",
+                  "description": "Cannot load client.truststore to create HttpClient.",
+                  "message": "TLS_TRUSTSTORE_ERROR",
+                  "statusCode": 400
+                },
+                "ERR10056": {
+                  "code": "ERR10056",
+                  "description": "Neither server_url nor serviceId is configured in client.yml for %s.",
+                  "message": "OAUTH_SERVER_URL_ERROR",
+                  "statusCode": 400
+                },
+                "ERR10057": {
+                  "code": "ERR10057",
+                  "description": "Config property %s is missing in config file %s.",
+                  "message": "CONFIG_PROPERTY_MISSING",
+                  "statusCode": 400
+                },
+                "ERR10058": {
+                  "code": "ERR10058",
+                  "description": "Failed to connect to the registry %s.",
+                  "message": "ERROR_CONNECT_REGISTRY",
+                  "statusCode": 400
+                },
+                "ERR10059": {
+                  "code": "ERR10059",
+                  "description": "Request body is missing.",
+                  "message": "REQUEST_BODY_MISSING",
+                  "statusCode": 400
+                },
+                "ERR10060": {
+                  "code": "ERR10060",
+                  "description": "Config value %s for key %s invalid in config file %s.",
+                  "message": "CONFIG_VALUE_INVALID",
+                  "statusCode": 400
+                },
+                "ERR10061": {
+                  "code": "ERR10061",
+                  "description": "JWT Authorizer is not configured or without permission on AWS API Gateway.",
+                  "message": "MISSING_GATEWAY_AUTHORIZER",
+                  "statusCode": 401
+                },
+                "ERR10062": {
+                  "code": "ERR10062",
+                  "description": "Scopes from the JWT token in Authorization header are missing.",
+                  "message": "MISSING_PRIMARY_SCOPES",
+                  "statusCode": 401
+                },
+                "ERR10063": {
+                  "code": "ERR10063",
+                  "description": "Missing function in the mapping for endpoint %s.",
+                  "message": "MISSING_ENDPOINT_FUNCTION",
+                  "statusCode": 400
+                },
+                "ERR10064": {
+                  "code": "ERR10064",
+                  "description": "Empty lambda function response for %s.",
+                  "message": "EMPTY_LAMBDA_RESPONSE",
+                  "statusCode": 400
+                },
+                "ERR10065": {
+                  "code": "ERR10065",
+                  "description": "Handler %s is disabled.",
+                  "message": "HANDLER_IS_DISABLED",
+                  "statusCode": 400
+                },
+                "ERR10066": {
+                  "code": "ERR10066",
+                  "description": "Unable to download jwk set.",
+                  "message": "OAUTH_KEY_ERROR",
+                  "statusCode": 400
+                },
+                "ERR10067": {
+                  "code": "ERR10067",
+                  "description": "Failed to pass the fine-grained authorization with rule %s.",
+                  "message": "ACCESS_CONTROL_ERROR",
+                  "statusCode": 403
+                },
+                "ERR10068": {
+                  "code": "ERR10068",
+                  "description": "The request body has exceeded the set max size.",
+                  "message": "PAYLOAD_TOO_LARGE",
+                  "statusCode": 413
+                },
+                "ERR10069": {
+                  "code": "ERR10069",
+                  "description": "Access control rule is missing for endpoint %s and default deny is true.",
+                  "message": "ACCESS_CONTROL_MISSING",
+                  "statusCode": 403
+                },
+                "ERR10070": {
+                  "code": "ERR10070",
+                  "description": "The object %s is not unique with value %s.",
+                  "message": "OBJECT_NOT_UNIQUE",
+                  "statusCode": 400
+                },
+                "ERR10071": {
+                  "code": "ERR10071",
+                  "description": "The request path %s is not authorized for user %s.",
+                  "message": "NOT_AUTHORIZED_REQUEST_PATH",
+                  "statusCode": 401
+                },
+                "ERR10072": {
+                  "code": "ERR10072",
+                  "description": "Bearer token is allowed but bearer user is not found.",
+                  "message": "BEARER_USER_NOT_FOUND",
+                  "statusCode": 400
+                },
+                "ERR10073": {
+                  "code": "ERR10073",
+                  "description": "Could not resolve the rate limit key with key type %s and resolver %s.",
+                  "message": "LIMIT_KEY_NOT_FOUND",
+                  "statusCode": 400
+                },
+                "ERR10074": {
+                  "code": "ERR10074",
+                  "description": "Handler %s depends on handler %s in the chain.",
+                  "message": "HANDLER_DEPENDENCY_ERROR",
+                  "statusCode": 400
+                },
+                "ERR10075": {
+                  "code": "ERR10075",
+                  "description": "Could not find matched APIKEY for request path %s.",
+                  "message": "API_KEY_MISMATCH",
+                  "statusCode": 401
+                },
+                "ERR10076": {
+                  "code": "ERR10076",
+                  "description": "Content type header is missing and it is required.",
+                  "message": "CONTENT_TYPE_MISSING",
+                  "statusCode": 400
+                },
+                "ERR10077": {
+                  "code": "ERR10077",
+                  "description": "Invalid content type %s.",
+                  "message": "INVALID_CONTENT_TYPE",
+                  "statusCode": 400
+                },
+                "ERR10078": {
+                  "code": "ERR10078",
+                  "description": "Missing path prefix auth entry for request path %s.",
+                  "message": "MISSING_PATH_PREFIX_AUTH",
+                  "statusCode": 400
+                },
+                "ERR10079": {
+                  "code": "ERR10079",
+                  "description": "Unable to introspect token from %s server for token %s.",
+                  "message": "OAUTH_INTROSPECTION_ERROR",
+                  "statusCode": 400
+                },
+                "ERR10080": {
+                  "code": "ERR10080",
+                  "description": "Token introspection error %s with error description %s.",
+                  "message": "TOKEN_INFO_ERROR",
+                  "statusCode": 400
+                },
+                "ERR10081": {
+                  "code": "ERR10081",
+                  "description": "Introspected token %s is expired.",
+                  "message": "INTROSPECTED_TOKEN_EXPIRED",
+                  "statusCode": 400
+                },
+                "ERR10082": {
+                  "code": "ERR10082",
+                  "description": "Client exception with message %s.",
+                  "message": "CLIENT_EXCEPTION",
+                  "statusCode": 400
+                },
+                "ERR10083": {
+                  "code": "ERR10083",
+                  "description": "API access with error response code %s.",
+                  "message": "API_ERROR_RESPONSE",
+                  "statusCode": 400
+                },
+                "ERR10084": {
+                  "code": "ERR10084",
+                  "description": "Downstream admin access is disabled.",
+                  "message": "DOWNSTREAM_ADMIN_DISABLED",
+                  "statusCode": 400
+                },
+                "ERR10085": {
+                  "code": "ERR10085",
+                  "description": "OpenAPI operation is missed from the auditInfo.",
+                  "message": "OPENAPI_OPERATION_MISSED",
+                  "statusCode": 400
+                },
+                "ERR10086": {
+                  "code": "ERR10086",
+                  "description": "Failed to invoke lambda function %s.",
+                  "message": "FAILED_TO_INVOKE_LAMBDA",
+                  "statusCode": 400
+                },
+                "ERR10087": {
+                  "code": "ERR10087",
+                  "description": "Exchange has failed state %s.",
+                  "message": "EXCHANGE_HAS_FAILED_STATE",
+                  "statusCode": 400
+                },
+                "ERR10088": {
+                  "code": "ERR10088",
+                  "description": "Rate limit exceeded.",
+                  "message": "RATE_LIMIT_EXCEEDED",
+                  "statusCode": 429
+                },
+                "ERR10089": {
+                  "code": "ERR10089",
+                  "description": "Failed to invoke HTTP service with serviceId %s.",
+                  "message": "FAILED_TO_INVOKE_SERVICE",
+                  "statusCode": 400
+                },
+                "ERR10090": {
+                  "code": "ERR10090",
+                  "description": "Token verification exception %s.",
+                  "message": "TOKEN_VERIFICATION_EXCEPTION",
+                  "statusCode": 400
+                },
+                "ERR10091": {
+                  "code": "ERR10091",
+                  "description": "Too many token requests. Please cache the jwt token on the client side.",
+                  "message": "TOKEN_LIMIT_ERROR",
+                  "statusCode": 400
+                },
+                "ERR10092": {
+                  "code": "ERR10092",
+                  "description": "CORS preflight request failed. Origin not allowed or method/headers unsupported..",
+                  "message": "CORS_PREFLIGHT_REQUEST_FAILED",
+                  "statusCode": 403
+                },
+                "ERR10093": {
+                  "code": "ERR10093",
+                  "description": "Webhook authentication failed.",
+                  "message": "INVALID_WEBHOOK_AUTHENTICATION",
+                  "statusCode": 401
+                },
+                "ERR10094": {
+                  "code": "ERR10094",
+                  "description": "Webhook authentication requires an absent or identity Content-Encoding.",
+                  "message": "UNSUPPORTED_WEBHOOK_CONTENT_ENCODING",
+                  "statusCode": 415
+                },
+                "ERR10095": {
+                  "code": "ERR10095",
+                  "description": "HMAC authentication is unavailable because its runtime or handler wiring is invalid.",
+                  "message": "HMAC_AUTHENTICATION_UNAVAILABLE",
+                  "statusCode": 503
+                },
+                "ERR10096": {
+                  "code": "ERR10096",
+                  "description": "The HMAC replay administration request is invalid.",
+                  "message": "INVALID_HMAC_REPLAY_ADMIN_REQUEST",
+                  "statusCode": 400
+                },
+                "ERR10097": {
+                  "code": "ERR10097",
+                  "description": "The buffered request body changed after HMAC verification.",
+                  "message": "HMAC_REQUEST_BODY_CHANGED",
+                  "statusCode": 500
+                },
+                "ERR11000": {
+                  "code": "ERR11000",
+                  "description": "Query parameter %s is required on path %s but not found in request.",
+                  "message": "VALIDATOR_REQUEST_PARAMETER_QUERY_MISSING",
+                  "statusCode": 400
+                },
+                "ERR11001": {
+                  "code": "ERR11001",
+                  "description": "Parameter %s is required but is missing.",
+                  "message": "VALIDATOR_REQUEST_PARAMETER_MISSING",
+                  "statusCode": 400
+                },
+                "ERR11002": {
+                  "code": "ERR11002",
+                  "description": "Value %s for parameter %s is not allowed. Allowed values are <%s>.",
+                  "message": "VALIDATOR_REQUEST_PARAMETER_ENUM_INVALID",
+                  "statusCode": 400
+                },
+                "ERR11003": {
+                  "code": "ERR11003",
+                  "description": "Unable to parse JSON - %s",
+                  "message": "VALIDATOR_SCHEMA_INVALID_JSON",
+                  "statusCode": 400
+                },
+                "ERR11004": {
+                  "code": "ERR11004",
+                  "description": "Schema Validation Error - %s",
+                  "message": "VALIDATOR_SCHEMA",
+                  "statusCode": 400
+                },
+                "ERR11005": {
+                  "code": "ERR11005",
+                  "description": "Parameter %s expected collection format of %s but %s was used instead.",
+                  "message": "VALIDATOR_REQUEST_PARAMETER_COLLECTION_INVALID_FORMAT",
+                  "statusCode": 400
+                },
+                "ERR11006": {
+                  "code": "ERR11006",
+                  "description": "Parameter %s accepts a maximum of %d items. Found %d.",
+                  "message": "VALIDATOR_REQUEST_PARAMETER_COLLECTION_TOO_MANY_ITEMS",
+                  "statusCode": 400
+                },
+                "ERR11007": {
+                  "code": "ERR11007",
+                  "description": "Parameter %s accepts a minimum of %d items. Found %d.",
+                  "message": "VALIDATOR_REQUEST_PARAMETER_COLLECTION_TOO_FEW_ITEMS",
+                  "statusCode": 400
+                },
+                "ERR11008": {
+                  "code": "ERR11008",
+                  "description": "Parameter %s does not allow duplicate values.",
+                  "message": "VALIDATOR_REQUEST_PARAMETER_COLLECTION_DUPLICATE_ITEMS",
+                  "statusCode": 400
+                },
+                "ERR11009": {
+                  "code": "ERR11009",
+                  "description": "Value %s for parameter %s is not allowed. Allowed values are <%s>.",
+                  "message": "VALIDATOR_REQUEST_PARAMETER_ENUM_INVALID",
+                  "statusCode": 400
+                },
+                "ERR11010": {
+                  "code": "ERR11010",
+                  "description": "Value %s for parameter %s does not match type %s with format %s.",
+                  "message": "VALIDATOR_REQUEST_PARAMETER_INVALID_FORMAT",
+                  "statusCode": 400
+                },
+                "ERR11011": {
+                  "code": "ERR11011",
+                  "description": "Value %s for parameter %s less than allowed min value %f.",
+                  "message": "VALIDATOR_REQUEST_PARAMETER_NUMBER_BELOW_MIN",
+                  "statusCode": 400
+                },
+                "ERR11012": {
+                  "code": "ERR11012",
+                  "description": "Value %s for parameter %s greater than allowed max value %f.",
+                  "message": "VALIDATOR_REQUEST_PARAMETER_NUMBER_ABOVE_MAX",
+                  "statusCode": 400
+                },
+                "ERR11013": {
+                  "code": "ERR11013",
+                  "description": "No request body is expected for %s on path %s.",
+                  "message": "VALIDATOR_REQUEST_BODY_UNEXPECTED",
+                  "statusCode": 400
+                },
+                "ERR11014": {
+                  "code": "ERR11014",
+                  "description": "Method %s on path %s requires a request body. None found.",
+                  "message": "VALIDATOR_REQUEST_BODY_MISSING",
+                  "statusCode": 400
+                },
+                "ERR11015": {
+                  "code": "ERR11015",
+                  "description": "Response status %d not defined for path %s.",
+                  "message": "VALIDATOR_RESPONSE_STATUS_UNKNOWN",
+                  "statusCode": 400
+                },
+                "ERR11016": {
+                  "code": "ERR11016",
+                  "description": "Method %s on path %s defines a response schema but no response body found.",
+                  "message": "VALIDATOR_RESPONSE_BODY_MISSING",
+                  "statusCode": 400
+                },
+                "ERR11017": {
+                  "code": "ERR11017",
+                  "description": "Header parameter %s is required on path %s but not found in request.",
+                  "message": "VALIDATOR_REQUEST_PARAMETER_HEADER_MISSING",
+                  "statusCode": 400
+                },
+                "ERR11018": {
+                  "code": "ERR11018",
+                  "description": "No response body content or schema is expected for %s on path %s.",
+                  "message": "VALIDATOR_RESPONSE_CONTENT_UNEXPECTED",
+                  "statusCode": 400
+                },
+                "ERR11019": {
+                  "code": "ERR11019",
+                  "description": "Startup hook %s is not loaded properly.",
+                  "message": "STARTUP_HOOK_NOT_LOADED",
+                  "statusCode": 400
+                },
+                "ERR11100": {
+                  "code": "ERR11100",
+                  "description": "Invalid framework %s.",
+                  "message": "INVALID_FRAMEWORK",
+                  "statusCode": 400
+                },
+                "ERR11101": {
+                  "code": "ERR11101",
+                  "description": "Missing generator item.",
+                  "message": "MISSING_GENERATOR_ITEM",
+                  "statusCode": 400
+                },
+                "ERR11102": {
+                  "code": "ERR11102",
+                  "description": "enableHttp or enableHttps needs to be set to true, but not both.",
+                  "message": "INVALID_CONFIG_HTTP_LISTEN_TYPE",
+                  "statusCode": 400
+                },
+                "ERR11103": {
+                  "code": "ERR11103",
+                  "description": "Invalid model URL %s.",
+                  "message": "INVALID_MODEL_URL",
+                  "statusCode": 400
+                },
+                "ERR11104": {
+                  "code": "ERR11104",
+                  "description": "Invalid config JSON format.",
+                  "message": "INVALID_CONFIG_JSON",
+                  "statusCode": 400
+                },
+                "ERR11105": {
+                  "code": "ERR11105",
+                  "description": "Invalid config URL extension %s.",
+                  "message": "INVALID_CONFIG_URL_EXTENSION",
+                  "statusCode": 400
+                },
+                "ERR11106": {
+                  "code": "ERR11106",
+                  "description": "Exception occurs during generation %s.",
+                  "message": "GENERATOR_EXCEPTION",
+                  "statusCode": 400
+                },
+                "ERR11107": {
+                  "code": "ERR11107",
+                  "description": "Exception occurs during compression %s.",
+                  "message": "COMPRESSION_EXCEPTION",
+                  "statusCode": 400
+                },
+                "ERR11108": {
+                  "code": "ERR11108",
+                  "description": "Content-Type %s is not supported by for this operation.",
+                  "message": "CONTENT_TYPE_NOT_SUPPORTED",
+                  "statusCode": 400
+                },
+                "ERR11200": {
+                  "code": "ERR11200",
+                  "description": "Handler for service %s cannot be found.",
+                  "message": "HANDLER_NOT_FOUND",
+                  "statusCode": 400
+                },
+                "ERR11201": {
+                  "code": "ERR11201",
+                  "description": "Hybrid request body is empty for post method.",
+                  "message": "REQUEST_BODY_EMPTY",
+                  "statusCode": 400
+                },
+                "ERR11202": {
+                  "code": "ERR11202",
+                  "description": "Hybrid request cmd parameter is empty for get method.",
+                  "message": "REQUEST_CMD_EMPTY",
+                  "statusCode": 400
+                },
+                "ERR11203": {
+                  "code": "ERR11203",
+                  "description": "Invalid request parameter with key %s.",
+                  "message": "INVALID_REQUEST_PARAMETER",
+                  "statusCode": 400
+                },
+                "ERR11300": {
+                  "code": "ERR11300",
+                  "description": "Fail to get token from Tableau server.",
+                  "message": "FAIL_TO_GET_TABLEAU_TOKEN",
+                  "statusCode": 400
+                },
+                "ERR11301": {
+                  "code": "ERR11301",
+                  "description": "TableauContentUrl is missing in the request header.",
+                  "message": "MISSING_TABLEAU_CONTENT_URL",
+                  "statusCode": 400
+                },
+                "ERR11350": {
+                  "code": "ERR11350",
+                  "description": "Email %s has been registered with a different userId %s.",
+                  "message": "EMAIL_REGISTERED",
+                  "statusCode": 400
+                },
+                "ERR11400": {
+                  "code": "ERR11400",
+                  "description": "The config server has been initialized already with an encryption key.",
+                  "message": "CONFIG_SERVER_INITIALIZED",
+                  "statusCode": 400
+                },
+                "ERR11401": {
+                  "code": "ERR11401",
+                  "description": "Invalid initialize key format for light-config-server.",
+                  "message": "INVALID_INITIALIZE_KEY_FORMAT",
+                  "statusCode": 400
+                },
+                "ERR11402": {
+                  "code": "ERR11402",
+                  "description": "Error writing key file to path %s.",
+                  "message": "ERROR_WRITING_KEY_FILE",
+                  "statusCode": 400
+                },
+                "ERR11403": {
+                  "code": "ERR11403",
+                  "description": "The service claim %s in the JWT token does not match the serviceId %s from the request path.",
+                  "message": "ERROR_SERVICE_ID_MISMATCH",
+                  "statusCode": 400
+                },
+                "ERR11404": {
+                  "code": "ERR11404",
+                  "description": "The service claim in the JWT token is missing.",
+                  "message": "ERROR_SERVICE_ID_MISSING",
+                  "statusCode": 400
+                },
+                "ERR11405": {
+                  "code": "ERR11405",
+                  "description": "The service %s already exists.",
+                  "message": "ERROR_SERVICE_EXISTS",
+                  "statusCode": 400
+                },
+                "ERR11406": {
+                  "code": "ERR11406",
+                  "description": "The service %s not found.",
+                  "message": "ERROR_SERVICE_NOT_FOUND",
+                  "statusCode": 404
+                },
+                "ERR11407": {
+                  "code": "ERR11407",
+                  "description": "The body doesn't follow the correct format.",
+                  "message": "ERROR_BAD_BODY_PARAMETER",
+                  "statusCode": 400
+                },
+                "ERR11500": {
+                  "code": "ERR11500",
+                  "description": "Invalid GraphQL path %s, must be %s.",
+                  "message": "GRAHPQL_INVALID_PATH",
+                  "statusCode": 400
+                },
+                "ERR11501": {
+                  "code": "ERR11501",
+                  "description": "Invalid GraphQL method %s, only GET and POST are allowed.",
+                  "message": "GRAHPQL_INVALID_METHOD",
+                  "statusCode": 405
+                },
+                "ERR11502": {
+                  "code": "ERR11502",
+                  "description": "Missing GraphQL query.",
+                  "message": "GRAHPQL_MISSING_QUERY",
+                  "statusCode": 400
+                },
+                "ERR11601": {
+                  "code": "ERR11601",
+                  "description": "Incorrect token type. Expecting %s.",
+                  "message": "INCORRECT_TOKEN_TYPE",
+                  "statusCode": 400
+                },
+                "ERR11602": {
+                  "code": "ERR11602",
+                  "description": "Exception %s is caught when deleting user %s.",
+                  "message": "DELETE_USER_EXCEPTION",
+                  "statusCode": 400
+                },
+                "ERR11603": {
+                  "code": "ERR11603",
+                  "description": "Delete user %s denied with user %s and roles %s.",
+                  "message": "DELETE_USER_DENIED",
+                  "statusCode": 400
+                },
+                "ERR11604": {
+                  "code": "ERR11604",
+                  "description": "UserId %s is used already.",
+                  "message": "USER_ID_IS_USED",
+                  "statusCode": 400
+                },
+                "ERR11605": {
+                  "code": "ERR11605",
+                  "description": "Send message exception caused by %s with user %s.",
+                  "message": "SEND_MESSAGE_EXCEPTION",
+                  "statusCode": 400
+                },
+                "ERR11606": {
+                  "code": "ERR11606",
+                  "description": "Exception %s is caught when updating user %s.",
+                  "message": "UPDATE_USER_EXCEPTION",
+                  "statusCode": 400
+                },
+                "ERR11607": {
+                  "code": "ERR11607",
+                  "description": "User not found by email %s.",
+                  "message": "USER_NOT_FOUND_BY_EMAIL",
+                  "statusCode": 404
+                },
+                "ERR11608": {
+                  "code": "ERR11608",
+                  "description": "User %s is not allowed to change password for %s.",
+                  "message": "CHANGE_PASSWORD_DENIED",
+                  "statusCode": 400
+                },
+                "ERR11609": {
+                  "code": "ERR11609",
+                  "description": "User not found by userId %s.",
+                  "message": "USER_NOT_FOUND_BY_ID",
+                  "statusCode": 404
+                },
+                "ERR11610": {
+                  "code": "ERR11610",
+                  "description": "Email %s is not confirmed. Please find the user confirmation email.",
+                  "message": "EMAIL_NOT_CONFIRMED",
+                  "statusCode": 400
+                },
+                "ERR11611": {
+                  "code": "ERR11611",
+                  "description": "User email address %s is registered.",
+                  "message": "USER_EMAIL_IS_USED",
+                  "statusCode": 400
+                },
+                "ERR11612": {
+                  "code": "ERR11612",
+                  "description": "Wrong login password for user with email %s.",
+                  "message": "WRONG_LOGIN_PASSWORD",
+                  "statusCode": 400
+                },
+                "ERR11613": {
+                  "code": "ERR11613",
+                  "description": "Password and passwordConfirm are not matched.",
+                  "message": "PASSWORD_NOT_MATCH",
+                  "statusCode": 400
+                },
+                "ERR11614": {
+                  "code": "ERR11614",
+                  "description": "Error in hashing password with exception %s.",
+                  "message": "ERROR_HASHING_PASSWORD",
+                  "statusCode": 400
+                },
+                "ERR11615": {
+                  "code": "ERR11615",
+                  "description": "Error in parsing user to JSON with exception %s.",
+                  "message": "ERROR_PARSING_USER",
+                  "statusCode": 400
+                },
+                "ERR11616": {
+                  "code": "ERR11616",
+                  "description": "Password validation error with exception %s.",
+                  "message": "ERROR_VALIDATE_PASSWORD",
+                  "statusCode": 400
+                },
+                "ERR11617": {
+                  "code": "ERR11617",
+                  "description": "User %s is not activated.",
+                  "message": "USER_NOT_ACTIVATED",
+                  "statusCode": 400
+                },
+                "ERR11618": {
+                  "code": "ERR11618",
+                  "description": "User %s is not matched the JWT user_id %s and not admin role.",
+                  "message": "USER_QUERY_DENIED",
+                  "statusCode": 400
+                },
+                "ERR11619": {
+                  "code": "ERR11619",
+                  "description": "Failed to send the confirmation email to %s.",
+                  "message": "EMAIL_SENDING_ERROR",
+                  "statusCode": 400
+                },
+                "ERR11620": {
+                  "code": "ERR11620",
+                  "description": "Fail to access the endpoint for user or roles %s.",
+                  "message": "PERMISSION_DENIED",
+                  "statusCode": 400
+                },
+                "ERR11621": {
+                  "code": "ERR11621",
+                  "description": "The city has been registered with key %s, %s, %s.",
+                  "message": "CITY_REGISTERED",
+                  "statusCode": 400
+                },
+                "ERR11622": {
+                  "code": "ERR11622",
+                  "description": "Country, Province or City is missing in user profile.",
+                  "message": "PROFILE_LOCATION_INCOMPLETE",
+                  "statusCode": 400
+                },
+                "ERR11623": {
+                  "code": "ERR11623",
+                  "description": "City not found for %s, %s, %s.",
+                  "message": "CITY_NOT_FOUND",
+                  "statusCode": 404
+                },
+                "ERR11624": {
+                  "code": "ERR11624",
+                  "description": "Country %s or province %s or city %s is empty.",
+                  "message": "COUNTRY_PROVINCE_CITY_EMPTY",
+                  "statusCode": 400
+                },
+                "ERR11625": {
+                  "code": "ERR11625",
+                  "description": "Entity not found for %s at %s, %s and %s defined in your profile. Please create an entity first.",
+                  "message": "ENTITY_NOT_FOUND",
+                  "statusCode": 404
+                },
+                "ERR11626": {
+                  "code": "ERR11626",
+                  "description": "Status not found for email or userId %s.",
+                  "message": "STATUS_NOT_FOUND",
+                  "statusCode": 404
+                },
+                "ERR11627": {
+                  "code": "ERR11627",
+                  "description": "Private message not found for email %s.",
+                  "message": "PRIVATE_MESSAGE_NOT_FOUND",
+                  "statusCode": 404
+                },
+                "ERR11628": {
+                  "code": "ERR11628",
+                  "description": "Website not found for email %s.",
+                  "message": "WEBSITE_NOT_FOUND",
+                  "statusCode": 404
+                },
+                "ERR11629": {
+                  "code": "ERR11629",
+                  "description": "Taiji Wallet %s email is not matched the JWT user_id %s and not admin role.",
+                  "message": "WALLET_QUERY_DENIED",
+                  "statusCode": 400
+                },
+                "ERR11630": {
+                  "code": "ERR11630",
+                  "description": "Email not found for Taiji wallet %s.",
+                  "message": "EMAIL_NOT_FOUND_BY_WALLET",
+                  "statusCode": 404
+                },
+                "ERR11631": {
+                  "code": "ERR11631",
+                  "description": "No entity has been registered for the %s, %s, %s, %s, %s combination.",
+                  "message": "NO_ENTITY_REGISTERED",
+                  "statusCode": 404
+                },
+                "ERR11632": {
+                  "code": "ERR11632",
+                  "description": "Payment not found for email %s.",
+                  "message": "PAYMENT_NOT_FOUND_BY_EMAIL",
+                  "statusCode": 404
+                },
+                "ERR11633": {
+                  "code": "ERR11633",
+                  "description": "Order not found for email %s.",
+                  "message": "ORDER_NOT_FOUND_BY_EMAIL",
+                  "statusCode": 404
+                },
+                "ERR11634": {
+                  "code": "ERR11634",
+                  "description": "Reference not found for name %s and language %s.",
+                  "message": "REFERENCE_NOT_FOUND",
+                  "statusCode": 404
+                },
+                "ERR11635": {
+                  "code": "ERR11635",
+                  "description": "Host %s doesn't match the email domain %s.",
+                  "message": "HOST_NOT_MATCH_EMAIL",
+                  "statusCode": 400
+                },
+                "ERR11636": {
+                  "code": "ERR11636",
+                  "description": "SQLException with error %s.",
+                  "message": "SQL_EXCEPTION",
+                  "statusCode": 400
+                },
+                "ERR11637": {
+                  "code": "ERR11637",
+                  "description": "Object %s not found for key %s.",
+                  "message": "OBJECT_NOT_FOUND",
+                  "statusCode": 404
+                },
+                "ERR11638": {
+                  "code": "ERR11638",
+                  "description": "Error while access filesystem with file %s and error message %s.",
+                  "message": "FILESYSTEM_ERROR",
+                  "statusCode": 400
+                },
+                "ERR11639": {
+                  "code": "ERR11639",
+                  "description": "Provider key type is missing.",
+                  "message": "PROVIDER_KEY_TYPE_MISSING",
+                  "statusCode": 400
+                },
+                "ERR11640": {
+                  "code": "ERR11640",
+                  "description": "Provider key type %s is invalid.",
+                  "message": "PROVIDER_KEY_TYPE_INVALID",
+                  "statusCode": 400
+                },
+                "ERR11641": {
+                  "code": "ERR11641",
+                  "description": "Invalid content format and %s is expected.",
+                  "message": "INVALID_CONTENT_FORMAT",
+                  "statusCode": 400
+                },
+                "ERR11642": {
+                  "code": "ERR11642",
+                  "description": "Invalid remote url %s.",
+                  "message": "INVALID_REMOTE_URL",
+                  "statusCode": 400
+                },
+                "ERR11643": {
+                  "code": "ERR11643",
+                  "description": "Kafka access error %s.",
+                  "message": "KAFKA_ACCESS_ERROR",
+                  "statusCode": 400
+                },
+                "ERR11644": {
+                  "code": "ERR11644",
+                  "description": "Invalid variable %s format with value %s.",
+                  "message": "INVALID_VARIABLE_FORMAT",
+                  "statusCode": 400
+                },
+                "ERR11645": {
+                  "code": "ERR11645",
+                  "description": "Aggregate version %d in read model is less than %d in write model for aggregate type %s and aggregate id %s.",
+                  "message": "READ_MODEL_OUT_OF_SYNC",
+                  "statusCode": 400
+                },
+                "ERR11646": {
+                  "code": "ERR11646",
+                  "description": "Aggregate version %d from user request is greater than the event store max aggregate version %d for the aggregate type %s and aggregate id %s.",
+                  "message": "AGGREGATE_VERSION_GREATER_THAN_MAX",
+                  "statusCode": 400
+                },
+                "ERR11647": {
+                  "code": "ERR11647",
+                  "description": "JWT bearer token is missing.",
+                  "message": "JWT_BEARER_TOKEN_MISSING",
+                  "statusCode": 401
+                },
+                "ERR11648": {
+                  "code": "ERR11648",
+                  "description": "Token exchange failed %s.",
+                  "message": "TOKEN_EXCHANGE_FAILED",
+                  "statusCode": 400
+                },
+                "ERR11649": {
+                  "code": "ERR11649",
+                  "description": "CSRF cookie/header validation failed for logout.",
+                  "message": "LOGOUT_CSRF_VALIDATION_FAILED",
+                  "statusCode": 400
+                },
+                "ERR12000": {
+                  "code": "ERR12000",
+                  "description": "Unable to parse x-www-form-urlencoded form data.",
+                  "message": "UNABLE_TO_PARSE_FORM_DATA",
+                  "statusCode": 400
+                },
+                "ERR12001": {
+                  "code": "ERR12001",
+                  "description": "Unsupported grant type %s. Only authorization_code and client_credentials are supported.",
+                  "message": "UNSUPPORTED_GRANT_TYPE",
+                  "statusCode": 400
+                },
+                "ERR12002": {
+                  "code": "ERR12002",
+                  "description": "Missing authorization header. client credentials must be passed in as Authorization header.",
+                  "message": "MISSING_AUTHORIZATION_HEADER",
+                  "statusCode": 401
+                },
+                "ERR12003": {
+                  "code": "ERR12003",
+                  "description": "Invalid authorization header %s.",
+                  "message": "INVALID_AUTHORIZATION_HEADER",
+                  "statusCode": 401
+                },
+                "ERR12004": {
+                  "code": "ERR12004",
+                  "description": "Invalid Basic credentials %s.",
+                  "message": "INVALID_BASIC_CREDENTIALS",
+                  "statusCode": 401
+                },
+                "ERR12005": {
+                  "code": "ERR12005",
+                  "description": "Json Processing Exception %s.",
+                  "message": "JSON_PROCESSING_EXCEPTION",
+                  "statusCode": 400
+                },
+                "ERR12007": {
+                  "code": "ERR12007",
+                  "description": "Unauthorized client with wrong client secret.",
+                  "message": "UNAUTHORIZED_CLIENT",
+                  "statusCode": 401
+                },
+                "ERR12008": {
+                  "code": "ERR12008",
+                  "description": "Invalid Authorization Code %s.",
+                  "message": "INVALID_AUTHORIZATION_CODE",
+                  "statusCode": 401
+                },
+                "ERR12009": {
+                  "code": "ERR12009",
+                  "description": "Invalid authorization code request. responseType and client_id are required.",
+                  "message": "INVALID_CODE_REQUEST",
+                  "statusCode": 401
+                },
+                "ERR12011": {
+                  "code": "ERR12011",
+                  "description": "Password %s or PasswordConfirm %s is empty.",
+                  "message": "PASSWORD_OR_PASSWORDCONFIRM_EMPTY",
+                  "statusCode": 400
+                },
+                "ERR12012": {
+                  "code": "ERR12012",
+                  "description": "Password %s and PasswordConfirm %s are not matched.",
+                  "message": "PASSWORD_PASSWORDCONFIRM_NOT_MATCH",
+                  "statusCode": 400
+                },
+                "ERR12013": {
+                  "code": "ERR12013",
+                  "description": "User %s is not found.",
+                  "message": "USER_NOT_FOUND",
+                  "statusCode": 404
+                },
+                "ERR12014": {
+                  "code": "ERR12014",
+                  "description": "Client %s is not found.",
+                  "message": "CLIENT_NOT_FOUND",
+                  "statusCode": 404
+                },
+                "ERR12015": {
+                  "code": "ERR12015",
+                  "description": "Service %s is not found.",
+                  "message": "SERVICE_NOT_FOUND",
+                  "statusCode": 404
+                },
+                "ERR12016": {
+                  "code": "ERR12016",
+                  "description": "Incorrect password.",
+                  "message": "INCORRECT_PASSWORD",
+                  "statusCode": 401
+                },
+                "ERR12017": {
+                  "code": "ERR12017",
+                  "description": "Public key certificate keyId %s is not found.",
+                  "message": "KEY_NOT_FOUND",
+                  "statusCode": 404
+                },
+                "ERR12018": {
+                  "code": "ERR12018",
+                  "description": "Service id %s exists.",
+                  "message": "SERVICE_ID_EXISTS",
+                  "statusCode": 400
+                },
+                "ERR12019": {
+                  "code": "ERR12019",
+                  "description": "Client id %s exists.",
+                  "message": "CLIENT_ID_EXISTS",
+                  "statusCode": 400
+                },
+                "ERR12020": {
+                  "code": "ERR12020",
+                  "description": "User id %s exists.",
+                  "message": "USER_ID_EXISTS",
+                  "statusCode": 400
+                },
+                "ERR12021": {
+                  "code": "ERR12021",
+                  "description": "Email %s exists.",
+                  "message": "EMAIL_EXISTS",
+                  "statusCode": 400
+                },
+                "ERR12022": {
+                  "code": "ERR12022",
+                  "description": "Username is required for password grant type.",
+                  "message": "USERNAME_REQUIRED",
+                  "statusCode": 400
+                },
+                "ERR12023": {
+                  "code": "ERR12023",
+                  "description": "Password is required for password grant type.",
+                  "message": "PASSWORD_REQUIRED",
+                  "statusCode": 400
+                },
+                "ERR12024": {
+                  "code": "ERR12024",
+                  "description": "Grant type is allowed only for trusted client type.",
+                  "message": "NOT_TRUSTED_CLIENT",
+                  "statusCode": 400
+                },
+                "ERR12025": {
+                  "code": "ERR12025",
+                  "description": "Missing redirect_uri in authorization code token service as redirect_uri %s is passed in code service.",
+                  "message": "MISSING_REDIRECT_URI",
+                  "statusCode": 400
+                },
+                "ERR12026": {
+                  "code": "ERR12026",
+                  "description": "redirect_uri %s from token service is not identical as redirect_uri %s from code service.",
+                  "message": "MISMATCH_REDIRECT_URI",
+                  "statusCode": 400
+                },
+                "ERR12027": {
+                  "code": "ERR12027",
+                  "description": "scope %s does not match previous scope or defined scope for client %s",
+                  "message": "MISMATCH_SCOPE",
+                  "statusCode": 400
+                },
+                "ERR12028": {
+                  "code": "ERR12028",
+                  "description": "client_id %s does not match previous client_id %s in refresh_token request.",
+                  "message": "MISMATCH_CLIENT_ID",
+                  "statusCode": 400
+                },
+                "ERR12029": {
+                  "code": "ERR12029",
+                  "description": "Refresh token %s is not found.",
+                  "message": "REFRESH_TOKEN_NOT_FOUND",
+                  "statusCode": 404
+                },
+                "ERR12030": {
+                  "code": "ERR12030",
+                  "description": "Invalid key id %s.",
+                  "message": "INVALID_KEY_ID",
+                  "statusCode": 400
+                },
+                "ERR12031": {
+                  "code": "ERR12031",
+                  "description": "UserId is required for client_authenticated_user grant type.",
+                  "message": "USER_ID_REQUIRED_FOR_CLIENT_AUTHENTICATED_USER_GRANT_TYPE",
+                  "statusCode": 400
+                },
+                "ERR12032": {
+                  "code": "ERR12032",
+                  "description": "UserType is required for client_authenticated_user grant type.",
+                  "message": "USER_TYPE_REQUIRED_FOR_CLIENT_AUTHENTICATED_USER_GRANT_TYPE",
+                  "statusCode": 400
+                },
+                "ERR12033": {
+                  "code": "ERR12033",
+                  "description": "Invalid PKCE code challenge method %s.",
+                  "message": "INVALID_CODE_CHALLENGE_METHOD",
+                  "statusCode": 400
+                },
+                "ERR12034": {
+                  "code": "ERR12034",
+                  "description": "PKCE codeChallenge length under lower limit, codeChallenge = %s",
+                  "message": "CODE_CHALLENGE_TOO_SHORT",
+                  "statusCode": 400
+                },
+                "ERR12035": {
+                  "code": "ERR12035",
+                  "description": "PKCE codeChallenge length over upper limit, codeChallenge = %s",
+                  "message": "CODE_CHALLENGE_TOO_LONG",
+                  "statusCode": 400
+                },
+                "ERR12036": {
+                  "code": "ERR12036",
+                  "description": "PKCE codeChallenge format is invalid, codeChallenge = %s",
+                  "message": "INVALID_CODE_CHALLENGE_FORMAT",
+                  "statusCode": 400
+                },
+                "ERR12037": {
+                  "code": "ERR12037",
+                  "description": "PKCE codeVerifier format is invalid, codeVerifier = %s",
+                  "message": "INVALID_CODE_VERIFIER_FORMAT",
+                  "statusCode": 400
+                },
+                "ERR12038": {
+                  "code": "ERR12038",
+                  "description": "PKCE codeVerifier length under lower limit , codeVerifier = %s",
+                  "message": "CODE_VERIFIER_TOO_SHORT",
+                  "statusCode": 400
+                },
+                "ERR12039": {
+                  "code": "ERR12039",
+                  "description": "PKCE codeVerifier length over upper limit , codeVerifier = %s",
+                  "message": "CODE_VERIFIER_TOO_LONG",
+                  "statusCode": 400
+                },
+                "ERR12040": {
+                  "code": "ERR12040",
+                  "description": "PKCE codeVerifier is not specified",
+                  "message": "CODE_VERIFIER_MISSING",
+                  "statusCode": 400
+                },
+                "ERR12041": {
+                  "code": "ERR12041",
+                  "description": "PKCE verification failed",
+                  "message": "CODE_VERIFIER_FAILED",
+                  "statusCode": 400
+                },
+                "ERR12042": {
+                  "code": "ERR12042",
+                  "description": "Service endpoint not found for serviceId %s",
+                  "message": "SERVICE_ENDPOINT_NOT_FOUND",
+                  "statusCode": 404
+                },
+                "ERR12043": {
+                  "code": "ERR12043",
+                  "description": "Only external client type needs optional deref client id",
+                  "message": "DEREF_NOT_EXTERNAL",
+                  "statusCode": 400
+                },
+                "ERR12044": {
+                  "code": "ERR12044",
+                  "description": "The authenticated client id %s is not matched to the registered dereference client id",
+                  "message": "DEREF_CLIENT_NOT_MATCH",
+                  "statusCode": 400
+                },
+                "ERR12045": {
+                  "code": "ERR12045",
+                  "description": "The reference token %s cannot be found to exchange to JWT",
+                  "message": "DEREF_TOKEN_NOT_FOUND",
+                  "statusCode": 400
+                },
+                "ERR12046": {
+                  "code": "ERR12046",
+                  "description": "The jwt token cannot be found to match the reference token %s",
+                  "message": "JWT_TOKEN_NOT_FOUND",
+                  "statusCode": 400
+                },
+                "ERR12047": {
+                  "code": "ERR12047",
+                  "description": "The provider id is not existing",
+                  "message": "PROVIDER_ID_NOT_EXISTING",
+                  "statusCode": 400
+                },
+                "ERR12048": {
+                  "code": "ERR12048",
+                  "description": "Provider id %s exists; It has been regristed already",
+                  "message": "PROVIDER_ID_EXISTS",
+                  "statusCode": 400
+                },
+                "ERR12049": {
+                  "code": "ERR12049",
+                  "description": "Provider id invalid",
+                  "message": "PROVIDER_ID_INVALID",
+                  "statusCode": 400
+                },
+                "ERR12050": {
+                  "code": "ERR12050",
+                  "description": "Failed to populate client credentials scope token in header in method %s",
+                  "message": "FAILED_TO_POPULATE_HEADER",
+                  "statusCode": 400
+                },
+                "ERR12051": {
+                  "code": "ERR12051",
+                  "description": "Host is required",
+                  "message": "HOST_IS_REQUIRED",
+                  "statusCode": 400
+                },
+                "ERR12052": {
+                  "code": "ERR12052",
+                  "description": "Authorization code %s not found when getting an authorization code token",
+                  "message": "AUTHORIZATION_CODE_NOT_FOUND",
+                  "statusCode": 400
+                },
+                "ERR12053": {
+                  "code": "ERR12053",
+                  "description": "provider_id %s does not match previous provider_id %s in token request.",
+                  "message": "MISMATCH_PROVIDER_ID",
+                  "statusCode": 400
+                },
+                "ERR12054": {
+                  "code": "ERR12054",
+                  "description": "Key generation error %s.",
+                  "message": "KEY_GENERATION_ERROR",
+                  "statusCode": 400
+                },
+                "ERR12055": {
+                  "code": "ERR12055",
+                  "description": "Subject token is missing in token exchange grant type.",
+                  "message": "SUBJECT_TOKEN_MISSING",
+                  "statusCode": 400
+                },
+                "ERR12056": {
+                  "code": "ERR12056",
+                  "description": "Subject token type is missing in token exchange grant type.",
+                  "message": "SUBJECT_TOKEN_TYPE_MISSING",
+                  "statusCode": 400
+                },
+                "ERR12057": {
+                  "code": "ERR12057",
+                  "description": "Subject token type %s is not supported in token exchange.",
+                  "message": "SUBJECT_TOKEN_TYPE_NOT_SUPPORTED",
+                  "statusCode": 400
+                },
+                "ERR12100": {
+                  "code": "ERR12100",
+                  "description": "Tokenizer scheme %s not found",
+                  "message": "SCHEME_NOT_FOUND",
+                  "statusCode": 404
+                },
+                "ERR12101": {
+                  "code": "ERR12101",
+                  "description": "Client_id is missing, JWT verification needs to be enable in security.yml",
+                  "message": "CLIENT_ID_MISSING",
+                  "statusCode": 400
+                },
+                "ERR12102": {
+                  "code": "ERR12102",
+                  "description": "Database not found from client_id %s to database mapping table.",
+                  "message": "DATABASE_NOT_FOUND",
+                  "statusCode": 400
+                },
+                "ERR12103": {
+                  "code": "ERR12103",
+                  "description": "DataSource %s is not configured in datasource.yml",
+                  "message": "DATASOURCE_NOT_CONFIGURED",
+                  "statusCode": 400
+                },
+                "ERR12104": {
+                  "code": "ERR12104",
+                  "description": "Fail to query token_vault table in database %s",
+                  "message": "FAIL_TO_QUERY_TOKEN_VAULT",
+                  "statusCode": 400
+                },
+                "ERR12105": {
+                  "code": "ERR12105",
+                  "description": "Fail to insert into token_vault table in database %s",
+                  "message": "FAIL_TO_INSERT_TOKEN_VAULT",
+                  "statusCode": 400
+                },
+                "ERR12106": {
+                  "code": "ERR12106",
+                  "description": "Fail to delete from token_vault table in database %s",
+                  "message": "FAIL_TO_DELETE_TOKEN_VAULT",
+                  "statusCode": 400
+                },
+                "ERR12107": {
+                  "code": "ERR12107",
+                  "description": "Token %s not found in token_vault table in database %s",
+                  "message": "TOKEN_NOT_FOUND",
+                  "statusCode": 404
+                },
+                "ERR12108": {
+                  "code": "ERR12108",
+                  "description": "Logging is disabled in logging.yml",
+                  "message": "LOGGING_DISABLED",
+                  "statusCode": 400
+                },
+                "ERR12109": {
+                  "code": "ERR12109",
+                  "description": "Logging level is not provided",
+                  "message": "LOGGING_LEVEL_NOT_PROVIDED",
+                  "statusCode": 400
+                },
+                "ERR12110": {
+                  "code": "ERR12110",
+                  "description": "log file requested does not exist or has improper formatting",
+                  "message": "Failed to parse log file appender",
+                  "statusCode": 500
+                },
+                "ERR12200": {
+                  "code": "ERR12200",
+                  "description": "Consumer instance not found for group %s and instance %s",
+                  "message": "CONSUMER_INSTANCE_NOT_FOUND",
+                  "statusCode": 404
+                },
+                "ERR12201": {
+                  "code": "ERR12201",
+                  "description": "Consumer configuration exception with message %s",
+                  "message": "CONSUMER_CONFIG_EXCEPTION",
+                  "statusCode": 400
+                },
+                "ERR12202": {
+                  "code": "ERR12202",
+                  "description": "Consumer already exists with id %s",
+                  "message": "CONSUMER_ALREADY_EXISTS",
+                  "statusCode": 400
+                },
+                "ERR12203": {
+                  "code": "ERR12203",
+                  "description": "Invalid embedded format key %s or value %s",
+                  "message": "INVALID_EMBEDDED_FORMAT",
+                  "statusCode": 400
+                },
+                "ERR12204": {
+                  "code": "ERR12204",
+                  "description": "The request data format does not match the deserializer for this consumer instance",
+                  "message": "CONSUMER_FORMAT_MISMATCH",
+                  "statusCode": 400
+                },
+                "ERR12205": {
+                  "code": "ERR12205",
+                  "description": "Unexpected exception in consumer read task with id %s",
+                  "message": "UNEXPECTED_CONSUMER_READ_EXCEPTION",
+                  "statusCode": 400
+                },
+                "ERR12206": {
+                  "code": "ERR12206",
+                  "description": "Unexpected exception in serializing %s format with message %s",
+                  "message": "SERIALIZE_SCHEMA_EXCEPTION",
+                  "statusCode": 400
+                },
+                "ERR12207": {
+                  "code": "ERR12207",
+                  "description": "Failed to commit offsets for consumer id %s with message %s",
+                  "message": "FAILED_TO_COMMIT_OFFSETS",
+                  "statusCode": 400
+                },
+                "ERR12208": {
+                  "code": "ERR12208",
+                  "description": "Failed to get schema with SchemaManager",
+                  "message": "FAILED_TO_GET_SCHEMA",
+                  "statusCode": 400
+                },
+                "ERR12209": {
+                  "code": "ERR12209",
+                  "description": "Format exists along with Schema Id for %s in ProduceRequest",
+                  "message": "FORMAT_WITH_SCHEMA_ID",
+                  "statusCode": 400
+                },
+                "ERR12210": {
+                  "code": "ERR12210",
+                  "description": "Schema version exists along with Schema Id for %s in ProduceRequest",
+                  "message": "VERSION_WITH_SCHEMA_ID",
+                  "statusCode": 400
+                },
+                "ERR12211": {
+                  "code": "ERR12211",
+                  "description": "Raw schema exists along with Schema Id for %s in ProduceRequest",
+                  "message": "SCHEMA_WITH_SCHEMA_ID",
+                  "statusCode": 400
+                },
+                "ERR12212": {
+                  "code": "ERR12212",
+                  "description": "Format exists along with Schema version for %s in ProduceRequest",
+                  "message": "FORMAT_WITH_SCHEMA_VERSION",
+                  "statusCode": 400
+                },
+                "ERR12213": {
+                  "code": "ERR12213",
+                  "description": "Raw schema exists along with Schema version for %s in ProduceRequest",
+                  "message": "SCHEMA_WITH_SCHEMA_VERSION",
+                  "statusCode": 400
+                },
+                "ERR12214": {
+                  "code": "ERR12214",
+                  "description": "Format does not exists along with Raw schema for %s in ProduceRequest",
+                  "message": "RAW_SCHEMA_WITHOUT_FORMAT",
+                  "statusCode": 400
+                },
+                "ERR12215": {
+                  "code": "ERR12215",
+                  "description": "Format exists along with Schema subject for %s in ProduceRequest",
+                  "message": "FORMAT_WITH_SUBJECT",
+                  "statusCode": 400
+                },
+                "ERR12216": {
+                  "code": "ERR12216",
+                  "description": "The producer startup hook is not enabled in the service.yml",
+                  "message": "PRODUCER_NOT_ENABLED",
+                  "statusCode": 400
+                },
+                "ERR12217": {
+                  "code": "ERR12217",
+                  "description": "Config reload is disabled in configreload.yml",
+                  "message": "CONFIG_RELOAD_DISABLED",
+                  "statusCode": 400
+                },
+                "ERR12218": {
+                  "code": "ERR12218",
+                  "description": "Topic replay metadata posted is wrong , %s",
+                  "message": "TOPICREPLAY_METADATA_ERROR",
+                  "statusCode": 400
+                },
+                "ERR13001": {
+                  "code": "ERR13001",
+                  "description": "Cannot parse scopes from request headers.",
+                  "message": "UNABLE_PARSE_SCOPES_FROM_HEADER",
+                  "statusCode": 403
+                },
+                "ERR14001": {
+                  "code": "ERR14001",
+                  "description": "Lambda native handler disabled, but still instantiated in chain (config error).",
+                  "message": "LAMBDA_NATIVE_HANDLER_DISABLED",
+                  "statusCode": 500
+                },
+                "ERR14002": {
+                  "code": "ERR14002",
+                  "description": "Lambda body transformation middleware failed with exception.",
+                  "message": "LAMBDA_BODY_TRANSFORMATION_EXCEPTION",
+                  "statusCode": 500
+                },
+                "ERR14003": {
+                  "code": "ERR14003",
+                  "description": "Middleware thread was interrupted during execution.",
+                  "message": "MIDDLEWARE_THREAD_INTERRUPT",
+                  "statusCode": 500
+                },
+                "ERR14004": {
+                  "code": "ERR14004",
+                  "description": "Middleware thread unhandled runtime exception.",
+                  "message": "MIDDLEWARE_UNHANDLED_EXCEPTION",
+                  "statusCode": 500
+                },
+                "ERR14005": {
+                  "code": "ERR14005",
+                  "description": "Header operation is unknown (config issue).",
+                  "message": "UNKNOWN_HEADER_OPERATION",
+                  "statusCode": 500
+                },
+                "ERR14006": {
+                  "code": "ERR14006",
+                  "description": "Header value %s is missing. Header must be present for this operation.",
+                  "message": "HEADER_MISSING_FOR_OPERATION",
+                  "statusCode": 500
+                },
+                "ERR14007": {
+                  "code": "ERR14007",
+                  "description": "Event body is missing for validation.",
+                  "message": "MISSING_EVENT_BODY",
+                  "statusCode": 500
+                },
+                "ERR14008": {
+                  "code": "ERR14008",
+                  "description": "Event body failed validation step.",
+                  "message": "EVENT_BODY_FAILED_VALIDATION",
+                  "statusCode": 500
+                },
+                "ERR14009": {
+                  "code": "ERR14009",
+                  "description": "Validator could not load openapi.yaml for validation.",
+                  "message": "VALIDATOR_FAILED_TO_LOAD_OPENAPI",
+                  "statusCode": 500
+                },
+                "SUC10200": {
+                  "code": "SUC10200",
+                  "description": "The request is handled successfully",
+                  "message": "OK",
+                  "severity": "NA",
+                  "statusCode": 200
+                },
+                "SUC10201": {
+                  "code": "SUC10201",
+                  "description": "A new resource is created",
+                  "message": "CREATED",
+                  "severity": "NA",
+                  "statusCode": 201
+                },
+                "SUC10202": {
+                  "code": "SUC10202",
+                  "description": "The request has been accepted for processing",
+                  "message": "ACCEPTED",
+                  "severity": "NA",
+                  "statusCode": 202
+                },
+                "SUC10203": {
+                  "code": "SUC10203",
+                  "description": "The server received a 200 OK but returned a modified version of response",
+                  "message": "NON-AUTHORITATIVE_INFORMATION",
+                  "severity": "NA",
+                  "statusCode": 203
+                },
+                "SUC10204": {
+                  "code": "SUC10204",
+                  "description": "The request is processed but no content is returned",
+                  "message": "NO_CONTENT",
+                  "severity": "NA",
+                  "statusCode": 204
+                },
+                "SUC10205": {
+                  "code": "SUC10205",
+                  "description": "The request is processed but no content is returned and document view needs to be reset",
+                  "message": "RESET_CONTENT",
+                  "severity": "NA",
+                  "statusCode": 205
+                },
+                "SUC10206": {
+                  "code": "SUC10206",
+                  "description": "The server is delivering only part of the resource",
+                  "message": "PARTIAL_CONTENT",
+                  "severity": "NA",
+                  "statusCode": 206
+                },
+                "SUC10207": {
+                  "code": "SUC10207",
+                  "description": "Separate response codes are returned",
+                  "message": "MULTI-STATUS",
+                  "severity": "NA",
+                  "statusCode": 207
+                },
+                "SUC10208": {
+                  "code": "SUC10208",
+                  "description": "DAV bindings have been returned in a preceding response",
+                  "message": "ALREADY_REPORTED",
+                  "severity": "NA",
+                  "statusCode": 208
+                },
+                "SUC10209": {
+                  "code": "SUC10209",
+                  "description": "DAV bindings have been returned in a preceding response",
+                  "message": "ALREADY_REPORTED",
+                  "severity": "NA",
+                  "statusCode": 209
+                },
+                "SUC10226": {
+                  "code": "SUC10226",
+                  "description": "The response is a representation of the result of one or more instance-manipulations applied to the current instance",
+                  "message": "IM_USED",
+                  "severity": "NA",
+                  "statusCode": 226
+                },
+                "SUC10300": {
+                  "code": "SUC10300",
+                  "description": "The client can choose multiple options for the resource",
+                  "message": "MULTIPLE_CHOICES",
+                  "severity": "NA",
+                  "statusCode": 300
+                },
+                "SUC10301": {
+                  "code": "SUC10301",
+                  "description": "All future requests should be redirect to the give URI",
+                  "message": "MOVED_PERMANENTLY",
+                  "severity": "NA",
+                  "statusCode": 301
+                },
+                "SUC10302": {
+                  "code": "SUC10302",
+                  "description": "Please look at (browse to) another url",
+                  "message": "FOUND",
+                  "severity": "NA",
+                  "statusCode": 302
+                },
+                "SUC10303": {
+                  "code": "SUC10303",
+                  "description": "The request can be found under another URI",
+                  "message": "SEE_OTHER",
+                  "severity": "NA",
+                  "statusCode": 303
+                },
+                "SUC10304": {
+                  "code": "SUC10304",
+                  "description": "The resource has not been modified",
+                  "message": "NOT_MODIFIED",
+                  "severity": "NA",
+                  "statusCode": 304
+                },
+                "SUC10305": {
+                  "code": "SUC10305",
+                  "description": "The resource is available only through a proxy",
+                  "message": "USE_PROXY",
+                  "severity": "NA",
+                  "statusCode": 305
+                },
+                "SUC10306": {
+                  "code": "SUC10306",
+                  "description": "Subsequent requests should use a specified proxy",
+                  "message": "SWITCH_PROXY",
+                  "severity": "NA",
+                  "statusCode": 306
+                },
+                "SUC10307": {
+                  "code": "SUC10307",
+                  "description": "The request should be repeated with another URI",
+                  "message": "TEMPORARY_REDIRECT",
+                  "severity": "NA",
+                  "statusCode": 307
+                },
+                "SUC10308": {
+                  "code": "SUC10308",
+                  "description": "The request and all future requests should be repeated with another URI",
+                  "message": "PERMANENT_REDIRECT",
+                  "severity": "NA",
+                  "statusCode": 308
+                },
+                "SUC14200": {
+                  "code": "SUC14200",
+                  "description": "Lambda native handler returned success execution.",
+                  "message": "MIDDLEWARE_OK",
+                  "severity": "NA",
+                  "statusCode": 200
+                },
+                "showDescription": true,
+                "showMessage": true,
+                "showMetadata": true
+              }
+            },
+            "plugin": {},
+            "plugins": []
+          }
+        }
+      },
+      "expect": {
+        "outcome": "response",
+        "status": 200,
+        "headers": [
+          [
+            "content-type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"runtime\":\"rust\",\"modules\":[\"serverless-core\",\"serverless-aws\"]}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0
+      },
+      "headerMode": "multi"
+    }
+  ],
+  "differences": [
+    "body",
+    "header:content-type"
+  ],
+  "substitutions": []
+}

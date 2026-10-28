@@ -1,0 +1,3421 @@
+[
+  {
+    "ledger": "C-01",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "C-01-alias-chain-multi-contract-v1",
+      "C-01-isolation-a-cp1-e02-accepted",
+      "C-01-isolation-b-cp1-e02-accepted",
+      "C-01-whole-invocation-listeners-init-v1",
+      "C-10-endpoint-source-configured-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "C-01-alias-chain-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "C-02",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "C-02-warning-severity-listeners-init-v1",
+      "D-01-missing-target-multi-contract-v1",
+      "E-01-custom-status-serializer-configured-init-v1",
+      "S-08-basic-denial-0-cp1-e02-accepted",
+      "S-08-basic-denial-1-cp1-e02-accepted",
+      "S-08-basic-denial-2-cp1-e02-accepted",
+      "S-08-basic-denial-3-cp1-e02-accepted",
+      "S-08-basic-denial-4-cp1-e02-accepted",
+      "S-08-basic-denial-5-cp1-e02-accepted",
+      "S-08-basic-denial-6-cp1-e02-accepted",
+      "T-01-validation-error-selected-plugin-init-v1",
+      "V-02-body-edges-multi-contract-v1",
+      "X-01-admin-health-denied-warm-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-01-missing-target-multi-contract-v1",
+      "V-02-body-edges-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "C-03",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "A-01-response-body-finalization-exception-sink-v1",
+      "A-01-safe-selected-stdout-multi-contract-v1",
+      "A-01-selected-audit-sink-init-v1",
+      "C-03-completion-probe-multi-contract-v1",
+      "C-03-listener-exception-listeners-init-v1",
+      "C-03-repeat-finalization-listeners-init-v1",
+      "C-03-warm-jwt-principal-not-reused-multi-contract-v1",
+      "S-12-unified-jwt-valid-missing-warm-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "A-01-safe-selected-stdout-multi-contract-v1",
+      "C-03-completion-probe-multi-contract-v1",
+      "C-03-warm-jwt-principal-not-reused-multi-contract-v1",
+      "S-12-unified-jwt-valid-missing-warm-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "C-04",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "B-01-malformed-oauth-error-loopback-multi-contract-v1",
+      "C-04-fail-open-listeners-init-v1",
+      "C-04-null-status-listeners-init-v1",
+      "C-04-return-null-status-multi-contract-v1",
+      "C-04-throw-test-exception-multi-contract-v1",
+      "S-12-alias-basic-init-v1",
+      "T-01-local-response-dispatch-selected-plugin-init-v1",
+      "X-04-malformed-0-represented-v1",
+      "X-04-malformed-1-represented-v1",
+      "X-04-malformed-2-represented-v1",
+      "X-04-malformed-3-represented-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "B-01-malformed-oauth-error-loopback-multi-contract-v1",
+      "C-04-return-null-status-multi-contract-v1",
+      "C-04-throw-test-exception-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "B-02-preflight-dispatch-cp1-e02-accepted",
+      "D-03-error-json-exception-v1",
+      "D-06-malformed-response-v1",
+      "D-06-nonobject-0-v1",
+      "D-06-nonobject-1-v1",
+      "D-06-nonobject-2-v1",
+      "L-02-alb-address-fail-open-cp1-e02-accepted",
+      "M-03-influx-null-status-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "C-05",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "C-05-retained-response-listeners-init-v1",
+      "D-01-missing-target-multi-contract-v1",
+      "S-08-basic-denial-1-cp1-e02-accepted",
+      "S-08-basic-denial-2-cp1-e02-accepted",
+      "S-08-basic-denial-3-cp1-e02-accepted",
+      "S-08-basic-denial-4-cp1-e02-accepted",
+      "S-08-basic-denial-5-cp1-e02-accepted",
+      "S-08-basic-denial-6-cp1-e02-accepted",
+      "V-02-body-edges-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-01-missing-target-multi-contract-v1",
+      "V-02-body-edges-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "S-08-basic-denial-0-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "C-06",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "C-06-body-on-0-cp1-e02-accepted",
+      "C-06-body-on-0-multi-v1",
+      "C-06-body-on-1-multi-v1",
+      "C-06-body-on-1-v1",
+      "C-06-body-on-2-multi-v1",
+      "C-06-body-on-2-v1",
+      "C-06-body-on-3-multi-v1",
+      "C-06-body-on-3-v1",
+      "C-06-body-on-4-multi-v1",
+      "C-06-body-on-4-v1",
+      "D-09-base64-expansion-below-limit-multi-contract-v1",
+      "D-09-base64-expansion-over-limit-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "C-06-body-on-0-multi-v1",
+      "C-06-body-on-1-multi-v1",
+      "C-06-body-on-2-multi-v1",
+      "C-06-body-on-3-multi-v1",
+      "C-06-body-on-4-multi-v1",
+      "D-09-base64-expansion-below-limit-multi-contract-v1",
+      "D-09-base64-expansion-over-limit-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "C-07",
+    "approvedStatus": "deferred",
+    "javaBehaviorFixtures": [
+      "C-07-malformed-stream-fallback-component-v1",
+      "C-07-stream-init-config-type-component-v1",
+      "C-07-valid-stream-no-output-component-v1"
+    ],
+    "proposedRustReachedFixtures": [],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "C-08",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "C-08-unverified-client-before-security-configured-v1",
+      "L-02-resolver-observation-supported-edge-v1",
+      "L-02-verified-client-counter-multi-contract-v1",
+      "L-02-verified-user-counter-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "C-08-unverified-client-before-security-configured-v1",
+      "L-02-verified-client-counter-multi-contract-v1",
+      "L-02-verified-user-counter-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "C-09",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "C-09-response-policy-error-counter-multi-contract-v1",
+      "C-09-response-policy-error-multi-contract-v1",
+      "D-08e-response-timeout-emf-finalization-counter-multi-contract-v1",
+      "D-09-minimum-cap-replacement-recheck-multi-contract-v1",
+      "D-09-response-policy-headers-limit-counter-multi-contract-v1",
+      "M-01-oversize-emf-completion-multi-contract-v1",
+      "S-08-basic-denial-0-cp1-e02-accepted",
+      "S-08-basic-denial-1-cp1-e02-accepted",
+      "S-08-basic-denial-2-cp1-e02-accepted",
+      "S-08-basic-denial-3-cp1-e02-accepted",
+      "S-08-basic-denial-4-cp1-e02-accepted",
+      "S-08-basic-denial-5-cp1-e02-accepted",
+      "S-08-basic-denial-6-cp1-e02-accepted"
+    ],
+    "proposedRustReachedFixtures": [
+      "C-09-response-policy-error-counter-multi-contract-v1",
+      "C-09-response-policy-error-multi-contract-v1",
+      "D-08e-response-timeout-emf-finalization-counter-multi-contract-v1",
+      "D-09-minimum-cap-replacement-recheck-multi-contract-v1",
+      "D-09-response-policy-headers-limit-counter-multi-contract-v1",
+      "M-01-oversize-emf-completion-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "B-02-denied-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "C-10",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "C-10-endpoint-source-configured-v1",
+      "C-10-no-terminal-configured-v1",
+      "C-10-self-cycle-init-v1",
+      "C-10-unknown-alias-init-v1",
+      "CFG-05-immutable-valid-snapshot-multi-contract-v1",
+      "CFG-05-static-init-retention-warm-config-v1",
+      "D-09-response-cap-minimum-4095-init-contract-v1",
+      "D-09-response-cap-minimum-4096-init-contract-v1",
+      "S-12-alias-apikey-init-v1",
+      "S-12-alias-basic-init-v1",
+      "S-12-alias-jwt-init-v1",
+      "S-12-alias-swt-init-v1",
+      "S-12-anonymous-prefix-warm-init-v1",
+      "S-12-basic-before-apikey-warm-init-v1",
+      "S-12-denied-unknown-warm-init-v1",
+      "S-12-denied-x-warm-init-v1",
+      "S-12-disabled-selected-basic-warm-init-v1",
+      "S-12-missing-basic-alias-warm-init-v1",
+      "X-02-disabled--adm-loggerGET-represented-v1",
+      "X-02-disabled--adm-loggerPOST-represented-v1",
+      "X-02-disabled--adm-server-infoGET-represented-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "A-01-mask-error-parameters-sink-init-v1",
+      "A-01-null-body-sink-init-v1",
+      "A-01-selected-audit-sink-init-v1",
+      "C-01-whole-invocation-listeners-init-v1",
+      "C-02-warning-severity-listeners-init-v1",
+      "C-03-listener-exception-listeners-init-v1",
+      "C-03-repeat-finalization-listeners-init-v1",
+      "C-04-fail-open-listeners-init-v1",
+      "C-04-null-status-listeners-init-v1",
+      "C-05-retained-response-listeners-init-v1",
+      "C-10-endpoint-source-configured-v1",
+      "C-10-no-terminal-configured-v1",
+      "C-10-self-cycle-init-v1",
+      "C-10-unknown-alias-init-v1",
+      "CFG-05-immutable-valid-snapshot-multi-contract-v1",
+      "CFG-05-static-init-retention-warm-config-v1",
+      "D-01-sdk-loopback-404-v1",
+      "D-02-sdk-loopback-finalized-v1",
+      "D-03-error-json-exception-v1",
+      "D-03-function-error-proxy-shape-v1",
+      "D-05-sdk-loopback-retry-v1",
+      "D-06-malformed-response-v1",
+      "D-07-forms-alias-represented-v1",
+      "D-07-forms-foreign-represented-v1",
+      "D-07-forms-full-represented-v1",
+      "D-07-forms-partial-represented-v1",
+      "D-07-forms-plain-represented-v1",
+      "D-07-forms-version-represented-v1",
+      "D-07-self-context-target-context-v1",
+      "D-08-independent-policy-waits-timed-v1",
+      "D-08-sdk-read-timeout-controlled-5000ms-v1",
+      "D-09-response-cap-minimum-4095-init-contract-v1",
+      "D-09-response-cap-minimum-4096-init-contract-v1",
+      "E-01-custom-status-serializer-configured-init-v1",
+      "E-01-status-metadata-escaping-configured-init-v1",
+      "E-03-body-off-0-listeners-init-v1",
+      "E-03-body-off-1-listeners-init-v1",
+      "E-03-body-off-2-listeners-init-v1",
+      "E-03-body-off-3-listeners-init-v1",
+      "E-03-body-off-4-listeners-init-v1",
+      "E-04-raw-encoded-query-listeners-init-v1",
+      "L-02-resolver-observation-supported-edge-v1",
+      "M-02-apm-loopback-sink-v1",
+      "M-02-natural-scheduled-report-sink-v1",
+      "M-03-enabled-influx-deferred-init-contract-v1",
+      "S-12-alias-apikey-init-v1",
+      "S-12-alias-basic-init-v1",
+      "S-12-alias-jwt-init-v1",
+      "S-12-alias-swt-init-v1",
+      "S-12-anonymous-prefix-warm-init-v1",
+      "S-12-basic-before-apikey-warm-init-v1",
+      "S-12-denied-unknown-warm-init-v1",
+      "S-12-denied-x-warm-init-v1",
+      "S-12-disabled-selected-basic-warm-init-v1",
+      "S-12-missing-basic-alias-warm-init-v1",
+      "S-16-loopback-bind-denial-represented-v1",
+      "T-02-no-endpoint-rule-supported-edge-v1",
+      "X-01-admin-health-denied-warm-init-v1",
+      "X-01-admin-health-warm-init-v1",
+      "X-01-local-health-warm-init-v1",
+      "X-02-disabled--adm-loggerGET-represented-v1",
+      "X-02-disabled--adm-loggerPOST-represented-v1",
+      "X-02-disabled--adm-server-infoGET-represented-v1",
+      "X-03-get-logger-warm-init-v1",
+      "X-04-empty-body-warm-init-v1",
+      "X-04-malformed-0-represented-v1",
+      "X-04-malformed-1-represented-v1",
+      "X-04-malformed-2-represented-v1",
+      "X-04-malformed-3-represented-v1",
+      "X-04-set-logger-warm-init-v1",
+      "X-05-cache-contents-warm-init-v1",
+      "X-05-missing-manager-warm-init-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "D-01-null-payload-v1",
+      "D-01-sdk-exception-v1",
+      "D-04-tail-v1"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "R-01",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "R-01-literal-duplicate-v1",
+      "R-01-literal-multi-v1",
+      "R-01a-wildcard-longest-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "R-01-literal-multi-v1",
+      "R-01a-wildcard-longest-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "R-02",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "R-02-invalid-method-multi-contract-v1",
+      "R-02-mixed-method-multi-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "R-02-invalid-method-multi-contract-v1",
+      "R-02-mixed-method-multi-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "R-01-literal-duplicate-v1",
+      "R-05-missing-route-0-v1",
+      "R-05-missing-route-1-v1",
+      "R-05-missing-route-2-v1"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "R-03",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "R-01a-wildcard-longest-multi-contract-v1",
+      "R-03-path-query-collision-multi-contract-v1",
+      "R-03-query-overwrite-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "R-01a-wildcard-longest-multi-contract-v1",
+      "R-03-path-query-collision-multi-contract-v1",
+      "R-04-template-null-multi-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "E-05-raw-path-0-cp1-e02-accepted",
+      "E-05-raw-path-1-cp1-e02-accepted",
+      "E-05-raw-path-2-cp1-e02-accepted",
+      "E-05-raw-path-3-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "R-04",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "R-04-null-path-parameters-v1",
+      "R-04-null-query-v1",
+      "R-04-template-null-multi-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "R-04-template-null-multi-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "R-05",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "D-01-missing-target-multi-contract-v1",
+      "R-05-missing-route-0-v1",
+      "R-05-missing-route-1-v1",
+      "R-05-missing-route-2-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-01-missing-target-multi-contract-v1",
+      "D-01-null-payload-v1",
+      "D-01-sdk-exception-v1",
+      "D-04-tail-v1",
+      "R-01-literal-duplicate-v1",
+      "R-03-query-overwrite-v1",
+      "R-05-missing-route-0-v1",
+      "R-05-missing-route-1-v1",
+      "R-05-missing-route-2-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "R-06",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "R-06-duplicate-only-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "R-06-duplicate-only-init-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "R-01-literal-duplicate-v1",
+      "R-03-query-overwrite-v1",
+      "R-05-missing-route-0-v1",
+      "R-05-missing-route-1-v1",
+      "R-05-missing-route-2-v1"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-01",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "B-02-denied-cp1-e02-accepted",
+      "D-01-missing-target-multi-contract-v1",
+      "D-01-sdk-exception-v1",
+      "E-01-custom-status-serializer-configured-init-v1",
+      "E-01-status-metadata-escaping-configured-init-v1",
+      "S-03-malformed-1-jks-init-v1",
+      "S-03-wrong-key-jks-init-v1",
+      "S-11-unmatched-prefix-cp1-e02-accepted"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-01-missing-target-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-02",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "E-02-nonoverlap-multi-fidelity-v1",
+      "E-02-response-cookies-v1",
+      "E-04-raw-encoded-query-listeners-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "E-02-nonoverlap-multi-fidelity-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-02a",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "E-02a-overlap-casing-conflicts-cookies-cp1-e02-accepted"
+    ],
+    "proposedRustReachedFixtures": [
+      "E-02a-overlap-casing-conflicts-cookies-cp1-e02-accepted"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "E-02-nonoverlap-multi-fidelity-v1"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-03",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "C-06-body-on-0-multi-v1",
+      "C-06-body-on-1-multi-v1",
+      "C-06-body-on-2-multi-v1",
+      "C-06-body-on-3-multi-v1",
+      "C-06-body-on-4-multi-v1",
+      "E-03-body-off-0-listeners-init-v1",
+      "E-03-body-off-1-listeners-init-v1",
+      "E-03-body-off-2-listeners-init-v1",
+      "E-03-body-off-3-listeners-init-v1",
+      "E-03-body-off-4-listeners-init-v1",
+      "E-03-response-off-0-cp1-e02-accepted",
+      "E-03-response-off-0-multi-v1",
+      "E-03-response-off-1-cp1-e02-accepted",
+      "E-03-response-off-1-multi-v1",
+      "E-03-response-off-2-cp1-e02-accepted",
+      "E-03-response-off-2-multi-v1",
+      "E-03-response-off-3-cp1-e02-accepted",
+      "E-03-response-off-3-multi-v1",
+      "E-03-response-off-4-multi-v1",
+      "E-03-response-off-4-v1",
+      "E-14-invalid-base64-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "C-06-body-on-0-multi-v1",
+      "C-06-body-on-1-multi-v1",
+      "C-06-body-on-2-multi-v1",
+      "C-06-body-on-3-multi-v1",
+      "C-06-body-on-4-multi-v1",
+      "E-03-response-off-0-multi-v1",
+      "E-03-response-off-1-multi-v1",
+      "E-03-response-off-2-multi-v1",
+      "E-03-response-off-3-multi-v1",
+      "E-03-response-off-4-multi-v1",
+      "E-14-invalid-base64-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "C-06-body-on-0-cp1-e02-accepted",
+      "C-06-body-on-1-v1",
+      "C-06-body-on-2-v1",
+      "C-06-body-on-3-v1",
+      "C-06-body-on-4-v1",
+      "D-04-tail-v1",
+      "E-14-invalid-base64-cp1-e02-accepted",
+      "V-03-body-edge-0-cp1-e02-accepted",
+      "V-03-body-edge-1-cp1-e02-accepted",
+      "V-03-body-edge-2-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-04",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "E-04-decoded-query-multi-contract-v1",
+      "E-04-raw-encoded-query-listeners-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "E-04-decoded-query-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "E-02-nonoverlap-multi-fidelity-v1",
+      "E-05-raw-path-0-cp1-e02-accepted",
+      "E-05-raw-path-1-cp1-e02-accepted",
+      "E-05-raw-path-2-cp1-e02-accepted",
+      "E-05-raw-path-3-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-05",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "E-05-bad-percent-multi-contract-v1",
+      "E-05-bad-utf8-multi-contract-v1",
+      "E-05-once-multi-contract-v1",
+      "E-05-raw-path-0-cp1-e02-accepted",
+      "E-05-raw-path-1-cp1-e02-accepted",
+      "E-05-raw-path-2-cp1-e02-accepted",
+      "E-05-raw-path-3-cp1-e02-accepted",
+      "E-05-slash-multi-contract-v1",
+      "E-05-utf8-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "E-05-bad-percent-multi-contract-v1",
+      "E-05-bad-utf8-multi-contract-v1",
+      "E-05-once-multi-contract-v1",
+      "E-05-slash-multi-contract-v1",
+      "E-05-utf8-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "R-03-query-overwrite-v1"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-06",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "B-03-lowercase-origin-represented-v1",
+      "S-01-valid-jks-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-01-valid-multi-policy-v1",
+      "S-02-expired-multi-policy-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "S-07-basic-success-0-cp1-e02-accepted",
+      "S-07-basic-success-1-cp1-e02-accepted",
+      "S-11-key-0-cp1-e02-accepted",
+      "S-11-key-1-cp1-e02-accepted",
+      "S-11-key-2-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-07",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "E-04-raw-encoded-query-listeners-init-v1",
+      "E-07-alb-discriminator-multi-contract-v1",
+      "E-14-non-alb-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "E-07-alb-discriminator-multi-contract-v1",
+      "E-14-non-alb-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "E-10-mapped-metadata-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-08",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "E-08-unverified-authorizer-absent-multi-contract-v1",
+      "E-08-verified-authorizer-multi-contract-v1",
+      "S-01-valid-jks-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "E-08-unverified-authorizer-absent-multi-contract-v1",
+      "E-08-verified-authorizer-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-09",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "CFG-05-missing-stage-init-report-contract-v1",
+      "E-09-stage-empty-init-contract-v1",
+      "E-09-stage-missing-init-contract-v1",
+      "E-10-mapped-metadata-cp1-e02-accepted"
+    ],
+    "proposedRustReachedFixtures": [
+      "CFG-05-missing-stage-init-report-contract-v1",
+      "E-09-stage-empty-init-contract-v1",
+      "E-09-stage-missing-init-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "E-10-mapped-metadata-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-10",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "C-06-body-on-0-multi-v1",
+      "C-06-body-on-1-multi-v1",
+      "C-06-body-on-2-multi-v1",
+      "C-06-body-on-3-multi-v1",
+      "C-06-body-on-4-multi-v1",
+      "D-03-handled-multi-contract-v1",
+      "D-03-unhandled-multi-contract-v1",
+      "E-03-response-off-0-multi-v1",
+      "E-03-response-off-1-multi-v1",
+      "E-03-response-off-2-multi-v1",
+      "E-03-response-off-3-multi-v1",
+      "E-03-response-off-4-multi-v1",
+      "E-04-decoded-query-multi-contract-v1",
+      "E-10-mapped-metadata-cp1-e02-accepted",
+      "L-01-seconds-reset-multi-v1",
+      "L-01-server-exhaustion-multi-v1",
+      "M-01-per-request-emf-multi-contract-v1",
+      "R-01-literal-multi-v1",
+      "S-01a-malformed-multi-policy-v1",
+      "S-01a-wrong-key-multi-policy-v1",
+      "S-07-valid-multi-policy-0-v1",
+      "S-07-valid-multi-policy-1-v1",
+      "S-09-anonymous-multi-policy-v1",
+      "S-10-bearer-gate-multi-policy-v1",
+      "S-11-unmatched-multi-policy-v1",
+      "S-11-valid-multi-policy-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "B-02a-allowed-multi-policy-v1",
+      "C-06-body-on-0-multi-v1",
+      "C-06-body-on-1-multi-v1",
+      "C-06-body-on-2-multi-v1",
+      "C-06-body-on-3-multi-v1",
+      "C-06-body-on-4-multi-v1",
+      "E-03-response-off-0-multi-v1",
+      "E-03-response-off-1-multi-v1",
+      "E-03-response-off-2-multi-v1",
+      "E-03-response-off-3-multi-v1",
+      "E-03-response-off-4-multi-v1",
+      "E-04-decoded-query-multi-contract-v1",
+      "E-05-once-multi-contract-v1",
+      "E-05-slash-multi-contract-v1",
+      "E-05-utf8-multi-contract-v1",
+      "L-01-seconds-reset-multi-v1",
+      "L-01-server-exhaustion-multi-v1",
+      "R-01-literal-multi-v1",
+      "R-04-template-null-multi-v1",
+      "S-01-valid-multi-policy-v1",
+      "S-07-valid-multi-policy-0-v1",
+      "S-07-valid-multi-policy-1-v1",
+      "S-09-anonymous-multi-policy-v1",
+      "S-10-bearer-gate-multi-policy-v1",
+      "S-11-unmatched-multi-policy-v1",
+      "S-11-valid-multi-policy-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-11",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "E-04-raw-encoded-query-listeners-init-v1",
+      "E-10-configured-metadata-multi-contract-v1",
+      "L-02-remote-address-explicit-identity-xff-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "E-10-configured-metadata-multi-contract-v1",
+      "L-02-remote-address-explicit-identity-xff-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "E-10-mapped-metadata-cp1-e02-accepted",
+      "L-02-alb-address-fail-open-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-12",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "C-06-body-on-0-multi-v1",
+      "C-06-body-on-1-multi-v1",
+      "C-06-body-on-2-multi-v1",
+      "C-06-body-on-3-multi-v1",
+      "C-06-body-on-4-multi-v1",
+      "E-03-body-off-0-listeners-init-v1",
+      "E-03-body-off-1-listeners-init-v1",
+      "E-03-body-off-2-listeners-init-v1",
+      "E-03-body-off-3-listeners-init-v1",
+      "E-03-body-off-4-listeners-init-v1",
+      "E-03-response-off-0-multi-v1",
+      "E-03-response-off-1-multi-v1",
+      "E-03-response-off-2-multi-v1",
+      "E-03-response-off-3-multi-v1",
+      "E-03-response-off-4-multi-v1",
+      "E-12-body-absent-cp1-e02-accepted",
+      "E-12-response-body-absent-cp1-e02-accepted"
+    ],
+    "proposedRustReachedFixtures": [
+      "C-06-body-on-0-multi-v1",
+      "C-06-body-on-1-multi-v1",
+      "C-06-body-on-2-multi-v1",
+      "C-06-body-on-3-multi-v1",
+      "C-06-body-on-4-multi-v1",
+      "E-03-response-off-0-multi-v1",
+      "E-03-response-off-1-multi-v1",
+      "E-03-response-off-2-multi-v1",
+      "E-03-response-off-3-multi-v1",
+      "E-03-response-off-4-multi-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "E-02-response-cookies-v1",
+      "E-03-response-off-0-cp1-e02-accepted",
+      "E-03-response-off-1-cp1-e02-accepted",
+      "E-03-response-off-2-cp1-e02-accepted",
+      "E-03-response-off-3-cp1-e02-accepted",
+      "E-03-response-off-4-v1",
+      "V-02-body-edge-0-cp1-e02-accepted",
+      "V-02-body-edge-1-cp1-e02-accepted",
+      "V-02-body-edge-2-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-13",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "C-01-isolation-a-cp1-e02-accepted",
+      "C-01-isolation-b-cp1-e02-accepted",
+      "E-13-multi-auth-invisible-represented-v1",
+      "E-13-warm-single-value-config-log-once-contract-v1",
+      "S-01-valid-multi-policy-v1",
+      "S-02-expired-multi-policy-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "A-01-response-body-finalization-exception-sink-v1",
+      "B-02-denied-cp1-e02-accepted",
+      "B-02-preflight-dispatch-cp1-e02-accepted",
+      "B-03-exact-origin-cp1-e02-accepted",
+      "B-03-lowercase-origin-represented-v1",
+      "B-04-header-prefix-cp1-e02-accepted",
+      "B-05-null-response-headers-cp1-e02-accepted",
+      "C-01-isolation-a-cp1-e02-accepted",
+      "C-01-isolation-b-cp1-e02-accepted",
+      "C-06-body-on-0-cp1-e02-accepted",
+      "C-06-body-on-1-v1",
+      "C-06-body-on-2-v1",
+      "C-06-body-on-3-v1",
+      "C-06-body-on-4-v1",
+      "D-01-typed-sdk-0-v1",
+      "D-01-typed-sdk-1-v1",
+      "D-01-typed-sdk-2-v1",
+      "D-01-typed-sdk-3-v1",
+      "D-03-handled-proxy-payload-cp1-e02-accepted",
+      "D-06-coerced-response-fields-cp1-e02-accepted",
+      "D-06-nonobject-0-v1",
+      "D-06-nonobject-1-v1",
+      "D-06-nonobject-2-v1",
+      "D-06-status-out-of-range-v1",
+      "D-09-oversize-response-cp1-e02-accepted",
+      "E-02-response-cookies-v1",
+      "E-03-response-off-0-cp1-e02-accepted",
+      "E-03-response-off-1-cp1-e02-accepted",
+      "E-03-response-off-2-cp1-e02-accepted",
+      "E-03-response-off-3-cp1-e02-accepted",
+      "E-03-response-off-4-v1",
+      "E-05-raw-path-0-cp1-e02-accepted",
+      "E-05-raw-path-1-cp1-e02-accepted",
+      "E-05-raw-path-2-cp1-e02-accepted",
+      "E-05-raw-path-3-cp1-e02-accepted",
+      "E-10-mapped-metadata-cp1-e02-accepted",
+      "E-12-body-absent-cp1-e02-accepted",
+      "E-12-response-body-absent-cp1-e02-accepted",
+      "E-13-warm-single-value-config-log-once-contract-v1",
+      "E-14-invalid-base64-cp1-e02-accepted",
+      "H-01-no-service-loopback-v1",
+      "H-03-http-0-loopback-v1",
+      "H-03-http-1-loopback-v1",
+      "H-03-http-2-loopback-v1",
+      "H-03-http-3-loopback-v1",
+      "H-03-http-4-loopback-v1",
+      "H-04-method-HEAD-loopback-v1",
+      "H-04-method-get-loopback-v1",
+      "H-04-unknown-service-loopback-v1",
+      "L-01-address-fallback-counter-recreated-cp1-e02-accepted",
+      "L-02-alb-address-fail-open-cp1-e02-accepted",
+      "L-02-synthetic-address-counter-configured-v1",
+      "Q-02-generated-null-map-cp1-e02-accepted",
+      "R-04-null-path-parameters-v1",
+      "R-04-null-query-v1",
+      "S-07-basic-success-0-cp1-e02-accepted",
+      "S-07-basic-success-1-cp1-e02-accepted",
+      "S-08-basic-denial-0-cp1-e02-accepted",
+      "S-08-basic-denial-1-cp1-e02-accepted",
+      "S-08-basic-denial-2-cp1-e02-accepted",
+      "S-08-basic-denial-3-cp1-e02-accepted",
+      "S-08-basic-denial-4-cp1-e02-accepted",
+      "S-08-basic-denial-5-cp1-e02-accepted",
+      "S-08-basic-denial-6-cp1-e02-accepted",
+      "S-09-anonymous-cp1-e02-accepted",
+      "S-09-anonymous-denied-cp1-e02-accepted",
+      "S-10-bearer-policy-only-cp1-e02-accepted",
+      "S-11-key-0-cp1-e02-accepted",
+      "S-11-key-1-cp1-e02-accepted",
+      "S-11-key-2-cp1-e02-accepted",
+      "S-11-unmatched-prefix-cp1-e02-accepted",
+      "T-01-missing-executor-supported-edge-v1",
+      "T-02-missing-executor-supported-edge-v1",
+      "V-01-spec-denial-0-cp1-e02-accepted",
+      "V-01-spec-denial-1-cp1-e02-accepted",
+      "V-02-body-edge-0-cp1-e02-accepted",
+      "V-02-body-edge-1-cp1-e02-accepted",
+      "V-02-body-edge-2-cp1-e02-accepted",
+      "V-02-nullable-enabled-cp1-e02-accepted",
+      "V-02-nullable-skip-0-cp1-e02-accepted",
+      "V-02-nullable-skip-1-cp1-e02-accepted",
+      "V-02-parameters-0-cp1-e02-accepted",
+      "V-02-parameters-1-cp1-e02-accepted",
+      "V-02-parameters-2-cp1-e02-accepted",
+      "V-02-parameters-3-cp1-e02-accepted",
+      "V-02-valid-json-cp1-e02-accepted",
+      "V-03-body-edge-0-cp1-e02-accepted",
+      "V-03-body-edge-1-cp1-e02-accepted",
+      "V-03-body-edge-2-cp1-e02-accepted",
+      "V-03-json-object-cp1-e02-accepted",
+      "X-02-java-info-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-14",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "E-14-decoded-utf8-at-cap-multi-contract-v1",
+      "E-14-decoded-utf8-over-cap-multi-contract-v1",
+      "E-14-invalid-base64-cp1-e02-accepted",
+      "E-14-invalid-base64-multi-contract-v1",
+      "E-14-invoke-envelope-over-cap-multi-contract-v1",
+      "R-02-invalid-method-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "E-14-decoded-utf8-at-cap-multi-contract-v1",
+      "E-14-decoded-utf8-over-cap-multi-contract-v1",
+      "E-14-invalid-base64-multi-contract-v1",
+      "E-14-invoke-envelope-over-cap-multi-contract-v1",
+      "E-14-non-alb-multi-contract-v1",
+      "R-02-invalid-method-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-10a",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "E-10-configured-metadata-multi-contract-v1",
+      "E-10-mapped-metadata-cp1-e02-accepted"
+    ],
+    "proposedRustReachedFixtures": [
+      "E-10-configured-metadata-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "E-10-mapped-metadata-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-10b",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "E-10-configured-metadata-multi-contract-v1",
+      "E-10-mapped-metadata-cp1-e02-accepted"
+    ],
+    "proposedRustReachedFixtures": [
+      "E-10-configured-metadata-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "E-10-mapped-metadata-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-10c",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "E-10-configured-metadata-multi-contract-v1",
+      "E-10-mapped-metadata-cp1-e02-accepted"
+    ],
+    "proposedRustReachedFixtures": [
+      "E-10-configured-metadata-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "E-10-mapped-metadata-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-10d",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "E-10-configured-metadata-multi-contract-v1",
+      "E-10-mapped-metadata-cp1-e02-accepted"
+    ],
+    "proposedRustReachedFixtures": [
+      "E-10-configured-metadata-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "E-10-mapped-metadata-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-10e",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "E-10-configured-metadata-multi-contract-v1",
+      "E-10-mapped-metadata-cp1-e02-accepted"
+    ],
+    "proposedRustReachedFixtures": [
+      "E-10-configured-metadata-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "E-10-mapped-metadata-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-10f",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "E-10-configured-metadata-multi-contract-v1",
+      "E-10-mapped-metadata-cp1-e02-accepted"
+    ],
+    "proposedRustReachedFixtures": [
+      "E-10-configured-metadata-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "E-10-mapped-metadata-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-10g",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "E-10-mapped-metadata-cp1-e02-accepted"
+    ],
+    "proposedRustReachedFixtures": [
+      "E-10-configured-metadata-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "E-10-mapped-metadata-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "E-10h",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "E-10-mapped-metadata-cp1-e02-accepted",
+      "R-02-mixed-method-multi-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "R-02-mixed-method-multi-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "E-10-mapped-metadata-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "D-01",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "CFG-02-sdk-netty-trust-boundary-represented-v1",
+      "D-01-missing-target-multi-contract-v1",
+      "D-01-null-payload-v1",
+      "D-01-sdk-exception-v1",
+      "D-01-sdk-loopback-404-v1",
+      "D-01-typed-sdk-0-v1",
+      "D-01-typed-sdk-1-v1",
+      "D-01-typed-sdk-2-v1",
+      "D-01-typed-sdk-3-v1",
+      "D-08-sdk-read-timeout-controlled-5000ms-v1",
+      "E-05-bad-percent-multi-contract-v1",
+      "E-05-bad-utf8-multi-contract-v1",
+      "E-05-once-multi-contract-v1",
+      "E-05-slash-multi-contract-v1",
+      "E-05-utf8-multi-contract-v1",
+      "M-01-gateway-error-emf-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-01-missing-target-multi-contract-v1",
+      "M-01-gateway-error-emf-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "R-05-missing-route-0-v1",
+      "R-05-missing-route-1-v1",
+      "R-05-missing-route-2-v1"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "D-02",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "D-02-sdk-loopback-finalized-v1",
+      "T-01-T-02-native-cel-body-multi-contract-v1",
+      "T-01-metadata-mutations-selected-plugin-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "T-01-T-02-native-cel-body-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "D-03",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "D-03-D-04-safe-metadata-no-log-tail-multi-contract-v1",
+      "D-03-error-json-exception-v1",
+      "D-03-function-error-proxy-shape-v1",
+      "D-03-handled-multi-contract-v1",
+      "D-03-handled-proxy-payload-cp1-e02-accepted",
+      "D-03-unhandled-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-03-D-04-safe-metadata-no-log-tail-multi-contract-v1",
+      "D-03-handled-multi-contract-v1",
+      "D-03-unhandled-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "D-04",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "D-02-sdk-loopback-finalized-v1",
+      "D-03-D-04-safe-metadata-no-log-tail-multi-contract-v1",
+      "D-04-log-type-multi-contract-v1",
+      "D-04-tail-v1",
+      "M-01-per-request-emf-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-03-D-04-safe-metadata-no-log-tail-multi-contract-v1",
+      "D-04-log-type-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "D-05",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "D-01-sdk-loopback-404-v1",
+      "D-05-sdk-loopback-retry-v1",
+      "D-08-sdk-read-timeout-controlled-5000ms-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-06-typed-sdk-0-multi-contract-v1",
+      "D-06-typed-sdk-1-multi-contract-v1",
+      "D-06-typed-sdk-2-multi-contract-v1",
+      "D-06-typed-sdk-3-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "D-01-sdk-exception-v1",
+      "D-01-typed-sdk-0-v1",
+      "D-01-typed-sdk-1-v1",
+      "D-01-typed-sdk-2-v1",
+      "D-01-typed-sdk-3-v1"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "D-06",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "D-06-coerced-response-fields-cp1-e02-accepted",
+      "D-06-malformed-response-v1",
+      "D-06-nonobject-0-v1",
+      "D-06-nonobject-1-v1",
+      "D-06-nonobject-2-v1",
+      "D-06-status-out-of-range-v1",
+      "D-06-typed-sdk-0-multi-contract-v1",
+      "D-06-typed-sdk-1-multi-contract-v1",
+      "D-06-typed-sdk-2-multi-contract-v1",
+      "D-06-typed-sdk-3-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-06-typed-sdk-0-multi-contract-v1",
+      "D-06-typed-sdk-1-multi-contract-v1",
+      "D-06-typed-sdk-2-multi-contract-v1",
+      "D-06-typed-sdk-3-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "D-01-null-payload-v1",
+      "D-01-sdk-exception-v1",
+      "D-01-typed-sdk-0-v1",
+      "D-01-typed-sdk-1-v1",
+      "D-01-typed-sdk-2-v1",
+      "D-01-typed-sdk-3-v1"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "D-07",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "D-07-account-conflict-init-contract-v1",
+      "D-07-caller-cannot-select-target-multi-contract-v1",
+      "D-07-forms-alias-represented-v1",
+      "D-07-forms-foreign-represented-v1",
+      "D-07-forms-full-represented-v1",
+      "D-07-forms-partial-represented-v1",
+      "D-07-forms-plain-represented-v1",
+      "D-07-forms-version-represented-v1",
+      "D-07-region-conflict-init-contract-v1",
+      "D-07-self-arn-alias-init-contract-v1",
+      "D-07-self-arn-version-init-contract-v1",
+      "D-07-self-context-target-context-v1",
+      "D-07-self-name-alias-init-contract-v1",
+      "D-07-self-name-init-contract-v1",
+      "D-07-self-name-version-init-contract-v1",
+      "D-08-independent-policy-waits-timed-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-07-account-conflict-init-contract-v1",
+      "D-07-caller-cannot-select-target-multi-contract-v1",
+      "D-07-region-conflict-init-contract-v1",
+      "D-07-self-arn-alias-init-contract-v1",
+      "D-07-self-arn-version-init-contract-v1",
+      "D-07-self-name-alias-init-contract-v1",
+      "D-07-self-name-init-contract-v1",
+      "D-07-self-name-version-init-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "D-08",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "D-08-absolute-cross-stage-budget-multi-contract-v1",
+      "D-08-independent-policy-waits-timed-v1",
+      "D-08-ingress-hard-limit-minimum-multi-contract-v1",
+      "D-08-sdk-read-timeout-controlled-5000ms-v1",
+      "D-08-zero-remaining-multi-contract-v1",
+      "D-08a-request-bounded-work-multi-contract-v1",
+      "D-08b-response-bounded-work-multi-contract-v1",
+      "D-08c-blocking-capacity-two-callers-multi-contract-v1",
+      "H-04-shared-http-deadline-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-08-absolute-cross-stage-budget-multi-contract-v1",
+      "D-08-ingress-hard-limit-minimum-multi-contract-v1",
+      "D-08-zero-remaining-multi-contract-v1",
+      "D-08a-request-bounded-work-multi-contract-v1",
+      "D-08b-response-bounded-work-multi-contract-v1",
+      "D-08c-blocking-capacity-two-callers-multi-contract-v1",
+      "H-04-shared-http-deadline-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "D-09",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "D-09-base64-expansion-below-limit-multi-contract-v1",
+      "D-09-base64-expansion-over-limit-multi-contract-v1",
+      "D-09-escaping-limit-multi-contract-v1",
+      "D-09-minimum-cap-replacement-recheck-multi-contract-v1",
+      "D-09-oversize-response-cp1-e02-accepted",
+      "D-09-response-cap-minimum-4095-init-contract-v1",
+      "D-09-response-cap-minimum-4096-init-contract-v1",
+      "D-09-response-policy-headers-limit-counter-multi-contract-v1",
+      "D-09-response-policy-headers-limit-multi-contract-v1",
+      "D-09-serialized-response-over-limit-multi-contract-v1",
+      "M-01-oversize-emf-completion-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-09-base64-expansion-below-limit-multi-contract-v1",
+      "D-09-base64-expansion-over-limit-multi-contract-v1",
+      "D-09-escaping-limit-multi-contract-v1",
+      "D-09-minimum-cap-replacement-recheck-multi-contract-v1",
+      "D-09-response-cap-minimum-4095-init-contract-v1",
+      "D-09-response-cap-minimum-4096-init-contract-v1",
+      "D-09-response-policy-headers-limit-counter-multi-contract-v1",
+      "D-09-response-policy-headers-limit-multi-contract-v1",
+      "D-09-serialized-response-over-limit-multi-contract-v1",
+      "M-01-oversize-emf-completion-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "D-08a",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "D-08-absolute-cross-stage-budget-multi-contract-v1",
+      "D-08-independent-policy-waits-timed-v1",
+      "D-08-ingress-hard-limit-minimum-multi-contract-v1",
+      "D-08a-request-bounded-work-multi-contract-v1",
+      "H-04-shared-http-deadline-multi-contract-v1",
+      "M-01-request-timeout-emf-completion-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-08-absolute-cross-stage-budget-multi-contract-v1",
+      "D-08-ingress-hard-limit-minimum-multi-contract-v1",
+      "D-08a-request-bounded-work-multi-contract-v1",
+      "H-04-shared-http-deadline-multi-contract-v1",
+      "M-01-request-timeout-emf-completion-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "D-08b",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "D-08-absolute-cross-stage-budget-multi-contract-v1",
+      "D-08-independent-policy-waits-timed-v1",
+      "D-08b-response-bounded-work-multi-contract-v1",
+      "D-08c-blocking-capacity-two-callers-multi-contract-v1",
+      "D-08e-response-timeout-emf-finalization-counter-multi-contract-v1",
+      "D-08e-response-timeout-emf-finalization-multi-contract-v1",
+      "H-04-shared-http-deadline-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-08-absolute-cross-stage-budget-multi-contract-v1",
+      "D-08b-response-bounded-work-multi-contract-v1",
+      "D-08c-blocking-capacity-two-callers-multi-contract-v1",
+      "D-08e-response-timeout-emf-finalization-counter-multi-contract-v1",
+      "D-08e-response-timeout-emf-finalization-multi-contract-v1",
+      "H-04-shared-http-deadline-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "D-08c",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "D-08-independent-policy-waits-timed-v1",
+      "D-08c-blocking-capacity-two-callers-multi-contract-v1",
+      "D-08c-blocking-response-lease-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-08c-blocking-capacity-two-callers-multi-contract-v1",
+      "D-08c-blocking-response-lease-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "D-08d",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "D-08-independent-policy-waits-timed-v1",
+      "D-08c-blocking-response-lease-multi-contract-v1",
+      "D-08e-response-timeout-emf-finalization-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-08c-blocking-response-lease-multi-contract-v1",
+      "D-08e-response-timeout-emf-finalization-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "D-08e",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "A-01-response-body-finalization-exception-sink-v1",
+      "C-03-listener-exception-listeners-init-v1",
+      "D-08-sdk-read-timeout-controlled-5000ms-v1",
+      "D-08e-response-timeout-emf-finalization-counter-multi-contract-v1",
+      "D-08e-response-timeout-emf-finalization-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-08e-response-timeout-emf-finalization-counter-multi-contract-v1",
+      "D-08e-response-timeout-emf-finalization-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "D-08f",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "D-08f-synchronous-jwks-represented-v1",
+      "S-13c-detached-refresh-cache-publish-multi-contract-v1",
+      "S-13c-java-synchronous-zero-budget-represented-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-13c-detached-refresh-cache-publish-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "H-01",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "H-01-no-service-loopback-v1",
+      "H-03-delete-multi-contract-v1",
+      "H-03-get-multi-contract-v1",
+      "H-03-http-0-loopback-v1",
+      "H-03-http-1-loopback-v1",
+      "H-03-http-2-loopback-v1",
+      "H-03-http-3-loopback-v1",
+      "H-03-http-4-loopback-v1",
+      "H-03-patch-multi-contract-v1",
+      "H-03-post-multi-contract-v1",
+      "H-03-put-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "H-03-delete-multi-contract-v1",
+      "H-03-get-multi-contract-v1",
+      "H-03-patch-multi-contract-v1",
+      "H-03-post-multi-contract-v1",
+      "H-03-put-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "H-02",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "H-03-delete-multi-contract-v1",
+      "H-03-get-multi-contract-v1",
+      "H-03-http-0-loopback-v1",
+      "H-03-http-1-loopback-v1",
+      "H-03-http-2-loopback-v1",
+      "H-03-http-3-loopback-v1",
+      "H-03-http-4-loopback-v1",
+      "H-03-patch-multi-contract-v1",
+      "H-03-post-multi-contract-v1",
+      "H-03-put-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "H-03-delete-multi-contract-v1",
+      "H-03-get-multi-contract-v1",
+      "H-03-patch-multi-contract-v1",
+      "H-03-post-multi-contract-v1",
+      "H-03-put-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "H-03",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "CFG-02-loopback-jks-tls-represented-v1",
+      "H-03-delete-multi-contract-v1",
+      "H-03-get-multi-contract-v1",
+      "H-03-http-0-loopback-v1",
+      "H-03-http-1-loopback-v1",
+      "H-03-http-2-loopback-v1",
+      "H-03-http-3-loopback-v1",
+      "H-03-http-4-loopback-v1",
+      "H-03-patch-multi-contract-v1",
+      "H-03-post-multi-contract-v1",
+      "H-03-put-multi-contract-v1",
+      "H-04-loopback-test-refused-represented-v1",
+      "H-04-loopback-test-slow-represented-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "H-03-delete-multi-contract-v1",
+      "H-03-get-multi-contract-v1",
+      "H-03-patch-multi-contract-v1",
+      "H-03-post-multi-contract-v1",
+      "H-03-put-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "H-04",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "H-04-already-failed-router-component-v1",
+      "H-04-loopback-test-refused-represented-v1",
+      "H-04-loopback-test-slow-represented-v1",
+      "H-04-method-HEAD-loopback-v1",
+      "H-04-method-get-loopback-v1",
+      "H-04-shared-http-deadline-multi-contract-v1",
+      "H-04-transport-refused-multi-contract-v1",
+      "H-04-transport-slow-multi-contract-v1",
+      "H-04-unknown-service-loopback-v1",
+      "H-04-unknown-service-multi-contract-v1",
+      "H-04-unsupported-HEAD-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "H-04-already-failed-router-component-v1",
+      "H-04-shared-http-deadline-multi-contract-v1",
+      "H-04-transport-refused-multi-contract-v1",
+      "H-04-transport-slow-multi-contract-v1",
+      "H-04-unknown-service-multi-contract-v1",
+      "H-04-unsupported-HEAD-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-01",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "C-03-warm-jwt-principal-not-reused-multi-contract-v1",
+      "E-13-multi-auth-invisible-represented-v1",
+      "S-01-valid-jks-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "C-03-warm-jwt-principal-not-reused-multi-contract-v1",
+      "S-01-valid-multi-policy-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-02",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "S-02-expired-jks-init-v1",
+      "S-02-ignore-expiry-warm-warm-jks-init-v1",
+      "S-02-skew-0-warm-jks-init-v1",
+      "S-02-skew-1-warm-jks-init-v1",
+      "S-18-cached-expiry-warm-jks-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-02-expired-multi-policy-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-03",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "S-03-hmac-rsa-rejection-generated-v1",
+      "S-03-malformed-0-jks-init-v1",
+      "S-03-malformed-1-jks-init-v1",
+      "S-03-malformed-2-jks-init-v1",
+      "S-03-rs512-jks-init-v1",
+      "S-03-wrong-key-jks-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-01a-malformed-multi-policy-v1",
+      "S-01a-wrong-key-multi-policy-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-04",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "S-04-issuer-not-enforced-jks-init-v1",
+      "S-04-provider-explicit-multi-contract-v1",
+      "S-04-provider-explicit-warm-jks-init-v1",
+      "S-04-provider-path-0-multi-contract-v1",
+      "S-04-provider-path-0-warm-jks-init-v1",
+      "S-04-provider-path-1-multi-contract-v1",
+      "S-04-provider-path-1-warm-jks-init-v1",
+      "S-04-provider-path-2-multi-contract-v1",
+      "S-04-provider-path-2-warm-jks-init-v1",
+      "S-04-wrong-audience-jks-init-v1",
+      "S-04-wrong-audience-multi-contract-v1",
+      "S-12-unified-jwt-valid-missing-warm-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-04-provider-explicit-multi-contract-v1",
+      "S-04-provider-path-0-multi-contract-v1",
+      "S-04-provider-path-1-multi-contract-v1",
+      "S-04-provider-path-2-multi-contract-v1",
+      "S-04-wrong-audience-multi-contract-v1",
+      "S-04a-matching-issuer-multi-contract-v1",
+      "S-12-unified-jwt-valid-missing-warm-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-05",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "S-05-primary-0-warm-jks-init-v1",
+      "S-05-primary-1-warm-jks-init-v1",
+      "S-05-primary-2-warm-jks-init-v1",
+      "S-05-primary-3-warm-jks-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-05-any-match-multi-contract-v1",
+      "S-05-denied-multi-contract-v1",
+      "S-05-no-required-multi-contract-v1",
+      "S-05-scope-list-multi-contract-v1",
+      "S-05-scope-string-multi-contract-v1",
+      "S-05-scp-list-multi-contract-v1",
+      "S-05-scp-string-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-06",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "S-06-secondary-0-dual-token-multi-contract-v1",
+      "S-06-secondary-0-warm-jks-init-v1",
+      "S-06-secondary-1-dual-token-multi-contract-v1",
+      "S-06-secondary-1-warm-jks-init-v1",
+      "S-06-secondary-forged-read-claims-multi-contract-v1",
+      "S-06-secondary-invalid-0-dual-token-multi-contract-v1",
+      "S-06-secondary-invalid-0-warm-jks-init-v1",
+      "S-06-secondary-invalid-1-dual-token-multi-contract-v1",
+      "S-06-secondary-invalid-1-warm-jks-init-v1",
+      "S-06-secondary-scope-list-multi-contract-v1",
+      "S-06-secondary-scope-string-multi-contract-v1",
+      "S-06-secondary-scp-string-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-06-secondary-0-dual-token-multi-contract-v1",
+      "S-06-secondary-1-dual-token-multi-contract-v1",
+      "S-06-secondary-forged-read-claims-multi-contract-v1",
+      "S-06-secondary-invalid-0-dual-token-multi-contract-v1",
+      "S-06-secondary-invalid-1-dual-token-multi-contract-v1",
+      "S-06-secondary-scope-list-multi-contract-v1",
+      "S-06-secondary-scope-string-multi-contract-v1",
+      "S-06-secondary-scp-string-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-07",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "S-07-basic-success-0-cp1-e02-accepted",
+      "S-07-basic-success-1-cp1-e02-accepted",
+      "S-16-before-bind-0-deferred-init-v1",
+      "S-16-before-bind-1-deferred-init-v1",
+      "S-16-before-bind-2-deferred-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-07-valid-multi-policy-0-v1",
+      "S-07-valid-multi-policy-1-v1",
+      "S-07a-authenticated-info-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "S-08-basic-denial-0-cp1-e02-accepted",
+      "S-08-basic-denial-1-cp1-e02-accepted",
+      "S-08-basic-denial-2-cp1-e02-accepted",
+      "S-08-basic-denial-3-cp1-e02-accepted",
+      "S-08-basic-denial-4-cp1-e02-accepted",
+      "S-08-basic-denial-5-cp1-e02-accepted",
+      "S-08-basic-denial-6-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-08",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "S-08-basic-denial-0-cp1-e02-accepted",
+      "S-08-basic-denial-1-cp1-e02-accepted",
+      "S-08-basic-denial-2-cp1-e02-accepted",
+      "S-08-basic-denial-3-cp1-e02-accepted",
+      "S-08-basic-denial-4-cp1-e02-accepted",
+      "S-08-basic-denial-5-cp1-e02-accepted",
+      "S-08-basic-denial-6-cp1-e02-accepted",
+      "S-08-basic-failures-warm-multi-contract-v1",
+      "S-08-missing-basic-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-08-basic-failures-warm-multi-contract-v1",
+      "S-08-missing-basic-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-09",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "S-09-anonymous-cp1-e02-accepted",
+      "S-09-anonymous-denied-cp1-e02-accepted"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-09-anonymous-multi-policy-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-10",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "S-10-bearer-policy-only-cp1-e02-accepted"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-10-bearer-gate-multi-policy-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-11",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "S-11-key-0-cp1-e02-accepted",
+      "S-11-key-1-cp1-e02-accepted",
+      "S-11-key-2-cp1-e02-accepted",
+      "S-11-unmatched-multi-policy-v1",
+      "S-11-unmatched-prefix-cp1-e02-accepted",
+      "S-12-unified-apikey-valid-denied-warm-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-11-unmatched-multi-policy-v1",
+      "S-11-valid-multi-policy-v1",
+      "S-12-unified-apikey-valid-denied-warm-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-12",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "S-04-provider-explicit-warm-jks-init-v1",
+      "S-12-alias-apikey-init-v1",
+      "S-12-alias-basic-init-v1",
+      "S-12-alias-jwt-init-v1",
+      "S-12-alias-swt-init-v1",
+      "S-12-anonymous-prefix-warm-init-v1",
+      "S-12-basic-anonymous-prefix-multi-contract-v1",
+      "S-12-basic-before-apikey-warm-init-v1",
+      "S-12-denied-unknown-multi-contract-v1",
+      "S-12-denied-unknown-warm-init-v1",
+      "S-12-denied-x-multi-contract-v1",
+      "S-12-denied-x-warm-init-v1",
+      "S-12-disabled-selected-basic-multi-contract-v1",
+      "S-12-disabled-selected-basic-warm-init-v1",
+      "S-12-jwt-apikey-authorization-precedence-warm-multi-contract-v1",
+      "S-12-missing-basic-alias-warm-init-v1",
+      "S-12-unified-apikey-valid-denied-warm-multi-contract-v1",
+      "S-12-unified-jwt-valid-missing-warm-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-12-basic-anonymous-prefix-multi-contract-v1",
+      "S-12-denied-unknown-multi-contract-v1",
+      "S-12-denied-x-multi-contract-v1",
+      "S-12-jwt-apikey-authorization-precedence-warm-multi-contract-v1",
+      "S-12-unified-apikey-valid-denied-warm-multi-contract-v1",
+      "S-12-unified-jwt-valid-missing-warm-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-13",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "D-08f-synchronous-jwks-represented-v1",
+      "S-04-wrong-audience-multi-contract-v1",
+      "S-06-secondary-forged-read-claims-multi-contract-v1",
+      "S-13-S-18-rotation-retention-multi-contract-v1",
+      "S-13-algorithm-hmac-no-refresh-multi-contract-v1",
+      "S-13-key-rotation-warm-jks-init-v1",
+      "S-13-normalized-service-set-cooldown-multi-contract-v1",
+      "S-13a-bootstrap-records-cooldown-multi-contract-v1",
+      "S-13a-failed-refresh-cooldown-multi-contract-v1",
+      "S-13a-java-no-cooldown-represented-v1",
+      "S-13a-successful-fetch-cooldown-multi-contract-v1",
+      "S-13b-java-independent-fetches-represented-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-04-wrong-audience-multi-contract-v1",
+      "S-04a-wrong-issuer-multi-contract-v1",
+      "S-06-secondary-forged-read-claims-multi-contract-v1",
+      "S-13-S-18-rotation-retention-multi-contract-v1",
+      "S-13-algorithm-hmac-no-refresh-multi-contract-v1",
+      "S-13-normalized-service-set-cooldown-multi-contract-v1",
+      "S-13a-bootstrap-records-cooldown-multi-contract-v1",
+      "S-13a-failed-refresh-cooldown-multi-contract-v1",
+      "S-13a-successful-fetch-cooldown-multi-contract-v1",
+      "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+      "S-17-future-nbf-120-skew60-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-13a",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "S-13-normalized-service-set-cooldown-multi-contract-v1",
+      "S-13a-bootstrap-records-cooldown-multi-contract-v1",
+      "S-13a-failed-refresh-cooldown-multi-contract-v1",
+      "S-13a-java-no-cooldown-represented-v1",
+      "S-13a-successful-fetch-cooldown-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-13-normalized-service-set-cooldown-multi-contract-v1",
+      "S-13a-bootstrap-records-cooldown-multi-contract-v1",
+      "S-13a-cancelled-shared-fetch-component-v1",
+      "S-13a-failed-refresh-cooldown-multi-contract-v1",
+      "S-13a-successful-fetch-cooldown-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-13b",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "S-13b-active-refresh-join-multi-contract-v1",
+      "S-13b-java-independent-fetches-represented-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-13b-active-refresh-join-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-13c",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "D-08f-synchronous-jwks-represented-v1",
+      "S-13c-detached-refresh-cache-publish-multi-contract-v1",
+      "S-13c-java-synchronous-zero-budget-represented-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-13c-detached-refresh-cache-publish-multi-contract-v1",
+      "S-13c-shared-fetch-panic-recovery-component-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-13d",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [],
+    "proposedRustReachedFixtures": [],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Individually approved later-WP ownership; no WP3 gateway observation",
+    "unresolvedObservations": [],
+    "laterOwnership": "No Java counterpart; shared-caller regression ownership WP6, as approved ledger",
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-14",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "S-02-ignore-expiry-warm-warm-jks-init-v1",
+      "S-14-enableMockJwt-explicit-test-override-contract-v1",
+      "S-14-enableMockJwt-init-contract-v1",
+      "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+      "S-14-ignoreJwtExpiry-explicit-test-override-contract-v1",
+      "S-14-ignoreJwtExpiry-init-contract-v1",
+      "S-14-logJwtToken-explicit-test-override-contract-v1",
+      "S-14-logJwtToken-init-contract-v1",
+      "S-14-test-override-does-not-relax-max-skew-init-contract-v1",
+      "S-14-verified-jwt-no-secret-logs-multi-contract-v1",
+      "S-17-ignore-exp-absent-nbf-multi-contract-v1",
+      "S-17-ignore-exp-retains-nbf-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-14-enableMockJwt-explicit-test-override-contract-v1",
+      "S-14-enableMockJwt-init-contract-v1",
+      "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+      "S-14-ignoreJwtExpiry-explicit-test-override-contract-v1",
+      "S-14-ignoreJwtExpiry-init-contract-v1",
+      "S-14-logJwtToken-explicit-test-override-contract-v1",
+      "S-14-logJwtToken-init-contract-v1",
+      "S-14-test-override-does-not-relax-max-skew-init-contract-v1",
+      "S-14-verified-jwt-no-secret-logs-multi-contract-v1",
+      "S-17-ignore-exp-absent-nbf-multi-contract-v1",
+      "S-17-ignore-exp-retains-nbf-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-15",
+    "approvedStatus": "deferred",
+    "javaBehaviorFixtures": [
+      "S-15-introspection-0-deferred-init-v1",
+      "S-15-introspection-1-deferred-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-15-introspection-0-deferred-init-v1",
+      "S-15-introspection-1-deferred-init-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-16",
+    "approvedStatus": "deferred",
+    "javaBehaviorFixtures": [
+      "S-16-before-bind-0-deferred-init-v1",
+      "S-16-before-bind-1-deferred-init-v1",
+      "S-16-before-bind-2-deferred-init-v1",
+      "S-16-loopback-bind-denial-represented-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-16-before-bind-0-deferred-init-v1",
+      "S-16-before-bind-1-deferred-init-v1",
+      "S-16-before-bind-2-deferred-init-v1",
+      "S-16-loopback-bind-denial-represented-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-17",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "S-17-absent-nbf-multi-contract-v1",
+      "S-17-cold-and-cached-nbf-warm-jks-init-v1",
+      "S-17-controlled-cached-nbf-mutation-v1",
+      "S-17-far-future-nbf-jks-init-v1",
+      "S-17-future-nbf-120-skew60-multi-contract-v1",
+      "S-17-future-nbf-30-skew60-multi-contract-v1",
+      "S-17-ignore-exp-absent-nbf-multi-contract-v1",
+      "S-17-ignore-exp-retains-nbf-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-17-absent-nbf-multi-contract-v1",
+      "S-17-future-nbf-120-skew60-multi-contract-v1",
+      "S-17-future-nbf-30-skew60-multi-contract-v1",
+      "S-17-ignore-exp-absent-nbf-multi-contract-v1",
+      "S-17-ignore-exp-retains-nbf-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "S-18",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "S-13-S-18-rotation-retention-multi-contract-v1",
+      "S-17-controlled-cached-nbf-mutation-v1",
+      "S-18-cached-expiry-multi-contract-v1",
+      "S-18-cached-expiry-warm-jks-init-v1",
+      "S-18-removed-key-warm-warm-jks-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-13-S-18-rotation-retention-multi-contract-v1",
+      "S-18-cached-expiry-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "L-01",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "L-01-address-fallback-counter-recreated-cp1-e02-accepted",
+      "L-01-seconds-reset-multi-v1",
+      "L-01-server-exhaustion-multi-v1",
+      "L-02-remote-address-explicit-identity-xff-multi-contract-v1",
+      "L-02-synthetic-address-counter-configured-v1",
+      "L-02-verified-client-counter-multi-contract-v1",
+      "L-02-verified-user-counter-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "L-01-seconds-reset-multi-v1",
+      "L-01-server-exhaustion-multi-v1",
+      "L-02-remote-address-explicit-identity-xff-multi-contract-v1",
+      "L-02-verified-client-counter-multi-contract-v1",
+      "L-02-verified-user-counter-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "L-02",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "C-08-unverified-client-before-security-configured-v1",
+      "L-02-alb-address-fail-open-cp1-e02-accepted",
+      "L-02-remote-address-explicit-identity-xff-multi-contract-v1",
+      "L-02-resolver-observation-supported-edge-v1",
+      "L-02-synthetic-address-counter-configured-v1",
+      "L-02-verified-client-counter-multi-contract-v1",
+      "L-02-verified-user-counter-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "L-02-remote-address-explicit-identity-xff-multi-contract-v1",
+      "L-02-verified-client-counter-multi-contract-v1",
+      "L-02-verified-user-counter-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "L-01-address-fallback-counter-recreated-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "L-03",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "L-01-seconds-reset-multi-v1",
+      "L-01-server-exhaustion-multi-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "L-01-seconds-reset-multi-v1",
+      "L-01-server-exhaustion-multi-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "L-04",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "C-08-unverified-client-before-security-configured-v1",
+      "L-01-seconds-reset-multi-v1",
+      "L-01-server-exhaustion-multi-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "L-01-seconds-reset-multi-v1",
+      "L-01-server-exhaustion-multi-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "M-01",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "D-08e-response-timeout-emf-finalization-counter-multi-contract-v1",
+      "D-08e-response-timeout-emf-finalization-multi-contract-v1",
+      "M-01-oversize-emf-completion-multi-contract-v1",
+      "M-01-request-timeout-emf-completion-multi-contract-v1",
+      "M-02-apm-loopback-sink-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-08e-response-timeout-emf-finalization-counter-multi-contract-v1",
+      "D-08e-response-timeout-emf-finalization-multi-contract-v1",
+      "M-01-gateway-error-emf-multi-contract-v1",
+      "M-01-oversize-emf-completion-multi-contract-v1",
+      "M-01-per-request-emf-multi-contract-v1",
+      "M-01-request-timeout-emf-completion-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "M-02",
+    "approvedStatus": "deferred",
+    "javaBehaviorFixtures": [
+      "M-02-apm-loopback-sink-v1",
+      "M-02-natural-scheduled-report-sink-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "M-02-apm-loopback-sink-v1",
+      "M-02-natural-scheduled-report-sink-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "M-03",
+    "approvedStatus": "deferred",
+    "javaBehaviorFixtures": [
+      "M-03-enabled-influx-deferred-init-contract-v1",
+      "M-03-influx-null-status-cp1-e02-accepted"
+    ],
+    "proposedRustReachedFixtures": [
+      "M-03-enabled-influx-deferred-init-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "A-01",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "A-01-mask-error-parameters-sink-init-v1",
+      "A-01-null-body-sink-init-v1",
+      "A-01-response-body-finalization-exception-sink-v1",
+      "A-01-safe-selected-stdout-multi-contract-v1",
+      "A-01-selected-audit-sink-init-v1",
+      "A-02-unsafe-authorization-selector-init-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "A-01-safe-selected-stdout-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "A-02",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "A-01-mask-error-parameters-sink-init-v1",
+      "A-01-selected-audit-sink-init-v1",
+      "A-02-selected-string-ascii-at-1024-contract-v1",
+      "A-02-selected-string-ascii-over-1024-contract-v1",
+      "A-02-selected-string-utf8-at-1024-contract-v1",
+      "A-02-selected-string-utf8-over-1024-contract-v1",
+      "A-02-unsafe-authorization-selector-init-contract-v1",
+      "D-03-D-04-safe-metadata-no-log-tail-multi-contract-v1",
+      "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+      "S-14-verified-jwt-no-secret-logs-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "A-02-selected-string-ascii-at-1024-contract-v1",
+      "A-02-selected-string-ascii-over-1024-contract-v1",
+      "A-02-selected-string-utf8-at-1024-contract-v1",
+      "A-02-selected-string-utf8-over-1024-contract-v1",
+      "A-02-unsafe-authorization-selector-init-contract-v1",
+      "D-03-D-04-safe-metadata-no-log-tail-multi-contract-v1",
+      "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+      "S-14-verified-jwt-no-secret-logs-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "X-01",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "X-01-admin-health-denied-warm-init-v1",
+      "X-01-admin-health-warm-init-v1",
+      "X-01-local-health-multi-contract-v1",
+      "X-01-local-health-warm-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "X-01-local-health-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "X-02",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "X-02-disabled--adm-loggerGET-represented-v1",
+      "X-02-disabled--adm-loggerPOST-represented-v1",
+      "X-02-disabled--adm-server-infoGET-represented-v1",
+      "X-02-enabled-multi-contract-v1",
+      "X-02-java-info-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-07a-authenticated-info-multi-contract-v1",
+      "X-02-enabled-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "X-02a",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "X-02-java-info-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-07a-authenticated-info-multi-contract-v1",
+      "X-02-enabled-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "X-03",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "X-03-current-filter-multi-contract-v1",
+      "X-03-get-logger-warm-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "X-03-current-filter-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "X-03a",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "X-02-disabled--adm-loggerGET-represented-v1",
+      "X-02-disabled--adm-loggerPOST-represented-v1",
+      "X-02-disabled--adm-server-infoGET-represented-v1",
+      "X-03-current-filter-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "X-02-disabled--adm-loggerGET-represented-v1",
+      "X-02-disabled--adm-loggerPOST-represented-v1",
+      "X-02-disabled--adm-server-infoGET-represented-v1",
+      "X-03-current-filter-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "X-04",
+    "approvedStatus": "deferred",
+    "javaBehaviorFixtures": [
+      "X-04-empty-body-warm-init-v1",
+      "X-04-malformed-0-represented-v1",
+      "X-04-malformed-1-represented-v1",
+      "X-04-malformed-2-represented-v1",
+      "X-04-malformed-3-represented-v1",
+      "X-04-set-logger-warm-init-v1"
+    ],
+    "proposedRustReachedFixtures": [],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "X-05",
+    "approvedStatus": "deferred",
+    "javaBehaviorFixtures": [
+      "X-05-cache-contents-warm-init-v1",
+      "X-05-missing-manager-warm-init-v1"
+    ],
+    "proposedRustReachedFixtures": [],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "K-01",
+    "approvedStatus": "deferred",
+    "javaBehaviorFixtures": [
+      "K-01-loopback-create-remove-component-v1",
+      "K-01-loopback-crud-component-v1",
+      "K-01-selected-dynamo-deferred-init-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "K-01-selected-dynamo-deferred-init-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "CFG-01",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "P-01a-java-bootstrap-component-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "CFG-01-configured-debug-v1-contract-v1",
+      "CFG-01-configured-error-v1-contract-v1",
+      "CFG-01-default-info-v1-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "CFG-02",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "CFG-02-loopback-jks-tls-represented-v1",
+      "CFG-02-sdk-netty-trust-boundary-represented-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "B-01-fetch-cache-secondary-represented-v1",
+      "B-01-malformed-oauth-error-represented-v1",
+      "B-01-no-service-represented-v1",
+      "B-01-oauth-denial-represented-v1",
+      "CFG-02-loopback-jks-tls-represented-v1",
+      "CFG-02-sdk-netty-trust-boundary-represented-v1",
+      "D-08f-synchronous-jwks-represented-v1",
+      "E-13-multi-auth-invisible-represented-v1",
+      "H-04-loopback-test-refused-represented-v1",
+      "H-04-loopback-test-slow-represented-v1",
+      "S-01-valid-jks-init-v1",
+      "S-02-expired-jks-init-v1",
+      "S-02-ignore-expiry-warm-warm-jks-init-v1",
+      "S-02-skew-0-warm-jks-init-v1",
+      "S-02-skew-1-warm-jks-init-v1",
+      "S-03-hmac-rsa-rejection-generated-v1",
+      "S-03-malformed-0-jks-init-v1",
+      "S-03-malformed-1-jks-init-v1",
+      "S-03-malformed-2-jks-init-v1",
+      "S-03-rs512-jks-init-v1",
+      "S-03-wrong-key-jks-init-v1",
+      "S-04-issuer-not-enforced-jks-init-v1",
+      "S-04-provider-explicit-warm-jks-init-v1",
+      "S-04-provider-path-0-warm-jks-init-v1",
+      "S-04-provider-path-1-warm-jks-init-v1",
+      "S-04-provider-path-2-warm-jks-init-v1",
+      "S-04-wrong-audience-jks-init-v1",
+      "S-05-primary-0-warm-jks-init-v1",
+      "S-05-primary-1-warm-jks-init-v1",
+      "S-05-primary-2-warm-jks-init-v1",
+      "S-05-primary-3-warm-jks-init-v1",
+      "S-06-secondary-0-warm-jks-init-v1",
+      "S-06-secondary-1-warm-jks-init-v1",
+      "S-06-secondary-invalid-0-warm-jks-init-v1",
+      "S-06-secondary-invalid-1-warm-jks-init-v1",
+      "S-13-key-rotation-warm-jks-init-v1",
+      "S-13a-java-no-cooldown-represented-v1",
+      "S-13b-java-independent-fetches-represented-v1",
+      "S-13c-java-synchronous-zero-budget-represented-v1",
+      "S-17-cold-and-cached-nbf-warm-jks-init-v1",
+      "S-17-controlled-cached-nbf-mutation-v1",
+      "S-17-far-future-nbf-jks-init-v1",
+      "S-18-cached-expiry-warm-jks-init-v1",
+      "S-18-removed-key-warm-warm-jks-init-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "CFG-03",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "CFG-03-synthetic-decryption-init-probe-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "CFG-03-synthetic-decryption-init-probe-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "CFG-04",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "CFG-04-handler-duration-absent-init-contract-v1",
+      "CFG-04-handler-duration-default-false-init-contract-v1",
+      "CFG-04-handler-duration-nondefault-true-init-contract-v1",
+      "CFG-05-static-init-retention-warm-config-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "B-01-fetch-cache-secondary-represented-v1",
+      "B-01-malformed-oauth-error-represented-v1",
+      "B-01-no-service-represented-v1",
+      "B-01-oauth-denial-represented-v1",
+      "CFG-02-loopback-jks-tls-represented-v1",
+      "CFG-02-sdk-netty-trust-boundary-represented-v1",
+      "CFG-04-handler-duration-absent-init-contract-v1",
+      "CFG-04-handler-duration-default-false-init-contract-v1",
+      "CFG-04-handler-duration-nondefault-true-init-contract-v1",
+      "CFG-05-static-init-retention-warm-config-v1",
+      "D-08f-synchronous-jwks-represented-v1",
+      "E-13-multi-auth-invisible-represented-v1",
+      "H-04-loopback-test-refused-represented-v1",
+      "H-04-loopback-test-slow-represented-v1",
+      "K-01-selected-dynamo-deferred-init-contract-v1",
+      "Q-01-trace-effects-observed-v1",
+      "S-01-valid-jks-init-v1",
+      "S-02-expired-jks-init-v1",
+      "S-02-ignore-expiry-warm-warm-jks-init-v1",
+      "S-02-skew-0-warm-jks-init-v1",
+      "S-02-skew-1-warm-jks-init-v1",
+      "S-03-hmac-rsa-rejection-generated-v1",
+      "S-03-malformed-0-jks-init-v1",
+      "S-03-malformed-1-jks-init-v1",
+      "S-03-malformed-2-jks-init-v1",
+      "S-03-rs512-jks-init-v1",
+      "S-03-wrong-key-jks-init-v1",
+      "S-04-issuer-not-enforced-jks-init-v1",
+      "S-04-provider-explicit-warm-jks-init-v1",
+      "S-04-provider-path-0-warm-jks-init-v1",
+      "S-04-provider-path-1-warm-jks-init-v1",
+      "S-04-provider-path-2-warm-jks-init-v1",
+      "S-04-wrong-audience-jks-init-v1",
+      "S-05-primary-0-warm-jks-init-v1",
+      "S-05-primary-1-warm-jks-init-v1",
+      "S-05-primary-2-warm-jks-init-v1",
+      "S-05-primary-3-warm-jks-init-v1",
+      "S-06-secondary-0-warm-jks-init-v1",
+      "S-06-secondary-1-warm-jks-init-v1",
+      "S-06-secondary-invalid-0-warm-jks-init-v1",
+      "S-06-secondary-invalid-1-warm-jks-init-v1",
+      "S-13-key-rotation-warm-jks-init-v1",
+      "S-13a-java-no-cooldown-represented-v1",
+      "S-13b-java-independent-fetches-represented-v1",
+      "S-13c-java-synchronous-zero-budget-represented-v1",
+      "S-15-introspection-0-deferred-init-v1",
+      "S-15-introspection-1-deferred-init-v1",
+      "S-16-before-bind-0-deferred-init-v1",
+      "S-16-before-bind-1-deferred-init-v1",
+      "S-16-before-bind-2-deferred-init-v1",
+      "S-17-cold-and-cached-nbf-warm-jks-init-v1",
+      "S-17-controlled-cached-nbf-mutation-v1",
+      "S-17-far-future-nbf-jks-init-v1",
+      "S-18-cached-expiry-warm-jks-init-v1",
+      "S-18-removed-key-warm-warm-jks-init-v1",
+      "T-01-local-response-dispatch-selected-plugin-init-v1",
+      "T-01-metadata-mutations-selected-plugin-init-v1",
+      "T-01-validation-error-selected-plugin-init-v1",
+      "T-02-request-header-input-selected-plugin-init-v1",
+      "T-02-response-rule-exception-selected-plugin-init-v1",
+      "T-04-slow-response-rule-selected-plugin-init-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "CFG-05",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "CFG-05-immutable-valid-snapshot-multi-contract-v1",
+      "CFG-05-missing-stage-init-report-contract-v1",
+      "CFG-05-static-init-retention-warm-config-v1",
+      "D-07-self-arn-alias-init-contract-v1",
+      "D-07-self-arn-version-init-contract-v1",
+      "D-07-self-name-alias-init-contract-v1",
+      "D-07-self-name-version-init-contract-v1",
+      "D-09-response-cap-minimum-4095-init-contract-v1",
+      "D-09-response-cap-minimum-4096-init-contract-v1",
+      "S-14-test-override-does-not-relax-max-skew-init-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "CFG-05-immutable-valid-snapshot-multi-contract-v1",
+      "CFG-05-loopback-connection-refused-v1-contract-v1",
+      "CFG-05-loopback-http-503-v1-contract-v1",
+      "CFG-05-loopback-response-withheld-v1-contract-v1",
+      "CFG-05-missing-stage-init-report-contract-v1",
+      "CFG-05-prepare-local-config-panic-init-contract-v1",
+      "CFG-05-runtime-api-unset-v1-contract-v1",
+      "D-07-self-arn-alias-init-contract-v1",
+      "D-07-self-arn-version-init-contract-v1",
+      "D-07-self-name-alias-init-contract-v1",
+      "D-07-self-name-version-init-contract-v1",
+      "D-09-response-cap-minimum-4095-init-contract-v1",
+      "D-09-response-cap-minimum-4096-init-contract-v1",
+      "S-14-test-override-does-not-relax-max-skew-init-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "C-01-isolation-a-cp1-e02-accepted",
+      "C-01-isolation-b-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "P-01",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [],
+    "proposedRustReachedFixtures": [],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Individually approved later-WP ownership; no WP3 gateway observation",
+    "unresolvedObservations": [],
+    "laterOwnership": "ZIP/layer packaging-family qualification WP15, owner-approved P-01a amendment; Java bootstrap component P-01a qualified",
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "T-01",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "T-01-T-02-native-cel-body-multi-contract-v1",
+      "T-01-caught-native-cel-rule-error-multi-contract-v1",
+      "T-01-deny-native-cel-multi-contract-v1",
+      "T-01-local-native-cel-multi-contract-v1",
+      "T-01-local-response-dispatch-selected-plugin-init-v1",
+      "T-01-metadata-mutations-selected-plugin-init-v1",
+      "T-01-metadata-native-cel-multi-contract-v1",
+      "T-01-missing-executor-supported-edge-v1",
+      "T-01-validation-error-selected-plugin-init-v1",
+      "T-02-no-endpoint-rule-supported-edge-v1",
+      "T-02-request-header-input-selected-plugin-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "T-01-T-02-native-cel-body-multi-contract-v1",
+      "T-01-caught-native-cel-rule-error-multi-contract-v1",
+      "T-01-deny-native-cel-multi-contract-v1",
+      "T-01-local-native-cel-multi-contract-v1",
+      "T-01-metadata-native-cel-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "T-02",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "T-01-T-02-native-cel-body-multi-contract-v1",
+      "T-01-missing-executor-supported-edge-v1",
+      "T-02-actual-native-response-input-map-multi-contract-v1",
+      "T-02-caught-native-cel-rule-error-multi-contract-v1",
+      "T-02-missing-executor-supported-edge-v1",
+      "T-02-no-endpoint-rule-supported-edge-v1",
+      "T-02-request-header-input-selected-plugin-init-v1",
+      "T-02-response-header-remove-update-multi-contract-v1",
+      "T-02-response-rule-exception-selected-plugin-init-v1",
+      "T-04-slow-response-rule-selected-plugin-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "T-01-T-02-native-cel-body-multi-contract-v1",
+      "T-02-actual-native-response-input-map-multi-contract-v1",
+      "T-02-caught-native-cel-rule-error-multi-contract-v1",
+      "T-02-response-header-remove-update-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "T-03",
+    "approvedStatus": "deferred",
+    "javaBehaviorFixtures": [
+      "T-02-request-header-input-selected-plugin-init-v1",
+      "T-02-response-rule-exception-selected-plugin-init-v1",
+      "T-04-slow-response-rule-selected-plugin-init-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "T-01-local-response-dispatch-selected-plugin-init-v1",
+      "T-01-metadata-mutations-selected-plugin-init-v1",
+      "T-01-validation-error-selected-plugin-init-v1",
+      "T-02-request-header-input-selected-plugin-init-v1",
+      "T-02-response-rule-exception-selected-plugin-init-v1",
+      "T-04-slow-response-rule-selected-plugin-init-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "T-04",
+    "approvedStatus": "deferred",
+    "javaBehaviorFixtures": [
+      "T-04-slow-response-rule-selected-plugin-init-v1"
+    ],
+    "proposedRustReachedFixtures": [],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "V-01",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "V-01-method-multi-contract-v1",
+      "V-01-openapi-31-valid-json-multi-contract-v1",
+      "V-01-path-multi-contract-v1",
+      "V-01-spec-denial-0-cp1-e02-accepted",
+      "V-01-spec-denial-1-cp1-e02-accepted",
+      "V-02-parameters-0-multi-contract-v1",
+      "V-02-parameters-1-multi-contract-v1",
+      "V-02-parameters-2-multi-contract-v1",
+      "V-02-parameters-3-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "V-01-method-multi-contract-v1",
+      "V-01-openapi-31-valid-json-multi-contract-v1",
+      "V-01-path-multi-contract-v1",
+      "V-02-parameters-0-multi-contract-v1",
+      "V-02-parameters-1-multi-contract-v1",
+      "V-02-parameters-2-multi-contract-v1",
+      "V-02-parameters-3-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "V-02-parameters-0-cp1-e02-accepted",
+      "V-02-parameters-1-cp1-e02-accepted",
+      "V-02-parameters-2-cp1-e02-accepted",
+      "V-02-parameters-3-cp1-e02-accepted",
+      "V-02-valid-json-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "V-02",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "V-01-openapi-31-valid-json-multi-contract-v1",
+      "V-02-body-edge-0-cp1-e02-accepted",
+      "V-02-body-edge-1-cp1-e02-accepted",
+      "V-02-body-edge-2-cp1-e02-accepted",
+      "V-02-body-edges-multi-contract-v1",
+      "V-02-nullable-enabled-cp1-e02-accepted",
+      "V-02-nullable-skip-0-cp1-e02-accepted",
+      "V-02-nullable-skip-1-cp1-e02-accepted",
+      "V-02-parameters-0-cp1-e02-accepted",
+      "V-02-parameters-0-multi-contract-v1",
+      "V-02-parameters-1-cp1-e02-accepted",
+      "V-02-parameters-1-multi-contract-v1",
+      "V-02-parameters-2-cp1-e02-accepted",
+      "V-02-parameters-2-multi-contract-v1",
+      "V-02-parameters-3-cp1-e02-accepted",
+      "V-02-parameters-3-multi-contract-v1",
+      "V-02-valid-json-cp1-e02-accepted",
+      "V-02-valid-json-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "V-01-openapi-31-valid-json-multi-contract-v1",
+      "V-02-body-edges-multi-contract-v1",
+      "V-02-parameters-0-multi-contract-v1",
+      "V-02-parameters-1-multi-contract-v1",
+      "V-02-parameters-2-multi-contract-v1",
+      "V-02-parameters-3-multi-contract-v1",
+      "V-02-valid-json-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "V-03",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "V-03-array-multi-contract-v1",
+      "V-03-body-edge-0-cp1-e02-accepted",
+      "V-03-body-edge-1-cp1-e02-accepted",
+      "V-03-body-edge-2-cp1-e02-accepted",
+      "V-03-cdata-golden-encoder-multi-contract-v1",
+      "V-03-css-string-golden-encoder-multi-contract-v1",
+      "V-03-css-url-golden-encoder-multi-contract-v1",
+      "V-03-get-body-bypass-multi-contract-v1",
+      "V-03-html-attribute-golden-encoder-multi-contract-v1",
+      "V-03-html-attribute-unquoted-golden-encoder-multi-contract-v1",
+      "V-03-html-content-encoder-multi-contract-v1",
+      "V-03-ignore-beats-explicit-encode-multi-contract-v1",
+      "V-03-java-golden-encoder-multi-contract-v1",
+      "V-03-javascript-attribute-golden-encoder-multi-contract-v1",
+      "V-03-javascript-block-golden-encoder-multi-contract-v1",
+      "V-03-javascript-golden-encoder-multi-contract-v1",
+      "V-03-javascript-source-golden-encoder-multi-contract-v1",
+      "V-03-json-golden-encoder-multi-contract-v1",
+      "V-03-json-object-cp1-e02-accepted",
+      "V-03-json-object-multi-contract-v1",
+      "V-03-malformed-json-multi-contract-v1",
+      "V-03-non-json-multi-contract-v1",
+      "V-03-patch-multi-contract-v1",
+      "V-03-put-multi-contract-v1",
+      "V-03-uri-component-golden-encoder-multi-contract-v1",
+      "V-03-uri-golden-encoder-multi-contract-v1",
+      "V-03-xml-1-1-attribute-golden-encoder-multi-contract-v1",
+      "V-03-xml-1-1-content-golden-encoder-multi-contract-v1",
+      "V-03-xml-1-1-golden-encoder-multi-contract-v1",
+      "V-03-xml-attribute-golden-encoder-multi-contract-v1",
+      "V-03-xml-comment-golden-encoder-multi-contract-v1",
+      "V-03-xml-content-encoder-multi-contract-v1",
+      "V-03-xml-encoder-multi-contract-v1",
+      "V-03a-base64-json-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "V-03-array-multi-contract-v1",
+      "V-03-cdata-golden-encoder-multi-contract-v1",
+      "V-03-css-string-golden-encoder-multi-contract-v1",
+      "V-03-css-url-golden-encoder-multi-contract-v1",
+      "V-03-get-body-bypass-multi-contract-v1",
+      "V-03-html-attribute-golden-encoder-multi-contract-v1",
+      "V-03-html-attribute-unquoted-golden-encoder-multi-contract-v1",
+      "V-03-html-content-encoder-multi-contract-v1",
+      "V-03-ignore-beats-explicit-encode-multi-contract-v1",
+      "V-03-java-golden-encoder-multi-contract-v1",
+      "V-03-javascript-attribute-golden-encoder-multi-contract-v1",
+      "V-03-javascript-block-golden-encoder-multi-contract-v1",
+      "V-03-javascript-golden-encoder-multi-contract-v1",
+      "V-03-javascript-source-golden-encoder-multi-contract-v1",
+      "V-03-json-golden-encoder-multi-contract-v1",
+      "V-03-json-object-multi-contract-v1",
+      "V-03-malformed-json-multi-contract-v1",
+      "V-03-non-json-multi-contract-v1",
+      "V-03-patch-multi-contract-v1",
+      "V-03-put-multi-contract-v1",
+      "V-03-uri-component-golden-encoder-multi-contract-v1",
+      "V-03-uri-golden-encoder-multi-contract-v1",
+      "V-03-xml-1-1-attribute-golden-encoder-multi-contract-v1",
+      "V-03-xml-1-1-content-golden-encoder-multi-contract-v1",
+      "V-03-xml-1-1-golden-encoder-multi-contract-v1",
+      "V-03-xml-attribute-golden-encoder-multi-contract-v1",
+      "V-03-xml-comment-golden-encoder-multi-contract-v1",
+      "V-03-xml-content-encoder-multi-contract-v1",
+      "V-03-xml-encoder-multi-contract-v1",
+      "V-03a-base64-json-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "Q-01",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "Q-01-trace-effects-observed-v1",
+      "Q-01a-warm-trace-context-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "Q-01a-warm-trace-context-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "B-04-header-prefix-cp1-e02-accepted",
+      "Q-02-generated-null-map-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "Q-02",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "B-04-Q-02-header-prefix-correlation-multi-contract-v1",
+      "Q-02-empty-correlation-multi-contract-v1",
+      "Q-02-generated-correlation-multi-contract-v1",
+      "Q-02-generated-null-map-cp1-e02-accepted",
+      "Q-02-repeated-correlation-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "B-04-Q-02-header-prefix-correlation-multi-contract-v1",
+      "Q-02-empty-correlation-multi-contract-v1",
+      "Q-02-generated-correlation-multi-contract-v1",
+      "Q-02-repeated-correlation-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "B-04-header-prefix-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "B-01",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "B-01-fetch-cache-secondary-represented-v1",
+      "B-01-loopback-acquisition-cache-secondary-multi-contract-v1",
+      "B-01-malformed-oauth-error-loopback-multi-contract-v1",
+      "B-01-malformed-oauth-error-represented-v1",
+      "B-01-no-service-represented-v1",
+      "B-01-oauth-denial-loopback-multi-contract-v1",
+      "B-01-oauth-denial-represented-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "B-01-loopback-acquisition-cache-secondary-multi-contract-v1",
+      "B-01-malformed-oauth-error-loopback-multi-contract-v1",
+      "B-01-oauth-denial-loopback-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "B-02",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "B-02-denied-cp1-e02-accepted",
+      "B-02-preflight-dispatch-cp1-e02-accepted"
+    ],
+    "proposedRustReachedFixtures": [
+      "B-02a-allowed-multi-policy-v1",
+      "B-02a-denied-multi-policy-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "B-03",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "B-03-exact-origin-cp1-e02-accepted",
+      "B-03-lowercase-origin-represented-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "B-02a-allowed-multi-policy-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "B-04",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "B-04-Q-02-header-prefix-correlation-multi-contract-v1",
+      "B-04-header-prefix-cp1-e02-accepted",
+      "B-04-remove-update-prefix-collision-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "B-04-Q-02-header-prefix-correlation-multi-contract-v1",
+      "B-04-remove-update-prefix-collision-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "Q-02-generated-null-map-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "B-05",
+    "approvedStatus": "equivalent",
+    "javaBehaviorFixtures": [
+      "B-05-null-response-headers-cp1-e02-accepted",
+      "C-09-response-policy-error-counter-multi-contract-v1",
+      "C-09-response-policy-error-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "C-09-response-policy-error-counter-multi-contract-v1",
+      "C-09-response-policy-error-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [
+      "B-04-header-prefix-cp1-e02-accepted"
+    ],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Fixture-kind equivalence and downstream reach are independent. E-13 rejection cannot establish downstream Rust policy coverage."
+  },
+  {
+    "ledger": "B-02a",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "B-02a-allowed-multi-policy-v1",
+      "B-02a-denied-multi-policy-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "B-02a-allowed-multi-policy-v1",
+      "B-02a-denied-multi-policy-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Shared multi input only; does not alter single-value fidelity or preflight dispatch."
+  },
+  {
+    "ledger": "B-03a",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "B-02a-allowed-multi-policy-v1",
+      "B-02a-denied-multi-policy-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "B-02a-allowed-multi-policy-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Shared multi input only; does not alter single-value fidelity or preflight dispatch."
+  },
+  {
+    "ledger": "P-01a",
+    "approvedStatus": "deferred",
+    "javaBehaviorFixtures": [
+      "P-01a-java-bootstrap-component-v1"
+    ],
+    "proposedRustReachedFixtures": [],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": "WP15 Rust packaging; Java component implemented in WP3",
+    "limitation": "No native ZIP or deployment qualification"
+  },
+  {
+    "ledger": "S-01a",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "S-01a-malformed-multi-policy-v1",
+      "S-01a-wrong-key-multi-policy-v1",
+      "S-05-any-match-multi-contract-v1",
+      "S-05-denied-multi-contract-v1",
+      "S-05-no-required-multi-contract-v1",
+      "S-05-scope-list-multi-contract-v1",
+      "S-05-scope-string-multi-contract-v1",
+      "S-05-scp-list-multi-contract-v1",
+      "S-05-scp-string-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-01a-malformed-multi-policy-v1",
+      "S-01a-wrong-key-multi-policy-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Java assertions qualified; proposed Rust reach counted separately; zero Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "No Rust execution until WP13"
+  },
+  {
+    "ledger": "E-06a",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "S-08-missing-basic-multi-contract-v1",
+      "V-01-method-multi-contract-v1",
+      "V-01-path-multi-contract-v1",
+      "X-02-enabled-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "D-01-missing-target-multi-contract-v1",
+      "S-08-missing-basic-multi-contract-v1",
+      "V-01-method-multi-contract-v1",
+      "V-01-path-multi-contract-v1",
+      "V-02-body-edges-multi-contract-v1",
+      "X-01-local-health-multi-contract-v1",
+      "X-02-enabled-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Approved casing-only response contract; no Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Exact names and separate maps retained; no comparator normalization."
+  },
+  {
+    "ledger": "S-07a",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "S-07a-authenticated-info-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-07a-authenticated-info-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Approved separate contract assertions; no Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Same declared input; no per-runner input transformation"
+  },
+  {
+    "ledger": "E-10i",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "E-07-alb-discriminator-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "E-07-alb-discriminator-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Approved separate contract assertions; no Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Same declared input; no per-runner input transformation"
+  },
+  {
+    "ledger": "M-01a",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "M-01-gateway-error-emf-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "M-01-gateway-error-emf-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Approved separate contract assertions; no Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Same declared input; no per-runner input transformation"
+  },
+  {
+    "ledger": "V-03a",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "V-03a-base64-json-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "V-03a-base64-json-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Approved separate contract assertions; no Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Same declared input; no per-runner input transformation"
+  },
+  {
+    "ledger": "Q-01a",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "Q-01a-warm-trace-context-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "Q-01a-warm-trace-context-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Approved separate contract assertions; no Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Same declared input; no per-runner input transformation"
+  },
+  {
+    "ledger": "S-12a",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "S-12a-basic-on-jwt-prefix-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-12a-basic-on-jwt-prefix-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Approved separate contract assertions; no Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Same declared input; no per-runner input transformation"
+  },
+  {
+    "ledger": "S-04a",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "S-04a-matching-issuer-multi-contract-v1",
+      "S-04a-wrong-issuer-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "S-04a-matching-issuer-multi-contract-v1",
+      "S-04a-wrong-issuer-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "acceptance": "Approved separate contract assertions; no Rust execution",
+    "unresolvedObservations": [],
+    "laterOwnership": null,
+    "limitation": "Same declared input; no per-runner input transformation"
+  },
+  {
+    "ledger": "R-01a",
+    "approvedStatus": "intentional-change",
+    "javaBehaviorFixtures": [
+      "R-01a-wildcard-longest-multi-contract-v1"
+    ],
+    "proposedRustReachedFixtures": [
+      "R-01a-wildcard-longest-multi-contract-v1"
+    ],
+    "rustExecutionFixtures": [],
+    "contextualOnlyFixtures": [],
+    "unresolvedObservations": [],
+    "laterOwnership": null
+  }
+]

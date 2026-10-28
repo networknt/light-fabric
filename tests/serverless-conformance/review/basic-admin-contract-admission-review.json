@@ -1,0 +1,18 @@
+[
+  {
+    "fixture": "S-07a-authenticated-info-multi-contract-v1",
+    "source": "BasicAuthMiddleware.execute/handleAnonymousAuth and retained failed ServerInfo draft 20261011T015805.510760Z",
+    "javaBehaviorAsserted": [
+      "S-07a"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-07",
+      "S-07a",
+      "X-02",
+      "X-02a"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Owner-approved corrected Basic multimap difference. Shared supported admin configuration and unchanged raw multimap input. Java exact missing single-map credentials rejection; authored Rust local credentials accepted and exact approved redacted ServerInfo shape reached. No Java success/authentication claim.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T020343.143383Z"
+  }
+]

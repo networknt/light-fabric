@@ -35,6 +35,7 @@ pub struct StoredLongBinding {
 
 #[async_trait::async_trait]
 pub trait LongBindingStore: Send + Sync {
+    #[must_use = "the lookup future must be awaited to load the active binding"]
     async fn active(
         &self,
         work: Uuid,

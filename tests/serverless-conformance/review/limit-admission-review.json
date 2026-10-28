@@ -1,0 +1,16 @@
+[
+  {
+    "fixture": "L-01-server-exhaustion-multi-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/L-01-server-exhaustion-cp1-e02-accepted.json",
+    "sourceSha256": "9ef593c8d8187b3768ce49c086f484efab6a95fc9fa7846c365fe76d61cb680a",
+    "review": "LimitResetTest/ServerLimitTest assertions and LimitMiddleware/RateLimiter source reviewed. Exact 1s/60s duration headers preserved; no time masks. Same multi input reaches server quotas in both proposed contracts. headersAlwaysSet omitted in this separately authored config because Java does not read it and Rust rejects its non-default use. Every warm-step status/body/header and target/count is asserted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "L-01-seconds-reset-multi-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/L-01-seconds-reset-cp1-e02-accepted.json",
+    "sourceSha256": "f84a62f0555b986e89a76f61ed3d19f911547f07431202b8b58bb4a272c1dfab",
+    "review": "LimitResetTest/ServerLimitTest assertions and LimitMiddleware/RateLimiter source reviewed. Exact 1s/60s duration headers preserved; no time masks. Same multi input reaches server quotas in both proposed contracts. headersAlwaysSet omitted in this separately authored config because Java does not read it and Rust rejects its non-default use. Every warm-step status/body/header and target/count is asserted.",
+    "rustExecutionEvidence": null
+  }
+]

@@ -1,0 +1,70 @@
+[
+  {
+    "fixture": "S-17-future-nbf-120-skew60-multi-contract-v1",
+    "source": "Preserved reviewed Java observations, approved contract and source-verifier chronology checks",
+    "javaBehaviorAsserted": [
+      "S-17"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-17"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared valid multimap requests, closed cache/JWKS prerequisites, exact Init bootstrap1 and GET traces. Future nbf120s/skew60 rejects Rust but Java accepts; nbf30s/skew60 and missing nbf pass. Zero per-request fetches asserted. Cached2s token is signed after Init and verified after3100ms with exact expiry denial. Generic invalid-token ERR10000 maps nbf validation failure; expectations are authored, not Rust evidence.",
+    "remainingContractAssertions": [
+      "Shared caller-specific expiry/skew semantics remain WP6 qualification, not executed Rust evidence."
+    ],
+    "javaRun": "20261011T045135.348268Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T045135.348268Z"
+  },
+  {
+    "fixture": "S-17-future-nbf-30-skew60-multi-contract-v1",
+    "source": "Preserved reviewed Java observations, approved contract and source-verifier chronology checks",
+    "javaBehaviorAsserted": [
+      "S-17"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-17"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared valid multimap requests, closed cache/JWKS prerequisites, exact Init bootstrap1 and GET traces. Future nbf120s/skew60 rejects Rust but Java accepts; nbf30s/skew60 and missing nbf pass. Zero per-request fetches asserted. Cached2s token is signed after Init and verified after3100ms with exact expiry denial. Generic invalid-token ERR10000 maps nbf validation failure; expectations are authored, not Rust evidence.",
+    "remainingContractAssertions": [
+      "Shared caller-specific expiry/skew semantics remain WP6 qualification, not executed Rust evidence."
+    ],
+    "javaRun": "20261011T045135.348268Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T045135.348268Z"
+  },
+  {
+    "fixture": "S-17-absent-nbf-multi-contract-v1",
+    "source": "Preserved reviewed Java observations, approved contract and source-verifier chronology checks",
+    "javaBehaviorAsserted": [
+      "S-17"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-17"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared valid multimap requests, closed cache/JWKS prerequisites, exact Init bootstrap1 and GET traces. Future nbf120s/skew60 rejects Rust but Java accepts; nbf30s/skew60 and missing nbf pass. Zero per-request fetches asserted. Cached2s token is signed after Init and verified after3100ms with exact expiry denial. Generic invalid-token ERR10000 maps nbf validation failure; expectations are authored, not Rust evidence.",
+    "remainingContractAssertions": [
+      "Shared caller-specific expiry/skew semantics remain WP6 qualification, not executed Rust evidence."
+    ],
+    "javaRun": "20261011T045135.348268Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T045135.348268Z"
+  },
+  {
+    "fixture": "S-18-cached-expiry-multi-contract-v1",
+    "source": "Preserved reviewed Java observations, approved contract and source-verifier chronology checks",
+    "javaBehaviorAsserted": [
+      "S-18"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-18"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared valid multimap requests, closed cache/JWKS prerequisites, exact Init bootstrap1 and GET traces. Future nbf120s/skew60 rejects Rust but Java accepts; nbf30s/skew60 and missing nbf pass. Zero per-request fetches asserted. Cached2s token is signed after Init and verified after3100ms with exact expiry denial. Generic invalid-token ERR10000 maps nbf validation failure; expectations are authored, not Rust evidence.",
+    "remainingContractAssertions": [
+      "Shared caller-specific expiry/skew semantics remain WP6 qualification, not executed Rust evidence."
+    ],
+    "javaRun": "20261011T045135.348268Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T045135.348268Z"
+  }
+]

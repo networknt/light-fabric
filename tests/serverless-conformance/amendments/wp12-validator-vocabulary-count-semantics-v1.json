@@ -1,0 +1,1230 @@
+{
+  "version": 1,
+  "scope": "WP12 named vocabulary and exact count semantic expectations",
+  "owner": "2026-10-17 disposition; earlier explicit amendments retained",
+  "httpBodies": "proposed separately; pending exact-byte disposition",
+  "cases": [
+    {
+      "id": "3.0.3-union",
+      "sourceSha256": "987d114f42d5b8a7839f1af8265a5ad8ad50c8b39c3c1192c3f50270e51b750b",
+      "expectJava": {
+        "id": "3.0.3-union",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": true,
+      "expectedStatus": null,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.0.3-const",
+      "sourceSha256": "2b839ee05a0aa9aa9c075905a55938c95afef2ba487618c4d9872d7b78d63514",
+      "expectJava": {
+        "id": "3.0.3-const",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - Schema at #/properties/v must be object or boolean but was MISSING\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.0.3-typed-const",
+      "sourceSha256": "2de07517b50b56d127cf058523219356ce624a81e8473c74a7fcf2c5e1504f7b",
+      "expectJava": {
+        "id": "3.0.3-typed-const",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "3.0.3-false-property",
+      "sourceSha256": "5518166412f78489b2e5549b4a00a032596a5eceb0ad96aa5c745773715eeb0b",
+      "expectJava": {
+        "id": "3.0.3-false-property",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - Schema at #/properties/v must be object or boolean but was MISSING\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.0.3-propertyNames-length",
+      "sourceSha256": "455b614b1a1751e36bad257283bd718ddac82dc532d382fe7f10697ee409c8ab",
+      "expectJava": {
+        "id": "3.0.3-propertyNames-length",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "3.0.3-additionalProperties",
+      "sourceSha256": "99a7a0e1907fa89656652b1d0a2bf8803406fce3ec328da0ebd5602de6630df7",
+      "expectJava": {
+        "id": "3.0.3-additionalProperties",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - : property 'extra' is not defined in the schema and the schema does not allow additional properties\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.0.3-unevaluatedProperties",
+      "sourceSha256": "2792185c6ef2b649c39b9d4f5c39c6792c05d05fce6213dd9cf07f1eb47fd306",
+      "expectJava": {
+        "id": "3.0.3-unevaluatedProperties",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - Schema at #/properties/v must be object or boolean but was MISSING\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.0.3-dependentSchemas",
+      "sourceSha256": "8b5641089a0cedfd390de28e07a4a2dd86a2616569e662292d2b299353960ac1",
+      "expectJava": {
+        "id": "3.0.3-dependentSchemas",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "3.0.3-if-then",
+      "sourceSha256": "87366cc85bc0f2c8e79f45113c75de86cf4cae1e7b55e1d626d6aef0d7a48067",
+      "expectJava": {
+        "id": "3.0.3-if-then",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "3.0.3-content",
+      "sourceSha256": "7b8b1a3b6b330d53fdf396f53800d1cd1028f785692d1f7ac7ab126568f4a0ef",
+      "expectJava": {
+        "id": "3.0.3-content",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "3.1.0-union",
+      "sourceSha256": "a7ff22f9d5943c84fff0a276f83ea40f363125b2a744b86fe3efb5ad732b18b2",
+      "expectJava": {
+        "id": "3.1.0-union",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.1.0-const",
+      "sourceSha256": "eb533104f52926c94c6804e148352ed801abc922ba5209e4a8e990a4a1c8a118",
+      "expectJava": {
+        "id": "3.1.0-const",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - Schema at #/properties/v must be object or boolean but was MISSING\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.1.0-typed-const",
+      "sourceSha256": "fa1e3388bcc4c12bda4c08ec6d55a0d30a4b6b5aeb73a9887b5940267427499b",
+      "expectJava": {
+        "id": "3.1.0-typed-const",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.1.0-false-property",
+      "sourceSha256": "eed9ecd28742c90efec5930d075a9bc9cc1d94b3fb87e93aa50724c5d9de7bce",
+      "expectJava": {
+        "id": "3.1.0-false-property",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - Schema at #/properties/v must be object or boolean but was MISSING\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.1.0-propertyNames-length",
+      "sourceSha256": "7d7f1b710383a0a15de6156cb415c86b53089569024aa0d0cb8c80cdaa24c0bc",
+      "expectJava": {
+        "id": "3.1.0-propertyNames-length",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.1.0-additionalProperties",
+      "sourceSha256": "0d60d34a8c45c8b62c9fae4eb15953dff0bb2687dc8f5e19f53b615821d50746",
+      "expectJava": {
+        "id": "3.1.0-additionalProperties",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - : property 'extra' is not defined in the schema and the schema does not allow additional properties\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.1.0-unevaluatedProperties",
+      "sourceSha256": "882f561944f988864284cd0ea983a161d009a614c15213c0272009a88a5756e1",
+      "expectJava": {
+        "id": "3.1.0-unevaluatedProperties",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - Schema at #/properties/v must be object or boolean but was MISSING\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.1.0-dependentSchemas",
+      "sourceSha256": "2486adb3740b71f0f94f37f626a32cecea634d5608f27531f8fd2f8d9e915501",
+      "expectJava": {
+        "id": "3.1.0-dependentSchemas",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.1.0-if-then",
+      "sourceSha256": "f02613dc3ac1f188d09d97177b3b6bd325cc05d1e6518a315a2429de1c237ffd",
+      "expectJava": {
+        "id": "3.1.0-if-then",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.1.0-content",
+      "sourceSha256": "f0eb20935986c519ccb4a13b09c16f556580f326b43b956c6ef288b29e2559a4",
+      "expectJava": {
+        "id": "3.1.0-content",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "minLength-zero",
+      "sourceSha256": "efebeb2ed60a5b89184308dbcdee70e282389a0f3f8932e03a0fcd19e191603c",
+      "expectJava": {
+        "id": "minLength-zero",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "minLength-one",
+      "sourceSha256": "11a04fbe05a31e24578ac0310ddf2405caf9a186b552791d4a5e1d2c12e59a3b",
+      "expectJava": {
+        "id": "minLength-one",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "minLength-u64max",
+      "sourceSha256": "80e039cba9274374fba228e933a17b0dafed6fe51e071ad55fe4b7bd3bf4808f",
+      "expectJava": {
+        "id": "minLength-u64max",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minLength-above-u64",
+      "sourceSha256": "575978c7fcbca21ec0b98606b313f33164c25b04fa46e6626a27e8d5fbf1d9be",
+      "expectJava": {
+        "id": "minLength-above-u64",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minLength-exp-u64",
+      "sourceSha256": "74801df6596fe3c3857057c2d017ecf99c256b4347ec0a35f96ca7d98091f76b",
+      "expectJava": {
+        "id": "minLength-exp-u64",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minLength-exp-large",
+      "sourceSha256": "297945235d2824479469b04c4096d6b5e7fc54924651e44ba8b7b42bbf8e92be",
+      "expectJava": {
+        "id": "minLength-exp-large",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minLength-exp-extreme",
+      "sourceSha256": "ed86f1a3c9d9f0066937745e842ea2db90e0b34518673eff5662a70952222d6c",
+      "expectJava": {
+        "id": "minLength-exp-extreme",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "maxLength-zero",
+      "sourceSha256": "b5943afc83b96da5bf0b3c8989b90a3df8b58feb053d26fcc2a4e28c183df4a7",
+      "expectJava": {
+        "id": "maxLength-zero",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at most 0 characters long\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "maxLength-one",
+      "sourceSha256": "860fb3b878e9ad4bd39b6c287d1ef253b9532f60649b250506afebe6610c700e",
+      "expectJava": {
+        "id": "maxLength-one",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxLength-u64max",
+      "sourceSha256": "8e12a0f079faaddd28c45f6c7ea2021fa427836841f700be31fd21b63ea00857",
+      "expectJava": {
+        "id": "maxLength-u64max",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxLength-above-u64",
+      "sourceSha256": "950807cd7e4e7e735dc8cd46d22f431a5e72413981eab3ff9085558dec93a47f",
+      "expectJava": {
+        "id": "maxLength-above-u64",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxLength-exp-u64",
+      "sourceSha256": "39265136a2f85548c8505451804a17ced68271e9ed99f1f13f13054f7e5122c5",
+      "expectJava": {
+        "id": "maxLength-exp-u64",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxLength-exp-large",
+      "sourceSha256": "c8a332165e22b2dd2ae0eebe9325872ed65b5cb3409bf215fdacc8cf8c858a54",
+      "expectJava": {
+        "id": "maxLength-exp-large",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxLength-exp-extreme",
+      "sourceSha256": "fa130fbd744d7ccd66fa662796122db7fbf2c90bb8884fa4090028f75dde3943",
+      "expectJava": {
+        "id": "maxLength-exp-extreme",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "minItems-zero",
+      "sourceSha256": "303234c98f73e5d6ef1b6251ba0f0baca1d9c332632e92081dcb7a8cc321711c",
+      "expectJava": {
+        "id": "minItems-zero",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "minItems-one",
+      "sourceSha256": "ddf5e3e6955e35bbcf63d2de15a08178eebe30164d9d838eea7ff754f1ae010b",
+      "expectJava": {
+        "id": "minItems-one",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "minItems-u64max",
+      "sourceSha256": "4bc0346d952813fd4bcbd0117c244b0f6eea59f4368512dd54a4f909b5c24c64",
+      "expectJava": {
+        "id": "minItems-u64max",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minItems-above-u64",
+      "sourceSha256": "49a54669668ea605738794d1a14852f5a5cb2c8be96ac5dfb05ca49a806d0513",
+      "expectJava": {
+        "id": "minItems-above-u64",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minItems-exp-u64",
+      "sourceSha256": "26a9d30910b921014e02e7f6f6d14856655de9f7bf36d5b239e08e3dd1bafedb",
+      "expectJava": {
+        "id": "minItems-exp-u64",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minItems-exp-large",
+      "sourceSha256": "4cc1b728da2ac3b3369213db621c623fce081d8f1f4827beb6dfe7ddd9a790b2",
+      "expectJava": {
+        "id": "minItems-exp-large",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minItems-exp-extreme",
+      "sourceSha256": "dd62f29b030ec705012294f04c12c5a57ff7396934f2d784fdb160c81d9eb9e5",
+      "expectJava": {
+        "id": "minItems-exp-extreme",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "maxItems-zero",
+      "sourceSha256": "ac90cd74878632a132cb49db426f8d12d9b408459abdfd98f7e3e04d4c6e93b5",
+      "expectJava": {
+        "id": "maxItems-zero",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have at most 0 items but found 1\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "maxItems-one",
+      "sourceSha256": "c385d00e97d1826212a5df94928e3673c9c8cb34598776c9609ac785476a778f",
+      "expectJava": {
+        "id": "maxItems-one",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxItems-u64max",
+      "sourceSha256": "4ee9a804897e5d5b9becc1eb3566b639719c935ee27e92f0f2a8463db71a720d",
+      "expectJava": {
+        "id": "maxItems-u64max",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxItems-above-u64",
+      "sourceSha256": "ca4f4ae9e98b656104275ad733c48585ffadd067b565be986419ac21314c8115",
+      "expectJava": {
+        "id": "maxItems-above-u64",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxItems-exp-u64",
+      "sourceSha256": "55f8897d95a4a98c39e6377cd4a8787f25b5f406e0481618c81f7f950230e838",
+      "expectJava": {
+        "id": "maxItems-exp-u64",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxItems-exp-large",
+      "sourceSha256": "7fceb63fd418aaeb059fbb0158049d68757aa1d02e2f7fcfcb4d8e2616b90ca8",
+      "expectJava": {
+        "id": "maxItems-exp-large",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxItems-exp-extreme",
+      "sourceSha256": "b1f917d56fd76beb8e6821cc514519cdf2469b1f344cd9a2bf9b035e5f6d9e6d",
+      "expectJava": {
+        "id": "maxItems-exp-extreme",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "minProperties-zero",
+      "sourceSha256": "5ee0511edd0307b75b03d6f4fa4e371786bac51ab2affdc5c8ab48f054401780",
+      "expectJava": {
+        "id": "minProperties-zero",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "minProperties-one",
+      "sourceSha256": "fab3e45111c88ba1955b99b14b8dfee4bb2f37a81ccce22c14ac87f9ff00f852",
+      "expectJava": {
+        "id": "minProperties-one",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "minProperties-u64max",
+      "sourceSha256": "39a1a27d1270c292d6d6a956ea903bd984d0e490fa4ed6d38bcfc568627f4c20",
+      "expectJava": {
+        "id": "minProperties-u64max",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minProperties-above-u64",
+      "sourceSha256": "6f427889becf553f936f860c466cd79e4e39d02623ceb902bfeb6449a617960e",
+      "expectJava": {
+        "id": "minProperties-above-u64",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minProperties-exp-u64",
+      "sourceSha256": "ee0a01162f35936b339b7a06f7feb1e4c1d0f3ae8627147783de4f93a63702fd",
+      "expectJava": {
+        "id": "minProperties-exp-u64",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minProperties-exp-large",
+      "sourceSha256": "f9a9e8d76be429f7e53cea9d328a8fb72181d90dc18b510451fe3f46966727ff",
+      "expectJava": {
+        "id": "minProperties-exp-large",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minProperties-exp-extreme",
+      "sourceSha256": "69fe7777d98f5c6f47b1ca6e5ff5c2a26875846dc34d7f749168bb2434f90db4",
+      "expectJava": {
+        "id": "minProperties-exp-extreme",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "maxProperties-zero",
+      "sourceSha256": "e9523bc5c65d3049c63215e55f4677067e9abac7a3c6b11ba5c46d0f19118c9b",
+      "expectJava": {
+        "id": "maxProperties-zero",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have at most 0 properties\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "maxProperties-one",
+      "sourceSha256": "333b0c17d8895d263bbb7560f41adba7fae22ad8454f941803d6e495f5826467",
+      "expectJava": {
+        "id": "maxProperties-one",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxProperties-u64max",
+      "sourceSha256": "a442067c15b227586e2bc501ddf4314f0fada66c72028daf2ffa50a6a4768d91",
+      "expectJava": {
+        "id": "maxProperties-u64max",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxProperties-above-u64",
+      "sourceSha256": "c7bedad138273da0faa58c1093237417f6c07385e1f0a2fca6013ca58a0661be",
+      "expectJava": {
+        "id": "maxProperties-above-u64",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxProperties-exp-u64",
+      "sourceSha256": "779ac59d81cba462758936dfeaf6424dac50e28764303b4668d351b7a49360b1",
+      "expectJava": {
+        "id": "maxProperties-exp-u64",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxProperties-exp-large",
+      "sourceSha256": "c3e4a0da684816790b237e44808c537f689a6816b6541a0d0a775335748a6904",
+      "expectJava": {
+        "id": "maxProperties-exp-large",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxProperties-exp-extreme",
+      "sourceSha256": "8ba83aeecc1bc1f1f5c26d205d4a9b6f45e39f98b8f30eafb92a15ff502be4c2",
+      "expectJava": {
+        "id": "maxProperties-exp-extreme",
+        "exception": "java.lang.RuntimeException",
+        "message": "Could not instantiate handler class: class com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "3.0.3-type-const",
+      "sourceSha256": "61fa836052fadf96118ae1987d5700023bf0cf7c7c4e7f1fcd5d0533ef1348db",
+      "expectJava": {
+        "id": "3.0.3-type-const",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: boolean found, integer expected\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.0.3-required-const",
+      "sourceSha256": "3724a81d6a787b8ef6c0ca70e5101204ca8f810c4d6e7d2610131de67062272b",
+      "expectJava": {
+        "id": "3.0.3-required-const",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - Schema at #/properties/v must be object or boolean but was MISSING\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.0.3-const-bound",
+      "sourceSha256": "fbd7cc2b3b9978bb35163b9ed8f98888735ba4ca4ff04445a1c035e087818018",
+      "expectJava": {
+        "id": "3.0.3-const-bound",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have a minimum value of 3\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.0.3-names-required",
+      "sourceSha256": "c4e366c36065b6a06844e60fb2cdc186c4f4f6812d786753c5819e64243f299b",
+      "expectJava": {
+        "id": "3.0.3-names-required",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - : required property 'missing' not found\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.0.3-if-required",
+      "sourceSha256": "4bf8c3fbc6e4a07c6f0c95010bf81a265744f6016096e4fed947c6681042ebe2",
+      "expectJava": {
+        "id": "3.0.3-if-required",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - : required property 'missing' not found\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.0.3-false-required",
+      "sourceSha256": "78afdb8f54ef11e8556fa58fc89bd56377dfde8f1f813fe2d06a1d8d7129fa95",
+      "expectJava": {
+        "id": "3.0.3-false-required",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - Schema at #/properties/v must be object or boolean but was MISSING\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.1.0-type-const",
+      "sourceSha256": "1b08cc923d5f7afdafc2ff689c680b593fb0dc821cdf8222a73cf67a30429977",
+      "expectJava": {
+        "id": "3.1.0-type-const",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: boolean found, integer expected\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.1.0-required-const",
+      "sourceSha256": "81547d502de70f874d3f0b89cee9a69a5301b16d671ca9aa264a2794935ea415",
+      "expectJava": {
+        "id": "3.1.0-required-const",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - Schema at #/properties/v must be object or boolean but was MISSING\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.1.0-const-bound",
+      "sourceSha256": "d03b8827a747409c412044e38382efeae336c6f5482216c781e9cee29d2a0dc5",
+      "expectJava": {
+        "id": "3.1.0-const-bound",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have a minimum value of 3\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.1.0-names-required",
+      "sourceSha256": "58e413f75f3aaccabcb39c01d23dd596f484406d24722e731675588d90a1c041",
+      "expectJava": {
+        "id": "3.1.0-names-required",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - : required property 'missing' not found\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.1.0-if-required",
+      "sourceSha256": "261a2dc0d72a022923b02a02b5abe912d7410d6f4b3c92c9c3e375d9914afd29",
+      "expectJava": {
+        "id": "3.1.0-if-required",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - : required property 'missing' not found\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.1.0-false-required",
+      "sourceSha256": "8d199af2b3c3005c205495202cff2fc88ccbf723e1bddba6bef66732e8143a70",
+      "expectJava": {
+        "id": "3.1.0-false-required",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - Schema at #/properties/v must be object or boolean but was MISSING\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minLength-around1-0",
+      "sourceSha256": "11a04fbe05a31e24578ac0310ddf2405caf9a186b552791d4a5e1d2c12e59a3b",
+      "expectJava": {
+        "id": "minLength-around1-0",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at least 1 characters long\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minLength-around1-2",
+      "sourceSha256": "11a04fbe05a31e24578ac0310ddf2405caf9a186b552791d4a5e1d2c12e59a3b",
+      "expectJava": {
+        "id": "minLength-around1-2",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxLength-around1-0",
+      "sourceSha256": "860fb3b878e9ad4bd39b6c287d1ef253b9532f60649b250506afebe6610c700e",
+      "expectJava": {
+        "id": "maxLength-around1-0",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxLength-around1-2",
+      "sourceSha256": "860fb3b878e9ad4bd39b6c287d1ef253b9532f60649b250506afebe6610c700e",
+      "expectJava": {
+        "id": "maxLength-around1-2",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at most 1 characters long\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minItems-around1-0",
+      "sourceSha256": "ddf5e3e6955e35bbcf63d2de15a08178eebe30164d9d838eea7ff754f1ae010b",
+      "expectJava": {
+        "id": "minItems-around1-0",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have at least 1 items but found 0\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minItems-around1-2",
+      "sourceSha256": "ddf5e3e6955e35bbcf63d2de15a08178eebe30164d9d838eea7ff754f1ae010b",
+      "expectJava": {
+        "id": "minItems-around1-2",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxItems-around1-0",
+      "sourceSha256": "c385d00e97d1826212a5df94928e3673c9c8cb34598776c9609ac785476a778f",
+      "expectJava": {
+        "id": "maxItems-around1-0",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxItems-around1-2",
+      "sourceSha256": "c385d00e97d1826212a5df94928e3673c9c8cb34598776c9609ac785476a778f",
+      "expectJava": {
+        "id": "maxItems-around1-2",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have at most 1 items but found 2\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minProperties-around1-0",
+      "sourceSha256": "fab3e45111c88ba1955b99b14b8dfee4bb2f37a81ccce22c14ac87f9ff00f852",
+      "expectJava": {
+        "id": "minProperties-around1-0",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have at least 1 properties\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "minProperties-around1-2",
+      "sourceSha256": "fab3e45111c88ba1955b99b14b8dfee4bb2f37a81ccce22c14ac87f9ff00f852",
+      "expectJava": {
+        "id": "minProperties-around1-2",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxProperties-around1-0",
+      "sourceSha256": "333b0c17d8895d263bbb7560f41adba7fae22ad8454f941803d6e495f5826467",
+      "expectJava": {
+        "id": "maxProperties-around1-0",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "maxProperties-around1-2",
+      "sourceSha256": "333b0c17d8895d263bbb7560f41adba7fae22ad8454f941803d6e495f5826467",
+      "expectJava": {
+        "id": "maxProperties-around1-2",
+        "status": 400,
+        "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have at most 1 properties\",\"severity\":\"ERROR\"}",
+        "lambdaCaptures": 0
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.0.3-names-pattern-length",
+      "sourceSha256": "c3532a5b98f27d27b0537db45ea86b613c5f497ba3cd02a8ae4bccdfc22d2216",
+      "expectJava": {
+        "id": "3.0.3-names-pattern-length",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "3.0.3-names-enum",
+      "sourceSha256": "ad88fa0641895d3cac989e9a0d8338556c2e1c7c788dd8434b143da746ecb70b",
+      "expectJava": {
+        "id": "3.0.3-names-enum",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "3.0.3-names-const",
+      "sourceSha256": "a0f089c02b34b93edb0dc83201eb99bc8adca0bfd1ddfb98dcdf9ca9882ddec1",
+      "expectJava": {
+        "id": "3.0.3-names-const",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "3.0.3-names-false",
+      "sourceSha256": "c459c93de010af0bede09098ec30b09eec5a26030b8fdca5b738f8d36168ed03",
+      "expectJava": {
+        "id": "3.0.3-names-false",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 200,
+      "expectedDispatches": 1
+    },
+    {
+      "id": "3.1.0-names-pattern-length",
+      "sourceSha256": "e16097aede8a15ac9508ec5d6e6970519a24653dcabc198a30030312db6fe826",
+      "expectJava": {
+        "id": "3.1.0-names-pattern-length",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.1.0-names-enum",
+      "sourceSha256": "ba9628454d0951b98d3879e56e0615e0cf8cbf8ae54ebc132d6e7eee3decc0f5",
+      "expectJava": {
+        "id": "3.1.0-names-enum",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.1.0-names-const",
+      "sourceSha256": "f03f0fffd7304819ab0cc1b80f73c8f47260f922c593d4cb0006fa2c5ff0158d",
+      "expectJava": {
+        "id": "3.1.0-names-const",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    },
+    {
+      "id": "3.1.0-names-false",
+      "sourceSha256": "cb1594744bae7706418acfdf01fb760d7b1fe03165a30136d91abcb0b8b78bc1",
+      "expectJava": {
+        "id": "3.1.0-names-false",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "expectInitRejection": false,
+      "expectedStatus": 400,
+      "expectedDispatches": 0
+    }
+  ]
+}

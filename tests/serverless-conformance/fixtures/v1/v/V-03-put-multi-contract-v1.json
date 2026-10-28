@@ -1,0 +1,211 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "V-03-put-multi-contract-v1",
+  "title": "Sanitizer exact array/method gate clause: put",
+  "ledger": [
+    "V-03",
+    "E-06a",
+    "E-10",
+    "E-02",
+    "E-13"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "sanitizer": {
+        "enabled": true,
+        "bodyEnabled": true,
+        "bodyEncoder": "html",
+        "headerEnabled": true,
+        "headerEncoder": "html",
+        "headerAttributesToIgnore": [
+          "x-ignore"
+        ],
+        "bodyAttributesToIgnore": [
+          "ignore"
+        ]
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX",
+          "/x@put": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.sanitizer.SanitizerMiddleware@h0"
+        ],
+        "chains": {
+          "request": [
+            "h0"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {},
+  "tokens": {},
+  "headerMode": "multi",
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "backendCalls",
+    "header:content-type"
+  ],
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "PUT",
+    "path": "/x",
+    "headers": {
+      "x-encode": "<b>",
+      "x-ignore": "<b>"
+    },
+    "queryStringParameters": {},
+    "body": "{\"value\":\"<b>\",\"ignore\":\"<b>\"}",
+    "isBase64Encoded": false,
+    "multiValueHeaders": {
+      "x-encode": [
+        "<b>"
+      ],
+      "x-ignore": [
+        "<b>"
+      ]
+    },
+    "multiValueQueryStringParameters": {}
+  },
+  "backend": [
+    {
+      "match": {
+        "target": "FnX"
+      },
+      "respond": {
+        "functionError": null,
+        "payload": {
+          "statusCode": 200,
+          "headers": {
+            "x-backend": "synthetic"
+          },
+          "body": "ok",
+          "isBase64Encoded": false
+        }
+      }
+    }
+  ],
+  "expectJava": {
+    "status": 200,
+    "headers": [
+      [
+        "x-backend",
+        "synthetic"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "ok",
+    "bodyBase64": false,
+    "backendCalls": [
+      {
+        "target": "FnX",
+        "event": {
+          "path": "/x",
+          "httpMethod": "PUT",
+          "headers": {
+            "x-encode": "&lt;b&gt;",
+            "x-ignore": "<b>"
+          },
+          "queryStringParameters": {},
+          "requestContext": {},
+          "body": "{\"value\":\"&lt;b&gt;\",\"ignore\":\"<b>\"}",
+          "isBase64Encoded": false,
+          "multiValueHeaders": {
+            "x-encode": [
+              "<b>"
+            ],
+            "x-ignore": [
+              "<b>"
+            ]
+          },
+          "multiValueQueryStringParameters": {}
+        }
+      }
+    ],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "expect": {
+    "status": 200,
+    "headers": [
+      [
+        "x-backend",
+        "synthetic"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "ok",
+    "bodyBase64": false,
+    "backendCalls": [
+      {
+        "target": "FnX",
+        "event": {
+          "path": "/x",
+          "httpMethod": "PUT",
+          "isBase64Encoded": false,
+          "requestContext": {
+            "stage": "test-only"
+          },
+          "body": "{\"value\":\"&lt;b&gt;\",\"ignore\":\"<b>\"}"
+        },
+        "eventExact": {
+          "headers": {
+            "x-encode": "&lt;b&gt;",
+            "x-ignore": "<b>"
+          },
+          "multiValueHeaders": {
+            "x-encode": [
+              "&lt;b&gt;"
+            ],
+            "x-ignore": [
+              "<b>"
+            ]
+          },
+          "queryStringParameters": null,
+          "multiValueQueryStringParameters": null,
+          "pathParameters": null
+        }
+      }
+    ],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "substitutions": []
+}

@@ -1,0 +1,150 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "security": {
+        "enableVerifyJwt": true,
+        "enableVerifyScope": false,
+        "ignoreJwtExpiry": false,
+        "jwt": {
+          "clockSkewInSeconds": 0,
+          "keyResolver": "JsonWebKeySet",
+          "certificate": {}
+        },
+        "enableJwtCache": true,
+        "jwtCacheFullSize": 1000,
+        "bootstrapFromKeyService": false,
+        "logJwtToken": false,
+        "enableMockJwt": false,
+        "enableRelaxedKeyValidation": false,
+        "jwksRefreshMinIntervalSecs": 1
+      },
+      "client": {
+        "request": {
+          "connectTimeout": 1000,
+          "timeout": 1000,
+          "maxRequestRetry": 1
+        },
+        "tls": {
+          "loadKeyStore": false,
+          "loadTrustStore": false,
+          "verifyHostname": true
+        },
+        "oauth": {
+          "multipleAuthServers": false,
+          "token": {
+            "key": {
+              "server_url": "${dependency:jwks}",
+              "uri": "/jwks",
+              "enableHttp2": false,
+              "audience": "test-audience"
+            }
+          }
+        }
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Relative wall clock. Wait for actual recorded cooldown expiration (1s), never guess with arbitrary sleeps. Gate task barriers precede I/O; exactly two joiners attach before panic release. Each caller retains its own1000ms deadline. No virtual clock is claimed."
+  },
+  "keys": {
+    "k1": {
+      "alg": "RS256"
+    },
+    "k2": {
+      "alg": "RS256"
+    }
+  },
+  "tokens": {
+    "gate-parallel": {
+      "kid": "k2",
+      "claims": {
+        "sub": "test-user",
+        "iss": "test-issuer",
+        "aud": "test-audience",
+        "jti": "gate-parallel",
+        "client_id": "test-client",
+        "user_id": "test-user",
+        "scp": null
+      },
+      "issuedOffsetSec": -10,
+      "expOffsetSec": 600,
+      "nbfOffsetSec": 0
+    }
+  },
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": true,
+  "dependencies": {
+    "jwks": {
+      "publishedKeys": [
+        "k2"
+      ],
+      "delayMs": 0
+    }
+  },
+  "substitutions": [],
+  "id": "S-13c-shared-fetch-panic-recovery-component-v1",
+  "title": "Task-boundary panic unblocks joined callers and gate recovers after cooldown",
+  "ledger": [
+    "S-13c"
+  ],
+  "component": "rustJwksGatePanicS13c",
+  "jwksGatePanicProbe": {
+    "mode": "task-boundary-before-io-v1",
+    "serviceIds": [
+      "test-provider"
+    ],
+    "token": "gate-parallel",
+    "callerCount": 3,
+    "callerBudgetMs": 1000,
+    "barrierWaitMaxMs": 1000,
+    "sequence": [
+      "attempt-recorded-active-published",
+      "two-joiners-attached",
+      "release-panic",
+      "all-waiters-settled",
+      "cooldown-elapsed",
+      "release-recovery"
+    ]
+  },
+  "expect": {
+    "outcome": "jwksGatePanicRecovery",
+    "prerequisiteReady": true,
+    "backendCalls": [],
+    "jwksFetches": 1,
+    "jwksCalls": [
+      {
+        "target": "jwks",
+        "method": "GET",
+        "uri": "/jwks"
+      }
+    ],
+    "failure": {
+      "taskStarts": 1,
+      "joinersAttached": 2,
+      "networkRequests": 0,
+      "waitersTerminated": 3,
+      "verifiedPrincipals": 0,
+      "attemptRecordedBeforeTask": true,
+      "activePublishedBeforePanic": true,
+      "activeAfterCleanup": false,
+      "cooldownRetained": true,
+      "callerBudgetMs": 1000,
+      "publicErrorMapping": "unspecified-by-approved-contract"
+    },
+    "recovery": {
+      "afterCooldown": true,
+      "taskStarts": 1,
+      "joinersAttached": 0,
+      "networkRequests": 1,
+      "verifiedPrincipals": 1,
+      "cachePublished": true,
+      "activeAfterCompletion": false
+    }
+  }
+}

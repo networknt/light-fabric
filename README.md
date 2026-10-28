@@ -20,6 +20,8 @@ Full documentation, including architecture guides and implementation patterns, i
 
 **[https://networknt.github.io/light-fabric/](https://networknt.github.io/light-fabric/)**
 
+For the Rust Lambda gateway, see [Deploy Light Lambda through the AWS console](docs/src/product/light-lambda/console-deployment.md). It covers the executable ZIP, configuration layer, scoped IAM role, JWT settings, direct Console Test events, and upload troubleshooting.
+
 ## Core Components
 
 - **`crates/model-provider`**: A unified interface for multiple LLM providers.

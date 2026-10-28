@@ -1,0 +1,18 @@
+[
+  {
+    "fixture": "D-08-sdk-read-timeout-controlled-5000ms-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-08-sdk-loopback-timeout-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "D-01",
+      "D-05",
+      "D-08",
+      "D-08e"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Owner approved separately authored overall budget5000ms to isolate readTimeout300ms against400ms delayed replies, exact legacy initial+three retry attempts. Historical1800ms source retains its at-least-one assertion and recorded four attempts; fixture does not qualify deterministic attempt count under that original smaller overall budget. Actual original production SDK constructor, no timeout repair, no call-count allowance. Listeners test plugin means proposed Rust Init rejects; no Rust transport/deadline credit.",
+    "validation": "passed focused separate-JVM workflow 20261011T010624.460791Z; result schema exit 0; isolation passed"
+  }
+]

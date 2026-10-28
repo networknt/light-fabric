@@ -1,0 +1,4 @@
+# Unavailable in Phase 1; enabling this policy fails Init.
+enabled: ${apikey.enabled:false}
+hashEnabled: ${apikey.hashEnabled:false}
+pathPrefixAuths: ${apikey.pathPrefixAuths:[]}

@@ -1,0 +1,179 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "S-11-unmatched-multi-policy-v1",
+  "title": "Independently authored shared multimap policy control",
+  "ledger": [
+    "S-11",
+    "E-10",
+    "C-04"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.security.ApiKeyMiddleware@h0"
+        ],
+        "chains": {
+          "request": [
+            "h0"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      },
+      "apikey": {
+        "enabled": true,
+        "hashEnabled": false,
+        "pathPrefixAuths": [
+          {
+            "pathPrefix": "/private",
+            "headerName": "x-test-key",
+            "apiKey": "test-only-key"
+          }
+        ]
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {},
+  "tokens": {},
+  "headerMode": "multi",
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "backendCalls"
+  ],
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "GET",
+    "path": "/x",
+    "body": null,
+    "isBase64Encoded": false,
+    "multiValueHeaders": {},
+    "multiValueQueryStringParameters": {}
+  },
+  "backend": [
+    {
+      "match": {
+        "target": "FnX"
+      },
+      "respond": {
+        "functionError": null,
+        "payload": {
+          "statusCode": 200,
+          "headers": {
+            "x-backend": "synthetic"
+          },
+          "body": "ok",
+          "isBase64Encoded": false
+        }
+      }
+    }
+  ],
+  "expectJava": {
+    "outcome": "response",
+    "status": 200,
+    "headers": [
+      [
+        "x-backend",
+        "synthetic"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "ok",
+    "bodyBase64": false,
+    "jwksFetches": 0,
+    "backendCalls": [
+      {
+        "target": "FnX",
+        "event": {
+          "path": "/x",
+          "httpMethod": "GET",
+          "isBase64Encoded": false
+        },
+        "eventAbsent": [
+          "/headers",
+          "/queryStringParameters",
+          "/pathParameters",
+          "/body",
+          "/requestContext/stage"
+        ],
+        "eventExact": {
+          "multiValueHeaders": {},
+          "multiValueQueryStringParameters": {},
+          "requestContext": {}
+        }
+      }
+    ]
+  },
+  "expect": {
+    "outcome": "response",
+    "status": 200,
+    "headers": [
+      [
+        "x-backend",
+        "synthetic"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "ok",
+    "bodyBase64": false,
+    "jwksFetches": 0,
+    "backendCalls": [
+      {
+        "target": "FnX",
+        "event": {
+          "path": "/x",
+          "httpMethod": "GET",
+          "isBase64Encoded": false,
+          "requestContext": {
+            "stage": "test-only"
+          },
+          "body": null
+        },
+        "eventExact": {
+          "headers": {},
+          "multiValueHeaders": {},
+          "queryStringParameters": null,
+          "multiValueQueryStringParameters": null,
+          "pathParameters": null
+        }
+      }
+    ]
+  },
+  "substitutions": []
+}

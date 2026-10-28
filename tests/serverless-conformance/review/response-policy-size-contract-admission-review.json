@@ -1,0 +1,18 @@
+[
+  {
+    "fixture": "D-09-response-policy-headers-limit-multi-contract-v1",
+    "source": "Plan 5.4 post-policy serialized envelope limit; approved native header-prefix behavior",
+    "javaBehaviorAsserted": [
+      "D-09"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-09"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Backend body990000 bytes is below ingress limit. Executed response policy adds60000-byte header and stable marker; combined final JSON envelope exceeds1048576. Java exact original body/headers are preserved. Rust authored minimal502 exactERR14016 excludes original/policy headers and preserves exactlyone backendcall. Proxy-only inherited routes were removed to prove response-policy execution; all failed drafts/runs retained.",
+    "remainingContractAssertions": [
+      "Base64-boundary and replacement-envelope recheck require explicit assertions; no policy execution counter is claimed."
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T034223.862491Z"
+  }
+]

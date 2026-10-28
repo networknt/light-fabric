@@ -1,0 +1,7 @@
+# Lambda wrapper uses the approved Java ID spelling. Phase1 false retained until
+# complete WP12 app-template qualification; explicit enabled configurations work.
+enabled: ${correlation.enabled:false}
+autogenCorrelationID: ${correlation.autogenCorrelationID:true}
+# Unsupported defaults are reported; non-default values fail Init.
+correlationMdcField: ${correlation.correlationMdcField:cId}
+traceabilityMdcField: ${correlation.traceabilityMdcField:tId}

@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "key": "address",
+  "rateLimit": "100/h",
+  "address": {
+    "198.51.100.7": "100/h",
+    "198.51.100.200": "1/h"
+  }
+}

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 aes = "0.8"
+aes-gcm = "0.10"
 cbc = "0.1"
 block-padding = "0.3"
 pbkdf2 = { version = "0.12", features = ["sha2"] }

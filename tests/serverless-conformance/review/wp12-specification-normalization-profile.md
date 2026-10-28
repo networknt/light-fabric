@@ -1,0 +1,9 @@
+# WP12 approved Specification normalization Init profile
+
+Owner approved the exact language, translations, effective first-server/fallback selection, static error and narrow KEY-004 disposition in WP12/specification-regex-profile-20261014T025214Z/profile-review.md. Approved bounds: 1024UTF-8 pattern bytes,256parser events,depth16,explicit counts64,16384translated bytes,1MiB program/cache,target depth64. Unsupported syntax or bound overflow has static InvalidConfiguration text `specification: base-path normalization profile rejected`. Preserve loader source bounds, defaults and ordinary fallback type validation; apply regex restrictions only to the effective pattern. Unused fallback regex syntax is not rejected.
+
+This is an intentional restricted Java compatibility profile, not blanket basePath rejection or deployed/customer compatibility. The production Init parser/compiler is tested against all392 preserved Java/prototype matrix declarations; golden Java output and observations remain unchanged. These are focused component tests, not a WP13 fixture runner/comparator.
+
+No fixture invocation expectations, Java observations, admissions or fixture DIGEST changed. Earlier read-only review480fixture declarations/58native Specification configurations found no explicit handler.basePath or nonempty servers source; no additional fixture outcome conflict identified. External/customer materialization remains unqualified while WP5 is open.
+
+Runtime normalization is not integrated, Specification remains unregistered, and the retained positive pipeline normalization regression remains failing pending bounded-work disposition. No path cutoff/new runtime error/worker lifecycle is approved. A separate runtime proposal must be approved and qualified before updating invocation outcomes or activating this handler.

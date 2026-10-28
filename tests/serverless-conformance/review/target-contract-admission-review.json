@@ -1,0 +1,34 @@
+[
+  {
+    "fixture": "D-07-account-conflict-init-contract-v1",
+    "source": "Approved D-07 / plan 5.5 full ARN account/region validation at Init; configured test gateway account 000000000000 and us-east-1 region",
+    "javaBehaviorAsserted": [
+      "D-07"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-07"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "All other shared configuration/ingress prerequisites supported. One declared synthetic target conflicts only in account. Java preserves the literal ARN and fake Invoke response; Rust must reject configuration at Init with zero calls. No AWS call or credential configuration.",
+    "remainingContractAssertions": [
+      "Self-target Init rejection still needs an explicit shared synthetic Init identity declaration and admission."
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T030617.578557Z"
+  },
+  {
+    "fixture": "D-07-region-conflict-init-contract-v1",
+    "source": "Approved D-07 / plan 5.5 full ARN account/region validation at Init; configured test gateway account 000000000000 and us-east-1 region",
+    "javaBehaviorAsserted": [
+      "D-07"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-07"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "All other shared configuration/ingress prerequisites supported. One declared synthetic target conflicts only in region. Java preserves the literal ARN and fake Invoke response; Rust must reject configuration at Init with zero calls. No AWS call or credential configuration.",
+    "remainingContractAssertions": [
+      "Self-target Init rejection still needs an explicit shared synthetic Init identity declaration and admission."
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T030617.578557Z"
+  }
+]

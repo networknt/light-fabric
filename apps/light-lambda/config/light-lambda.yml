@@ -1,0 +1,13 @@
+stage: ${light-lambda.stage:}
+stageVariables: ${light-lambda.stageVariables:null}
+accountId: ${light-lambda.accountId:null}
+apiId: ${light-lambda.apiId:null}
+domainName: ${light-lambda.domainName:null}
+resourceId: ${light-lambda.resourceId:null}
+ingressTimeoutMs: ${light-lambda.ingressTimeoutMs:60000}
+responseReserveMs: ${light-lambda.responseReserveMs:250}
+postReserveMs: ${light-lambda.postReserveMs:100}
+maxRequestBytes: ${light-lambda.maxRequestBytes:1048576}
+maxResponseBytes: ${light-lambda.maxResponseBytes:1048576}
+maxInvokePayloadBytes: ${light-lambda.maxInvokePayloadBytes:6291456}
+invokeMaxRetries: ${light-lambda.invokeMaxRetries:0}

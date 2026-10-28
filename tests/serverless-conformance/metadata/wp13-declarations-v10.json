@@ -1,0 +1,35 @@
+{
+  "schema": "light-lambda-declaration-review/v1",
+  "reviews": [
+    {
+      "id": "D-08-zero-remaining-supported-config-v1",
+      "fixtureDigest": "45ac2a925f5ccfe92bb8c4cef1e17e08b0adb6f6b58a5b13ca56c28592c0e191",
+      "originalDeclared": [
+        "status",
+        "body",
+        "backendCalls",
+        "header:content-type"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "R3 supported-input and R4 deferred-manager contracts: unchanged expectations prove these fields equal under existing header-case and absent-field rules. This does not qualify Dynamo execution in Rust.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-approved-dispositions-20261018T235124Z/java-qualified/D-08-zero-remaining-supported-config-v1.json",
+      "nativeSha256": "c6211f3247c059a396a90c8a11b5865943070fbcc0a5036f0fc2b4542b49686e"
+    },
+    {
+      "id": "K-01-selected-dynamo-deferred-init-contract-v1",
+      "fixtureDigest": "4dc2e017d4ca2ca869bacc8458ea2b003577bcd8678e5d9cc6c633cfa92d6520",
+      "originalDeclared": [
+        "outcome",
+        "cacheActions"
+      ],
+      "remove": [
+        "cacheActions"
+      ],
+      "reason": "R3 supported-input and R4 deferred-manager contracts: unchanged expectations prove these fields equal under existing header-case and absent-field rules. This does not qualify Dynamo execution in Rust.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-approved-dispositions-20261018T235124Z/java-qualified/K-01-selected-dynamo-deferred-init-contract-v1.json",
+      "nativeSha256": "65320d413904019e490e69d04a968e33fd2b9a915163e3bb06c4df1d02bc146a"
+    }
+  ]
+}

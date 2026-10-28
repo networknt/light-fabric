@@ -1,0 +1,6 @@
+light-lambda.stage: local-baseline
+lambda-proxy.region: us-east-1
+lambda-proxy.functions:
+  /hello@get: test-only-business
+security.enabled: false
+unified-security.enabled: false

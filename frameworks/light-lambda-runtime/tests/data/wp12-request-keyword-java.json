@@ -1,0 +1,3538 @@
+[
+  {
+    "input": {
+      "id": "keyword-3.0.3-maxLength",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "maxLength": 3
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": \"abcd\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-maxLength",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at most 3 characters long\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-maxLength.json",
+    "sha256": "b02a64f6db3bf5e06800b3ed7b605e8c16062249b46a14da5522491cb10c2360"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-pattern",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "pattern": "^x"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": \"bad\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-pattern",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: does not match the regex pattern ^x\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-pattern.json",
+    "sha256": "a8670393db8d896608d9880942e4fe7d7c05cd62813bf61744985ed92bd7005b"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-minItems",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "array",
+                            "minItems": 2
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": [1]}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-minItems",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have at least 2 items but found 1\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-minItems.json",
+    "sha256": "281f79998558a0de9f8f7a42899770a841bb56a575a2fb11afc3e787f5b1acc3"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-maxItems",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "array",
+                            "maxItems": 1
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": [1, 2]}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-maxItems",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have at most 1 items but found 2\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-maxItems.json",
+    "sha256": "29f6575037572072de5a3fc28d51e5576b8b76efb4cff34009816daefd1e1d2e"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-uniqueItems",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "array",
+                            "uniqueItems": true
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": [1, 1]}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-uniqueItems",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have only unique items in the array\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-uniqueItems.json",
+    "sha256": "fa22309126ee88b0511eb99094bcb70e9c17e539e5b8c18147133cae413afd8f"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-minProperties",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "object",
+                            "minProperties": 2
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": {\"a\": 1}}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-minProperties",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have at least 2 properties\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-minProperties.json",
+    "sha256": "762de6021b5631169972db6506accdc2236c9dfa23bb9b82226b2ed4941d0ec7"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-maxProperties",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "object",
+                            "maxProperties": 1
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": {\"a\": 1, \"b\": 2}}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-maxProperties",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have at most 1 properties\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-maxProperties.json",
+    "sha256": "6022aafa58421f53d03eb1419cf64bfe03f5b5e4a8a014a4713388c19d0f804d"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-additionalProperties",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "object",
+                            "additionalProperties": false
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": {\"a\": 1}}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-additionalProperties",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: property 'a' is not defined in the schema and the schema does not allow additional properties\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-additionalProperties.json",
+    "sha256": "25656d63c75cd35b6d812d18aea598020abdc15a53f13fb5a9f92ba7a8d2217b"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-not",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "not": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": \"bad\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-not",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must not be valid to the schema {\"type\":\"string\"}\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-not.json",
+    "sha256": "a037aaad2006e6fc8a1dd2435c7cf4e4171cc734f9a6ee8aef9a264e070ce521"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-allOf",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "allOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "minLength": 3
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": \"x\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-allOf",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at least 3 characters long\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-allOf.json",
+    "sha256": "2619e4a8531ea223c4d0daa1cc877ae1eae96d3bd514e8d161c30c01f9a95dec"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-oneOfNone",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "oneOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": \"bad\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-oneOfNone",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be valid to one and only one schema, but 0 are valid\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-oneOfNone.json",
+    "sha256": "9ffaa10a1b71e11b8aac056601441b2351c65f8d06f3e2ffba7af490ad6dbae6"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-oneOfMany",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "oneOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "integer"
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": 1}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-oneOfMany",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be valid to one and only one schema, but 2 are valid with indexes '0, 1'\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-oneOfMany.json",
+    "sha256": "cff68d7efbdb137d72ae85e6e70c231d57e1b7582bdc19fc164e518f145ff4d8"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-items",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "array",
+                            "items": {
+                              "type": "integer"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": [\"bad\"]}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-items",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v/0: string found, integer expected\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-items.json",
+    "sha256": "f26ed6e35fc11789f055ab9d9cf72c15b113ea4bac71fb484fee08dff2ec7934"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-minimum",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "number",
+                            "minimum": 1.25
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": 1}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-minimum",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have a minimum value of 1.25\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-minimum.json",
+    "sha256": "8f27505d80e8306b692519ddd4d28b7eaa22e9a9a9e91c7a853cfb8c0a695c36"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-maximum",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "number",
+                            "maximum": 1.25
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": 2}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-maximum",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have a maximum value of 1.25\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-maximum.json",
+    "sha256": "382e958a2301a57c8e9d1db4ef83a0d68ad9a6899ff6c93949f638cf6c942fd2"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-contains",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "contains": {
+                              "type": "integer"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": [\"bad\"]}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-contains",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - Schema at #/properties/v must be object or boolean but was MISSING\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-contains.json",
+    "sha256": "8232787b8731794152693a02ede4327827df3c9b21799f6ca8b2d134147f1c06"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-propertyNames",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "propertyNames": {
+                              "pattern": "^x"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": {\"bad\": 1}}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-propertyNames",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - Schema at #/properties/v must be object or boolean but was MISSING\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-propertyNames.json",
+    "sha256": "1e55c73a678e023b4c67e54c5ff31cbf2cee3e6cea0d00ea36979aba21dd2b49"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-dependentRequired",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "dependentRequired": {
+                              "a": [
+                                "b"
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": {\"a\": 1}}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-dependentRequired",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - Schema at #/properties/v must be object or boolean but was MISSING\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-dependentRequired.json",
+    "sha256": "e5896b03d1bfa5094e98c419deb4845d19efecd76a6cfecdad29b6ce0b151289"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-unevaluatedProperties",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "unevaluatedProperties": false
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": {\"bad\": 1}}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-unevaluatedProperties",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: property 'bad' is not evaluated and the schema does not allow unevaluated properties\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-unevaluatedProperties.json",
+    "sha256": "7d61a7a45f0058da75ee4d62579d43cc5707c3788c5b9c5044a9010b0e3ff0f9"
+  },
+  {
+    "input": {
+      "id": "keyword-3.0.3-prefixItems",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "prefixItems": [
+                              {
+                                "type": "integer"
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": [\"bad\"]}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.0.3-prefixItems",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - Schema at #/properties/v must be object or boolean but was MISSING\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.0.3-prefixItems.json",
+    "sha256": "f3cbc01dc0ccb88645854bfdf853f5e3288fe2f6ff66a8d683d8926df1ef6d8e"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-maxLength",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "maxLength": 3
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": \"abcd\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-maxLength",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at most 3 characters long\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-maxLength.json",
+    "sha256": "d4ebac0fb9dd7cefc8903f46591a24288fa3a0975ec9abd4fa2fb48d498005db"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-pattern",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "string",
+                            "pattern": "^x"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": \"bad\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-pattern",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: does not match the regex pattern ^x\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-pattern.json",
+    "sha256": "af0fedde53b86874e79bc2a0e17adbc8c95a4f345871aa754ffa9ccfc0fb55f7"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-minItems",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "array",
+                            "minItems": 2
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": [1]}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-minItems",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have at least 2 items but found 1\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-minItems.json",
+    "sha256": "53547c0d20e1b902760faee5fb87528af8bb0cb48aa3b935c211808c7c65359c"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-maxItems",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "array",
+                            "maxItems": 1
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": [1, 2]}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-maxItems",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have at most 1 items but found 2\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-maxItems.json",
+    "sha256": "2f1b2bfb269028836a4a8c1f2dcd358cefbd9db2626b7a007eae86a72a9e4340"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-uniqueItems",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "array",
+                            "uniqueItems": true
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": [1, 1]}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-uniqueItems",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have only unique items in the array\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-uniqueItems.json",
+    "sha256": "89cc6c89abbc299a293e68017bc2ad38c46d3e0d7ab7faa26b6e6ded0ffd3336"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-minProperties",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "object",
+                            "minProperties": 2
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": {\"a\": 1}}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-minProperties",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have at least 2 properties\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-minProperties.json",
+    "sha256": "6a6991d11c41ebf3acb9980eb15c6eb5f895cc461956c529313835d3a055399d"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-maxProperties",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "object",
+                            "maxProperties": 1
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": {\"a\": 1, \"b\": 2}}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-maxProperties",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have at most 1 properties\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-maxProperties.json",
+    "sha256": "5131f649309e720a71bb944bc7c9c0ec34d6594b731945714074b40e047960c3"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-additionalProperties",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "object",
+                            "additionalProperties": false
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": {\"a\": 1}}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-additionalProperties",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: property 'a' is not defined in the schema and the schema does not allow additional properties\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-additionalProperties.json",
+    "sha256": "086274e184a9809c7d059b9d53b5c0903d0823a53ef040a1699aa6a5192b369b"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-not",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "not": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": \"bad\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-not",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must not be valid to the schema {\"type\":\"string\"}\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-not.json",
+    "sha256": "361c5ed472767f4e3bd0855546f7758521e6f2e9d49360b612817757a55908e8"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-allOf",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "allOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "minLength": 3
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": \"x\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-allOf",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at least 3 characters long\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-allOf.json",
+    "sha256": "e9739bc8d5233579bd35ad021fb0df736afe77a1d5d58f891c9977d77273ca9e"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-oneOfNone",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "oneOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": \"bad\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-oneOfNone",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be valid to one and only one schema, but 0 are valid\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-oneOfNone.json",
+    "sha256": "9b6a6dd0245e7930cce72bb18398e30f8b0992e35950d6b3d19fac2df18325d9"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-oneOfMany",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "oneOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "integer"
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": 1}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-oneOfMany",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be valid to one and only one schema, but 2 are valid with indexes '0, 1'\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-oneOfMany.json",
+    "sha256": "d6e443a8afc57fee2219ddbc78ba2ad863d1f1c9027d6e037479707a61f6ee44"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-items",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "array",
+                            "items": {
+                              "type": "integer"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": [\"bad\"]}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-items",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v/0: string found, integer expected\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-items.json",
+    "sha256": "cebd8f9fcd0e0b0bb118df5684e906303078748dc590ce47509591578753a3e5"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-minimum",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "number",
+                            "minimum": 1.25
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": 1}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-minimum",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have a minimum value of 1.25\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-minimum.json",
+    "sha256": "c33408f34ae4cc52780bfec2699a086eec904ffb587eb7bf46ae93e58da2396e"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-maximum",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "type": "number",
+                            "maximum": 1.25
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": 2}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-maximum",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have a maximum value of 1.25\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-maximum.json",
+    "sha256": "a7bd73aa1829c06223a0fd6d26c34510e5dfe2310a93e691a354d6e4d9b30bf2"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-contains",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "contains": {
+                              "type": "integer"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": [\"bad\"]}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-contains",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - Schema at #/properties/v must be object or boolean but was MISSING\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-contains.json",
+    "sha256": "ced133ce21c0a9d435026d7d7db5617272076c2a69fea6efad8cee22a3bd2be4"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-propertyNames",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "propertyNames": {
+                              "pattern": "^x"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": {\"bad\": 1}}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-propertyNames",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - Schema at #/properties/v must be object or boolean but was MISSING\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-propertyNames.json",
+    "sha256": "72096b58221c478792f748e179ca3cf07aefb6468cb11b3956f11f4fa7340b64"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-dependentRequired",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "dependentRequired": {
+                              "a": [
+                                "b"
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": {\"a\": 1}}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-dependentRequired",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - Schema at #/properties/v must be object or boolean but was MISSING\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-dependentRequired.json",
+    "sha256": "b06fef6960924d8a0c3d0131298091d82023adb72308825543508121210b85d8"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-unevaluatedProperties",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "unevaluatedProperties": false
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": {\"bad\": 1}}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-unevaluatedProperties",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: property 'bad' is not evaluated and the schema does not allow unevaluated properties\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-unevaluatedProperties.json",
+    "sha256": "86798c022c8b07dba04c4230b0de404a39326eb23830790bb02d885ea278e6c5"
+  },
+  {
+    "input": {
+      "id": "keyword-3.1.0-prefixItems",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-keyword-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "properties": {
+                          "v": {
+                            "prefixItems": [
+                              {
+                                "type": "integer"
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\": [\"bad\"]}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "keyword-3.1.0-prefixItems",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11003\",\"message\":\"VALIDATOR_SCHEMA_INVALID_JSON\",\"description\":\"Unable to parse JSON - Schema at #/properties/v must be object or boolean but was MISSING\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/immutable-capture-20261016T233641Z/request-keyword-probes/keyword-3.1.0-prefixItems.json",
+    "sha256": "07bd81c74bad93c947c61837a5194d938103e6a05710cae0c8b5b3b3617f7a16"
+  }
+]

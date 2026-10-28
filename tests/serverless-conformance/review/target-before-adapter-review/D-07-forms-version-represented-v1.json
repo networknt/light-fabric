@@ -1,0 +1,136 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {},
+  "tokens": {},
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "substitutions": [],
+  "id": "D-07-forms-version-represented-v1",
+  "title": "D-07-forms-version \u2014 reviewed Java forwarding / Rust Init boundary",
+  "ledger": [
+    "D-07",
+    "C-10"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only",
+      "light-lambda.accountId": "000000000000",
+      "light-lambda.apiId": "test-only",
+      "light-lambda.domainName": "test.example",
+      "light-lambda.resourceId": "test-only"
+    },
+    "files": {
+      "lambda-proxy": {
+        "region": "us-east-1",
+        "functions": {
+          "/x/plain@get": "test-only-gateway",
+          "/x/alias@get": "test-only-gateway:test-alias",
+          "/x/version@get": "test-only-gateway:7",
+          "/x/full@get": "arn:aws:lambda:us-east-1:000000000000:function:test-only-gateway:test-alias",
+          "/x/partial@get": "000000000000:function:test-only-gateway:7",
+          "/x/foreign@get": "arn:aws:lambda:eu-west-1:111111111111:function:test-only-other"
+        },
+        "logType": "Tail"
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy"
+        ],
+        "chains": {
+          "request": [],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls",
+    "header:x-backend"
+  ],
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "GET",
+    "path": "/x/version",
+    "headers": {},
+    "queryStringParameters": {},
+    "body": null,
+    "isBase64Encoded": false
+  },
+  "backend": [
+    {
+      "match": {
+        "target": "test-only-gateway:7"
+      },
+      "respond": {
+        "functionError": null,
+        "payload": {
+          "statusCode": 200,
+          "headers": {
+            "x-backend": "synthetic"
+          },
+          "body": "ok",
+          "isBase64Encoded": false
+        }
+      }
+    }
+  ],
+  "expectJava": {
+    "status": 200,
+    "headers": [
+      [
+        "x-backend",
+        "synthetic"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "ok",
+    "bodyBase64": false,
+    "backendCalls": [
+      {
+        "target": "test-only-gateway:7",
+        "event": {
+          "path": "/x/version",
+          "httpMethod": "GET",
+          "headers": {},
+          "queryStringParameters": {},
+          "requestContext": {},
+          "isBase64Encoded": false
+        }
+      }
+    ],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "expect": {
+    "outcome": "initError",
+    "code": "InvalidConfiguration",
+    "backendCalls": [],
+    "jwksFetches": 0
+  }
+}

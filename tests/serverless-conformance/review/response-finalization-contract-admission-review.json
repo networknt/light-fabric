@@ -1,0 +1,22 @@
+[
+  {
+    "fixture": "D-08e-response-timeout-emf-finalization-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "D-08e",
+      "D-08d",
+      "M-01",
+      "D-08b"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-08e",
+      "D-08d",
+      "M-01",
+      "D-08b"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Exact one dispatch and response-stage bounded work; Rust authored 504 timeout and one EMF Errors=1 finalization record. Java synchronous reviewed response preserved. No Rust execution.",
+    "javaRun": "20261011T045659.508816Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T045659.508816Z"
+  }
+]

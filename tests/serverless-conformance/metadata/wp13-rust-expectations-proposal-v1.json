@@ -1,0 +1,920 @@
+{
+  "status": "inactive review package; no expectation change applied",
+  "preserve": "all originals, Java expectations, input envelopes, historical failures and exact comparison rules",
+  "proposals": [
+    {
+      "id": "D-06-typed-sdk-2-multi-contract-v1",
+      "originalFixtureDigest": "1d0730db751b6d4eadb77d41c404aea6320b21ad1cd097ec3474ee4803dea0c0",
+      "originalExpected": [
+        {
+          "outcome": "response",
+          "status": 502,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":502,\"code\":\"ERR14019\",\"message\":\"BACKEND_UNAVAILABLE\",\"description\":\"Backend function FnX is missing or not permitted.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "jwksFetches": 0,
+          "backendCalls": [
+            {
+              "target": "FnX",
+              "event": {
+                "path": "/x",
+                "httpMethod": "GET",
+                "body": null,
+                "isBase64Encoded": false,
+                "requestContext": {
+                  "stage": "test-only"
+                }
+              },
+              "eventExact": {
+                "headers": null,
+                "multiValueHeaders": null,
+                "queryStringParameters": null,
+                "multiValueQueryStringParameters": null,
+                "pathParameters": null
+              },
+              "invoke": {
+                "logType": "None"
+              }
+            }
+          ]
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "outcome": "response",
+          "status": 502,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":502,\"code\":\"ERR14019\",\"message\":\"BACKEND_UNAVAILABLE\",\"description\":\"Backend function function0 is missing or not permitted.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "jwksFetches": 0,
+          "backendCalls": [
+            {
+              "target": "FnX",
+              "event": {
+                "path": "/x",
+                "httpMethod": "GET",
+                "body": null,
+                "isBase64Encoded": false,
+                "requestContext": {
+                  "stage": "test-only"
+                }
+              },
+              "eventExact": {
+                "headers": null,
+                "multiValueHeaders": null,
+                "queryStringParameters": null,
+                "multiValueQueryStringParameters": null,
+                "pathParameters": null
+              },
+              "invoke": {
+                "logType": "None"
+              }
+            }
+          ]
+        }
+      ],
+      "decisionGroup": "A",
+      "status": "PROPOSAL ONLY; inactive; originals and runner expectations unchanged",
+      "authority": "A: accept indexed public labels in a versioned expectation, or specify the trusted display-name contract to implement"
+    },
+    {
+      "id": "D-06-typed-sdk-3-multi-contract-v1",
+      "originalFixtureDigest": "99f2f8735a0c79a75886002ed6ba946292ad32539f1dca74277aaa0e3977593e",
+      "originalExpected": [
+        {
+          "outcome": "response",
+          "status": 502,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":502,\"code\":\"ERR14014\",\"message\":\"BACKEND_FUNCTION_ERROR\",\"description\":\"Backend function FnX failed.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "jwksFetches": 0,
+          "backendCalls": [
+            {
+              "target": "FnX",
+              "event": {
+                "path": "/x",
+                "httpMethod": "GET",
+                "body": null,
+                "isBase64Encoded": false,
+                "requestContext": {
+                  "stage": "test-only"
+                }
+              },
+              "eventExact": {
+                "headers": null,
+                "multiValueHeaders": null,
+                "queryStringParameters": null,
+                "multiValueQueryStringParameters": null,
+                "pathParameters": null
+              },
+              "invoke": {
+                "logType": "None"
+              }
+            }
+          ]
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "outcome": "response",
+          "status": 502,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":502,\"code\":\"ERR14014\",\"message\":\"BACKEND_FUNCTION_ERROR\",\"description\":\"Backend function function0 failed.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "jwksFetches": 0,
+          "backendCalls": [
+            {
+              "target": "FnX",
+              "event": {
+                "path": "/x",
+                "httpMethod": "GET",
+                "body": null,
+                "isBase64Encoded": false,
+                "requestContext": {
+                  "stage": "test-only"
+                }
+              },
+              "eventExact": {
+                "headers": null,
+                "multiValueHeaders": null,
+                "queryStringParameters": null,
+                "multiValueQueryStringParameters": null,
+                "pathParameters": null
+              },
+              "invoke": {
+                "logType": "None"
+              }
+            }
+          ]
+        }
+      ],
+      "decisionGroup": "A",
+      "status": "PROPOSAL ONLY; inactive; originals and runner expectations unchanged",
+      "authority": "A: same label decision; no raw ARN disclosure introduced"
+    },
+    {
+      "id": "H-04-transport-slow-multi-contract-v1",
+      "originalFixtureDigest": "f87398c0ceff27a8ba57c79fad80fd88c4ce45d943116a8072677540738e3d34",
+      "originalExpected": [
+        {
+          "status": 400,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":400,\"code\":\"ERR10089\",\"message\":\"FAILED_TO_INVOKE_SERVICE\",\"description\":\"Failed to invoke HTTP service with serviceId ${dependency:http}/x.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response",
+          "httpCalls": [
+            {
+              "target": "${dependency:http}/x",
+              "method": "GET",
+              "uri": "/x",
+              "body": "",
+              "serviceId": null
+            },
+            {
+              "target": "${dependency:http}/x",
+              "method": "GET",
+              "uri": "/x",
+              "body": "",
+              "serviceId": null
+            },
+            {
+              "target": "${dependency:http}/x",
+              "method": "GET",
+              "uri": "/x",
+              "body": "",
+              "serviceId": null
+            }
+          ]
+        }
+      ],
+      "proposedVersionedRustExpectation": {
+        "outcome": "initError",
+        "code": "InvalidConfiguration",
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "httpCalls": []
+      },
+      "decisionGroup": "B",
+      "status": "PROPOSAL ONLY; inactive; originals and runner expectations unchanged",
+      "authority": "B: retain explicit Router activation and version the Init expectation, or approve a native-default activation change"
+    },
+    {
+      "id": "L-01-address-fallback-counter-recreated-cp1-e02-accepted",
+      "originalFixtureDigest": "31b4fde1cd8c4b34aeea67e68b7948a259306213f481d2008f9a89160c7af680",
+      "originalExpected": [
+        {
+          "status": 500,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":500,\"code\":\"ERR14011\",\"message\":\"ALB_MULTI_VALUE_HEADERS_REQUIRED\",\"description\":\"The target group must enable multi-value headers.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 500,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":500,\"code\":\"ERR14011\",\"message\":\"ALB_MULTI_VALUE_HEADERS_REQUIRED\",\"description\":\"The target group must enable multi-value headers.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 500,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":500,\"code\":\"ERR14011\",\"message\":\"ALB_MULTI_VALUE_HEADERS_REQUIRED\",\"description\":\"The target group must enable multi-value headers.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 500,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":500,\"code\":\"ERR14011\",\"message\":\"ALB_MULTI_VALUE_HEADERS_REQUIRED\",\"description\":\"The target group must enable multi-value headers.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "status": 400,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":400,\"code\":\"ERR14010\",\"message\":\"UNSUPPORTED_EVENT_FAMILY\",\"description\":\"The gateway received an event that is not an ALB request.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 400,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":400,\"code\":\"ERR14010\",\"message\":\"UNSUPPORTED_EVENT_FAMILY\",\"description\":\"The gateway received an event that is not an ALB request.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 400,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":400,\"code\":\"ERR14010\",\"message\":\"UNSUPPORTED_EVENT_FAMILY\",\"description\":\"The gateway received an event that is not an ALB request.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 400,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":400,\"code\":\"ERR14010\",\"message\":\"UNSUPPORTED_EVENT_FAMILY\",\"description\":\"The gateway received an event that is not an ALB request.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        }
+      ],
+      "decisionGroup": "C",
+      "status": "PROPOSAL ONLY; inactive; originals and runner expectations unchanged",
+      "authority": "C: versioned Rust expectations under the already-approved ALB classification contract; keep raw events unchanged"
+    },
+    {
+      "id": "L-02-synthetic-address-counter-configured-v1",
+      "originalFixtureDigest": "8ba9489b1365c5fb88cf6d9578a21ad4c1e48b00544eec509825a108217e7815",
+      "originalExpected": [
+        {
+          "status": 500,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":500,\"code\":\"ERR14011\",\"message\":\"ALB_MULTI_VALUE_HEADERS_REQUIRED\",\"description\":\"The target group must enable multi-value headers.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 500,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":500,\"code\":\"ERR14011\",\"message\":\"ALB_MULTI_VALUE_HEADERS_REQUIRED\",\"description\":\"The target group must enable multi-value headers.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "status": 400,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":400,\"code\":\"ERR14010\",\"message\":\"UNSUPPORTED_EVENT_FAMILY\",\"description\":\"The gateway received an event that is not an ALB request.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 400,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":400,\"code\":\"ERR14010\",\"message\":\"UNSUPPORTED_EVENT_FAMILY\",\"description\":\"The gateway received an event that is not an ALB request.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        }
+      ],
+      "decisionGroup": "C",
+      "status": "PROPOSAL ONLY; inactive; originals and runner expectations unchanged",
+      "authority": "C: same Rust amendment; D: retain exact Java failure or authorize a separately qualified deterministic clock/timing fixture; no tolerance inferred"
+    },
+    {
+      "id": "S-08-basic-failures-warm-multi-contract-v1",
+      "originalFixtureDigest": "d69b15e92fcc167621f3fd5f5fcf8f4761f4c9979ffbc2967f7ecb6234cfdd7b",
+      "originalExpected": [
+        {
+          "status": 401,
+          "headers": [
+            [
+              "www-authenticate",
+              "Basic realm=\"Basic Auth\""
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR12003\",\"message\":\"INVALID_AUTHORIZATION_HEADER\",\"description\":\"Invalid authorization header BASIC.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR12003\",\"message\":\"INVALID_AUTHORIZATION_HEADER\",\"description\":\"Invalid authorization header BASIC.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10047\",\"message\":\"INVALID_USERNAME_OR_PASSWORD\",\"description\":\"Invalid username or password for basic authentication\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10047\",\"message\":\"INVALID_USERNAME_OR_PASSWORD\",\"description\":\"Invalid username or password for basic authentication\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10047\",\"message\":\"INVALID_USERNAME_OR_PASSWORD\",\"description\":\"Invalid username or password for basic authentication\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR12003\",\"message\":\"INVALID_AUTHORIZATION_HEADER\",\"description\":\"Invalid authorization header unknown.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ],
+            [
+              "www-authenticate",
+              "Basic realm=\"Basic Auth\""
+            ],
+            [
+              "x-response-policy",
+              "ran"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ],
+            [
+              "x-response-policy",
+              "ran"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR12003\",\"message\":\"INVALID_AUTHORIZATION_HEADER\",\"description\":\"Invalid authorization header BASIC.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ],
+            [
+              "x-response-policy",
+              "ran"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR12003\",\"message\":\"INVALID_AUTHORIZATION_HEADER\",\"description\":\"Invalid authorization header BASIC.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ],
+            [
+              "x-response-policy",
+              "ran"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10047\",\"message\":\"INVALID_USERNAME_OR_PASSWORD\",\"description\":\"Invalid username or password for basic authentication\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ],
+            [
+              "x-response-policy",
+              "ran"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10047\",\"message\":\"INVALID_USERNAME_OR_PASSWORD\",\"description\":\"Invalid username or password for basic authentication\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ],
+            [
+              "x-response-policy",
+              "ran"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10047\",\"message\":\"INVALID_USERNAME_OR_PASSWORD\",\"description\":\"Invalid username or password for basic authentication\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ],
+            [
+              "x-response-policy",
+              "ran"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR12003\",\"message\":\"INVALID_AUTHORIZATION_HEADER\",\"description\":\"Invalid authorization header unknown.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        }
+      ],
+      "decisionGroup": "C",
+      "status": "PROPOSAL ONLY; inactive; originals and runner expectations unchanged",
+      "authority": "C: versioned header expectations using existing JSON-error/C-09 approvals; original Java expectations stay exact"
+    },
+    {
+      "id": "S-08-missing-basic-multi-contract-v1",
+      "originalFixtureDigest": "bd3b90cdf4d843b05913f8d69e8dd72bed22d643b799b0ceb0ca32ae7afb3b74",
+      "originalExpected": [
+        {
+          "status": 401,
+          "headers": [
+            [
+              "www-authenticate",
+              "Basic realm=\"Basic Auth\""
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ],
+            [
+              "www-authenticate",
+              "Basic realm=\"Basic Auth\""
+            ],
+            [
+              "x-response-policy",
+              "ran"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        }
+      ],
+      "decisionGroup": "C",
+      "status": "PROPOSAL ONLY; inactive; originals and runner expectations unchanged",
+      "authority": "C: same versioned header amendment; no renewed behavior approval"
+    },
+    {
+      "id": "S-12-denied-unknown-multi-contract-v1",
+      "originalFixtureDigest": "9c3b3c6364ef0ecbf206e98c3e35ab50cc07436f70d1767bcc9f202a20b19b37",
+      "originalExpected": [
+        {
+          "status": 401,
+          "headers": [
+            [
+              "www-authenticate",
+              "Basic realm=\"Default Realm\""
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 400,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":400,\"code\":\"ERR10078\",\"message\":\"MISSING_PATH_PREFIX_AUTH\",\"description\":\"Missing path prefix auth entry for request path /unknown.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ],
+            [
+              "www-authenticate",
+              "Basic realm=\"Default Realm\""
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        },
+        {
+          "status": 400,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":400,\"code\":\"ERR10078\",\"message\":\"MISSING_PATH_PREFIX_AUTH\",\"description\":\"Missing path prefix auth entry for request path /unknown.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        }
+      ],
+      "decisionGroup": "C",
+      "status": "PROPOSAL ONLY; inactive; originals and runner expectations unchanged",
+      "authority": "C: versioned header expectation under existing error-format approval"
+    },
+    {
+      "id": "S-12-denied-x-multi-contract-v1",
+      "originalFixtureDigest": "36f86885b8903246fb33062c1fe14cf6bc5507113feb93a9008f69299dde385d",
+      "originalExpected": [
+        {
+          "status": 401,
+          "headers": [
+            [
+              "www-authenticate",
+              "Basic realm=\"Default Realm\""
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ],
+            [
+              "www-authenticate",
+              "Basic realm=\"Default Realm\""
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        }
+      ],
+      "decisionGroup": "C",
+      "status": "PROPOSAL ONLY; inactive; originals and runner expectations unchanged",
+      "authority": "C: versioned header expectation under existing error-format approval"
+    },
+    {
+      "id": "T-01-missing-executor-supported-edge-v1",
+      "originalFixtureDigest": "3304cd2cd0d5f72cd7d8abf5c3b7aa5e15e6cf3f3b87e9859d6258875ac72b25",
+      "originalExpected": [
+        {
+          "status": 500,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":500,\"code\":\"ERR14011\",\"message\":\"ALB_MULTI_VALUE_HEADERS_REQUIRED\",\"description\":\"The target group must enable multi-value headers.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        }
+      ],
+      "proposedVersionedRustExpectation": {
+        "outcome": "initError",
+        "code": "InvalidConfiguration",
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "httpCalls": []
+      },
+      "decisionGroup": "C",
+      "status": "PROPOSAL ONLY; inactive; originals and runner expectations unchanged",
+      "authority": "C: versioned Init expectation; do not reopen settled Transformer execution/admission"
+    },
+    {
+      "id": "T-02-missing-executor-supported-edge-v1",
+      "originalFixtureDigest": "06410f83e9d75844b758c70afe4a92327b714d87c40ade4a309a4e7be33cb1d5",
+      "originalExpected": [
+        {
+          "status": 500,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":500,\"code\":\"ERR14011\",\"message\":\"ALB_MULTI_VALUE_HEADERS_REQUIRED\",\"description\":\"The target group must enable multi-value headers.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "backendCalls": [],
+          "jwksFetches": 0,
+          "outcome": "response"
+        }
+      ],
+      "proposedVersionedRustExpectation": {
+        "outcome": "initError",
+        "code": "InvalidConfiguration",
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "httpCalls": []
+      },
+      "decisionGroup": "C",
+      "status": "PROPOSAL ONLY; inactive; originals and runner expectations unchanged",
+      "authority": "C: versioned Init expectation; do not reopen settled Transformer execution/admission"
+    }
+  ]
+}

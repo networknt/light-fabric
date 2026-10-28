@@ -180,6 +180,7 @@ pub trait ReloadableModule: Send + Sync {
         false
     }
 
+    #[must_use = "the reload future must be awaited to perform the operation"]
     async fn reload(&self, ctx: ReloadContext) -> Result<ReloadOutcome, RuntimeError>;
 }
 
@@ -243,6 +244,8 @@ impl ModuleRegistry {
         *self.mask_write() = enabled;
     }
 
+    // Preserve the established public compatibility signature.
+    #[allow(clippy::too_many_arguments)]
     pub fn register_config(
         &self,
         module_id: impl Into<String>,
@@ -279,6 +282,8 @@ impl ModuleRegistry {
         entry
     }
 
+    // Preserve the established public compatibility signature.
+    #[allow(clippy::too_many_arguments)]
     pub fn register_loaded_config<T>(
         &self,
         module_id: impl Into<String>,
@@ -367,6 +372,67 @@ impl ModuleRegistry {
         Ok(parsed)
     }
 
+    /// Opt-in rule path. Borrow the already owned source values rather than
+    /// cloning unrelated application values. Captures are private to this Init.
+    pub fn load_config_bounded(
+        &self,
+        runtime: &RuntimeConfig,
+        file_name: &str,
+    ) -> Result<serde_yaml::Value, RuntimeError> {
+        let password = std::env::var("light_4j_config_password").ok();
+        let loader = ConfigLoader::from_values(Default::default(), password.as_deref(), None)?;
+        let mut captures = config_loader::BoundedCaptures::default();
+        // All participating value documents count, including defaults overlaid
+        // by a later source. This is raw-source admission, not a re-resolution.
+        if let Some(file) =
+            config_loader::embedded_config_file(runtime.embedded_config, "values.yml")
+        {
+            captures.embedded(file)?;
+        }
+        for path in config_loader::existing_config_paths(
+            runtime.default_config_dir.as_deref(),
+            &runtime.config_dir,
+            Some(&runtime.external_config_dir),
+            "values.yml",
+        ) {
+            captures.read(&path)?;
+        }
+        let paths = config_loader::existing_config_paths(
+            runtime.default_config_dir.as_deref(),
+            &runtime.config_dir,
+            Some(&runtime.external_config_dir),
+            file_name,
+        );
+        let mut value = if let Some(path) = paths.last() {
+            loader.load_file_bounded(path, &mut captures)?
+        } else if let Some(file) =
+            config_loader::embedded_config_file(runtime.embedded_config, file_name)
+        {
+            loader.load_embedded_file_bounded(file, &mut captures)?
+        } else {
+            return Err(RuntimeError::MissingConfig(file_name.into()));
+        };
+        loader.resolve_value_bounded(&mut value, &runtime.resolved_values)?;
+        Ok(value)
+    }
+
+    /// Explicit immutable Lambda snapshot. No path lookup or source reopen.
+    pub fn load_config_bounded_from_sources(
+        &self,
+        runtime: &RuntimeConfig,
+        sources: &config_loader::BoundedLocalSources,
+    ) -> Result<serde_yaml::Value, RuntimeError> {
+        let password = std::env::var("light_4j_config_password").ok();
+        let loader = ConfigLoader::from_values(Default::default(), password.as_deref(), None)?;
+        let mut value = sources
+            .rule()?
+            .ok_or_else(|| RuntimeError::MissingConfig("rule.yml".into()))?;
+        loader.resolve_value_bounded(&mut value, &runtime.resolved_values)?;
+        Ok(value)
+    }
+
+    // Preserve the established public compatibility signature.
+    #[allow(clippy::too_many_arguments)]
     pub fn load_registered<T>(
         &self,
         runtime_config: &RuntimeConfig,
@@ -632,24 +698,24 @@ impl ModuleRegistry {
 
         // Preflight all selected reloaders before any metadata/state mutation.
         for module_id in &target_modules {
-            if let Some(reloader) = self.reloader(module_id) {
-                if let Err(error) = reloader.validate_reload(&ctx) {
-                    let mut result = ReloadModulesResult::default();
-                    self.set_last_reload(module_id, "failed", Some(error.to_string()));
-                    result.failed.push(ReloadFailed {
-                        module_id: module_id.clone(),
-                        message: error.to_string(),
-                    });
-                    for other in &target_modules {
-                        if other != module_id {
-                            result.skipped.push(ReloadSkipped {
-                                module_id: other.clone(),
-                                reason: "blockedByValidation".into(),
-                            });
-                        }
+            if let Some(reloader) = self.reloader(module_id)
+                && let Err(error) = reloader.validate_reload(&ctx)
+            {
+                let mut result = ReloadModulesResult::default();
+                self.set_last_reload(module_id, "failed", Some(error.to_string()));
+                result.failed.push(ReloadFailed {
+                    module_id: module_id.clone(),
+                    message: error.to_string(),
+                });
+                for other in &target_modules {
+                    if other != module_id {
+                        result.skipped.push(ReloadSkipped {
+                            module_id: other.clone(),
+                            reason: "blockedByValidation".into(),
+                        });
                     }
-                    return result;
                 }
+                return result;
             }
         }
 

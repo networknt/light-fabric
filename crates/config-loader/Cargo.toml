@@ -19,6 +19,7 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 base64 = "0.22"
 toml = "0.8"
+unsafe-libyaml = "=0.2.11"
 
 [dev-dependencies]
 aes = "0.8"

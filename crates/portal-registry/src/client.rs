@@ -221,11 +221,7 @@ fn root_store_with_ca_bundle(
 
     let mut reader = BufReader::new(Cursor::new(ca_certificate));
     let mut certificate_count = 0usize;
-    loop {
-        let Some(item) = rustls_pemfile::read_one(&mut reader)? else {
-            break;
-        };
-
+    while let Some(item) = rustls_pemfile::read_one(&mut reader)? {
         match item {
             rustls_pemfile::Item::X509Certificate(cert) => {
                 root_store.add(cert)?;
@@ -288,7 +284,9 @@ pub struct RegistrySession {
 
 #[async_trait::async_trait]
 pub trait RegistryHandler: Send + Sync {
+    #[must_use = "the notification future must be awaited to handle the notification"]
     async fn handle_notification(&self, _method: &str, _params: serde_json::Value) {}
+    #[must_use = "the request future must be awaited to produce the response"]
     async fn handle_request(&self, method: &str, _params: serde_json::Value) -> serde_json::Value {
         unsupported_method_response(method)
     }
@@ -796,9 +794,9 @@ impl PortalRegistryClient {
                                             &self.pending_requests,
                                             message,
                                         ).await {
-                                            tx.send(response).await.map_err(|_| {
-                                                anyhow::anyhow!("registry client outbound queue closed")
-                                            })?;
+                                            // This loop also drains rx: enqueueing here can
+                                            // deadlock when external producers fill the queue.
+                                            sender.send_message(response).await?;
                                         }
                                     }
                                     InboundEvent::Ping(payload) => sender.send_pong(payload).await?,
@@ -1002,11 +1000,27 @@ mod tests {
     struct SlowHandler {
         active: AtomicUsize,
         max_active: AtomicUsize,
+        prefill_queue: Mutex<Option<mpsc::Sender<RuntimeSessionOutput>>>,
     }
 
     #[async_trait::async_trait]
     impl RegistryHandler for SlowHandler {
         async fn handle_request(&self, _method: &str, params: Value) -> Value {
+            if let Some(tx) = self.prefill_queue.lock().await.take() {
+                // Fill the queue while the socket loop is inside the handler.
+                // Its receive branch cannot drain it until this handler returns.
+                for index in 0..OUTBOUND_QUEUE_CAPACITY {
+                    tx.try_send(RuntimeSessionOutput::Response {
+                        request_id: json!(format!("prefill-{index}")),
+                        response: RuntimeResponse {
+                            result: Some(json!({})),
+                            error: None,
+                        },
+                    })
+                    .expect("fill outbound queue");
+                }
+                assert_eq!(tx.capacity(), 0);
+            }
             let active = self.active.fetch_add(1, AtomicOrdering::SeqCst) + 1;
             self.max_active.fetch_max(active, AtomicOrdering::SeqCst);
             tokio::time::sleep(Duration::from_millis(2)).await;
@@ -1198,7 +1212,7 @@ mod tests {
     ) {
         let frame = encode_rkyv_frame_v1(&message, 1024 * 1024).expect("encode wire frame");
         socket
-            .send(Message::Binary(frame.into()))
+            .send(Message::Binary(frame))
             .await
             .expect("send wire frame");
     }
@@ -1608,6 +1622,7 @@ mod tests {
             .await
             .expect("bind listener");
         let addr = listener.local_addr().expect("listener addr");
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accept connection");
             let mut socket = accept_hdr_async(
@@ -1641,6 +1656,7 @@ mod tests {
                 }),
             )
             .await;
+            ready_rx.await.expect("handler configured");
             for index in 0..COMMANDS {
                 send_test_rkyv(
                     &mut socket,
@@ -1654,7 +1670,7 @@ mod tests {
                 .await;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
-            for _ in 0..COMMANDS {
+            for _ in 0..COMMANDS + OUTBOUND_QUEUE_CAPACITY {
                 let response = socket
                     .next()
                     .await
@@ -1678,14 +1694,30 @@ mod tests {
         .expect("build client")
         .with_control_candidates(vec![ControlCandidate::runtime_rkyv_v1()])
         .expect("candidate configuration");
-        client
-            .connect_and_loop()
-            .await
-            .expect("bounded command flood session");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            // Wait until registration publishes the outbound sender, then
+            // arrange saturation during the first handler invocation.
+            let configure_handler = async {
+                loop {
+                    let guard = client.outbound_tx.lock().await;
+                    if let Some(tx) = guard.as_ref() {
+                        *handler.prefill_queue.lock().await = Some(tx.clone());
+                        ready_tx.send(()).expect("release command flood");
+                        break;
+                    }
+                    drop(guard);
+                    tokio::task::yield_now().await;
+                }
+            };
+            let (result, ()) = tokio::join!(client.connect_and_loop(), configure_handler);
+            result.expect("bounded command flood session");
+            server.await.expect("join server");
+        })
+        .await
+        .expect("command flood must complete without a queue deadlock");
         assert_eq!(handler.max_active.load(AtomicOrdering::SeqCst), 1);
         assert_eq!(handler.active.load(AtomicOrdering::SeqCst), 0);
         assert_eq!(OUTBOUND_QUEUE_CAPACITY, 100);
-        server.await.expect("join server");
     }
 
     #[tokio::test]
@@ -1839,8 +1871,7 @@ mod tests {
                                 "status": "registered"
                             }
                         })
-                        .to_string()
-                        .into(),
+                        .to_string(),
                     ))
                     .await
                     .expect("send ack");
@@ -2050,8 +2081,7 @@ mod tests {
                         "status": "registered"
                     }
                 })
-                .to_string()
-                .into(),
+                .to_string(),
             ))
             .await
             .expect("send ack");
@@ -2150,8 +2180,7 @@ mod tests {
                         "status": "registered"
                     }
                 })
-                .to_string()
-                .into(),
+                .to_string(),
             ))
             .await
             .expect("send ack");
@@ -2192,8 +2221,7 @@ mod tests {
                         }]
                     }
                 })
-                .to_string()
-                .into(),
+                .to_string(),
             ))
             .await
             .expect("send lookup response");
@@ -2271,7 +2299,7 @@ mod tests {
             let register_json = serde_json::from_str::<Value>(&register).expect("register json");
             assert_eq!(register_json["method"], "service/register");
 
-            ws.send(Message::Ping("pre-ack".as_bytes().to_vec().into()))
+            ws.send(Message::Ping("pre-ack".as_bytes().to_vec()))
                 .await
                 .expect("send ping");
 
@@ -2294,8 +2322,7 @@ mod tests {
                         "status": "registered"
                     }
                 })
-                .to_string()
-                .into(),
+                .to_string(),
             ))
             .await
             .expect("send ack");
@@ -2356,7 +2383,7 @@ mod tests {
                 "jsonrpc": "2.0",
                 "id": "register-1",
                 "result": { "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f39", "status": "registered" }
-            }).to_string().into())).await.unwrap();
+            }).to_string())).await.unwrap();
             ws.close(None).await.unwrap();
 
             // Second connection
@@ -2368,7 +2395,7 @@ mod tests {
                 "jsonrpc": "2.0",
                 "id": "register-1",
                 "result": { "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f40", "status": "registered" }
-            }).to_string().into())).await.unwrap();
+            }).to_string())).await.unwrap();
             ws.close(None).await.unwrap();
         });
 
@@ -2429,7 +2456,7 @@ mod tests {
                 "jsonrpc": "2.0",
                 "id": "register-1",
                 "result": { "runtimeInstanceId": "0195ef10-2f24-7af2-85e9-a8ef54642f39", "status": "registered" }
-            }).to_string().into())).await.unwrap();
+            }).to_string())).await.unwrap();
 
             // Keep the connection open indefinitely without reading from it,
             // so we do not automatically respond with a Pong to the client's Ping.

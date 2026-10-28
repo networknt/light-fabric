@@ -1,0 +1,16 @@
+[
+  {
+    "fixture": "X-01-local-health-multi-contract-v1",
+    "source": "Approved X-01 local health/no downstream contract; actual HealthCheckHandler 200 OK and text/plain source bytes; owner-approved E-06a casing",
+    "javaBehaviorAsserted": [
+      "X-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "X-01",
+      "E-06a"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Supported minimal local-only configuration, not the retained downstreamEnabled true Init-rejected fixture. Two warm shared ALB multimap inputs each assert exact 200 OK and zero backend calls. No Java behavior change or per-runner input transformation.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T024652.061188Z"
+  }
+]

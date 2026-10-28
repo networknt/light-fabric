@@ -1,0 +1,20 @@
+[
+  {
+    "fixture": "S-13-S-18-rotation-retention-multi-contract-v1",
+    "source": "Reviewed WP2 rotation/retention, approved closed JWKS/cache prerequisites and S13/S18 contracts",
+    "javaBehaviorAsserted": [
+      "S-13",
+      "S-18"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-13",
+      "S-18"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Three steps share one gateway: unknown k2 with published k1 gives401 and one actual Java fetch; publish k2 gives200 with one fetch; remove all published keys and use distinct token jti signed by retained k2 gives200 without fetch. Cooldown explicitly0 disables suppression. All valid multimap events and token substitutions declared. Exact business target/calls/bodies asserted. Lifetime trust retention is asserted, not Rust execution. Cached expiry and nbf enforcement, provider normalization and cancellation remain open. Init/bootstrap fetches now asserted separately from per-request fetches. Failed-refresh cooldown fixture explicitly disables bootstrap so first request establishes the failed attempt, rather than inheriting Init cooldown. Prior revisions retained.",
+    "remainingContractAssertions": [
+      "Cached expiry/nbf checks, provider normalization and full refresh trigger matrix, cancellation"
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T043042.345473Z"
+  }
+]

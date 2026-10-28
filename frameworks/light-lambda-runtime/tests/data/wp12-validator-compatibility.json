@@ -1,0 +1,3127 @@
+[
+  {
+    "id": "V-02-body-edge-0-cp1-e02-accepted:/x:post:body:application/json",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            }
+          },
+          "post": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "requestBody": {
+              "required": true,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "required": [
+                      "name"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-body-edge-1-cp1-e02-accepted:/x:post:body:application/json",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            }
+          },
+          "post": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "requestBody": {
+              "required": true,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "required": [
+                      "name"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-body-edge-2-cp1-e02-accepted:/x:post:body:application/json",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            }
+          },
+          "post": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "requestBody": {
+              "required": true,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "required": [
+                      "name"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-body-edges-multi-contract-v1:/x:post:body:application/json",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            }
+          },
+          "post": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "requestBody": {
+              "required": true,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "required": [
+                      "name"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-nullable-enabled-cp1-e02-accepted:/x:post:body:application/json",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "requestBody": {
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "nullable": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-nullable-skip-0-cp1-e02-accepted:/x:post:body:application/json",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "requestBody": {
+              "required": true,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "required": [
+                      "name"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "nullable": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "/x/skip": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "requestBody": {
+              "required": true,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "required": [
+                      "name"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "nullable": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-nullable-skip-0-cp1-e02-accepted:/x/skip:post:body:application/json",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "requestBody": {
+              "required": true,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "required": [
+                      "name"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "nullable": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "/x/skip": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "requestBody": {
+              "required": true,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "required": [
+                      "name"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "nullable": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-nullable-skip-1-cp1-e02-accepted:/x:post:body:application/json",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "requestBody": {
+              "required": true,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "required": [
+                      "name"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "nullable": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "/x/skip": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "requestBody": {
+              "required": true,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "required": [
+                      "name"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "nullable": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-nullable-skip-1-cp1-e02-accepted:/x/skip:post:body:application/json",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "requestBody": {
+              "required": true,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "required": [
+                      "name"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "nullable": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "/x/skip": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "requestBody": {
+              "required": true,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "required": [
+                      "name"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "nullable": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-0-cp1-e02-accepted:/x/{id}:get:operation:path:id",
+    "location": "path",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-0-cp1-e02-accepted:/x/{id}:get:operation:query:q",
+    "location": "query",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-0-cp1-e02-accepted:/x/{id}:get:operation:header:x-required",
+    "location": "header",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-0-multi-contract-v1:/x/{id}:get:operation:path:id",
+    "location": "path",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-0-multi-contract-v1:/x/{id}:get:operation:query:q",
+    "location": "query",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-0-multi-contract-v1:/x/{id}:get:operation:header:x-required",
+    "location": "header",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-1-cp1-e02-accepted:/x/{id}:get:operation:path:id",
+    "location": "path",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-1-cp1-e02-accepted:/x/{id}:get:operation:query:q",
+    "location": "query",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-1-cp1-e02-accepted:/x/{id}:get:operation:header:x-required",
+    "location": "header",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-1-multi-contract-v1:/x/{id}:get:operation:path:id",
+    "location": "path",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-1-multi-contract-v1:/x/{id}:get:operation:query:q",
+    "location": "query",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-1-multi-contract-v1:/x/{id}:get:operation:header:x-required",
+    "location": "header",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-2-cp1-e02-accepted:/x/{id}:get:operation:path:id",
+    "location": "path",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-2-cp1-e02-accepted:/x/{id}:get:operation:query:q",
+    "location": "query",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-2-cp1-e02-accepted:/x/{id}:get:operation:header:x-required",
+    "location": "header",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-2-multi-contract-v1:/x/{id}:get:operation:path:id",
+    "location": "path",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-2-multi-contract-v1:/x/{id}:get:operation:query:q",
+    "location": "query",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-2-multi-contract-v1:/x/{id}:get:operation:header:x-required",
+    "location": "header",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-3-cp1-e02-accepted:/x/{id}:get:operation:path:id",
+    "location": "path",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-3-cp1-e02-accepted:/x/{id}:get:operation:query:q",
+    "location": "query",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-3-cp1-e02-accepted:/x/{id}:get:operation:header:x-required",
+    "location": "header",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-3-multi-contract-v1:/x/{id}:get:operation:path:id",
+    "location": "path",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-3-multi-contract-v1:/x/{id}:get:operation:query:q",
+    "location": "query",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-parameters-3-multi-contract-v1:/x/{id}:get:operation:header:x-required",
+    "location": "header",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x/{id}": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "parameters": [
+              {
+                "name": "id",
+                "in": "path",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "q",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              {
+                "name": "x-required",
+                "in": "header",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-valid-json-cp1-e02-accepted:/x:post:body:application/json",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            }
+          },
+          "post": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "requestBody": {
+              "required": true,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "required": [
+                      "name"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "V-02-valid-json-multi-contract-v1:/x:post:body:application/json",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "test-only-characterization",
+        "version": "1.0.0"
+      },
+      "paths": {
+        "/x": {
+          "get": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            }
+          },
+          "post": {
+            "responses": {
+              "200": {
+                "description": "synthetic response"
+              }
+            },
+            "requestBody": {
+              "required": true,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "required": [
+                      "name"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "synthetic-3.0.3-exclusive-4",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "integer",
+          "minimum": 5,
+          "exclusiveMinimum": true
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "v": {
+                        "type": "integer",
+                        "minimum": 5,
+                        "exclusiveMinimum": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "synthetic-3.0.3-exclusive-5",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "integer",
+          "minimum": 5,
+          "exclusiveMinimum": true
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "v": {
+                        "type": "integer",
+                        "minimum": 5,
+                        "exclusiveMinimum": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "synthetic-3.0.3-exclusive-6",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "integer",
+          "minimum": 5,
+          "exclusiveMinimum": true
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "v": {
+                        "type": "integer",
+                        "minimum": 5,
+                        "exclusiveMinimum": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "synthetic-3.0.3-nullable-False",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "v": {
+                        "type": "string",
+                        "nullable": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "synthetic-3.0.3-nullable-True",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "v": {
+                        "type": "string",
+                        "nullable": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "synthetic-3.0.3-ref-sibling",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "$ref": "#/components/schemas/Text",
+          "minLength": 3
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "v": {
+                        "$ref": "#/components/schemas/Text",
+                        "minLength": 3
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "components": {
+        "schemas": {
+          "Text": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "synthetic-3.0.3-recursive",
+    "location": "body",
+    "schema": {
+      "$ref": "#/components/schemas/Node"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Node"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "components": {
+        "schemas": {
+          "Node": {
+            "type": "object",
+            "properties": {
+              "child": {
+                "$ref": "#/components/schemas/Node"
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "synthetic-3.0.3-decimal",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "multipleOf": 0.25
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "v": {
+                        "type": "number",
+                        "multipleOf": 0.25
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "synthetic-3.0.3-anyOf",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "v": {
+                        "anyOf": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "synthetic-3.0.3-format",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "string",
+          "format": "date"
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "v": {
+                        "type": "string",
+                        "format": "date"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "synthetic-3.0.3-primitive-body",
+    "location": "body",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "synthetic-3.0.3-absent-required-body",
+    "location": "body",
+    "schema": {
+      "type": "object"
+    },
+    "resources": {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": true,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": true
+  },
+  {
+    "id": "synthetic-3.1.0-exclusive-4",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "integer",
+          "exclusiveMinimum": 5
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.1.0",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "v": {
+                        "type": "integer",
+                        "exclusiveMinimum": 5
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": false
+  },
+  {
+    "id": "synthetic-3.1.0-exclusive-5",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "integer",
+          "exclusiveMinimum": 5
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.1.0",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "v": {
+                        "type": "integer",
+                        "exclusiveMinimum": 5
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": false
+  },
+  {
+    "id": "synthetic-3.1.0-exclusive-6",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "integer",
+          "exclusiveMinimum": 5
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.1.0",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "v": {
+                        "type": "integer",
+                        "exclusiveMinimum": 5
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": false
+  },
+  {
+    "id": "synthetic-3.1.0-nullable-False",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.1.0",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "v": {
+                        "type": "string",
+                        "nullable": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": false
+  },
+  {
+    "id": "synthetic-3.1.0-nullable-True",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.1.0",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "v": {
+                        "type": "string",
+                        "nullable": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": false
+  },
+  {
+    "id": "synthetic-3.1.0-ref-sibling",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "$ref": "#/components/schemas/Text",
+          "minLength": 3
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.1.0",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "v": {
+                        "$ref": "#/components/schemas/Text",
+                        "minLength": 3
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "components": {
+        "schemas": {
+          "Text": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "oas30": false
+  },
+  {
+    "id": "synthetic-3.1.0-recursive",
+    "location": "body",
+    "schema": {
+      "$ref": "#/components/schemas/Node"
+    },
+    "resources": {
+      "openapi": "3.1.0",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Node"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "components": {
+        "schemas": {
+          "Node": {
+            "type": "object",
+            "properties": {
+              "child": {
+                "$ref": "#/components/schemas/Node"
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": false
+  },
+  {
+    "id": "synthetic-3.1.0-decimal",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "number",
+          "multipleOf": 0.25
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.1.0",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "v": {
+                        "type": "number",
+                        "multipleOf": 0.25
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": false
+  },
+  {
+    "id": "synthetic-3.1.0-anyOf",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.1.0",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "v": {
+                        "anyOf": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": false
+  },
+  {
+    "id": "synthetic-3.1.0-format",
+    "location": "body",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "v": {
+          "type": "string",
+          "format": "date"
+        }
+      }
+    },
+    "resources": {
+      "openapi": "3.1.0",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "v": {
+                        "type": "string",
+                        "format": "date"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": false
+  },
+  {
+    "id": "synthetic-3.1.0-primitive-body",
+    "location": "body",
+    "schema": {
+      "type": "integer"
+    },
+    "resources": {
+      "openapi": "3.1.0",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": false,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": false
+  },
+  {
+    "id": "synthetic-3.1.0-absent-required-body",
+    "location": "body",
+    "schema": {
+      "type": "object"
+    },
+    "resources": {
+      "openapi": "3.1.0",
+      "info": {
+        "title": "owned-qualification",
+        "version": "1"
+      },
+      "paths": {
+        "/x": {
+          "post": {
+            "responses": {
+              "200": {
+                "description": "ok"
+              }
+            },
+            "requestBody": {
+              "required": true,
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oas30": false
+  }
+]

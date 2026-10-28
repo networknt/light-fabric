@@ -1,0 +1,34 @@
+[package]
+name = "serverless-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+light-security = { path = "../light-security" }
+gateway-policy = { path = "../gateway-policy" }
+serde_yaml.workspace = true
+base64.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+light-runtime = { path = "../light-runtime" }
+base64 = "0.22"
+jsonwebtoken = "9.3"
+tempfile = "3"
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+
+[features]
+conformance = []

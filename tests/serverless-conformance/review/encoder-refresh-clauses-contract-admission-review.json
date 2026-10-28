@@ -1,0 +1,284 @@
+[
+  {
+    "fixture": "V-03-html-attribute-golden-encoder-multi-contract-v1",
+    "javaRun": "20261011T150651.353483Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned. Exact significant golden body bytes, preserved ignored body attribute and unchanged synthetic headers; reviewed shared multimap prerequisite. Supported encoder registry1.5.0, not deployed compatibility.",
+    "source": "Resolved encoder1.5.0 registry and selected encodeArrays bytecode/constants; original failed XML-comment draft retained",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150651.353483Z"
+  },
+  {
+    "fixture": "V-03-html-attribute-unquoted-golden-encoder-multi-contract-v1",
+    "javaRun": "20261011T150651.353483Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned. Exact significant golden body bytes, preserved ignored body attribute and unchanged synthetic headers; reviewed shared multimap prerequisite. Supported encoder registry1.5.0, not deployed compatibility.",
+    "source": "Resolved encoder1.5.0 registry and selected encodeArrays bytecode/constants; original failed XML-comment draft retained",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150651.353483Z"
+  },
+  {
+    "fixture": "V-03-xml-attribute-golden-encoder-multi-contract-v1",
+    "javaRun": "20261011T150651.353483Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned. Exact significant golden body bytes, preserved ignored body attribute and unchanged synthetic headers; reviewed shared multimap prerequisite. Supported encoder registry1.5.0, not deployed compatibility.",
+    "source": "Resolved encoder1.5.0 registry and selected encodeArrays bytecode/constants; original failed XML-comment draft retained",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150651.353483Z"
+  },
+  {
+    "fixture": "V-03-xml-comment-golden-encoder-multi-contract-v1",
+    "javaRun": "20261011T150757.796643Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Corrected from actual1.5.0 XMLCommentEncoder.encodeArrays bytecode: each hyphen45 writes tilde126 independently. Original1.3.1-based -~ draft and failed run retained. Assertion reauthored from resolved binary control flow, not current gateway output. Exact significant golden body bytes, preserved ignored body attribute and unchanged synthetic headers; reviewed shared multimap prerequisite. Supported encoder registry1.5.0, not deployed compatibility.",
+    "source": "Resolved encoder1.5.0 registry and selected encodeArrays bytecode/constants; original failed XML-comment draft retained",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150757.796643Z"
+  },
+  {
+    "fixture": "V-03-xml-1-1-golden-encoder-multi-contract-v1",
+    "javaRun": "20261011T150651.353483Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned. Exact significant golden body bytes, preserved ignored body attribute and unchanged synthetic headers; reviewed shared multimap prerequisite. Supported encoder registry1.5.0, not deployed compatibility.",
+    "source": "Resolved encoder1.5.0 registry and selected encodeArrays bytecode/constants; original failed XML-comment draft retained",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150651.353483Z"
+  },
+  {
+    "fixture": "V-03-xml-1-1-content-golden-encoder-multi-contract-v1",
+    "javaRun": "20261011T150651.353483Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned. Exact significant golden body bytes, preserved ignored body attribute and unchanged synthetic headers; reviewed shared multimap prerequisite. Supported encoder registry1.5.0, not deployed compatibility.",
+    "source": "Resolved encoder1.5.0 registry and selected encodeArrays bytecode/constants; original failed XML-comment draft retained",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150651.353483Z"
+  },
+  {
+    "fixture": "V-03-xml-1-1-attribute-golden-encoder-multi-contract-v1",
+    "javaRun": "20261011T150651.353483Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned. Exact significant golden body bytes, preserved ignored body attribute and unchanged synthetic headers; reviewed shared multimap prerequisite. Supported encoder registry1.5.0, not deployed compatibility.",
+    "source": "Resolved encoder1.5.0 registry and selected encodeArrays bytecode/constants; original failed XML-comment draft retained",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150651.353483Z"
+  },
+  {
+    "fixture": "V-03-cdata-golden-encoder-multi-contract-v1",
+    "javaRun": "20261011T150651.353483Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned. Exact significant golden body bytes, preserved ignored body attribute and unchanged synthetic headers; reviewed shared multimap prerequisite. Supported encoder registry1.5.0, not deployed compatibility.",
+    "source": "Resolved encoder1.5.0 registry and selected encodeArrays bytecode/constants; original failed XML-comment draft retained",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150651.353483Z"
+  },
+  {
+    "fixture": "V-03-css-string-golden-encoder-multi-contract-v1",
+    "javaRun": "20261011T150651.353483Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned. Exact significant golden body bytes, preserved ignored body attribute and unchanged synthetic headers; reviewed shared multimap prerequisite. Supported encoder registry1.5.0, not deployed compatibility.",
+    "source": "Resolved encoder1.5.0 registry and selected encodeArrays bytecode/constants; original failed XML-comment draft retained",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150651.353483Z"
+  },
+  {
+    "fixture": "V-03-css-url-golden-encoder-multi-contract-v1",
+    "javaRun": "20261011T150651.353483Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned. Exact significant golden body bytes, preserved ignored body attribute and unchanged synthetic headers; reviewed shared multimap prerequisite. Supported encoder registry1.5.0, not deployed compatibility.",
+    "source": "Resolved encoder1.5.0 registry and selected encodeArrays bytecode/constants; original failed XML-comment draft retained",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150651.353483Z"
+  },
+  {
+    "fixture": "V-03-java-golden-encoder-multi-contract-v1",
+    "javaRun": "20261011T150651.353483Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned. Exact significant golden body bytes, preserved ignored body attribute and unchanged synthetic headers; reviewed shared multimap prerequisite. Supported encoder registry1.5.0, not deployed compatibility.",
+    "source": "Resolved encoder1.5.0 registry and selected encodeArrays bytecode/constants; original failed XML-comment draft retained",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150651.353483Z"
+  },
+  {
+    "fixture": "V-03-javascript-golden-encoder-multi-contract-v1",
+    "javaRun": "20261011T150651.353483Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned. Exact significant golden body bytes, preserved ignored body attribute and unchanged synthetic headers; reviewed shared multimap prerequisite. Supported encoder registry1.5.0, not deployed compatibility.",
+    "source": "Resolved encoder1.5.0 registry and selected encodeArrays bytecode/constants; original failed XML-comment draft retained",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150651.353483Z"
+  },
+  {
+    "fixture": "V-03-javascript-attribute-golden-encoder-multi-contract-v1",
+    "javaRun": "20261011T150651.353483Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned. Exact significant golden body bytes, preserved ignored body attribute and unchanged synthetic headers; reviewed shared multimap prerequisite. Supported encoder registry1.5.0, not deployed compatibility.",
+    "source": "Resolved encoder1.5.0 registry and selected encodeArrays bytecode/constants; original failed XML-comment draft retained",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150651.353483Z"
+  },
+  {
+    "fixture": "V-03-javascript-block-golden-encoder-multi-contract-v1",
+    "javaRun": "20261011T150651.353483Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned. Exact significant golden body bytes, preserved ignored body attribute and unchanged synthetic headers; reviewed shared multimap prerequisite. Supported encoder registry1.5.0, not deployed compatibility.",
+    "source": "Resolved encoder1.5.0 registry and selected encodeArrays bytecode/constants; original failed XML-comment draft retained",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150651.353483Z"
+  },
+  {
+    "fixture": "V-03-javascript-source-golden-encoder-multi-contract-v1",
+    "javaRun": "20261011T150651.353483Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned. Exact significant golden body bytes, preserved ignored body attribute and unchanged synthetic headers; reviewed shared multimap prerequisite. Supported encoder registry1.5.0, not deployed compatibility.",
+    "source": "Resolved encoder1.5.0 registry and selected encodeArrays bytecode/constants; original failed XML-comment draft retained",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150651.353483Z"
+  },
+  {
+    "fixture": "V-03-json-golden-encoder-multi-contract-v1",
+    "javaRun": "20261011T150651.353483Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned. Exact significant golden body bytes, preserved ignored body attribute and unchanged synthetic headers; reviewed shared multimap prerequisite. Supported encoder registry1.5.0, not deployed compatibility.",
+    "source": "Resolved encoder1.5.0 registry and selected encodeArrays bytecode/constants; original failed XML-comment draft retained",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150651.353483Z"
+  },
+  {
+    "fixture": "V-03-uri-golden-encoder-multi-contract-v1",
+    "javaRun": "20261011T150651.353483Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned. Exact significant golden body bytes, preserved ignored body attribute and unchanged synthetic headers; reviewed shared multimap prerequisite. Supported encoder registry1.5.0, not deployed compatibility.",
+    "source": "Resolved encoder1.5.0 registry and selected encodeArrays bytecode/constants; original failed XML-comment draft retained",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150651.353483Z"
+  },
+  {
+    "fixture": "V-03-uri-component-golden-encoder-multi-contract-v1",
+    "javaRun": "20261011T150651.353483Z",
+    "javaBehaviorAsserted": [
+      "V-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-03"
+    ],
+    "review": "Expected significant escaping authored from known encoder rules and actual1.5.0 registry/constants/bytecode; no gateway-output regeneration. Cached1.3.1 source used only as navigation; CDATA1.5 explicitly uses new bracket literal. URI/Java classes byte-identical to cached1.3.1 binary; other classes differ and that source is not claimed aligned. Exact significant golden body bytes, preserved ignored body attribute and unchanged synthetic headers; reviewed shared multimap prerequisite. Supported encoder registry1.5.0, not deployed compatibility.",
+    "source": "Resolved encoder1.5.0 registry and selected encodeArrays bytecode/constants; original failed XML-comment draft retained",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150651.353483Z"
+  },
+  {
+    "fixture": "S-13-algorithm-hmac-no-refresh-multi-contract-v1",
+    "javaRun": "20261011T150443.696680Z",
+    "javaBehaviorAsserted": [
+      "S-13"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-13"
+    ],
+    "review": "Known published RSA keys; signed HS256 recipe rejected401 before refresh with exact zero business/JWKS calls in both contract assertions. Actual Init readiness/bootstrap requests asserted separately.",
+    "source": "Approved algorithm filtering/cooldown contract, signed synthetic token recipes and actual local Java evidence",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150443.696680Z"
+  },
+  {
+    "fixture": "S-13a-successful-fetch-cooldown-multi-contract-v1",
+    "javaRun": "20261011T150759.128348Z",
+    "javaBehaviorAsserted": [
+      "S-13",
+      "S-13a"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-13",
+      "S-13a"
+    ],
+    "review": "Bootstrap disabled; first request actually fetches publishedk2 once and dispatches200. Immediate different unknownkid returns401: Java fetches once; authored Rust suppresses within30sec successful-attempt cooldown. Same gateway/inputs, exact JWKS request lists and outcomes; failed invalid difference label preserved.",
+    "source": "Approved algorithm filtering/cooldown contract, signed synthetic token recipes and actual local Java evidence",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T150759.128348Z"
+  }
+]

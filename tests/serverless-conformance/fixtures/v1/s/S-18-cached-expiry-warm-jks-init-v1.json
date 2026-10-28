@@ -1,0 +1,293 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "S-18-cached-expiry-warm-jks-init-v1",
+  "title": "S-18-cached-expiry Java warm behavior and one Rust Init rejection",
+  "ledger": [
+    "S-18",
+    "S-02",
+    "CFG-02",
+    "CFG-04"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "security": {
+        "enableVerifyJwt": true,
+        "enableVerifyScope": false,
+        "ignoreJwtExpiry": false,
+        "jwt": {
+          "clockSkewInSeconds": 0,
+          "keyResolver": "JsonWebKeySet",
+          "certificate": {}
+        },
+        "enableJwtCache": true,
+        "jwtCacheFullSize": 1000,
+        "bootstrapFromKeyService": true,
+        "logJwtToken": false,
+        "enableMockJwt": false,
+        "enableRelaxedKeyValidation": false
+      },
+      "service": {
+        "singletons": [
+          {
+            "com.networknt.cache.CacheManager": [
+              "com.networknt.cache.CaffeineCacheManager"
+            ]
+          }
+        ]
+      },
+      "cache": {
+        "caches": [
+          {
+            "cacheName": "jwt",
+            "expiryInMinutes": 15,
+            "maxSize": 1000
+          },
+          {
+            "cacheName": "jwk",
+            "expiryInMinutes": 600,
+            "maxSize": 1000
+          }
+        ]
+      },
+      "client": {
+        "request": {
+          "connectTimeout": 1000,
+          "timeout": 1000,
+          "maxRequestRetry": 1
+        },
+        "tls": {
+          "loadKeyStore": false,
+          "loadTrustStore": true,
+          "trustStore": "test-only-truststore.jks",
+          "trustStorePass": "test-only-store",
+          "verifyHostname": true
+        },
+        "oauth": {
+          "multipleAuthServers": false,
+          "token": {
+            "key": {
+              "server_url": "${dependency:jwks}",
+              "uri": "/jwks",
+              "enableHttp2": false,
+              "audience": "test-audience"
+            }
+          }
+        }
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.security.JwtVerifyMiddleware@h0"
+        ],
+        "chains": {
+          "request": [
+            "h0"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Runtime signing uses wall time. Cached-expiry token is signed immediately before step 0 after Init; step 1 waits 3100ms. No virtual gateway clock."
+  },
+  "keys": {
+    "k1": {
+      "alg": "RS256"
+    }
+  },
+  "tokens": {
+    "warm-expiry": {
+      "kid": "k1",
+      "claims": {
+        "sub": "test-user",
+        "iss": "test-issuer",
+        "aud": "test-audience",
+        "jti": "warm-expiry",
+        "client_id": "test-client",
+        "user_id": "test-user"
+      },
+      "issuedOffsetSec": -10,
+      "expOffsetSec": 2,
+      "nbfOffsetSec": 0,
+      "signAtStep": 0
+    }
+  },
+  "dependencies": {
+    "jwks": {
+      "publishedKeys": [
+        "k1"
+      ]
+    }
+  },
+  "substitutions": [
+    {
+      "pointer": "/steps/0/rawEvent/headers/AUTHORIZATION",
+      "recipe": "token:warm-expiry"
+    },
+    {
+      "pointer": "/steps/1/rawEvent/headers/AUTHORIZATION",
+      "recipe": "token:warm-expiry"
+    }
+  ],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "expectRustInit": {
+    "outcome": "initError",
+    "code": "InvalidConfiguration",
+    "backendCalls": [],
+    "jwksFetches": 0
+  },
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls",
+    "jwksFetches",
+    "header:x-backend",
+    "header:content-type"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {
+          "AUTHORIZATION": "Bearer ${token:warm-expiry}"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "headers": {
+                "AUTHORIZATION": "Bearer ${token:warm-expiry}"
+              },
+              "queryStringParameters": {},
+              "requestContext": {},
+              "isBase64Encoded": false
+            }
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "single",
+      "expect": {
+        "outcome": "notExecuted",
+        "reason": "initError",
+        "backendCalls": [],
+        "jwksFetches": 0
+      }
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {
+          "AUTHORIZATION": "Bearer ${token:warm-expiry}"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false
+      },
+      "backend": [],
+      "expectJava": {
+        "status": 401,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR10001\",\"message\":\"AUTH_TOKEN_EXPIRED\",\"description\":\"Jwt token in authorization header expired\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "single",
+      "expect": {
+        "outcome": "notExecuted",
+        "reason": "initError",
+        "backendCalls": [],
+        "jwksFetches": 0
+      },
+      "waitBeforeMs": 3100
+    }
+  ]
+}

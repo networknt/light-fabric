@@ -1,0 +1,38 @@
+[
+  {
+    "fixture": "C-07-stream-init-config-type-component-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-07-stream-init-config-type-cp1-e02-accepted.json",
+    "sourceSha256": "ae516ed1e9faa16403bde4845356ff0f1d9f945b52cbb5de7534998ae77112fe",
+    "javaBehaviorAsserted": [
+      "C-07"
+    ],
+    "proposedRustBehaviorReached": [],
+    "review": "Owner-approved closed C-07 component. Actual existing LambdaStreamApp executes in the fresh fixture JVM after runner writes temporary config. Stream input bytes are explicit; malformed not-json remains unchanged. Original public Terminal test plugin and exact execution count reused; bridge clears only its test counter. Init failure is an explicit exception, not a response. Zero output bytes/base64 empty asserted. Rust is skipped without gateway initialization; no Rust stream behavior claimed.",
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "C-07-valid-stream-no-output-component-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-07-valid-stream-no-output-cp1-e02-accepted.json",
+    "sourceSha256": "bb08430183c73649d4f52b57e2a47e95eb841de9f5affa6e165569263d531636",
+    "javaBehaviorAsserted": [
+      "C-07"
+    ],
+    "proposedRustBehaviorReached": [],
+    "review": "Owner-approved closed C-07 component. Actual existing LambdaStreamApp executes in the fresh fixture JVM after runner writes temporary config. Stream input bytes are explicit; malformed not-json remains unchanged. Original public Terminal test plugin and exact execution count reused; bridge clears only its test counter. Init failure is an explicit exception, not a response. Zero output bytes/base64 empty asserted. Rust is skipped without gateway initialization; no Rust stream behavior claimed.",
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "C-07-malformed-stream-fallback-component-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-07-malformed-stream-fallback-cp1-e02-accepted.json",
+    "sourceSha256": "53fcb604c11d3042e77eca0157966868afe1d4f2c4c3192094ec91e43caeb30a",
+    "javaBehaviorAsserted": [
+      "C-07"
+    ],
+    "proposedRustBehaviorReached": [],
+    "review": "Owner-approved closed C-07 component. Actual existing LambdaStreamApp executes in the fresh fixture JVM after runner writes temporary config. Stream input bytes are explicit; malformed not-json remains unchanged. Original public Terminal test plugin and exact execution count reused; bridge clears only its test counter. Init failure is an explicit exception, not a response. Zero output bytes/base64 empty asserted. Rust is skipped without gateway initialization; no Rust stream behavior claimed.",
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  }
+]

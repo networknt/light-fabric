@@ -1,0 +1,100 @@
+{
+  "schema": "light-lambda-declaration-review/v1",
+  "reviews": [
+    {
+      "id": "S-13c-java-synchronous-zero-budget-represented-v1",
+      "fixtureDigest": "7e4dc989dfa9e5aec3598c579b35e21cd07f9d1105625c662d9e935778f6ad98",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "header:x-backend",
+        "backendCalls",
+        "jwksFetches",
+        "invocationTiming"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Original Java and Rust expectations establish exact field equality under existing comparison rules. Fresh unchanged native execution passes. No expectation amendment or production behavior change.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-remaining-adapters-20261018T202155Z/java-fresh/results/S-13c-java-synchronous-zero-budget-represented-v1.json",
+      "nativeSha256": "d6534a55f742acbac79c7aa7e983b1410612ca1cdf2356cc3825ea14de0b96e6"
+    },
+    {
+      "id": "S-14-test-override-does-not-relax-max-skew-init-contract-v1",
+      "fixtureDigest": "535d987889f79428eaf1893e16ff0849e8a3c29cfb31dabf47998a7f6fd3dcf6",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "backendCalls",
+        "header:x-backend"
+      ],
+      "remove": [
+        "header:x-backend"
+      ],
+      "reason": "Original Java and Rust expectations establish exact field equality under existing comparison rules. Fresh unchanged native execution passes. No expectation amendment or production behavior change.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-remaining-adapters-20261018T202155Z/java-fresh/results/S-14-test-override-does-not-relax-max-skew-init-contract-v1.json",
+      "nativeSha256": "1ab36b92c35f07bf51faa8096e2cda760838842b574c7a61fd9ef7ae0439223f"
+    },
+    {
+      "id": "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+      "fixtureDigest": "506670b8a8c38a3f31e8ed93f60eed004298b8d17493b1d149e0f7e9ede7e9ae",
+      "originalDeclared": [
+        "header:content-type",
+        "securityLogObservation"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Original Java and Rust expectations establish exact field equality under existing comparison rules. Fresh unchanged native execution passes. No expectation amendment or production behavior change.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-remaining-adapters-20261018T202155Z/java-fresh/results/S-14-expired-jwt-no-secret-logs-multi-contract-v1.json",
+      "nativeSha256": "59ca6f0549fc1defcbccaef37c00b1c506f9f811f6bb57bdc6ce09a25cefbd34"
+    },
+    {
+      "id": "S-14-verified-jwt-no-secret-logs-multi-contract-v1",
+      "fixtureDigest": "b9e5983a8590d6551d61e6eeb76bad6f6126d530151e687f424b33ea59d29db0",
+      "originalDeclared": [
+        "status",
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "backendCalls",
+        "securityLogObservation"
+      ],
+      "remove": [
+        "body",
+        "header:content-type",
+        "header:x-backend",
+        "status"
+      ],
+      "reason": "Original Java and Rust expectations establish exact field equality under existing comparison rules. Fresh unchanged native execution passes. No expectation amendment or production behavior change.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-remaining-adapters-20261018T202155Z/java-fresh/results/S-14-verified-jwt-no-secret-logs-multi-contract-v1.json",
+      "nativeSha256": "f88cd114fd24a354e1b9655bdc12eab55619800fa35d12a1984add3d1a67d382"
+    },
+    {
+      "id": "D-08f-synchronous-jwks-represented-v1",
+      "fixtureDigest": "097375ac5ba93a02e8836881cd62808e2705ce64e35aff370dd2992846af4889",
+      "originalDeclared": [
+        "outcome",
+        "status",
+        "body",
+        "bodyBase64",
+        "header:content-type",
+        "header:x-backend",
+        "backendCalls",
+        "jwksFetches",
+        "invocationTiming"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "reason": "Original Java and Rust expectations establish exact field equality under existing comparison rules. Fresh unchanged native execution passes. No expectation amendment or production behavior change.",
+      "nativeEvidence": "/home/steve/workspace/artifacts/implementation/light-lambda/WP13-remaining-adapters-20261018T202155Z/java-fresh/results/D-08f-synchronous-jwks-represented-v1.json",
+      "nativeSha256": "b49c721d9a04a733c5ea2b6ed6017d05bdaebaddb712f4b7535bcaac1145f731"
+    }
+  ]
+}

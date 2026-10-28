@@ -12,6 +12,8 @@ use std::sync::{Arc, LazyLock};
 use symmetric_decryptor::{Decryptor as SymmetricDecryptorTrait, SymmetricDecryptor};
 use thiserror::Error;
 use tracing::{error, warn};
+mod bounded;
+pub use bounded::{BoundedCaptures, BoundedLocalSources, RuleBudget};
 
 const EXTERNAL_CONFIG_DIR_ENV: &str = "LIGHT_RS_CONFIG_DIR";
 const MAX_EXPANSION_DEPTH: usize = 16;
@@ -565,10 +567,10 @@ impl ConfigLoader {
 
     fn parse_text_scalar(input: &str) -> Value {
         let trimmed = input.trim();
-        if matches!(trimmed.as_bytes().first(), Some(b'[' | b'{')) {
-            if let Ok(value) = serde_yaml::from_str::<Value>(trimmed) {
-                return value;
-            }
+        if matches!(trimmed.as_bytes().first(), Some(b'[' | b'{'))
+            && let Ok(value) = serde_yaml::from_str::<Value>(trimmed)
+        {
+            return value;
         }
         if trimmed.eq_ignore_ascii_case("true") {
             return Value::Bool(true);
@@ -583,11 +585,11 @@ impl ConfigLoader {
             return serde_yaml::to_value(parsed)
                 .unwrap_or_else(|_| Value::String(input.to_string()));
         }
-        if let Ok(parsed) = trimmed.parse::<f64>() {
-            if parsed.is_finite() {
-                return serde_yaml::to_value(parsed)
-                    .unwrap_or_else(|_| Value::String(input.to_string()));
-            }
+        if let Ok(parsed) = trimmed.parse::<f64>()
+            && parsed.is_finite()
+        {
+            return serde_yaml::to_value(parsed)
+                .unwrap_or_else(|_| Value::String(input.to_string()));
         }
         Value::String(input.to_string())
     }
@@ -603,12 +605,12 @@ mod tests {
 
     static ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
-    struct TempDir {
+    pub(super) struct TempDir {
         path: PathBuf,
     }
 
     impl TempDir {
-        fn new(label: &str) -> Self {
+        pub(super) fn new(label: &str) -> Self {
             let suffix = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("time")
@@ -618,7 +620,7 @@ mod tests {
             Self { path }
         }
 
-        fn path(&self) -> &Path {
+        pub(super) fn path(&self) -> &Path {
             &self.path
         }
     }
@@ -896,7 +898,7 @@ mod tests {
         let map = value.as_mapping().expect("mapping");
         assert_eq!(map.len(), 1);
         assert_eq!(
-            map.get(&Value::String("serviceId".to_string()))
+            map.get(Value::String("serviceId".to_string()))
                 .expect("serviceId"),
             &Value::String("local".to_string())
         );

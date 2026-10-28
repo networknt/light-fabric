@@ -1,0 +1,80 @@
+[
+  {
+    "fixture": "S-16-before-bind-0-deferred-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-16-before-bind-0-cp1-e02-accepted.json",
+    "sourceSha256": "603fc0e7d953a5d34d499ffc1311665ccecf1d7647e58519ab851d60c6451287",
+    "javaBehaviorAsserted": [
+      "S-16",
+      "S-07"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-16",
+      "CFG-04"
+    ],
+    "review": "LdapRejectionTest exact empty/reserved identity inputs reject before any LDAP bind; no LDAP dependency/network endpoint declared. SwtIntrospectionTest exact active/inactive outcomes use declared fake HTTP POST /introspect, one form token call, and source-relative exp recipe. Existing source OauthHelper/SwtVerifier reviewed: exact POST token form and active rejection. Enabled LDAP/SWT config fails proposed Rust Init under approved deferred row; no downstream Rust LDAP/SWT execution asserted.",
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-16-before-bind-1-deferred-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-16-before-bind-1-cp1-e02-accepted.json",
+    "sourceSha256": "ba1eec15d72e233085a4d3c634de9d4734afb4e4315a12f306f555c488d56c27",
+    "javaBehaviorAsserted": [
+      "S-16",
+      "S-07"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-16",
+      "CFG-04"
+    ],
+    "review": "LdapRejectionTest exact empty/reserved identity inputs reject before any LDAP bind; no LDAP dependency/network endpoint declared. SwtIntrospectionTest exact active/inactive outcomes use declared fake HTTP POST /introspect, one form token call, and source-relative exp recipe. Existing source OauthHelper/SwtVerifier reviewed: exact POST token form and active rejection. Enabled LDAP/SWT config fails proposed Rust Init under approved deferred row; no downstream Rust LDAP/SWT execution asserted.",
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-16-before-bind-2-deferred-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-16-before-bind-2-cp1-e02-accepted.json",
+    "sourceSha256": "06a23d8cf5462f961ed311901838da799cb7f41eec5e97ffad380a71343732ad",
+    "javaBehaviorAsserted": [
+      "S-16",
+      "S-07"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-16",
+      "CFG-04"
+    ],
+    "review": "LdapRejectionTest exact empty/reserved identity inputs reject before any LDAP bind; no LDAP dependency/network endpoint declared. SwtIntrospectionTest exact active/inactive outcomes use declared fake HTTP POST /introspect, one form token call, and source-relative exp recipe. Existing source OauthHelper/SwtVerifier reviewed: exact POST token form and active rejection. Enabled LDAP/SWT config fails proposed Rust Init under approved deferred row; no downstream Rust LDAP/SWT execution asserted.",
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-15-introspection-0-deferred-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-15-introspection-0-cp1-e02-accepted.json",
+    "sourceSha256": "a8def7414432e9d20fca2dff438d1502c8c2adeb52faefe99425a9137d45946e",
+    "javaBehaviorAsserted": [
+      "S-15"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-15",
+      "CFG-04"
+    ],
+    "review": "LdapRejectionTest exact empty/reserved identity inputs reject before any LDAP bind; no LDAP dependency/network endpoint declared. SwtIntrospectionTest exact active/inactive outcomes use declared fake HTTP POST /introspect, one form token call, and source-relative exp recipe. Existing source OauthHelper/SwtVerifier reviewed: exact POST token form and active rejection. Enabled LDAP/SWT config fails proposed Rust Init under approved deferred row; no downstream Rust LDAP/SWT execution asserted.",
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-15-introspection-1-deferred-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-15-introspection-1-cp1-e02-accepted.json",
+    "sourceSha256": "12ee850ff9d78e6e775c72fcfa3a6343110a28e8bb4933c760ae5fa5655d4500",
+    "javaBehaviorAsserted": [
+      "S-15"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-15",
+      "CFG-04"
+    ],
+    "review": "LdapRejectionTest exact empty/reserved identity inputs reject before any LDAP bind; no LDAP dependency/network endpoint declared. SwtIntrospectionTest exact active/inactive outcomes use declared fake HTTP POST /introspect, one form token call, and source-relative exp recipe. Existing source OauthHelper/SwtVerifier reviewed: exact POST token form and active rejection. Enabled LDAP/SWT config fails proposed Rust Init under approved deferred row; no downstream Rust LDAP/SWT execution asserted.",
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  }
+]

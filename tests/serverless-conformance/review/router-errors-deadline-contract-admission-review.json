@@ -1,0 +1,76 @@
+[
+  {
+    "fixture": "H-04-unsupported-HEAD-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "H-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "H-04"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Java HttpMethod rejects HEAD before send; H04 requires preserved non-deadline unsupported-method error. Valid shared multimap reaches the same policy error, zero HTTP/business calls. Rust authored parity plus E06a casing.",
+    "remainingContractAssertions": [
+      "H-04: already-failed exchange branch still needs reviewed assertion"
+    ],
+    "javaRun": "20261011T105413.798067Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T105413.798067Z"
+  },
+  {
+    "fixture": "H-04-shared-http-deadline-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "H-04",
+      "D-08",
+      "D-08a",
+      "D-08b"
+    ],
+    "proposedRustBehaviorReached": [
+      "H-04",
+      "D-08",
+      "D-08a",
+      "D-08b"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Real shared loopback HTTP service responds after300ms; Java completes202 with exact response/body/maps. Rust approved request deadline under200ms context and40/20 reserves produces exact504 ERR14017 with exactly1 HTTP request and0 business calls. No Rust execution.",
+    "remainingContractAssertions": [
+      "H-04: already-failed exchange branch still needs reviewed assertion"
+    ],
+    "javaRun": "20261011T105559.513027Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T105559.513027Z"
+  },
+  {
+    "fixture": "H-04-transport-refused-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "H-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "H-04"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Valid multimap reaches failed connection, exact400 ERR10089/body and zero accepted HTTP requests or business calls. Default supported infrastructure, no Java-only JKS settings.",
+    "remainingContractAssertions": [
+      "H-04: already-failed exchange branch still needs reviewed assertion"
+    ],
+    "javaRun": "20261011T105632.140347Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T105632.140347Z"
+  },
+  {
+    "fixture": "H-04-transport-slow-multi-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "H-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "H-04"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared router maxRequestTime100ms caps300ms delayed replies; preserved exact400 ERR10089, three accepted HTTP requests, zero business dispatch. Default retry behavior preserved, broad invocation budget avoids shared-deadline early stop.",
+    "remainingContractAssertions": [
+      "H-04: already-failed exchange branch still needs reviewed assertion"
+    ],
+    "javaRun": "20261011T105632.140347Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T105632.140347Z"
+  }
+]

@@ -1,0 +1,222 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "E-10-mapped-metadata-cp1-e02-accepted",
+  "title": "E-10-mapped-metadata",
+  "ledger": [
+    "E-07",
+    "E-09",
+    "E-10",
+    "E-10a",
+    "E-10b",
+    "E-10c",
+    "E-10d",
+    "E-10e",
+    "E-10f",
+    "E-10g",
+    "E-10h",
+    "E-11",
+    "E-13"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only",
+      "light-lambda.accountId": "000000000000",
+      "light-lambda.apiId": "test-only",
+      "light-lambda.domainName": "test.example",
+      "light-lambda.resourceId": "test-only"
+    },
+    "files": {
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy"
+        ],
+        "chains": {
+          "request": [],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {},
+  "tokens": {},
+  "headerMode": "single",
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "status",
+    "body",
+    "header:content-type",
+    "backendCalls",
+    "jwksFetches",
+    "header:x-backend"
+  ],
+  "rawEvent": {
+    "requestContext": {
+      "accountId": "test-account",
+      "apiId": "test-api",
+      "domainName": "test.example",
+      "resourceId": "test-resource",
+      "stage": "test-stage",
+      "requestId": "test-request",
+      "extendedRequestId": "test-extended",
+      "requestTime": "test-time",
+      "requestTimeEpoch": 123,
+      "protocol": "HTTP/1.1",
+      "resourcePath": "/synthetic",
+      "httpMethod": "GET",
+      "path": "/x",
+      "identity": {
+        "sourceIp": "203.0.113.9",
+        "userAgent": "test-agent"
+      },
+      "elb": {
+        "targetGroupArn": "synthetic"
+      }
+    },
+    "httpMethod": "GET",
+    "path": "/x",
+    "headers": {},
+    "queryStringParameters": {},
+    "body": null,
+    "isBase64Encoded": false,
+    "stageVariables": {
+      "test": "value"
+    },
+    "resource": "/synthetic"
+  },
+  "backend": [
+    {
+      "match": {
+        "target": "FnX"
+      },
+      "respond": {
+        "functionError": null,
+        "payload": {
+          "statusCode": 200,
+          "headers": {
+            "x-backend": "synthetic"
+          },
+          "body": "ok",
+          "isBase64Encoded": false
+        }
+      }
+    }
+  ],
+  "expectJava": {
+    "status": 200,
+    "headers": [
+      [
+        "x-backend",
+        "synthetic"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "ok",
+    "bodyBase64": false,
+    "backendCalls": [
+      {
+        "target": "FnX",
+        "event": {
+          "resource": "/synthetic",
+          "path": "/x",
+          "httpMethod": "GET",
+          "headers": {},
+          "queryStringParameters": {},
+          "stageVariables": {
+            "test": "value"
+          },
+          "requestContext": {
+            "accountId": "test-account",
+            "stage": "test-stage",
+            "resourceId": "test-resource",
+            "requestId": "test-request",
+            "identity": {
+              "sourceIp": "203.0.113.9",
+              "userAgent": "test-agent"
+            },
+            "resourcePath": "/synthetic",
+            "httpMethod": "GET",
+            "apiId": "test-api",
+            "path": "/x",
+            "extendedRequestId": "test-extended",
+            "requestTime": "test-time",
+            "requestTimeEpoch": 123,
+            "domainName": "test.example",
+            "protocol": "HTTP/1.1"
+          },
+          "isBase64Encoded": false
+        },
+        "eventExact": {
+          "requestContext": {
+            "accountId": "test-account",
+            "stage": "test-stage",
+            "resourceId": "test-resource",
+            "requestId": "test-request",
+            "identity": {
+              "sourceIp": "203.0.113.9",
+              "userAgent": "test-agent"
+            },
+            "resourcePath": "/synthetic",
+            "httpMethod": "GET",
+            "apiId": "test-api",
+            "path": "/x",
+            "extendedRequestId": "test-extended",
+            "requestTime": "test-time",
+            "requestTimeEpoch": 123,
+            "domainName": "test.example",
+            "protocol": "HTTP/1.1"
+          },
+          "stageVariables": {
+            "test": "value"
+          }
+        }
+      }
+    ],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "expect": {
+    "status": 500,
+    "headers": [
+      [
+        "content-type",
+        "application/json"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "{\"statusCode\":500,\"code\":\"ERR14011\",\"message\":\"ALB_MULTI_VALUE_HEADERS_REQUIRED\",\"description\":\"The target group must enable multi-value headers.\",\"severity\":\"ERROR\"}",
+    "bodyBase64": false,
+    "backendCalls": [],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "substitutions": []
+}

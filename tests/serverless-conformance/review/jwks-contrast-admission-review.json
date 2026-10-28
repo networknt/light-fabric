@@ -1,0 +1,63 @@
+[
+  {
+    "fixture": "S-13a-java-no-cooldown-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-13a-java-no-cooldown-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "S-13",
+      "S-13a"
+    ],
+    "proposedRustBehaviorReached": [
+      "CFG-02",
+      "CFG-04"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Reviewed exact JwtWaitTest/JwksGateContrastTest/JwksDeadlineContrastTest source: generated rotated signing key; published key set; exactly two same-input concurrent callers, or two warm unknown-kid failures, or 120ms synchronous JWKS wait including zero caller context. Bodies/counts stay exact; duration only bounded below by declared actual wait, no virtual clock. Original Java Caffeine service/JKS config retained, so proposed Rust rejects Init and receives no gate/deadline behavior credit.",
+    "validation": "passed focused workflow 20261011T005540.781601Z"
+  },
+  {
+    "fixture": "S-13b-java-independent-fetches-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-13b-java-independent-fetches-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "S-13",
+      "S-13b"
+    ],
+    "proposedRustBehaviorReached": [
+      "CFG-02",
+      "CFG-04"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Reviewed exact JwtWaitTest/JwksGateContrastTest/JwksDeadlineContrastTest source: generated rotated signing key; published key set; exactly two same-input concurrent callers, or two warm unknown-kid failures, or 120ms synchronous JWKS wait including zero caller context. Bodies/counts stay exact; duration only bounded below by declared actual wait, no virtual clock. Original Java Caffeine service/JKS config retained, so proposed Rust rejects Init and receives no gate/deadline behavior credit.",
+    "validation": "passed focused workflow 20261011T005540.781601Z"
+  },
+  {
+    "fixture": "D-08f-synchronous-jwks-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-08f-synchronous-jwks-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "D-08f",
+      "S-13",
+      "S-13c"
+    ],
+    "proposedRustBehaviorReached": [
+      "CFG-02",
+      "CFG-04"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Reviewed exact JwtWaitTest/JwksGateContrastTest/JwksDeadlineContrastTest source: generated rotated signing key; published key set; exactly two same-input concurrent callers, or two warm unknown-kid failures, or 120ms synchronous JWKS wait including zero caller context. Bodies/counts stay exact; duration only bounded below by declared actual wait, no virtual clock. Original Java Caffeine service/JKS config retained, so proposed Rust rejects Init and receives no gate/deadline behavior credit.",
+    "validation": "passed focused workflow 20261011T005540.781601Z"
+  },
+  {
+    "fixture": "S-13c-java-synchronous-zero-budget-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-13c-java-synchronous-zero-budget-cp1-e02-accepted.json",
+    "javaBehaviorAsserted": [
+      "S-13c",
+      "D-08f"
+    ],
+    "proposedRustBehaviorReached": [
+      "CFG-02",
+      "CFG-04"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Reviewed exact JwtWaitTest/JwksGateContrastTest/JwksDeadlineContrastTest source: generated rotated signing key; published key set; exactly two same-input concurrent callers, or two warm unknown-kid failures, or 120ms synchronous JWKS wait including zero caller context. Bodies/counts stay exact; duration only bounded below by declared actual wait, no virtual clock. Original Java Caffeine service/JKS config retained, so proposed Rust rejects Init and receives no gate/deadline behavior credit.",
+    "validation": "passed focused workflow 20261011T005540.781601Z"
+  }
+]

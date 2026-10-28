@@ -1,0 +1,957 @@
+[
+  {
+    "id": "success",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 1,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "backend-http500",
+    "mode": "backend-http500",
+    "status": 500,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 2,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-backend-http500",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 3,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "backend-http403",
+    "mode": "backend-http403",
+    "status": 403,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 4,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-backend-http403",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 5,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "function-handled",
+    "mode": "function-handled",
+    "status": 502,
+    "code": "ERR14014",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 6,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-function-handled",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 7,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "function-unhandled",
+    "mode": "function-unhandled",
+    "status": 502,
+    "code": "ERR14014",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 8,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-function-unhandled",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 9,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "function-error-wins-valid-envelope",
+    "mode": "function-error-wins-valid-envelope",
+    "status": 502,
+    "code": "ERR14014",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 10,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-function-error-wins-valid-envelope",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 11,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "function-error-wins-invalid-json",
+    "mode": "function-error-wins-invalid-json",
+    "status": 502,
+    "code": "ERR14014",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 12,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-function-error-wins-invalid-json",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 13,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "empty-payload",
+    "mode": "empty-payload",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 14,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-empty-payload",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 15,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "malformed-json",
+    "mode": "malformed-json",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 16,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-malformed-json",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 17,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "invalid-utf8",
+    "mode": "invalid-utf8",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 18,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-invalid-utf8",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 19,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "null-payload",
+    "mode": "null-payload",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 20,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-null-payload",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 21,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "array-payload",
+    "mode": "array-payload",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 22,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-array-payload",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 23,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "string-payload",
+    "mode": "string-payload",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 24,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-string-payload",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 25,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "missing-status",
+    "mode": "missing-status",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 26,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-missing-status",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 27,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "null-status",
+    "mode": "null-status",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 28,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-null-status",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 29,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "string-status",
+    "mode": "string-status",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 30,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-string-status",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 31,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "fractional-status",
+    "mode": "fractional-status",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 32,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-fractional-status",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 33,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "low-status",
+    "mode": "low-status",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 34,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-low-status",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 35,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "high-status",
+    "mode": "high-status",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 36,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-high-status",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 37,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "negative-status",
+    "mode": "negative-status",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 38,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-negative-status",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 39,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "body-object",
+    "mode": "body-object",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 40,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-body-object",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 41,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "body-array",
+    "mode": "body-array",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 42,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-body-array",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 43,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "invalid-base64",
+    "mode": "invalid-base64",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 44,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-invalid-base64",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 45,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "string-base64-flag",
+    "mode": "string-base64-flag",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 46,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-string-base64-flag",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 47,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "invalid-header-name",
+    "mode": "invalid-header-name",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 48,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-invalid-header-name",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 49,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "invalid-header-value",
+    "mode": "invalid-header-value",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 50,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-invalid-header-value",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 51,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "invalid-multi-header-value",
+    "mode": "invalid-multi-header-value",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 52,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-invalid-multi-header-value",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 53,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "invalid-multi-header-type",
+    "mode": "invalid-multi-header-type",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 54,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-invalid-multi-header-type",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 55,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "invalid-discarded-scalar-header",
+    "mode": "invalid-discarded-scalar-header",
+    "status": 502,
+    "code": "ERR14015",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 56,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-invalid-discarded-scalar-header",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 57,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "invoke-access-denied",
+    "mode": "invoke-access-denied",
+    "status": 502,
+    "code": "ERR14019",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 58,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-invoke-access-denied",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 59,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "invoke-not-found",
+    "mode": "invoke-not-found",
+    "status": 502,
+    "code": "ERR14019",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 60,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-invoke-not-found",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 61,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "invoke-service500",
+    "mode": "invoke-service500",
+    "status": 502,
+    "code": "ERR14014",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 62,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-invoke-service500",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 63,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "invoke-service503",
+    "mode": "invoke-service503",
+    "status": 502,
+    "code": "ERR14014",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 64,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-invoke-service503",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 65,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "invoke-throttled",
+    "mode": "invoke-throttled",
+    "status": 429,
+    "code": "ERR14018",
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 66,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-invoke-throttled",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 67,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "binary-response",
+    "mode": "binary-response",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 68,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-binary-response",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 69,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "absent-body",
+    "mode": "absent-body",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 70,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-absent-body",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 71,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "null-body",
+    "mode": "null-body",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 72,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-null-body",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 73,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "empty-body",
+    "mode": "empty-body",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 74,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-empty-body",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 75,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "null-base64-flag",
+    "mode": "null-base64-flag",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 76,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-null-base64-flag",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 77,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "nested-status-text",
+    "mode": "nested-status-text",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 78,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-nested-status-text",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 79,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "headers-multimap-overlap",
+    "mode": "headers-multimap-overlap",
+    "status": 201,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 80,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-headers-multimap-overlap",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 81,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "status599",
+    "mode": "status599",
+    "status": 599,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 82,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}"
+  },
+  {
+    "id": "warm-after-status599",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 83,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "auth-reject-with-error-backend",
+    "mode": "function-unhandled",
+    "status": 401,
+    "code": "ERR10002",
+    "expectInvokeDelta": 0,
+    "expectedInvokeTotal": 83,
+    "subject": "synthetic-A",
+    "body": "{}",
+    "missingJwt": true
+  },
+  {
+    "id": "warm-after-auth-reject-with-error-backend",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 84,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "schema-reject-with-error-backend",
+    "mode": "function-unhandled",
+    "status": 400,
+    "code": "ERR11004",
+    "expectInvokeDelta": 0,
+    "expectedInvokeTotal": 84,
+    "subject": "synthetic-A",
+    "body": "{}"
+  },
+  {
+    "id": "warm-after-schema-reject-with-error-backend",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 85,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "scope-reject-with-error-backend",
+    "mode": "function-unhandled",
+    "status": 403,
+    "code": "ERR10005",
+    "expectInvokeDelta": 0,
+    "expectedInvokeTotal": 85,
+    "subject": "synthetic-A",
+    "body": "{}",
+    "wrongScope": true
+  },
+  {
+    "id": "warm-after-scope-reject-with-error-backend",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 86,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "invalid-base64-ingress",
+    "mode": "function-unhandled",
+    "status": 400,
+    "code": "ERR14012",
+    "expectInvokeDelta": 0,
+    "expectedInvokeTotal": 86,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}",
+    "invalidBase64": true
+  },
+  {
+    "id": "warm-after-invalid-base64-ingress",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 87,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "invalid-header-ingress",
+    "mode": "function-unhandled",
+    "status": 400,
+    "code": "ERR14012",
+    "expectInvokeDelta": 0,
+    "expectedInvokeTotal": 87,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}",
+    "invalidHeader": true
+  },
+  {
+    "id": "warm-after-invalid-header-ingress",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 88,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  },
+  {
+    "id": "valid-base64-ingress",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 89,
+    "subject": "synthetic-A",
+    "body": "{\"name\":\"TrialPet\"}",
+    "validBase64": true
+  },
+  {
+    "id": "warm-after-valid-base64-ingress",
+    "mode": "success",
+    "status": 200,
+    "code": null,
+    "expectInvokeDelta": 1,
+    "expectedInvokeTotal": 90,
+    "subject": "synthetic-B",
+    "body": "{\"name\":\"WarmPet\"}"
+  }
+]

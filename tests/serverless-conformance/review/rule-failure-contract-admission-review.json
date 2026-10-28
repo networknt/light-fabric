@@ -1,0 +1,16 @@
+[
+  {
+    "fixture": "T-02-caught-native-cel-rule-error-multi-contract-v1",
+    "javaRun": "20261011T135637.047157Z",
+    "javaBehaviorAsserted": [
+      "T-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "T-02"
+    ],
+    "review": "Original native SlowResponseRuleTest.Action throws on declared throw header. Actual ResponseTransformerMiddleware catch log event observed exactly once; backend200/ok/header and one dispatch retained. Rust light-rule standard CEL int(throw) evaluation error must be caught by approved equivalent T02 behavior; bounded literal action never executes. C04 concerns escaping handler exceptions. T01 pair prerequisite contextual only.",
+    "rustExecutionEvidence": null,
+    "source": "Approved native/CEL pair and unchanged ResponseTransformerMiddleware source",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T135637.047157Z"
+  }
+]

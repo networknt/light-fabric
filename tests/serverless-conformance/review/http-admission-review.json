@@ -1,0 +1,65 @@
+[
+  {
+    "fixture": "H-01-no-service-loopback-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/H-01-no-service-cp1-e02-accepted.json",
+    "sourceSha256": "9d6fb2df6c95ff4e5d5c22f4904515f36c75973e5dfdd3785dcf492b9d37c7bf",
+    "review": "HttpRouterTest source/recorded assertions reviewed: method-specific body behavior, omitted query, service_id removal, collapsed Set-Cookie a=1 and no Lambda dispatch. Declared synthetic dependency sends fixed Date in place of WP2 server wall-date; assertions authored from source behavior and dependency specification, not runner output. Same single input reaches only E-13 in proposed Rust. Exact HTTP target, method, raw URI, request body and count asserted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "H-03-http-0-loopback-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/H-03-http-0-cp1-e02-accepted.json",
+    "sourceSha256": "bc6b03d370d09fc589c21f96bc13aea66110d98dd1b948b395e10a1dc2dafa09",
+    "review": "HttpRouterTest source/recorded assertions reviewed: method-specific body behavior, omitted query, service_id removal, collapsed Set-Cookie a=1 and no Lambda dispatch. Declared synthetic dependency sends fixed Date in place of WP2 server wall-date; assertions authored from source behavior and dependency specification, not runner output. Same single input reaches only E-13 in proposed Rust. Exact HTTP target, method, raw URI, request body and count asserted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "H-03-http-1-loopback-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/H-03-http-1-cp1-e02-accepted.json",
+    "sourceSha256": "87717e74a61ccbaa70c403549d4015305fb6d952a3cec26c52049cd5f2b3c032",
+    "review": "HttpRouterTest source/recorded assertions reviewed: method-specific body behavior, omitted query, service_id removal, collapsed Set-Cookie a=1 and no Lambda dispatch. Declared synthetic dependency sends fixed Date in place of WP2 server wall-date; assertions authored from source behavior and dependency specification, not runner output. Same single input reaches only E-13 in proposed Rust. Exact HTTP target, method, raw URI, request body and count asserted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "H-03-http-2-loopback-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/H-03-http-2-cp1-e02-accepted.json",
+    "sourceSha256": "ee5c662c7ce833347d20079cb0e79274c54fd831a0b60ce5b699c222ebcd1efb",
+    "review": "HttpRouterTest source/recorded assertions reviewed: method-specific body behavior, omitted query, service_id removal, collapsed Set-Cookie a=1 and no Lambda dispatch. Declared synthetic dependency sends fixed Date in place of WP2 server wall-date; assertions authored from source behavior and dependency specification, not runner output. Same single input reaches only E-13 in proposed Rust. Exact HTTP target, method, raw URI, request body and count asserted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "H-03-http-3-loopback-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/H-03-http-3-cp1-e02-accepted.json",
+    "sourceSha256": "bbe79eea71cfedafa053fa44c195217a36e0f9227fa5ff52e26a73d46db21c57",
+    "review": "HttpRouterTest source/recorded assertions reviewed: method-specific body behavior, omitted query, service_id removal, collapsed Set-Cookie a=1 and no Lambda dispatch. Declared synthetic dependency sends fixed Date in place of WP2 server wall-date; assertions authored from source behavior and dependency specification, not runner output. Same single input reaches only E-13 in proposed Rust. Exact HTTP target, method, raw URI, request body and count asserted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "H-03-http-4-loopback-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/H-03-http-4-cp1-e02-accepted.json",
+    "sourceSha256": "2714c2582f899ebd42193a7d67359d4154eecad11b1835ef942fe7784c91f38d",
+    "review": "HttpRouterTest source/recorded assertions reviewed: method-specific body behavior, omitted query, service_id removal, collapsed Set-Cookie a=1 and no Lambda dispatch. Declared synthetic dependency sends fixed Date in place of WP2 server wall-date; assertions authored from source behavior and dependency specification, not runner output. Same single input reaches only E-13 in proposed Rust. Exact HTTP target, method, raw URI, request body and count asserted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "H-04-unknown-service-loopback-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/H-04-unknown-service-cp1-e02-accepted.json",
+    "sourceSha256": "9fce709017f1526abf533215664f379dbadf860023a367047d379aafcb8d45d0",
+    "review": "HttpRouterTest source/recorded assertions reviewed: method-specific body behavior, omitted query, service_id removal, collapsed Set-Cookie a=1 and no Lambda dispatch. Declared synthetic dependency sends fixed Date in place of WP2 server wall-date; assertions authored from source behavior and dependency specification, not runner output. Same single input reaches only E-13 in proposed Rust. Exact HTTP target, method, raw URI, request body and count asserted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "H-04-method-get-loopback-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/H-04-method-get-cp1-e02-accepted.json",
+    "sourceSha256": "7426eebd1b0ec79cd5fc8a4aee09ffeeb22a398a53944c00a8e9522e8c1c96d5",
+    "review": "HttpRouterTest source/recorded assertions reviewed: method-specific body behavior, omitted query, service_id removal, collapsed Set-Cookie a=1 and no Lambda dispatch. Declared synthetic dependency sends fixed Date in place of WP2 server wall-date; assertions authored from source behavior and dependency specification, not runner output. Same single input reaches only E-13 in proposed Rust. Exact HTTP target, method, raw URI, request body and count asserted.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "H-04-method-HEAD-loopback-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/H-04-method-HEAD-cp1-e02-accepted.json",
+    "sourceSha256": "3d1a1b151f156fce459680890d35a79ee98b1f8d656a19a5a151bc9f5ba7c57a",
+    "review": "HttpRouterTest source/recorded assertions reviewed: method-specific body behavior, omitted query, service_id removal, collapsed Set-Cookie a=1 and no Lambda dispatch. Declared synthetic dependency sends fixed Date in place of WP2 server wall-date; assertions authored from source behavior and dependency specification, not runner output. Same single input reaches only E-13 in proposed Rust. Exact HTTP target, method, raw URI, request body and count asserted.",
+    "rustExecutionEvidence": null
+  }
+]

@@ -1,0 +1,58 @@
+[
+  {
+    "fixture": "D-06-typed-sdk-0-multi-contract-v1",
+    "source": "Original D-01-typed-sdk-0 Java exception observation; approved D-05 default zero retries and D-06/Appendix C exact Rust error mapping",
+    "javaBehaviorAsserted": [
+      "D-06"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-05",
+      "D-06"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Valid multimap and supported configuration reach one actual fake Invoke throwing declared SdkClientException. Rust default retries zero, exact 502/ERR14014, one attempted call. Java exact ERR10086 retained. Expectations authored from source and Appendix C, not captured current output. This case does not prove other retry modes or deadline paths.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T024531.420482Z"
+  },
+  {
+    "fixture": "D-06-typed-sdk-1-multi-contract-v1",
+    "source": "Original D-01-typed-sdk-1 Java exception observation; approved D-05 default zero retries and D-06/Appendix C exact Rust error mapping",
+    "javaBehaviorAsserted": [
+      "D-06"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-05",
+      "D-06"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Valid multimap and supported configuration reach one actual fake Invoke throwing declared TooManyRequestsException. Rust default retries zero, exact 429/ERR14018, one attempted call. Java exact ERR10086 retained. Expectations authored from source and Appendix C, not captured current output. This case does not prove other retry modes or deadline paths.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T024531.420482Z"
+  },
+  {
+    "fixture": "D-06-typed-sdk-2-multi-contract-v1",
+    "source": "Original D-01-typed-sdk-2 Java exception observation; approved D-05 default zero retries and D-06/Appendix C exact Rust error mapping",
+    "javaBehaviorAsserted": [
+      "D-06"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-05",
+      "D-06"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Valid multimap and supported configuration reach one actual fake Invoke throwing declared ResourceNotFoundException. Rust default retries zero, exact 502/ERR14019, one attempted call. Java exact ERR10086 retained. Expectations authored from source and Appendix C, not captured current output. This case does not prove other retry modes or deadline paths.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T024531.420482Z"
+  },
+  {
+    "fixture": "D-06-typed-sdk-3-multi-contract-v1",
+    "source": "Original D-01-typed-sdk-3 Java exception observation; approved D-05 default zero retries and D-06/Appendix C exact Rust error mapping",
+    "javaBehaviorAsserted": [
+      "D-06"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-05",
+      "D-06"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Valid multimap and supported configuration reach one actual fake Invoke throwing declared LambdaException. Rust default retries zero, exact 502/ERR14014, one attempted call. Java exact ERR10086 retained. Expectations authored from source and Appendix C, not captured current output. This case does not prove other retry modes or deadline paths.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T024531.420482Z"
+  }
+]

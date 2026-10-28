@@ -1,0 +1,184 @@
+[
+  {
+    "fixture": "D-07-forms-alias-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-07-forms-alias-cp1-e02-accepted.json",
+    "review": "TargetFormsTest preserves the entire originally invalid mixed target configuration; Java forwards exact alias/version/full/partial/foreign target. Rust rejects invalid self/cross-region target configuration, no credit for the individual target validation branch. The original WP2 CapturingProxy isEnabled unconditionally returns true even when config omits enabled. New ConformanceAlwaysEnabledProxy mirrors this explicit test-only behavior using the retained constructor seam; configuration is not repaired to enabled=true. Rust rejects this synthetic plugin at Init, so no individual Rust target-policy branch is counted.",
+    "javaBehaviorAsserted": [
+      "D-07"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "validation": "passed focused workflow 20261011T004843.673332Z"
+  },
+  {
+    "fixture": "D-07-forms-foreign-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-07-forms-foreign-cp1-e02-accepted.json",
+    "review": "TargetFormsTest preserves the entire originally invalid mixed target configuration; Java forwards exact alias/version/full/partial/foreign target. Rust rejects invalid self/cross-region target configuration, no credit for the individual target validation branch. The original WP2 CapturingProxy isEnabled unconditionally returns true even when config omits enabled. New ConformanceAlwaysEnabledProxy mirrors this explicit test-only behavior using the retained constructor seam; configuration is not repaired to enabled=true. Rust rejects this synthetic plugin at Init, so no individual Rust target-policy branch is counted.",
+    "javaBehaviorAsserted": [
+      "D-07"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "validation": "passed focused workflow 20261011T004843.673332Z"
+  },
+  {
+    "fixture": "D-07-forms-full-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-07-forms-full-cp1-e02-accepted.json",
+    "review": "TargetFormsTest preserves the entire originally invalid mixed target configuration; Java forwards exact alias/version/full/partial/foreign target. Rust rejects invalid self/cross-region target configuration, no credit for the individual target validation branch. The original WP2 CapturingProxy isEnabled unconditionally returns true even when config omits enabled. New ConformanceAlwaysEnabledProxy mirrors this explicit test-only behavior using the retained constructor seam; configuration is not repaired to enabled=true. Rust rejects this synthetic plugin at Init, so no individual Rust target-policy branch is counted.",
+    "javaBehaviorAsserted": [
+      "D-07"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "validation": "passed focused workflow 20261011T004843.673332Z"
+  },
+  {
+    "fixture": "D-07-forms-partial-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-07-forms-partial-cp1-e02-accepted.json",
+    "review": "TargetFormsTest preserves the entire originally invalid mixed target configuration; Java forwards exact alias/version/full/partial/foreign target. Rust rejects invalid self/cross-region target configuration, no credit for the individual target validation branch. The original WP2 CapturingProxy isEnabled unconditionally returns true even when config omits enabled. New ConformanceAlwaysEnabledProxy mirrors this explicit test-only behavior using the retained constructor seam; configuration is not repaired to enabled=true. Rust rejects this synthetic plugin at Init, so no individual Rust target-policy branch is counted.",
+    "javaBehaviorAsserted": [
+      "D-07"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "validation": "passed focused workflow 20261011T004843.673332Z"
+  },
+  {
+    "fixture": "D-07-forms-plain-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-07-forms-plain-cp1-e02-accepted.json",
+    "review": "TargetFormsTest preserves the entire originally invalid mixed target configuration; Java forwards exact alias/version/full/partial/foreign target. Rust rejects invalid self/cross-region target configuration, no credit for the individual target validation branch. The original WP2 CapturingProxy isEnabled unconditionally returns true even when config omits enabled. New ConformanceAlwaysEnabledProxy mirrors this explicit test-only behavior using the retained constructor seam; configuration is not repaired to enabled=true. Rust rejects this synthetic plugin at Init, so no individual Rust target-policy branch is counted.",
+    "javaBehaviorAsserted": [
+      "D-07"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "validation": "passed focused workflow 20261011T004843.673332Z"
+  },
+  {
+    "fixture": "D-07-forms-version-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-07-forms-version-cp1-e02-accepted.json",
+    "review": "TargetFormsTest preserves the entire originally invalid mixed target configuration; Java forwards exact alias/version/full/partial/foreign target. Rust rejects invalid self/cross-region target configuration, no credit for the individual target validation branch. The original WP2 CapturingProxy isEnabled unconditionally returns true even when config omits enabled. New ConformanceAlwaysEnabledProxy mirrors this explicit test-only behavior using the retained constructor seam; configuration is not repaired to enabled=true. Rust rejects this synthetic plugin at Init, so no individual Rust target-policy branch is counted.",
+    "javaBehaviorAsserted": [
+      "D-07"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "validation": "passed focused workflow 20261011T004843.673332Z"
+  },
+  {
+    "fixture": "X-04-malformed-0-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/X-04-malformed-0-cp1-e02-accepted.json",
+    "review": "LoggerMalformedTest: null, invalid JSON, empty object and array fail open and dispatch exactly once. Rust rejects deferred logger binding at Init.",
+    "javaBehaviorAsserted": [
+      "X-04",
+      "C-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "validation": "passed focused workflow 20261011T004843.673332Z"
+  },
+  {
+    "fixture": "X-04-malformed-1-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/X-04-malformed-1-cp1-e02-accepted.json",
+    "review": "LoggerMalformedTest: null, invalid JSON, empty object and array fail open and dispatch exactly once. Rust rejects deferred logger binding at Init.",
+    "javaBehaviorAsserted": [
+      "X-04",
+      "C-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "validation": "passed focused workflow 20261011T004843.673332Z"
+  },
+  {
+    "fixture": "X-04-malformed-2-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/X-04-malformed-2-cp1-e02-accepted.json",
+    "review": "LoggerMalformedTest: null, invalid JSON, empty object and array fail open and dispatch exactly once. Rust rejects deferred logger binding at Init.",
+    "javaBehaviorAsserted": [
+      "X-04",
+      "C-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "validation": "passed focused workflow 20261011T004843.673332Z"
+  },
+  {
+    "fixture": "X-04-malformed-3-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/X-04-malformed-3-cp1-e02-accepted.json",
+    "review": "LoggerMalformedTest: null, invalid JSON, empty object and array fail open and dispatch exactly once. Rust rejects deferred logger binding at Init.",
+    "javaBehaviorAsserted": [
+      "X-04",
+      "C-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "validation": "passed focused workflow 20261011T004843.673332Z"
+  },
+  {
+    "fixture": "X-02-disabled--adm-loggerGET-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/X-02-disabled--adm-loggerGET-cp1-e02-accepted.json",
+    "review": "DisabledAdminTest: disabled ServerInfo/logger bindings are filtered by Java before dispatch. Rust rejects deferred logger declaration at Init even disabled under X-03a/C-10. No Rust ServerInfo behavior credited.",
+    "javaBehaviorAsserted": [
+      "X-02",
+      "X-03a",
+      "C-10"
+    ],
+    "proposedRustBehaviorReached": [
+      "X-03a",
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "validation": "passed focused workflow 20261011T004843.673332Z"
+  },
+  {
+    "fixture": "X-02-disabled--adm-loggerPOST-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/X-02-disabled--adm-loggerPOST-cp1-e02-accepted.json",
+    "review": "DisabledAdminTest: disabled ServerInfo/logger bindings are filtered by Java before dispatch. Rust rejects deferred logger declaration at Init even disabled under X-03a/C-10. No Rust ServerInfo behavior credited.",
+    "javaBehaviorAsserted": [
+      "X-02",
+      "X-03a",
+      "C-10"
+    ],
+    "proposedRustBehaviorReached": [
+      "X-03a",
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "validation": "passed focused workflow 20261011T004843.673332Z"
+  },
+  {
+    "fixture": "X-02-disabled--adm-server-infoGET-represented-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/X-02-disabled--adm-server-infoGET-cp1-e02-accepted.json",
+    "review": "DisabledAdminTest: disabled ServerInfo/logger bindings are filtered by Java before dispatch. Rust rejects deferred logger declaration at Init even disabled under X-03a/C-10. No Rust ServerInfo behavior credited.",
+    "javaBehaviorAsserted": [
+      "X-02",
+      "X-03a",
+      "C-10"
+    ],
+    "proposedRustBehaviorReached": [
+      "X-03a",
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "validation": "passed focused workflow 20261011T004843.673332Z"
+  }
+]

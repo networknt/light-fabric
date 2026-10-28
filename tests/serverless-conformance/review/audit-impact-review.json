@@ -1,0 +1,14 @@
+{
+  "gitnexus": {
+    "ConformanceRunnerMain": "UNKNOWN: target not indexed",
+    "validate_fixture": "UNKNOWN: target not indexed"
+  },
+  "directAnalysis": "Main is test-only CLI launched by run-conformance.sh and ConformanceIsolationTest; no production caller. Public JSON/client/digest signatures and configuration timing unchanged. New sink attaches only Audit logger during explicitly declared step, restores its previous log level/removes its own appender. No production initialization or reflection change; public WP2 action bindings remain unchanged. Rust validation is the new digest/validate-only crate; callers are CLI/tests. Optional closed side-effect representation does not affect runtime or existing fixture execution.",
+  "risk": "LOW based on direct changed-method analysis; UNKNOWN was not treated as clearance",
+  "affectedProcesses": [
+    "test fixture JVM workflow",
+    "isolation child JVMs",
+    "Rust schema validation CLI"
+  ],
+  "productionDiff": "No existing production symbol edited."
+}

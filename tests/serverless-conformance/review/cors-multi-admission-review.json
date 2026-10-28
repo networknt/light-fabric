@@ -1,0 +1,33 @@
+[
+  {
+    "fixture": "B-02a-denied-multi-policy-v1",
+    "review": "Separately authored shared multiValueHeaders-only raw ALB input. No per-runner transformation. Java RequestCors/ResponseCors read getHeaders and do not see origin; normal actual proxy dispatch retains exact multimap. Rust contract explicitly reads origin from ALB multimap under owner-approved B-02a/B-03a, denying unmatched origin before dispatch or adding allow-origin for accepted origin. Exact denial body copied from approved B-02 Java Status evidence. No preflight dispatch change or single-value case normalization.",
+    "javaBehaviorAsserted": [
+      "B-02a",
+      "B-03a"
+    ],
+    "proposedRustBehaviorReached": [
+      "B-02",
+      "B-02a"
+    ],
+    "validation": "pending focused workflow",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "B-02a-allowed-multi-policy-v1",
+    "review": "Separately authored shared multiValueHeaders-only raw ALB input. No per-runner transformation. Java RequestCors/ResponseCors read getHeaders and do not see origin; normal actual proxy dispatch retains exact multimap. Rust contract explicitly reads origin from ALB multimap under owner-approved B-02a/B-03a, denying unmatched origin before dispatch or adding allow-origin for accepted origin. Exact denial body copied from approved B-02 Java Status evidence. No preflight dispatch change or single-value case normalization.",
+    "javaBehaviorAsserted": [
+      "B-02a",
+      "B-03a"
+    ],
+    "proposedRustBehaviorReached": [
+      "B-02",
+      "B-02a",
+      "B-03",
+      "B-03a",
+      "E-10"
+    ],
+    "validation": "pending focused workflow",
+    "rustExecutionEvidence": null
+  }
+]

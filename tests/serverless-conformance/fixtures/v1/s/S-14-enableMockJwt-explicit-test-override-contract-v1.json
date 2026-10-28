@@ -1,0 +1,239 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "S-14-enableMockJwt-explicit-test-override-contract-v1",
+  "title": "Closed explicit test-config exception: enableMockJwt",
+  "ledger": [
+    "S-14"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "lambda-proxy": {
+        "functions": {
+          "/pets/fixed@get": "FnX"
+        },
+        "logType": "Tail",
+        "enabled": true
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.security.JwtVerifyMiddleware@jwt"
+        ],
+        "chains": {
+          "request": [
+            "jwt"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      },
+      "security": {
+        "enableVerifyJwt": true,
+        "enableVerifyScope": false,
+        "ignoreJwtExpiry": false,
+        "jwt": {
+          "clockSkewInSeconds": 0,
+          "keyResolver": "JsonWebKeySet",
+          "certificate": {}
+        },
+        "enableJwtCache": true,
+        "jwtCacheFullSize": 1000,
+        "bootstrapFromKeyService": true,
+        "logJwtToken": false,
+        "enableMockJwt": true,
+        "enableRelaxedKeyValidation": false
+      },
+      "client": {
+        "request": {
+          "connectTimeout": 1000,
+          "timeout": 1000,
+          "maxRequestRetry": 1
+        },
+        "tls": {
+          "loadKeyStore": false,
+          "loadTrustStore": false,
+          "verifyHostname": true
+        },
+        "oauth": {
+          "multipleAuthServers": false,
+          "token": {
+            "key": {
+              "server_url": "${dependency:jwks}",
+              "uri": "/jwks",
+              "enableHttp2": false,
+              "audience": "test-audience"
+            }
+          }
+        }
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {
+    "k1": {
+      "alg": "RS256"
+    }
+  },
+  "tokens": {},
+  "headerMode": "multi",
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "backendCalls"
+  ],
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "GET",
+    "path": "/pets/fixed",
+    "multiValueHeaders": {},
+    "multiValueQueryStringParameters": {
+      "a": [
+        "1",
+        "2"
+      ]
+    },
+    "body": null,
+    "isBase64Encoded": false
+  },
+  "backend": [
+    {
+      "match": {
+        "target": "FnX"
+      },
+      "respond": {
+        "functionError": null,
+        "payload": {
+          "statusCode": 200,
+          "body": "ok",
+          "isBase64Encoded": false
+        }
+      }
+    }
+  ],
+  "expectJava": {
+    "outcome": "response",
+    "status": 200,
+    "headers": [],
+    "headersAbsent": [],
+    "body": "ok",
+    "bodyBase64": false,
+    "jwksFetches": 0,
+    "backendCalls": [
+      {
+        "target": "FnX",
+        "event": {
+          "path": "/pets/fixed",
+          "httpMethod": "GET",
+          "isBase64Encoded": false
+        },
+        "eventAbsent": [
+          "/body",
+          "/headers",
+          "/queryStringParameters",
+          "/pathParameters",
+          "/requestContext/stage"
+        ],
+        "eventExact": {
+          "multiValueHeaders": {},
+          "multiValueQueryStringParameters": {
+            "a": [
+              "1",
+              "2"
+            ]
+          },
+          "requestContext": {}
+        }
+      }
+    ],
+    "jwksCalls": []
+  },
+  "expect": {
+    "outcome": "response",
+    "status": 200,
+    "headers": [],
+    "headersAbsent": [],
+    "body": "ok",
+    "bodyBase64": false,
+    "jwksFetches": 0,
+    "backendCalls": [
+      {
+        "target": "FnX",
+        "event": {
+          "path": "/x",
+          "httpMethod": "GET",
+          "isBase64Encoded": false,
+          "body": null,
+          "requestContext": {
+            "stage": "test-only"
+          }
+        },
+        "eventExact": {
+          "headers": null,
+          "multiValueHeaders": null,
+          "queryStringParameters": null,
+          "multiValueQueryStringParameters": null,
+          "pathParameters": null
+        }
+      }
+    ],
+    "jwksCalls": []
+  },
+  "substitutions": [],
+  "loopbackJwksPrerequisite": "synthetic-jks-client-v1",
+  "jwtCachePrerequisite": "caffeine-jwt-jwk-v1",
+  "dependencies": {
+    "jwks": {
+      "publishedKeys": [
+        "k1"
+      ]
+    }
+  },
+  "expectJavaInit": {
+    "outcome": "initSuccess",
+    "backendCalls": [],
+    "jwksFetches": 1,
+    "jwksCalls": [
+      {
+        "target": "jwks",
+        "method": "GET",
+        "uri": "/jwks"
+      }
+    ]
+  },
+  "expectInit": {
+    "outcome": "initSuccess",
+    "backendCalls": [],
+    "jwksFetches": 1,
+    "jwksCalls": [
+      {
+        "target": "jwks",
+        "method": "GET",
+        "uri": "/jwks"
+      }
+    ]
+  },
+  "insecureTestConfigPrerequisite": "allow-v1"
+}

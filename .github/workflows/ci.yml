@@ -32,6 +32,13 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Keep complete workspace checks within hosted-runner disk/memory limits.
+    # These affect symbols/caches only; debug assertions and test scope remain on.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@v7
       - name: Checkout public Workflow admin fixtures
@@ -50,7 +57,7 @@ jobs:
         working-directory: apps/light-workflow/contracts/workflow-admin
         run: npm ci --ignore-scripts && npm test
       - name: Shared client template parity
-        run: python3 scripts/sync-client-config.py --check
+        run: python3 scripts/test_sync_client_config.py && python3 scripts/sync-client-config.py --check
       - name: Image build orchestration
         run: python3 scripts/test_select_changed_apps.py && scripts/test-build.sh
       - name: Install worker test dependencies
@@ -80,6 +87,12 @@ jobs:
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: light-fabric-ci-debug0-v1
+      - name: Fetch locked graph for offline dependency-boundary checks
+        # Metadata inspects all target dependencies, including non-Linux crates.
+        # Keep the boundary tests offline and unchanged; populate their inputs.
+        run: cargo fetch --locked
       - name: Formatting
         run: cargo fmt --all --check
       - name: Compile all targets

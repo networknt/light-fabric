@@ -1,0 +1,198 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "T-01-deny-native-cel-multi-contract-v1",
+  "title": "Reviewed native/CEL deny action effects through actual Java configured chain",
+  "ledger": [
+    "T-01",
+    "C-02",
+    "T-03",
+    "CFG-04",
+    "T-02",
+    "E-10",
+    "E-10e",
+    "E-06a"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "request-transformer": {
+        "enabled": true,
+        "appliedPathPrefixes": [
+          "/x"
+        ]
+      },
+      "lambda-proxy": {
+        "functions": {
+          "/changed@post": "FnChanged",
+          "/x@post": "FnX"
+        },
+        "logType": "Tail",
+        "enabled": true
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.transformer.RequestTransformerMiddleware@h0"
+        ],
+        "chains": {
+          "request": [
+            "h0"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "No virtual deadline or elapsed-time equality; exact observed rule result is asserted."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "backendCalls",
+    "header:content-type"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {},
+        "queryStringParameters": {},
+        "body": "deny",
+        "isBase64Encoded": false,
+        "multiValueHeaders": {},
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [],
+      "expectJava": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":403,\"code\":\"ERR10075\",\"message\":\"test-only-denied\",\"description\":\"test-only\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "expect": {
+        "status": 403,
+        "headers": [
+          [
+            "content-type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":403,\"code\":\"ERR10075\",\"message\":\"test-only-denied\",\"description\":\"test-only\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi"
+    }
+  ],
+  "ruleConfigurationPair": {
+    "java": {
+      "executor": "java-yaml-rule",
+      "rule": {
+        "endpointRules": {
+          "/x@post": {
+            "req-tra": [
+              "test-edge"
+            ]
+          }
+        },
+        "ruleBodies": {
+          "test-edge": {
+            "ruleId": "test-edge",
+            "ruleType": "req-tra",
+            "common": "Y",
+            "ruleName": "test-only-edge",
+            "conditions": [],
+            "actions": [
+              {
+                "actionId": "edge",
+                "actionClassName": "com.networknt.aws.lambda.characterization.RequestTransformEdgesTest$EdgeAction"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "rust": {
+      "executor": "light-rule-cel",
+      "rule": {
+        "endpointRules": {
+          "/x@post": {
+            "req-tra": [
+              "test-edge"
+            ]
+          }
+        },
+        "ruleBodies": {
+          "test-edge": {
+            "ruleId": "test-edge",
+            "ruleType": "req-tra",
+            "common": "Y",
+            "ruleName": "test-only-edge",
+            "actions": [
+              {
+                "actionId": "edge",
+                "actionRef": "request-validation-error-literal",
+                "actionValues": {
+                  "validationError": true,
+                  "errorMessage": "{\"statusCode\":403,\"code\":\"ERR10075\",\"message\":\"test-only-denied\",\"description\":\"test-only\",\"severity\":\"ERROR\"}"
+                }
+              }
+            ],
+            "conditionLanguage": "cel",
+            "conditionSecurityProfile": "standard",
+            "expression": "requestBody == 'deny'"
+          }
+        }
+      }
+    }
+  },
+  "expectInit": {
+    "outcome": "initSuccess",
+    "backendCalls": [],
+    "jwksFetches": 0
+  },
+  "expectJavaInit": {
+    "outcome": "initSuccess",
+    "backendCalls": [],
+    "jwksFetches": 0
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "gitnexus": "RunnerHttpDependency UNKNOWN/not indexed; supplemented by direct source",
+  "callers": "serve is private, called only by constructor-created bounded loopback worker. Main owns configure/close; no production caller or reflection binding. Existing response body handling unchanged unless optional explicitly declared introspection expiry recipe present.",
+  "risk": "LOW",
+  "scope": "Relative expiry substituted only in declared fake /introspect dependency response, at send time. Null placeholder required. Served body preserved in result httpCalls; application body expectations remain exact."
+}

@@ -1,0 +1,26 @@
+[
+  {
+    "fixture": "M-01-gateway-error-emf-multi-contract-v1",
+    "source": "Owner approvals and focused Java evidence",
+    "javaBehaviorAsserted": [
+      "M-01a",
+      "D-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "M-01",
+      "M-01a",
+      "D-01"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Native enabled APM missing protocol throws NPE in APMEPAgentSender URL constructor; ChainExecutor records ERR14004 then continues to proxy missing-target ERR10086. ExceptionUtil returns first error. Exact observed Java500 preserved. Authored Rust400 and closed EMF Errors1 asserted; missing target configured and zero dispatch exact.",
+    "remainingContractAssertions": [],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T035648.154379Z",
+    "wp12OwnerRouteAmendment": {
+      "rustRoute": "<unmatched>",
+      "priorRustRoute": "/pets/fixed",
+      "approval": "/home/steve/artifacts/implementation/light-lambda/WP12/metrics-route-20261013T115511Z/owner-authorization.md",
+      "JavaPreserved": true,
+      "currentReview": "metrics-wp12-trusted-route-admission-review.json"
+    }
+  }
+]

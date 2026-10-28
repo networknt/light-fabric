@@ -1,0 +1,183 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "D-03-unhandled-multi-contract-v1",
+  "title": "Shared ALB input reaches approved target contract",
+  "ledger": [
+    "D-03",
+    "E-10"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "lambda-proxy": {
+        "functions": {
+          "/x@get": "FnX"
+        },
+        "logType": "Tail",
+        "enabled": true
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy"
+        ],
+        "chains": {
+          "request": [],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {},
+  "tokens": {},
+  "headerMode": "multi",
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "status",
+    "body",
+    "backendCalls",
+    "header:content-type",
+    "backendDiagnostics"
+  ],
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "GET",
+    "path": "/x",
+    "multiValueHeaders": {},
+    "multiValueQueryStringParameters": {},
+    "body": null,
+    "isBase64Encoded": false
+  },
+  "backend": [
+    {
+      "match": {
+        "target": "FnX"
+      },
+      "respond": {
+        "functionError": "Unhandled",
+        "payload": {
+          "statusCode": 200,
+          "body": "test-only-backend-error-content",
+          "isBase64Encoded": false,
+          "errorType": "TestOnly.Error",
+          "errorMessage": "test-only-error-message",
+          "stackTrace": [
+            "test-only-frame"
+          ]
+        }
+      }
+    }
+  ],
+  "expectJava": {
+    "outcome": "response",
+    "status": 200,
+    "headers": [],
+    "headersAbsent": [],
+    "body": "test-only-backend-error-content",
+    "bodyBase64": false,
+    "jwksFetches": 0,
+    "backendCalls": [
+      {
+        "target": "FnX",
+        "event": {
+          "path": "/x",
+          "httpMethod": "GET",
+          "isBase64Encoded": false
+        },
+        "eventAbsent": [
+          "/body",
+          "/headers",
+          "/queryStringParameters",
+          "/pathParameters",
+          "/requestContext/stage"
+        ],
+        "eventExact": {
+          "multiValueHeaders": {},
+          "multiValueQueryStringParameters": {},
+          "requestContext": {}
+        }
+      }
+    ],
+    "backendDiagnostics": {
+      "kind": "javaFunctionErrorTrace",
+      "payloadUtf8": "{\"statusCode\":200,\"body\":\"test-only-backend-error-content\",\"isBase64Encoded\":false,\"errorType\":\"TestOnly.Error\",\"errorMessage\":\"test-only-error-message\",\"stackTrace\":[\"test-only-frame\"]}"
+    }
+  },
+  "expect": {
+    "outcome": "response",
+    "status": 502,
+    "headers": [
+      [
+        "content-type",
+        "application/json"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "{\"statusCode\":502,\"code\":\"ERR14014\",\"message\":\"BACKEND_FUNCTION_ERROR\",\"description\":\"Backend function FnX failed.\",\"severity\":\"ERROR\"}",
+    "bodyBase64": false,
+    "backendCalls": [
+      {
+        "target": "FnX",
+        "event": {
+          "path": "/x",
+          "httpMethod": "GET",
+          "body": null,
+          "isBase64Encoded": false,
+          "requestContext": {
+            "stage": "test-only"
+          },
+          "queryStringParameters": null,
+          "pathParameters": null,
+          "multiValueQueryStringParameters": null
+        },
+        "eventExact": {
+          "headers": null,
+          "multiValueHeaders": null,
+          "queryStringParameters": {
+            "a": "2"
+          },
+          "pathParameters": null,
+          "multiValueQueryStringParameters": null
+        }
+      }
+    ],
+    "jwksFetches": 0,
+    "backendDiagnostics": {
+      "kind": "rustFunctionErrorSafeMetadata",
+      "metadata": {
+        "requestId": "test-only-request",
+        "targetAlias": "FnX",
+        "functionError": "Unhandled",
+        "executedVersion": null,
+        "payloadBytes": 186,
+        "errorType": "TestOnly.Error"
+      }
+    }
+  },
+  "substitutions": [],
+  "observeBackendDiagnostics": true
+}

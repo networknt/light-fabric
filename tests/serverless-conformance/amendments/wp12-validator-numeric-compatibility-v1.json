@@ -1,0 +1,69 @@
+{
+  "schema": "wp12-validator-numeric-compatibility/v1",
+  "ownerDisposition": "2026-10-17 exact mathematical numeric compatibility approval",
+  "reference": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/header-status-20261017T072706Z/numeric-compatibility-decisions.json",
+  "productionAdmission": false,
+  "preserveHistoricalObservations": true,
+  "cases": [
+    {
+      "id": "json-exp-invalid",
+      "sourceSha256": "4105ab00f71f54aa1ad783cf0c89d06ab8cf5492ac216c8baaedb6ffb06d67d6",
+      "requestBody": "{\"v\":1e401}",
+      "originalJava": {
+        "id": "json-exp-invalid",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have a maximum value of 1e+400\",\"severity\":\"ERROR\"}",
+      "dispatches": 0,
+      "disposition": "intentional-change"
+    },
+    {
+      "id": "json-exp-equal",
+      "sourceSha256": "4105ab00f71f54aa1ad783cf0c89d06ab8cf5492ac216c8baaedb6ffb06d67d6",
+      "requestBody": "{\"v\":1e400}",
+      "originalJava": {
+        "id": "json-exp-equal",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "status": 200,
+      "body": "ok",
+      "dispatches": 1,
+      "disposition": "unchanged"
+    },
+    {
+      "id": "yaml-exp-invalid",
+      "sourceSha256": "26eecf7d778be0f249c33885fb4adb13a607475d17b9b266ff41a6c7e9cff495",
+      "requestBody": "{\"v\":1e401}",
+      "originalJava": {
+        "id": "yaml-exp-invalid",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have a maximum value of 1e+400\",\"severity\":\"ERROR\"}",
+      "dispatches": 0,
+      "disposition": "intentional-change"
+    },
+    {
+      "id": "json-decimal-invalid",
+      "sourceSha256": "c60e16374cf4fd4e53edeed16f6db76c413e65285b519f06a3a7d3d4da00f18d",
+      "requestBody": "{\"v\":1.00000000000000000001}",
+      "originalJava": {
+        "id": "json-decimal-invalid",
+        "status": 200,
+        "body": "ok",
+        "lambdaCaptures": 1
+      },
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have a maximum value of 1.00000000000000000000\",\"severity\":\"ERROR\"}",
+      "dispatches": 0,
+      "disposition": "intentional-change"
+    }
+  ]
+}

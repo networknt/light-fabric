@@ -9,14 +9,18 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 #[async_trait]
 pub trait RuntimeCache: Send + Sync {
+    #[must_use = "the len future must be awaited to perform the operation"]
     async fn len(&self) -> usize;
+    #[must_use = "the is_empty future must be awaited to perform the operation"]
     async fn is_empty(&self) -> bool {
         self.len().await == 0
     }
+    #[must_use = "the entries_summary future must be awaited to perform the operation"]
     async fn entries_summary(&self) -> JsonValue;
     fn clear_supported(&self) -> bool {
         true
     }
+    #[must_use = "the clear future must be awaited to perform the operation"]
     async fn clear(&self);
 }
 

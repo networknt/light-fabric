@@ -6,23 +6,13 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub struct ClientConfig {
     pub tls: ClientTlsConfig,
     pub request: ClientRequestConfig,
     pub oauth: ClientOauthConfig,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub path_prefix_services: BTreeMap<String, String>,
-}
-
-impl Default for ClientConfig {
-    fn default() -> Self {
-        Self {
-            tls: ClientTlsConfig::default(),
-            request: ClientRequestConfig::default(),
-            oauth: ClientOauthConfig::default(),
-            path_prefix_services: BTreeMap::new(),
-        }
-    }
 }
 
 impl<'de> Deserialize<'de> for ClientConfig {

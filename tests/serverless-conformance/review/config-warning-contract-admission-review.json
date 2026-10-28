@@ -1,0 +1,47 @@
+[
+  {
+    "fixture": "CFG-04-handler-duration-absent-init-contract-v1",
+    "source": "WP1 configuration-keys KEY002: default false/absent warns, non-default rejects",
+    "javaBehaviorAsserted": [
+      "CFG-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "CFG-04"
+    ],
+    "rustExecutionEvidence": [],
+    "review": "Shared actual production handler configuration; Java Init success retained. Authored Rust validator warning observation for only KEY002, or exact unsupported non-default Init rejection. No stdout field names/error messages invented; raw validator warning report retained in future results.",
+    "remainingContractAssertions": [],
+    "javaRun": "20261011T163328.636704Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T163328.636704Z"
+  },
+  {
+    "fixture": "CFG-04-handler-duration-default-false-init-contract-v1",
+    "source": "WP1 configuration-keys KEY002: default false/absent warns, non-default rejects",
+    "javaBehaviorAsserted": [
+      "CFG-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "CFG-04"
+    ],
+    "rustExecutionEvidence": [],
+    "review": "Shared actual production handler configuration; Java Init success retained. Authored Rust validator warning observation for only KEY002, or exact unsupported non-default Init rejection. No stdout field names/error messages invented; raw validator warning report retained in future results.",
+    "remainingContractAssertions": [],
+    "javaRun": "20261011T163328.636704Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T163328.636704Z"
+  },
+  {
+    "fixture": "CFG-04-handler-duration-nondefault-true-init-contract-v1",
+    "source": "WP1 configuration-keys KEY002: default false/absent warns, non-default rejects",
+    "javaBehaviorAsserted": [
+      "CFG-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "CFG-04"
+    ],
+    "rustExecutionEvidence": [],
+    "review": "Shared actual production handler configuration; Java Init success retained. Authored Rust validator warning observation for only KEY002, or exact unsupported non-default Init rejection. No stdout field names/error messages invented; raw validator warning report retained in future results.",
+    "remainingContractAssertions": [],
+    "javaRun": "20261011T163328.636704Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T163328.636704Z"
+  }
+]

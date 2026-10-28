@@ -24,6 +24,7 @@ pub struct ResolvedServerMetadata {
 pub trait TransportRuntime: Send + Sync {
     type Handle: Send + Sync;
 
+    #[must_use = "the bind future must be awaited to perform the operation"]
     async fn bind(
         &self,
         config: &RuntimeConfig,
@@ -32,6 +33,7 @@ pub trait TransportRuntime: Send + Sync {
         startup_cancel: CancellationToken,
     ) -> Result<BoundTransport<Self::Handle>, RuntimeError>;
 
+    #[must_use = "the stop future must be awaited to perform the operation"]
     async fn stop(
         &self,
         handle: &mut Self::Handle,

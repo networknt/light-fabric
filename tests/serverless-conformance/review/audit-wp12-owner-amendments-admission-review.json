@@ -1,0 +1,27 @@
+[
+  {
+    "fixture": "A-01-response-body-finalization-exception-sink-v1",
+    "ownerAmendment": "WP12 2026-10-13 responseBody Init rejection",
+    "supersedesRustAdmission": [
+      "review/audit-edge-admission-review.json",
+      "fixture-behavior-review.json"
+    ],
+    "historicalEvidence": "/home/steve/artifacts/implementation/light-lambda/WP12/audit-amendments-20261013T021831Z/before-0-A-01-response-body-finalization-exception-sink-v1.json",
+    "javaExpectationSha256": "8bb90e92a2228abed89e684b9c56c368efbe15ac945983e25f7d77ec1accf5e8",
+    "javaObservationsChanged": false,
+    "rustInitContract": {
+      "outcome": "initError",
+      "code": "InvalidConfiguration",
+      "backendCalls": [],
+      "jwksFetches": 0
+    },
+    "exactRuntimeDiagnostic": "audit.yml: responseBody selector is unsupported",
+    "proposedRustBehaviorReached": [
+      "A-02",
+      "CFG-04",
+      "C-10"
+    ],
+    "rustDifferentialExecutionEvidence": null,
+    "review": "Owner-approved Rust-only outcome amendment. No Java expectation/observation/source change. E-13 is no longer credited by the current declaration; prior E-13 admission remains historical. Targeted constructor/offline/startup evidence is separate from WP13 differential execution."
+  }
+]

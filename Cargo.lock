@@ -679,6 +679,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-lambda"
+version = "1.139.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbbe615ec96230c3032b82e25d7613c2c9bf524784738bc3a0a4bd3247b4acd1"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-eventstream",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-sso"
 version = "1.105.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1651,6 +1678,7 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "unsafe-libyaml",
 ]
 
 [[package]]
@@ -2728,6 +2756,34 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "gateway-policy"
+version = "0.2.1"
+dependencies = [
+ "async-trait",
+ "base64",
+ "chrono",
+ "hex",
+ "http 1.4.0",
+ "ipnet",
+ "light-client",
+ "light-runtime",
+ "light-security",
+ "pbkdf2",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha1",
+ "sha2 0.10.9",
+ "subtle",
+ "tokio",
+ "tracing",
+ "url",
  "uuid",
 ]
 
@@ -4034,6 +4090,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9171a2ea8a68358193d15dd5d70c1c10a2afc3e7e4c5bc92bc9f025cebd7359c"
 
 [[package]]
+name = "http-serde"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f056c8559e3757392c8d091e796416e4649d8e49e88b8d76df6c002f05027fd"
+dependencies = [
+ "http 1.4.0",
+ "serde",
+]
+
+[[package]]
 name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4582,6 +4648,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonschema-macros"
+version = "0.48.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17fb29ec60ebce38c9bdab49e2980cf590905f74989464ef07dc443d37f92e17"
+dependencies = [
+ "jsonschema-macros-core",
+ "proc-macro2",
+]
+
+[[package]]
+name = "jsonschema-macros-core"
+version = "0.48.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd95fd822e8990a734b9b222cf96f4f65c28b210598b0b0deaface517178d8cb"
+dependencies = [
+ "fancy-regex",
+ "indexmap 2.13.1",
+ "jsonschema-regex",
+ "percent-encoding",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "referencing",
+ "regex",
+ "serde_json",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "jsonschema-regex"
 version = "0.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4755,6 +4850,50 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "lambda_runtime"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b4a47ba6672230da151bb4bc10e4c09c9dcb7f6b363f47dc3ce84df1ec9bbbd"
+dependencies = [
+ "async-stream",
+ "base64",
+ "bytes",
+ "futures",
+ "http 1.4.0",
+ "http-body-util",
+ "http-serde",
+ "hyper 1.9.0",
+ "lambda_runtime_api_client",
+ "pin-project",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "tokio",
+ "tokio-stream",
+ "tower",
+ "tracing",
+]
+
+[[package]]
+name = "lambda_runtime_api_client"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09c46c8324555826a4040136b25ed8c1abb45ab2969f7ec1c3324048ed0c29a2"
+dependencies = [
+ "bytes",
+ "futures-channel",
+ "futures-util",
+ "http 1.4.0",
+ "http-body 1.0.1",
+ "http-body-util",
+ "hyper 1.9.0",
+ "hyper-util",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -5292,6 +5431,144 @@ dependencies = [
 ]
 
 [[package]]
+name = "light-lambda"
+version = "0.2.1"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64",
+ "config-embed-build",
+ "config-loader",
+ "futures-util",
+ "gateway-policy",
+ "http 1.4.0",
+ "jsonwebtoken",
+ "lambda_runtime",
+ "light-lambda-runtime",
+ "light-security",
+ "serde_json",
+ "serverless-aws",
+ "serverless-core",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
+name = "light-lambda-precision-json"
+version = "1.0.149"
+dependencies = [
+ "indexmap 2.13.1",
+ "itoa",
+ "memchr",
+ "serde",
+ "serde_core",
+ "zmij",
+]
+
+[[package]]
+name = "light-lambda-precision-jsonschema"
+version = "0.48.0"
+dependencies = [
+ "ahash",
+ "bytecount",
+ "data-encoding",
+ "email_address",
+ "fancy-regex",
+ "fraction",
+ "getrandom 0.3.4",
+ "idna",
+ "itoa",
+ "jsonschema-macros",
+ "jsonschema-regex",
+ "light-lambda-precision-json",
+ "light-lambda-precision-referencing",
+ "num-bigint",
+ "num-cmp",
+ "num-traits",
+ "percent-encoding",
+ "regex",
+ "serde",
+ "unicode-general-category",
+ "uuid-simd",
+]
+
+[[package]]
+name = "light-lambda-precision-referencing"
+version = "0.48.0"
+dependencies = [
+ "ahash",
+ "fluent-uri",
+ "getrandom 0.3.4",
+ "hashbrown 0.17.1",
+ "itoa",
+ "light-lambda-precision-json",
+ "micromap",
+ "parking_lot",
+ "percent-encoding",
+]
+
+[[package]]
+name = "light-lambda-runtime"
+version = "0.2.1"
+dependencies = [
+ "async-trait",
+ "aws-config",
+ "aws-sdk-lambda",
+ "base64",
+ "bytes",
+ "config-loader",
+ "fancy-regex",
+ "futures-util",
+ "gateway-policy",
+ "http 1.4.0",
+ "http-body-util",
+ "hyper-util",
+ "jsonschema",
+ "jsonwebtoken",
+ "lambda_runtime",
+ "libc",
+ "light-client",
+ "light-lambda-validator",
+ "light-rule",
+ "light-runtime",
+ "light-security",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "serverless-aws",
+ "serverless-core",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "tracing-core",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "light-lambda-validator"
+version = "0.2.1"
+dependencies = [
+ "fraction",
+ "light-lambda-precision-json",
+ "light-lambda-precision-jsonschema",
+ "light-lambda-precision-referencing",
+ "num-bigint",
+ "serde",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "unsafe-libyaml",
+]
+
+[[package]]
 name = "light-pingora"
 version = "0.2.1"
 dependencies = [
@@ -5301,6 +5578,7 @@ dependencies = [
  "base64",
  "bytes",
  "chrono",
+ "gateway-policy",
  "hex",
  "hmac 0.12.1",
  "http 1.4.0",
@@ -8202,6 +8480,95 @@ dependencies = [
 ]
 
 [[package]]
+name = "serverless-aws"
+version = "0.2.1"
+dependencies = [
+ "async-trait",
+ "aws-sdk-lambda",
+ "aws-smithy-http-client",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "axum",
+ "base64",
+ "bytes",
+ "chrono",
+ "http 1.4.0",
+ "hyper-util",
+ "serde",
+ "serde_json",
+ "serverless-core",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-core",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "serverless-conformance"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "aws-sdk-lambda",
+ "axum",
+ "axum-server",
+ "base64",
+ "bytes",
+ "chrono",
+ "futures-util",
+ "hex",
+ "http 1.4.0",
+ "jsonschema",
+ "jsonwebtoken",
+ "lambda_runtime",
+ "light-lambda",
+ "light-lambda-runtime",
+ "light-runtime",
+ "light-security",
+ "percent-encoding",
+ "rcgen",
+ "rsa",
+ "rustls 0.23.37",
+ "serde_json",
+ "serverless-aws",
+ "serverless-core",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "serverless-core"
+version = "0.2.1"
+dependencies = [
+ "async-trait",
+ "base64",
+ "bytes",
+ "chrono",
+ "futures-util",
+ "gateway-policy",
+ "http 1.4.0",
+ "jsonwebtoken",
+ "light-runtime",
+ "light-security",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "sfv"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8650,6 +9017,7 @@ name = "symmetric-decryptor"
 version = "0.2.1"
 dependencies = [
  "aes",
+ "aes-gcm",
  "block-padding",
  "cbc",
  "hex",

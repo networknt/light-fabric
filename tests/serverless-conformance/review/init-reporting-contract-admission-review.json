@@ -1,0 +1,35 @@
+[
+  {
+    "fixture": "CFG-05-missing-stage-init-report-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "CFG-05",
+      "E-09"
+    ],
+    "proposedRustBehaviorReached": [
+      "CFG-05",
+      "E-09"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Owner-approved complete missing-stage Runtime.InitError header/body, 1024 UTF8 byte maximum, forbidden secret sentinels, one report, exit1 and no invocation loop. Java actual 200/one dispatch is unchanged; no Rust executed evidence. Plan5.1 header is Runtime.InitError for both paths; panic body errorType is Runtime.InitPanic; source-reviewed correction preserved separately.",
+    "remainingContractAssertions": [
+      "CFG-05: unset Runtime API and failed report transport still require explicit fixture representation; other invalid configuration cases retain separate assertions."
+    ],
+    "javaRun": "20261011T160015.742253Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T160015.742253Z"
+  },
+  {
+    "fixture": "CFG-05-prepare-local-config-panic-init-contract-v1",
+    "source": null,
+    "javaBehaviorAsserted": [],
+    "proposedRustBehaviorReached": [
+      "CFG-05"
+    ],
+    "rustExecutionEvidence": [],
+    "kind": "rustOnly",
+    "javaRun": "20261011T160015.742253Z",
+    "review": "Owner-approved closed fixed Init preparation panic probe. Exact Runtime.InitPanic report, bounded redacted body, exit1/no invocation loop. Java has no meaningful real catch_unwind counterpart; skipped without gateway Init. WP9/WP13 real execution required. Plan5.1 header is Runtime.InitError for both paths; panic body errorType is Runtime.InitPanic; source-reviewed correction preserved separately.",
+    "remainingContractAssertions": [],
+    "validation": "Java skipped (rustOnly, no gateway Init); result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T160015.742253Z"
+  }
+]

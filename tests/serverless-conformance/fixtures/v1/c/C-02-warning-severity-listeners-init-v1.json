@@ -1,0 +1,164 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "C-02-warning-severity-listeners-init-v1",
+  "title": "C-02-warning-severity actual Java entry and listener assertions",
+  "ledger": [
+    "C-02",
+    "C-10"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.characterization.ExchangeEdgesTest$Edge@h0"
+        ],
+        "chains": {
+          "request": [
+            "h0"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "No virtual clock or volatile body expectation."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "expectRustInit": {
+    "outcome": "initError",
+    "code": "InvalidConfiguration",
+    "backendCalls": [],
+    "jwksFetches": 0
+  },
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls",
+    "completions",
+    "finalizationProbe",
+    "header:x-backend",
+    "header:content-type"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {
+          "test-edge": "warning"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "GET",
+              "headers": {
+                "test-edge": "warning"
+              },
+              "queryStringParameters": {},
+              "requestContext": {},
+              "isBase64Encoded": false
+            },
+            "eventExact": {
+              "headers": {
+                "test-edge": "warning"
+              },
+              "queryStringParameters": {},
+              "requestContext": {}
+            },
+            "eventAbsent": [
+              "/body"
+            ]
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response",
+        "completions": []
+      },
+      "headerMode": "single",
+      "observeCompletions": true,
+      "expect": {
+        "outcome": "notExecuted",
+        "reason": "initError",
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "completions": []
+      }
+    }
+  ]
+}

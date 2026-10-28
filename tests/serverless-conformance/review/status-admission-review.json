@@ -1,0 +1,31 @@
+[
+  {
+    "fixture": "E-01-custom-status-serializer-configured-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/E-01-custom-status-serializer-cp1-e02-accepted.json",
+    "sourceSha256": "8ff1701b25f796357bed933bec8ed7696535a3d5c449b23d6efb7306438d94e4",
+    "javaBehaviorAsserted": [
+      "E-01",
+      "C-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "review": "Exact CustomStatusSerializerTest configured serializer/Deny retained, or exact ErrorMetadataTest constructor/metadata returned by a new synthetic request middleware through real LambdaApp. Body remains byte exact even when invalid JSON; no parsing/repair. Unsupported test class binding rejects Rust Init.",
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "E-01-status-metadata-escaping-configured-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/E-01-status-metadata-escaping-cp1-e02-accepted.json",
+    "sourceSha256": "edddc0096d09265a80bebfadb06f403a96388c62426de83e06446ee2e2a71dff",
+    "javaBehaviorAsserted": [
+      "E-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "review": "Exact CustomStatusSerializerTest configured serializer/Deny retained, or exact ErrorMetadataTest constructor/metadata returned by a new synthetic request middleware through real LambdaApp. Body remains byte exact even when invalid JSON; no parsing/repair. Unsupported test class binding rejects Rust Init. Component bytes and JSON parse failure are separately asserted in statusSerialization. TEST_ONLY does not begin ERR, so ExceptionUtil intentionally returns a response with null status/body and empty headers. Earlier incorrect HTTP-body draft and failed replay are preserved. Only E-01 component serialization coverage is claimed; no invented HTTP error bytes.",
+    "validation": "pending focused replay",
+    "rustExecutionEvidence": null
+  }
+]

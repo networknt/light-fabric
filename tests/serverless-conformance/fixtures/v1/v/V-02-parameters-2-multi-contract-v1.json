@@ -1,0 +1,181 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "V-02-parameters-2-multi-contract-v1",
+  "title": "Valid ingress request parameter validation 2",
+  "ledger": [
+    "V-02",
+    "V-01",
+    "E-06a",
+    "E-10"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only",
+      "light-lambda.accountId": "000000000000",
+      "light-lambda.apiId": "test-only",
+      "light-lambda.domainName": "test.example",
+      "light-lambda.resourceId": "test-only"
+    },
+    "files": {
+      "openapi": {
+        "openapi": "3.0.3",
+        "info": {
+          "title": "test-only-characterization",
+          "version": "1.0.0"
+        },
+        "paths": {
+          "/x/{id}": {
+            "get": {
+              "responses": {
+                "200": {
+                  "description": "synthetic response"
+                }
+              },
+              "parameters": [
+                {
+                  "name": "id",
+                  "in": "path",
+                  "required": true,
+                  "schema": {
+                    "type": "integer"
+                  }
+                },
+                {
+                  "name": "q",
+                  "in": "query",
+                  "required": true,
+                  "schema": {
+                    "type": "integer"
+                  }
+                },
+                {
+                  "name": "x-required",
+                  "in": "header",
+                  "required": true,
+                  "schema": {
+                    "type": "integer"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "openapi-inject": {},
+      "openapi-handler": {
+        "enabled": true
+      },
+      "openapi-validator": {
+        "enabled": true,
+        "validateRequest": true
+      },
+      "lambda-proxy": {
+        "functions": {
+          "/x/{id}@get": "FnX"
+        },
+        "logType": "Tail",
+        "enabled": true
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware@h0",
+          "com.networknt.aws.lambda.handler.middleware.validator.ValidatorMiddleware@h1"
+        ],
+        "chains": {
+          "request": [
+            "h0",
+            "h1"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {},
+  "tokens": {},
+  "headerMode": "multi",
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "backendCalls",
+    "header:content-type"
+  ],
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "GET",
+    "path": "/x/42",
+    "headers": {
+      "x-required": "8"
+    },
+    "queryStringParameters": {
+      "q": "bad"
+    },
+    "body": null,
+    "isBase64Encoded": false,
+    "multiValueHeaders": {
+      "x-required": [
+        "8"
+      ]
+    },
+    "multiValueQueryStringParameters": {
+      "q": [
+        "bad"
+      ]
+    }
+  },
+  "backend": [],
+  "expectJava": {
+    "status": 400,
+    "headers": [
+      [
+        "Content-Type",
+        "application/json"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /q: string found, integer expected\",\"severity\":\"ERROR\"}",
+    "bodyBase64": false,
+    "backendCalls": [],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "expect": {
+    "status": 400,
+    "headers": [
+      [
+        "content-type",
+        "application/json"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /q: string found, integer expected\",\"severity\":\"ERROR\"}",
+    "bodyBase64": false,
+    "backendCalls": [],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "substitutions": []
+}

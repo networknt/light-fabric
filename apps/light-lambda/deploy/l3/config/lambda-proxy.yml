@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "region": "us-east-2",
+  "metricsInjection": false,
+  "logType": "None",
+  "functions": {
+    "/v1/pets@get": "arn:aws:lambda:us-east-2:964637446810:function:PetsGetFunction",
+    "/v1/pets@post": "arn:aws:lambda:us-east-2:964637446810:function:PetsPostFunction",
+    "/v1/pets/{petId}@get": "arn:aws:lambda:us-east-2:964637446810:function:PetsPetIdGetFunction",
+    "/v1/pets/{petId}@delete": "arn:aws:lambda:us-east-2:964637446810:function:PetsPetIdDeleteFunction"
+  }
+}

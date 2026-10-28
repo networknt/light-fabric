@@ -1,0 +1,4 @@
+# Default-only admission; these flags do not change the fixed status renderer.
+showMessage: ${status.showMessage:true}
+showDescription: ${status.showDescription:true}
+showMetadata: ${status.showMetadata:true}

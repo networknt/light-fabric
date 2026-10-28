@@ -1,0 +1,72 @@
+[
+  {
+    "fixture": "S-13c-shared-fetch-panic-recovery-component-v1",
+    "source": null,
+    "kind": "rustOnly",
+    "javaRun": "20261011T164014.821845Z",
+    "javaBehaviorAsserted": [],
+    "proposedRustBehaviorReached": [
+      "S-13c"
+    ],
+    "rustExecutionEvidence": [],
+    "review": "Owner-approved closed fault contract; Java legitimately skipped without gateway Init. Authored expectations only. Attempts and received requests distinct; S13c barriers are actual task-boundary synchronization, no timing guesses or exact undefined error codes. Actual reporting/TCP/accept/received-POST counters are distinct; mode-specific prerequisite readiness and configured/absent endpoint are explicit.",
+    "remainingContractAssertions": [],
+    "validation": "Java skipped (rustOnly, no gateway Init); result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T164014.821845Z"
+  },
+  {
+    "fixture": "CFG-05-runtime-api-unset-v1-contract-v1",
+    "source": null,
+    "kind": "rustOnly",
+    "javaRun": "20261011T164014.821845Z",
+    "javaBehaviorAsserted": [],
+    "proposedRustBehaviorReached": [
+      "CFG-05"
+    ],
+    "rustExecutionEvidence": [],
+    "review": "Owner-approved closed fault contract; Java legitimately skipped without gateway Init. Authored expectations only. Attempts and received requests distinct; S13c barriers are actual task-boundary synchronization, no timing guesses or exact undefined error codes. Actual reporting/TCP/accept/received-POST counters are distinct; mode-specific prerequisite readiness and configured/absent endpoint are explicit.",
+    "remainingContractAssertions": [],
+    "validation": "Java skipped (rustOnly, no gateway Init); result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T164014.821845Z"
+  },
+  {
+    "fixture": "CFG-05-loopback-http-503-v1-contract-v1",
+    "source": null,
+    "kind": "rustOnly",
+    "javaRun": "20261011T164014.821845Z",
+    "javaBehaviorAsserted": [],
+    "proposedRustBehaviorReached": [
+      "CFG-05"
+    ],
+    "rustExecutionEvidence": [],
+    "review": "Owner-approved closed fault contract; Java legitimately skipped without gateway Init. Authored expectations only. Attempts and received requests distinct; S13c barriers are actual task-boundary synchronization, no timing guesses or exact undefined error codes. Actual reporting/TCP/accept/received-POST counters are distinct; mode-specific prerequisite readiness and configured/absent endpoint are explicit.",
+    "remainingContractAssertions": [],
+    "validation": "Java skipped (rustOnly, no gateway Init); result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T164014.821845Z"
+  },
+  {
+    "fixture": "CFG-05-loopback-connection-refused-v1-contract-v1",
+    "source": null,
+    "kind": "rustOnly",
+    "javaRun": "20261011T164014.821845Z",
+    "javaBehaviorAsserted": [],
+    "proposedRustBehaviorReached": [
+      "CFG-05"
+    ],
+    "rustExecutionEvidence": [],
+    "review": "Owner-approved closed fault contract; Java legitimately skipped without gateway Init. Authored expectations only. Attempts and received requests distinct; S13c barriers are actual task-boundary synchronization, no timing guesses or exact undefined error codes. Actual reporting/TCP/accept/received-POST counters are distinct; mode-specific prerequisite readiness and configured/absent endpoint are explicit.",
+    "remainingContractAssertions": [],
+    "validation": "Java skipped (rustOnly, no gateway Init); result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T164014.821845Z"
+  },
+  {
+    "fixture": "CFG-05-loopback-response-withheld-v1-contract-v1",
+    "source": null,
+    "kind": "rustOnly",
+    "javaRun": "20261011T164014.821845Z",
+    "javaBehaviorAsserted": [],
+    "proposedRustBehaviorReached": [
+      "CFG-05"
+    ],
+    "rustExecutionEvidence": [],
+    "review": "Owner-approved closed fault contract; Java legitimately skipped without gateway Init. Authored expectations only. Attempts and received requests distinct; S13c barriers are actual task-boundary synchronization, no timing guesses or exact undefined error codes. Actual reporting/TCP/accept/received-POST counters are distinct; mode-specific prerequisite readiness and configured/absent endpoint are explicit.",
+    "remainingContractAssertions": [],
+    "validation": "Java skipped (rustOnly, no gateway Init); result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T164014.821845Z"
+  }
+]

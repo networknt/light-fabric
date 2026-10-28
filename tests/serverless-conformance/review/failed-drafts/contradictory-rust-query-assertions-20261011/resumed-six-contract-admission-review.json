@@ -1,0 +1,100 @@
+[
+  {
+    "fixture": "D-03-D-04-safe-metadata-no-log-tail-multi-contract-v1",
+    "source": "Reviewed prior draft and preserved focused evidence",
+    "javaBehaviorAsserted": [
+      "D-03",
+      "D-04",
+      "A-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-03",
+      "D-04",
+      "A-02"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared valid ingress dispatches once. Java preserves the FunctionError payload trace and decoded log-tail byte array; Rust explicitly requests LogType None and asserts exactly one closed safe metadata record, excluding payload and log tail. No Rust execution evidence.",
+    "javaRun": "20261011T111925.913864Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T111925.913864Z"
+  },
+  {
+    "fixture": "S-12-unified-apikey-valid-denied-warm-multi-contract-v1",
+    "source": "Reviewed prior draft and preserved focused evidence",
+    "javaBehaviorAsserted": [
+      "S-12",
+      "S-11"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-12",
+      "S-11"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Supported API-key-only Unified policy reaches valid, mismatch and missing-key branches in one initialized gateway. Exact reviewed status/body/challenge and dispatch counts retained; no combined-factor coverage claim.",
+    "javaRun": "20261011T111729.354401Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T111729.354401Z"
+  },
+  {
+    "fixture": "D-07-self-name-alias-init-contract-v1",
+    "source": "Reviewed prior draft and preserved focused evidence",
+    "javaBehaviorAsserted": [
+      "D-07",
+      "CFG-05"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-07",
+      "CFG-05"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Process-start synthetic function identity matches the qualified self target. Valid configured /pets/fixed GET route dispatches once in Java; Rust must reject self-target at Init, dispatch zero times and report the approved CFG-05 Init failure. The earlier wrong-route failure remains archived.",
+    "javaRun": "20261011T113131.783580Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T113131.783580Z"
+  },
+  {
+    "fixture": "D-07-self-name-version-init-contract-v1",
+    "source": "Reviewed prior draft and preserved focused evidence",
+    "javaBehaviorAsserted": [
+      "D-07",
+      "CFG-05"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-07",
+      "CFG-05"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Process-start synthetic function identity matches the qualified self target. Valid configured /pets/fixed GET route dispatches once in Java; Rust must reject self-target at Init, dispatch zero times and report the approved CFG-05 Init failure. The earlier wrong-route failure remains archived.",
+    "javaRun": "20261011T113131.783580Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T113131.783580Z"
+  },
+  {
+    "fixture": "D-07-self-arn-alias-init-contract-v1",
+    "source": "Reviewed prior draft and preserved focused evidence",
+    "javaBehaviorAsserted": [
+      "D-07",
+      "CFG-05"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-07",
+      "CFG-05"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Process-start synthetic function identity matches the qualified self target. Valid configured /pets/fixed GET route dispatches once in Java; Rust must reject self-target at Init, dispatch zero times and report the approved CFG-05 Init failure. The earlier wrong-route failure remains archived.",
+    "javaRun": "20261011T113131.783580Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T113131.783580Z"
+  },
+  {
+    "fixture": "D-07-self-arn-version-init-contract-v1",
+    "source": "Reviewed prior draft and preserved focused evidence",
+    "javaBehaviorAsserted": [
+      "D-07",
+      "CFG-05"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-07",
+      "CFG-05"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Process-start synthetic function identity matches the qualified self target. Valid configured /pets/fixed GET route dispatches once in Java; Rust must reject self-target at Init, dispatch zero times and report the approved CFG-05 Init failure. The earlier wrong-route failure remains archived.",
+    "javaRun": "20261011T113131.783580Z",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T113131.783580Z"
+  }
+]

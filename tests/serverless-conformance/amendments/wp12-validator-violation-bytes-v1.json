@@ -1,0 +1,71 @@
+{
+  "schema": "wp12-schema-adapter-byte-expectation/v1",
+  "cases": [
+    {
+      "id": "synthetic-3.0.3-exclusive-4",
+      "schemaValid": false,
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have an exclusive minimum value of 5\",\"severity\":\"ERROR\"}",
+      "errorFormatReference": "exclusiveMinimum4",
+      "semanticDisposition": "owner-approved dialect/ref-sibling amendment; original Java bytes unchanged"
+    },
+    {
+      "id": "synthetic-3.0.3-exclusive-5",
+      "schemaValid": false,
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have an exclusive minimum value of 5\",\"severity\":\"ERROR\"}",
+      "errorFormatReference": "exclusiveMinimum5",
+      "semanticDisposition": "owner-approved dialect/ref-sibling amendment; original Java bytes unchanged"
+    },
+    {
+      "id": "synthetic-3.0.3-exclusive-6",
+      "schemaValid": true,
+      "status": 200,
+      "body": null,
+      "errorFormatReference": null,
+      "semanticDisposition": "owner-approved dialect/ref-sibling amendment; original Java bytes unchanged"
+    },
+    {
+      "id": "synthetic-3.0.3-ref-sibling",
+      "schemaValid": true,
+      "status": 200,
+      "body": null,
+      "errorFormatReference": null,
+      "semanticDisposition": "owner-approved dialect/ref-sibling amendment; original Java bytes unchanged"
+    },
+    {
+      "id": "synthetic-3.1.0-exclusive-4",
+      "schemaValid": false,
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have an exclusive minimum value of 5\",\"severity\":\"ERROR\"}",
+      "errorFormatReference": "exclusiveMinimum4",
+      "semanticDisposition": "owner-approved dialect/ref-sibling amendment; original Java bytes unchanged"
+    },
+    {
+      "id": "synthetic-3.1.0-exclusive-5",
+      "schemaValid": false,
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must have an exclusive minimum value of 5\",\"severity\":\"ERROR\"}",
+      "errorFormatReference": "exclusiveMinimum5",
+      "semanticDisposition": "owner-approved dialect/ref-sibling amendment; original Java bytes unchanged"
+    },
+    {
+      "id": "synthetic-3.1.0-exclusive-6",
+      "schemaValid": true,
+      "status": 200,
+      "body": null,
+      "errorFormatReference": null,
+      "semanticDisposition": "owner-approved dialect/ref-sibling amendment; original Java bytes unchanged"
+    },
+    {
+      "id": "synthetic-3.1.0-ref-sibling",
+      "schemaValid": false,
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: must be at least 3 characters long\",\"severity\":\"ERROR\"}",
+      "errorFormatReference": "minLength",
+      "semanticDisposition": "owner-approved dialect/ref-sibling amendment; original Java bytes unchanged"
+    }
+  ],
+  "productionAdmission": false,
+  "referencePackage": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/bounded-admission-20261016T201237Z/schema-violation-bytes"
+}

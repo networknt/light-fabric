@@ -1,0 +1,86 @@
+[
+  {
+    "input": " { \"z\":1, \"a\": [true,null,\"雪😀\"] } ",
+    "canonical": "{\"a\":[true,null,\"雪😀\"],\"z\":1}",
+    "sha256": "07e2338925e9c84cca3e250714ef3ca959c3b560e68b7fa2483b19a5c082c2ee"
+  },
+  {
+    "input": "{\"😀\":1,\"\":2,\"a\":3}",
+    "canonical": "{\"a\":3,\"\":2,\"😀\":1}",
+    "sha256": "f3d4db98c3d18f7f8d405f091f7e34be7db621fc83961988c21370340001b0d2"
+  },
+  {
+    "input": "{\"n\":0.123456789012345678901234567890123456789}",
+    "canonical": "{\"n\":0.123456789012345678901234567890123456789}",
+    "sha256": "541eb9243163ec2679f44e60640bcedc126be085b075c637d69a513ad854bb83"
+  },
+  {
+    "input": "[1e+20,1E-30,-0,-0.0,1.00,9007199254740993,123456789012345678901234567890]",
+    "canonical": "[1e+20,1E-30,-0,-0.0,1.00,9007199254740993,123456789012345678901234567890]",
+    "sha256": "1fcb5a4f46f0b8f35cb17bdf8d0bb8ef2dbdd4d902c786b6130408eca70b2139"
+  },
+  {
+    "input": "{\"\\u0061\":\"\\u96ea\\ud83d\\ude00\",\"s\":\"\\/\\b\\f\\n\\r\\t\\u0001\"}",
+    "canonical": "{\"a\":\"雪😀\",\"s\":\"/\\b\\f\\n\\r\\t\\u0001\"}",
+    "sha256": "18da339e7e1b182b3206e7da540a5eba13bf187c16b4817b054f66f44fe4e371"
+  },
+  {
+    "input": "[null,\"\",[],{},false,0]",
+    "canonical": "[null,\"\",[],{},false,0]",
+    "sha256": "0aee2ce3b87a5e386b0c5321b479b6508e350c96b6020a1e5d22b948f0781f11"
+  },
+  {
+    "input": "{\"b\":{\"z\":2,\"a\":1},\"a\":[2,1]}",
+    "canonical": "{\"a\":[2,1],\"b\":{\"a\":1,\"z\":2}}",
+    "sha256": "5eb64c69809ad680fe9f8a219cecabe8aa4289d501468d43daf75735ab6aaab5"
+  },
+  {
+    "input": "1e9999",
+    "canonical": "1e9999",
+    "sha256": "780bf6aecd073e6691e50b33c48c2e4a796cea8936868cc4adb4beffee703b65"
+  },
+  {
+    "input": "{\"a\":1,\"\\u0061\":2}",
+    "invalid": true
+  },
+  {
+    "input": "01",
+    "invalid": true
+  },
+  {
+    "input": "1.",
+    "invalid": true
+  },
+  {
+    "input": "1e",
+    "invalid": true
+  },
+  {
+    "input": "true false",
+    "invalid": true
+  },
+  {
+    "input": "[1,]",
+    "invalid": true
+  },
+  {
+    "input": "{\"a\":1,}",
+    "invalid": true
+  },
+  {
+    "input": "\"\\ud800\"",
+    "invalid": true
+  },
+  {
+    "input": "\"\\udc00\"",
+    "invalid": true
+  },
+  {
+    "input": "\"unescaped\nline\"",
+    "invalid": true
+  },
+  {
+    "input": "{\"x\":NaN}",
+    "invalid": true
+  }
+]

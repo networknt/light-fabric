@@ -1,0 +1,18 @@
+[
+  {
+    "fixture": "D-08c-blocking-response-lease-multi-contract-v1",
+    "source": "Owner-approved closed prerequisite, reviewed Java behavior, approved deadline/cache contracts",
+    "javaBehaviorAsserted": [
+      "D-08c",
+      "D-08d"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-08c",
+      "D-08d"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Fixed response-stage300ms work after one exact FnX dispatch. Java capacity-one test probe completes synchronously before200; authored Rust504 retains active worker/permit at response, then exact completed/released counts and one late-result discard. No redispatch. Shared100ms hard budget and40/20ms reserves are valid. No Rust runtime execution or arbitrary capacity override.",
+    "remainingContractAssertions": [],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T044051.986779Z"
+  }
+]

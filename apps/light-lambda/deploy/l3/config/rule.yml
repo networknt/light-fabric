@@ -1,0 +1,67 @@
+{
+  "endpointRules": {
+    "/x@post": {
+      "req-tra": [
+        "test-edge"
+      ]
+    },
+    "/x@get": {
+      "res-tra": [
+        "slow"
+      ]
+    }
+  },
+  "ruleBodies": {
+    "test-edge": {
+      "ruleId": "test-edge",
+      "ruleType": "req-tra",
+      "common": "Y",
+      "ruleName": "test-only-edge",
+      "actions": [
+        {
+          "actionId": "edge",
+          "actionRef": "request-metadata-literal",
+          "actionValues": {
+            "requestPath": "/changed",
+            "queryString": "{\"added\":7}",
+            "requestHeaders": {
+              "remove": [
+                "x-remove"
+              ],
+              "update": {
+                "X-Added": "updated"
+              }
+            },
+            "requestBody": "transformed"
+          }
+        }
+      ],
+      "conditionLanguage": "cel",
+      "conditionSecurityProfile": "standard",
+      "expression": "requestBody == 'mutate'"
+    },
+    "slow": {
+      "ruleId": "slow",
+      "ruleType": "res-tra",
+      "common": "Y",
+      "ruleName": "test-only-response-headers",
+      "actions": [
+        {
+          "actionId": "slow",
+          "actionRef": "response-headers-literal",
+          "actionValues": {
+            "remove": [
+              "X-Remove"
+            ],
+            "update": {
+              "x-added": "after"
+            }
+          }
+        }
+      ],
+      "conditionLanguage": "cel",
+      "conditionSecurityProfile": "standard",
+      "expression": "true"
+    }
+  }
+}

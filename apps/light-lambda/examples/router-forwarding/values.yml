@@ -1,0 +1,11 @@
+light-lambda.stage: local-router
+lambda-proxy.region: us-east-1
+lambda-proxy.functions:
+  /*@get: test-only-business
+  /*@post: test-only-business
+security.enabled: false
+unified-security.enabled: false
+router.enabled: true
+router.httpsEnabled: false
+router.maxRequestTime: 1000
+router.urlRewriteRules: []

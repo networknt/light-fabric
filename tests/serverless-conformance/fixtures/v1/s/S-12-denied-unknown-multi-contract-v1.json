@@ -1,0 +1,185 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "S-12-denied-unknown-multi-contract-v1",
+  "title": "Unified supported-factor denial at valid shared ingress: denied-unknown",
+  "ledger": [
+    "S-12",
+    "E-06a"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "unified-security": {
+        "enabled": true,
+        "anonymousPrefixes": [
+          "/x/public"
+        ],
+        "pathPrefixAuths": [
+          {
+            "prefix": "/x",
+            "basic": true
+          }
+        ]
+      },
+      "basic-auth": {
+        "enabled": true,
+        "allowAnonymous": false,
+        "allowBearerToken": false,
+        "enableAD": false,
+        "users": [
+          {
+            "username": "test-user",
+            "password": "test-only-password",
+            "paths": [
+              "/x"
+            ]
+          }
+        ]
+      },
+      "lambda-proxy": {
+        "functions": {
+          "/x@get": "FnX",
+          "/x/public@get": "FnX"
+        },
+        "logType": "Tail",
+        "enabled": true,
+        "region": "us-east-1"
+      },
+      "handler": {
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.security.BasicAuthMiddleware@basic",
+          "com.networknt.aws.lambda.handler.middleware.security.UnifiedSecurityMiddleware@unified"
+        ],
+        "defaultHandlers": [
+          "unified",
+          "proxy"
+        ],
+        "chains": {},
+        "paths": []
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "No generated time-sensitive token or clock control."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "header:content-type",
+    "header:www-authenticate"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {},
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {},
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [],
+      "expectJava": {
+        "status": 401,
+        "headers": [
+          [
+            "WWW-Authenticate",
+            "Basic realm=\"Default Realm\""
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi",
+      "expect": {
+        "status": 401,
+        "headers": [
+          [
+            "www-authenticate",
+            "Basic realm=\"Default Realm\""
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      }
+    },
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/unknown",
+        "headers": {},
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {},
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [],
+      "expectJava": {
+        "status": 400,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":400,\"code\":\"ERR10078\",\"message\":\"MISSING_PATH_PREFIX_AUTH\",\"description\":\"Missing path prefix auth entry for request path /unknown.\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "multi",
+      "expect": {
+        "status": 400,
+        "headers": [
+          [
+            "content-type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":400,\"code\":\"ERR10078\",\"message\":\"MISSING_PATH_PREFIX_AUTH\",\"description\":\"Missing path prefix auth entry for request path /unknown.\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      }
+    }
+  ]
+}

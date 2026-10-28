@@ -1,0 +1,15 @@
+[
+  {
+    "fixture": "C-01-alias-chain-multi-contract-v1",
+    "source": "Handler alias/defaultHandlers flattening; approved C-01 immutable plan compilation",
+    "javaBehaviorAsserted": [
+      "C-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-01"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Only defaultHandlers request alias can reach the declared proxy. Exact one FnLiteral invocation and response prove alias/chain compilation and execution; unsupported Java-only test handler declarations are absent. Forwarded metadata remains under E-10.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T030048.061014Z"
+  }
+]

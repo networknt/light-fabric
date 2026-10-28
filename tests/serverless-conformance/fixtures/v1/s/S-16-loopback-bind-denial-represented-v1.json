@@ -1,0 +1,140 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {},
+  "tokens": {},
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "substitutions": [],
+  "id": "S-16-loopback-bind-denial-represented-v1",
+  "title": "Original nonempty-password Basic LDAP bind rejected by owned loopback",
+  "ledger": [
+    "S-16",
+    "C-10"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only",
+      "light-lambda.accountId": "000000000000",
+      "light-lambda.apiId": "test-only",
+      "light-lambda.domainName": "test.example",
+      "light-lambda.resourceId": "test-only"
+    },
+    "files": {
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.security.BasicAuthMiddleware@basic"
+        ],
+        "chains": {
+          "request": [
+            "basic"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      },
+      "basic-auth": {
+        "enabled": true,
+        "enableAD": true,
+        "allowAnonymous": false,
+        "allowBearerToken": false,
+        "users": [
+          {
+            "username": "test-user",
+            "paths": [
+              "/x"
+            ]
+          }
+        ]
+      },
+      "ldap": {
+        "uri": "${dependency:ldap}",
+        "principal": "cn=test-only",
+        "credential": "test-only-password",
+        "searchBase": "dc=test-only",
+        "searchFilter": "(uid=%s)",
+        "connectTimeoutMs": 1000,
+        "readTimeoutMs": 1000
+      }
+    }
+  },
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "header:content-type",
+    "ldapBinds"
+  ],
+  "dependencies": {
+    "ldap": {
+      "bindResult": "invalidCredentials"
+    }
+  },
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "GET",
+    "path": "/x",
+    "headers": {
+      "Authorization": "Basic test-user:test-only-password"
+    },
+    "queryStringParameters": {},
+    "body": null,
+    "isBase64Encoded": false
+  },
+  "backend": [],
+  "expectJava": {
+    "outcome": "response",
+    "status": 401,
+    "headers": [
+      [
+        "Content-Type",
+        "application/json"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "{\"statusCode\":401,\"code\":\"ERR10047\",\"message\":\"INVALID_USERNAME_OR_PASSWORD\",\"description\":\"Invalid username or password for basic authentication\",\"severity\":\"ERROR\"}",
+    "bodyBase64": false,
+    "backendCalls": [],
+    "jwksFetches": 0,
+    "ldapBinds": 1
+  },
+  "expect": {
+    "outcome": "initError",
+    "code": "InvalidConfiguration",
+    "backendCalls": [],
+    "jwksFetches": 0,
+    "ldapBinds": 0
+  }
+}

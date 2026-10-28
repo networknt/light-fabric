@@ -1,0 +1,194 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "S-04-wrong-audience-multi-contract-v1",
+  "title": "Valid multimap ingress reaches wrong-audience denial without JWKS refresh",
+  "ledger": [
+    "S-04",
+    "S-13",
+    "E-06a"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "security": {
+        "enableVerifyJwt": true,
+        "enableVerifyScope": false,
+        "ignoreJwtExpiry": false,
+        "jwt": {
+          "clockSkewInSeconds": 0,
+          "keyResolver": "JsonWebKeySet",
+          "certificate": {}
+        },
+        "enableJwtCache": true,
+        "jwtCacheFullSize": 1000,
+        "bootstrapFromKeyService": true,
+        "logJwtToken": false,
+        "enableMockJwt": false,
+        "enableRelaxedKeyValidation": false
+      },
+      "client": {
+        "request": {
+          "connectTimeout": 1000,
+          "timeout": 1000,
+          "maxRequestRetry": 1
+        },
+        "tls": {
+          "loadKeyStore": false,
+          "loadTrustStore": false,
+          "verifyHostname": true
+        },
+        "oauth": {
+          "multipleAuthServers": false,
+          "token": {
+            "key": {
+              "server_url": "${dependency:jwks}",
+              "uri": "/jwks",
+              "enableHttp2": false,
+              "audience": "test-audience"
+            }
+          }
+        }
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.security.JwtVerifyMiddleware@h0"
+        ],
+        "chains": {
+          "request": [
+            "h0"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Runtime-signed tokens use process wall time; no deterministic gateway clock."
+  },
+  "keys": {
+    "k1": {
+      "alg": "RS256"
+    }
+  },
+  "tokens": {
+    "wrong-audience": {
+      "kid": "k1",
+      "claims": {
+        "sub": "test-user",
+        "iss": "test-issuer",
+        "aud": "wrong-audience",
+        "jti": "wrong-audience",
+        "client_id": "test-client",
+        "user_id": "test-user"
+      },
+      "issuedOffsetSec": -10,
+      "expOffsetSec": 600,
+      "nbfOffsetSec": 0
+    }
+  },
+  "dependencies": {
+    "jwks": {
+      "publishedKeys": [
+        "k1"
+      ]
+    }
+  },
+  "headerMode": "multi",
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "GET",
+    "path": "/x",
+    "headers": {
+      "AUTHORIZATION": "Bearer ${token:wrong-audience}"
+    },
+    "queryStringParameters": {},
+    "body": null,
+    "isBase64Encoded": false,
+    "multiValueHeaders": {
+      "authorization": [
+        "Bearer ${token:wrong-audience}"
+      ]
+    },
+    "multiValueQueryStringParameters": {}
+  },
+  "backend": [],
+  "expectJava": {
+    "status": 401,
+    "headers": [
+      [
+        "Content-Type",
+        "application/json"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "{\"statusCode\":401,\"code\":\"ERR10000\",\"message\":\"INVALID_AUTH_TOKEN\",\"description\":\"Incorrect signature or malformed token in authorization header\",\"severity\":\"ERROR\"}",
+    "bodyBase64": false,
+    "backendCalls": [],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "expect": {
+    "status": 401,
+    "headers": [
+      [
+        "content-type",
+        "application/json"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "{\"statusCode\":401,\"code\":\"ERR10000\",\"message\":\"INVALID_AUTH_TOKEN\",\"description\":\"Incorrect signature or malformed token in authorization header\",\"severity\":\"ERROR\"}",
+    "bodyBase64": false,
+    "backendCalls": [],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "substitutions": [
+    {
+      "pointer": "/rawEvent/headers/AUTHORIZATION",
+      "recipe": "token:wrong-audience"
+    },
+    {
+      "pointer": "/rawEvent/multiValueHeaders/authorization/0",
+      "recipe": "token:wrong-audience"
+    }
+  ],
+  "differences": [
+    "header:content-type"
+  ],
+  "loopbackJwksPrerequisite": "synthetic-jks-client-v1",
+  "jwtCachePrerequisite": "caffeine-jwt-jwk-v1"
+}

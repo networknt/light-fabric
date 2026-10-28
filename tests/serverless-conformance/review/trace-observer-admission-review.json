@@ -1,0 +1,15 @@
+[
+  {
+    "fixture": "Q-01-trace-effects-observed-v1",
+    "source": null,
+    "javaBehaviorAsserted": [
+      "Q-01"
+    ],
+    "proposedRustBehaviorReached": [
+      "CFG-04"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Independent source assertion: TraceabilityMiddleware uses MapUtil.getValueIgnoreCase, MDC tid and TRACEABILITY_ATTACHMENT_KEY. Test-only response observer exposes both exact values. Original mixed-case HeaderTraceTest confirms tid. No MDC reset or new ID generation. Explicit synthetic plugin causes proposed Rust Init rejection, so no Rust traceability credit.",
+    "validation": "passed focused separate-JVM workflow 20261011T011338.492302Z; result schema exit 0; isolation passed"
+  }
+]

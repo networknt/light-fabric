@@ -587,16 +587,18 @@ where
     tracing_subscriber::fmt::layer().json().with_ansi(false)
 }
 
+type JsonFileLayer<S> = tracing_subscriber::fmt::Layer<
+    S,
+    tracing_subscriber::fmt::format::JsonFields,
+    tracing_subscriber::fmt::format::Format<tracing_subscriber::fmt::format::Json>,
+    tracing_appender::non_blocking::NonBlocking,
+>;
+
 fn json_file_layer<S>(
     config: JsonFileConfig,
 ) -> Result<
     (
-        tracing_subscriber::fmt::Layer<
-            S,
-            tracing_subscriber::fmt::format::JsonFields,
-            tracing_subscriber::fmt::format::Format<tracing_subscriber::fmt::format::Json>,
-            tracing_appender::non_blocking::NonBlocking,
-        >,
+        JsonFileLayer<S>,
         tracing_appender::non_blocking::WorkerGuard,
     ),
     TracingInitError,

@@ -1,0 +1,32 @@
+{
+  "schema": "light-lambda-declaration-reviews/v1",
+  "reviews": [
+    {
+      "id": "H-04-transport-refused-enabled-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/h/H-04-transport-refused-enabled-contract-v1.json",
+      "fixtureDigest": "c4e6c67bf6cdcdf487b21b6a84030e625ff7f5643200321dbf6363dd0f4e5aa5",
+      "fixtureBytesSha256": "ee42a77005e32854ca49fccdac4d3ab59537ae42ce0cdf1c19f380b1ecac2780",
+      "originalDeclared": [
+        "header:content-type"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "authority": "Explicit-activation version of original H-04. Original paired Java/Rust expectations retained verbatim, including literal header-name case required by native assertions. Existing comparison rules fold HTTP header names, so both original expectations require the same application/json header; removal is re-proved from unchanged expected fields, not observed Rust output."
+    },
+    {
+      "id": "S-06-secondary-forged-read-claims-multi-contract-v1",
+      "fixture": "tests/serverless-conformance/fixtures/v1/s/S-06-secondary-forged-read-claims-multi-contract-v1.json",
+      "fixtureDigest": "2cfd42d0a4b81c27e1bd691905d02501559dcaf7e28014e52b692dd69b0e21d0",
+      "fixtureBytesSha256": "74f16009a9d201ab1f7a859de5126a8364b420aa155e3a93298983d2ca67c7ce",
+      "originalDeclared": [
+        "header:content-type",
+        "jwksFetches"
+      ],
+      "remove": [
+        "header:content-type"
+      ],
+      "authority": "After approved diagnostic repair both original Java and Rust expectations still require application/json. Existing case-insensitive HTTP-header comparison; original equality is re-proved. Keep jwksFetches difference unchanged."
+    }
+  ]
+}

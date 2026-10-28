@@ -1,0 +1,20 @@
+[
+  {
+    "fixture": "S-04-wrong-audience-multi-contract-v1",
+    "source": "Reviewed ERR10000 and resolved JwtVerifier source validation order lines279-294",
+    "javaBehaviorAsserted": [
+      "S-04",
+      "S-13"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-04",
+      "S-13"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Valid ALB multimap and shared configured audience reach incorrect-audience rejection before key resolution. Exact401, zero dispatch, zero JWKS calls asserted. Correct issuer isolates audience. Existing JKS rejection remains. Exact reviewed native cache configuration moved to closed approved cache prerequisite, shared TLS settings to supported Rust map plus named Java infrastructure prerequisite. No provider routing, issuer validation or rotation claim. Init/bootstrap fetches now asserted separately from per-request fetches. Failed-refresh cooldown fixture explicitly disables bootstrap so first request establishes the failed attempt, rather than inheriting Init cooldown. Prior revisions retained.",
+    "remainingContractAssertions": [
+      "Provider and normalized service-id routing, accepted audiences and multiple providers; refresh trigger matrix"
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T043042.345473Z"
+  }
+]

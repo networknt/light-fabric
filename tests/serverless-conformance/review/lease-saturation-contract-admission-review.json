@@ -1,0 +1,20 @@
+[
+  {
+    "fixture": "D-08c-blocking-capacity-two-callers-multi-contract-v1",
+    "javaRun": "20261011T135102.947395Z",
+    "javaBehaviorAsserted": [
+      "D-08c",
+      "D-08",
+      "D-08b"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-08c",
+      "D-08",
+      "D-08b"
+    ],
+    "review": "Two identical shared requests; second starts only after actual first probe STARTED publication while sole capacity-one permit is held. Java second response-stage exception is recorded by actual ChainExecutor but existing business response stays200. Exactly two backend calls, only one work started/completed, zero active after actual return. Rust both504 and actual held-at-response/returned-afterward/one discarded late result authored. No fabricated Rust concurrency execution.",
+    "rustExecutionEvidence": null,
+    "source": "Approved closed capacity-one lease prerequisite and direct Java source review",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T135102.947395Z"
+  }
+]

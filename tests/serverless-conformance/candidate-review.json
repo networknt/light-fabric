@@ -1,0 +1,1017 @@
+[
+  {
+    "id": "B-02-denied-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/B-02-denied-cp1-e02-accepted.json",
+    "sourceSha256": "8c4810830f1f5b2fd7bf6d018490e83d5f99c3ccfd74826722cec2ea2e95a172",
+    "ledger": [
+      "B-02",
+      "C-09",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "B-02",
+      "C-09",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "B-02-preflight-dispatch-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/B-02-preflight-dispatch-cp1-e02-accepted.json",
+    "sourceSha256": "b6ced0d9192de66f3e9946ad57396e36c74a84c96202449c2aa6912b81de2720",
+    "ledger": [
+      "B-02",
+      "C-04",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "B-02",
+      "C-04",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "B-03-exact-origin-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/B-03-exact-origin-cp1-e02-accepted.json",
+    "sourceSha256": "8de80bccd2e747817a8efa31d63e6de9f0b6c5dcf70b0811352e15d3efd7990c",
+    "ledger": [
+      "B-03",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "B-03",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "B-04-header-prefix-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/B-04-header-prefix-cp1-e02-accepted.json",
+    "sourceSha256": "7ef1375ad96476ae676b9ffb6c24e0e91363731e06b4ac3359ec0d9342456d5c",
+    "ledger": [
+      "B-04",
+      "B-05",
+      "Q-01",
+      "Q-02",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "B-04",
+      "B-05",
+      "Q-01",
+      "Q-02",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "B-05-null-response-headers-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/B-05-null-response-headers-cp1-e02-accepted.json",
+    "sourceSha256": "29448c9be0a4269a3688a3c1d6a4addc3d94644ae029595a842146917f29fd57",
+    "ledger": [
+      "B-05",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "B-05",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "C-01-isolation-a-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/C-01-isolation-a-cp1-e02-accepted.json",
+    "sourceSha256": "be5097a9e2ec991245deeef42422021f85f44e81fd9b3eeac06c8c90ec890f26",
+    "ledger": [
+      "C-01",
+      "CFG-05",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "C-01",
+      "CFG-05",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "C-01-isolation-b-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/C-01-isolation-b-cp1-e02-accepted.json",
+    "sourceSha256": "9705e11f36053b59e0baccce411015424a86c12f6e021693ced7cb75f1bcd9bb",
+    "ledger": [
+      "C-01",
+      "CFG-05",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "C-01",
+      "CFG-05",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "C-06-body-on-0-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/C-06-body-on-0-cp1-e02-accepted.json",
+    "sourceSha256": "9843e55d828b183833e9674ab1d17a7c3c7f687ea15e67adb807ceb4f454d95e",
+    "ledger": [
+      "C-06",
+      "E-03",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "C-06",
+      "E-03",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "D-03-handled-proxy-payload-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/D-03-handled-proxy-payload-cp1-e02-accepted.json",
+    "sourceSha256": "0035bbedcf3dddebe837100180db365c2ca6a95d0417c7a36bc9461289336316",
+    "ledger": [
+      "D-03",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "D-03",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "D-06-coerced-response-fields-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/D-06-coerced-response-fields-cp1-e02-accepted.json",
+    "sourceSha256": "66fc08c79f0f1341cf2e5c8af7401267b93e9d398a3df309173c8190e76b04ca",
+    "ledger": [
+      "D-06",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "D-06",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "D-09-oversize-response-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/D-09-oversize-response-cp1-e02-accepted.json",
+    "sourceSha256": "725dc0d1b5d6def667bbd60d8db14ea150bc3fb0c3e18a2e3773707085c20c9f",
+    "ledger": [
+      "D-09",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "D-09",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "E-02a-overlap-casing-conflicts-cookies-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/E-02a-overlap-casing-conflicts-cookies-cp1-e02-accepted.json",
+    "sourceSha256": "1f1fff4fef9e330121c7871abcc3460bf53e630a9cf2a40ca829c0f8a9cd3e66",
+    "ledger": [
+      "E-02a"
+    ],
+    "relatedWP2Ledger": [
+      "E-02a"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "E-03-response-off-0-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/E-03-response-off-0-cp1-e02-accepted.json",
+    "sourceSha256": "5c2bf4603d9d38e866933ca836b15c6d19e720d50191cb23a2f9376c494da2b8",
+    "ledger": [
+      "E-03",
+      "E-12",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "E-03",
+      "E-12",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "E-03-response-off-1-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/E-03-response-off-1-cp1-e02-accepted.json",
+    "sourceSha256": "694c5ad43e4be2751dcf7a284d5cc55ee956fa25c35c055b4a99c7ec655ab63b",
+    "ledger": [
+      "E-03",
+      "E-12",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "E-03",
+      "E-12",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "E-03-response-off-2-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/E-03-response-off-2-cp1-e02-accepted.json",
+    "sourceSha256": "407ccad4002081ca41f1cab2252eb0d8ac96ba9242d23a9be3fbb77c7854a62f",
+    "ledger": [
+      "E-03",
+      "E-12",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "E-03",
+      "E-12",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "E-03-response-off-3-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/E-03-response-off-3-cp1-e02-accepted.json",
+    "sourceSha256": "2fd5d80ce034562c4912d39e83664a9bfc8856c1e6390786dc9c8ae61ea5faa2",
+    "ledger": [
+      "E-03",
+      "E-12",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "E-03",
+      "E-12",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "E-05-raw-path-0-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/E-05-raw-path-0-cp1-e02-accepted.json",
+    "sourceSha256": "312dafa8346942c4aeacca5be12d1850e19a14877f57e3d7632468c6b4c78be4",
+    "ledger": [
+      "E-05",
+      "E-04",
+      "R-03",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "E-05",
+      "E-04",
+      "R-03",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "E-05-raw-path-1-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/E-05-raw-path-1-cp1-e02-accepted.json",
+    "sourceSha256": "11722acf7be4d0acada5db5beeb24f194a761c8933f9d0a77b05779bffb80e04",
+    "ledger": [
+      "E-05",
+      "E-04",
+      "R-03",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "E-05",
+      "E-04",
+      "R-03",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "E-05-raw-path-2-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/E-05-raw-path-2-cp1-e02-accepted.json",
+    "sourceSha256": "fd7c484f805073718b41cbf33ecc4eb0d500adaa7192925b219e54a274067dcf",
+    "ledger": [
+      "E-05",
+      "E-04",
+      "R-03",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "E-05",
+      "E-04",
+      "R-03",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "E-05-raw-path-3-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/E-05-raw-path-3-cp1-e02-accepted.json",
+    "sourceSha256": "6f3d8b914bd55f5edcb93f554f140820aeab12c46e6024722962b4b4780317a0",
+    "ledger": [
+      "E-05",
+      "E-04",
+      "R-03",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "E-05",
+      "E-04",
+      "R-03",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "E-10-mapped-metadata-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/E-10-mapped-metadata-cp1-e02-accepted.json",
+    "sourceSha256": "2fda991aeee6d8f9a6be25ac794b608846f06b18727c287837ecce3692de7f9e",
+    "ledger": [
+      "E-07",
+      "E-09",
+      "E-10",
+      "E-10a",
+      "E-10b",
+      "E-10c",
+      "E-10d",
+      "E-10e",
+      "E-10f",
+      "E-10g",
+      "E-10h",
+      "E-11",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "E-07",
+      "E-09",
+      "E-10",
+      "E-10a",
+      "E-10b",
+      "E-10c",
+      "E-10d",
+      "E-10e",
+      "E-10f",
+      "E-10g",
+      "E-10h",
+      "E-11",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "E-12-body-absent-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/E-12-body-absent-cp1-e02-accepted.json",
+    "sourceSha256": "8e750d5e86ee29fd0937e91403915e9dab3bce0d4b1045325de9596c7938832d",
+    "ledger": [
+      "E-12",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "E-12",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "E-12-response-body-absent-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/E-12-response-body-absent-cp1-e02-accepted.json",
+    "sourceSha256": "0e925ee67ca3f36c6347d10c7fa1867458863f8bec70c735716b96175f191c93",
+    "ledger": [
+      "E-12",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "E-12",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "E-14-invalid-base64-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/E-14-invalid-base64-cp1-e02-accepted.json",
+    "sourceSha256": "483a6ad15f54ac75d8e504f9a407b86b87b06833c652e202001dbcde0dbb804c",
+    "ledger": [
+      "E-14",
+      "E-03",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "E-14",
+      "E-03",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "L-01-address-fallback-counter-recreated-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/L-01-address-fallback-counter-recreated-cp1-e02-accepted.json",
+    "sourceSha256": "2630f9445daa16d774122545845dc6e05e3022ede4cec20126583decea1c12bf",
+    "ledger": [
+      "L-01",
+      "L-02",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "L-01",
+      "L-02",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "L-02-alb-address-fail-open-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/L-02-alb-address-fail-open-cp1-e02-accepted.json",
+    "sourceSha256": "407642488f5e8bed577566182d2377d15aba02be4ea557c1a134850cc1f3c9db",
+    "ledger": [
+      "L-02",
+      "E-11",
+      "C-04",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "L-02",
+      "E-11",
+      "C-04",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "M-03-influx-null-status-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/M-03-influx-null-status-cp1-e02-accepted.json",
+    "sourceSha256": "794c0e7e5da45845fb447c0b1d11a667f4e00556536a7638b58c98abdb5661f7",
+    "ledger": [
+      "M-03",
+      "C-04"
+    ],
+    "relatedWP2Ledger": [
+      "M-01",
+      "M-03",
+      "C-04"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "Q-02-generated-null-map-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/Q-02-generated-null-map-cp1-e02-accepted.json",
+    "sourceSha256": "208f44a6199078d5680016f73fdca76ae3197c2782747b093d3d3868f3974cff",
+    "ledger": [
+      "Q-02",
+      "Q-01",
+      "B-04",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "Q-02",
+      "Q-01",
+      "B-04",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "S-07-basic-success-0-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/S-07-basic-success-0-cp1-e02-accepted.json",
+    "sourceSha256": "a8c17cd22c4ebe858c028d9c5e66509bbdb01f1fb1733a52cddef37947ad433a",
+    "ledger": [
+      "S-07",
+      "E-06",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "S-07",
+      "E-06",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "S-07-basic-success-1-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/S-07-basic-success-1-cp1-e02-accepted.json",
+    "sourceSha256": "10fc2456cd38d8cd9156df8eb4bc59b0a12cc6de195449da02eeafd567ff0fe6",
+    "ledger": [
+      "S-07",
+      "E-06",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "S-07",
+      "E-06",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "S-08-basic-denial-0-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/S-08-basic-denial-0-cp1-e02-accepted.json",
+    "sourceSha256": "4ea655ee3970c49672bc76d762edb6187fcb9a932d5867ea6ea0ebb3a1e92a74",
+    "ledger": [
+      "C-02",
+      "C-05",
+      "C-09",
+      "S-07",
+      "S-08",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "C-02",
+      "C-05",
+      "C-09",
+      "S-07",
+      "S-08",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "S-08-basic-denial-1-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/S-08-basic-denial-1-cp1-e02-accepted.json",
+    "sourceSha256": "0036df9938e2deb2d95c2b6f97f2e7797ef5c2b74049a3829ffbad134fb1ccf4",
+    "ledger": [
+      "C-02",
+      "C-05",
+      "C-09",
+      "S-07",
+      "S-08",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "C-02",
+      "C-05",
+      "C-09",
+      "S-07",
+      "S-08",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "S-08-basic-denial-2-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/S-08-basic-denial-2-cp1-e02-accepted.json",
+    "sourceSha256": "8f5279675ad3927984d7636c2ddb391ffecf9ae999a4df493be77647cd016202",
+    "ledger": [
+      "C-02",
+      "C-05",
+      "C-09",
+      "S-07",
+      "S-08",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "C-02",
+      "C-05",
+      "C-09",
+      "S-07",
+      "S-08",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "S-08-basic-denial-3-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/S-08-basic-denial-3-cp1-e02-accepted.json",
+    "sourceSha256": "0719ce1c5313cc810fefa162c1e845cfb0e3d37a6198f1b343a7b199be06cb25",
+    "ledger": [
+      "C-02",
+      "C-05",
+      "C-09",
+      "S-07",
+      "S-08",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "C-02",
+      "C-05",
+      "C-09",
+      "S-07",
+      "S-08",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "S-08-basic-denial-4-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/S-08-basic-denial-4-cp1-e02-accepted.json",
+    "sourceSha256": "522724d38b85cdb4e220fa019897454d1f5f2d9c3bfbad0d533dd228f5f648f7",
+    "ledger": [
+      "C-02",
+      "C-05",
+      "C-09",
+      "S-07",
+      "S-08",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "C-02",
+      "C-05",
+      "C-09",
+      "S-07",
+      "S-08",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "S-08-basic-denial-5-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/S-08-basic-denial-5-cp1-e02-accepted.json",
+    "sourceSha256": "184c15280d565417bc6c0a0a1b9593ad8689a6c8f4a959f16c01765df8c69254",
+    "ledger": [
+      "C-02",
+      "C-05",
+      "C-09",
+      "S-07",
+      "S-08",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "C-02",
+      "C-05",
+      "C-09",
+      "S-07",
+      "S-08",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "S-08-basic-denial-6-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/S-08-basic-denial-6-cp1-e02-accepted.json",
+    "sourceSha256": "a418883abcb273513a5430225d441c14ac10dae772978ad085850a25fc4cfedb",
+    "ledger": [
+      "C-02",
+      "C-05",
+      "C-09",
+      "S-07",
+      "S-08",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "C-02",
+      "C-05",
+      "C-09",
+      "S-07",
+      "S-08",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "S-09-anonymous-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/S-09-anonymous-cp1-e02-accepted.json",
+    "sourceSha256": "58c52d9e4197b6d83768dc1e4cdcd9b17f59c6911259d9a7896fe7681ee7834c",
+    "ledger": [
+      "S-09",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "S-09",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "S-09-anonymous-denied-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/S-09-anonymous-denied-cp1-e02-accepted.json",
+    "sourceSha256": "08ba2f9611e7e91be18307863529f566cd44956b31fcb94cdc5288772a540e75",
+    "ledger": [
+      "S-09",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "S-09",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "S-10-bearer-policy-only-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/S-10-bearer-policy-only-cp1-e02-accepted.json",
+    "sourceSha256": "0ea3608bfc6731a9f088e7fd7897dbbf3916dff0c3faf614287dcf3b0b3a2a70",
+    "ledger": [
+      "S-10",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "S-10",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "S-11-key-0-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/S-11-key-0-cp1-e02-accepted.json",
+    "sourceSha256": "c4657d39a161cbc32639f5d4bf62c4b1bf62af6cb69bc738b8059afbe60eeeb8",
+    "ledger": [
+      "S-11",
+      "E-06",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "S-11",
+      "E-06",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "S-11-key-1-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/S-11-key-1-cp1-e02-accepted.json",
+    "sourceSha256": "5555367248ed3736f799599a8ee696e2aff0dd9f7debe5f421d544f727c1b2eb",
+    "ledger": [
+      "S-11",
+      "E-06",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "S-11",
+      "E-06",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "S-11-key-2-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/S-11-key-2-cp1-e02-accepted.json",
+    "sourceSha256": "07684129c79cd93b793bd51438fb5460b839b8eb114c1eba64867e8bcd151319",
+    "ledger": [
+      "S-11",
+      "E-06",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "S-11",
+      "E-06",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "S-11-unmatched-prefix-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/S-11-unmatched-prefix-cp1-e02-accepted.json",
+    "sourceSha256": "896519f082899099dbcc071801de06da8367b224839065d9d5eb3d153ca9297d",
+    "ledger": [
+      "S-11",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "S-11",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "V-01-spec-denial-0-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/V-01-spec-denial-0-cp1-e02-accepted.json",
+    "sourceSha256": "c698cd693c1fea686a8e2c7761aa0427d8aaf8de4d39276aab4fa153b3b5fa5f",
+    "ledger": [
+      "V-01",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "V-01",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "V-01-spec-denial-1-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/V-01-spec-denial-1-cp1-e02-accepted.json",
+    "sourceSha256": "97c4c59580e74b4006d030513307c8264a3d213dc2cc983d4a568ab36233a995",
+    "ledger": [
+      "V-01",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "V-01",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "V-02-body-edge-0-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/V-02-body-edge-0-cp1-e02-accepted.json",
+    "sourceSha256": "1d8626f1ad4882045e7b6c0b35e15914de4095306c3e68282ad718e878ec6b86",
+    "ledger": [
+      "V-02",
+      "E-12",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "V-02",
+      "E-12",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "V-02-body-edge-1-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/V-02-body-edge-1-cp1-e02-accepted.json",
+    "sourceSha256": "0ae21e1720135a94c4f8fce3e5d4442c7d8cb8921bd423e7e4d9adbabe8ef012",
+    "ledger": [
+      "V-02",
+      "E-12",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "V-02",
+      "E-12",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "V-02-body-edge-2-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/V-02-body-edge-2-cp1-e02-accepted.json",
+    "sourceSha256": "0a26590121fffb698f05ff7e062638ac141c13846749e38668adabfc396ee308",
+    "ledger": [
+      "V-02",
+      "E-12",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "V-02",
+      "E-12",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "V-02-nullable-enabled-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/V-02-nullable-enabled-cp1-e02-accepted.json",
+    "sourceSha256": "f7f53ab670aa134dbef36bc3b99be2b92322115911e83184997bbb3a95e9b9d6",
+    "ledger": [
+      "V-02",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "V-02",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "V-02-nullable-skip-0-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/V-02-nullable-skip-0-cp1-e02-accepted.json",
+    "sourceSha256": "09273783f1399b1224db837a096a8bf84b9284f22310d189c12f459d5b760b5d",
+    "ledger": [
+      "V-02",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "V-02",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "V-02-nullable-skip-1-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/V-02-nullable-skip-1-cp1-e02-accepted.json",
+    "sourceSha256": "e6b1c89d02ec81abcf57849a927c8fd28afd460fb6fce43ffcaf7b67d3904c6d",
+    "ledger": [
+      "V-02",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "V-02",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "V-02-parameters-0-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/V-02-parameters-0-cp1-e02-accepted.json",
+    "sourceSha256": "6fa66ce5a22faecc67be6d955e2b54186b7f1d61ea7ecf5c513bf39acc34c887",
+    "ledger": [
+      "V-02",
+      "V-01",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "V-02",
+      "V-01",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "V-02-parameters-1-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/V-02-parameters-1-cp1-e02-accepted.json",
+    "sourceSha256": "cc9bfcc3fef76e7be6f689c410561e12e5acff9c6d79c707ce14bd5671fb113d",
+    "ledger": [
+      "V-02",
+      "V-01",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "V-02",
+      "V-01",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "V-02-parameters-2-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/V-02-parameters-2-cp1-e02-accepted.json",
+    "sourceSha256": "157bec10767ba363426d64438d4992095e385e9df81911199084deee5239bd70",
+    "ledger": [
+      "V-02",
+      "V-01",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "V-02",
+      "V-01",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "V-02-parameters-3-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/V-02-parameters-3-cp1-e02-accepted.json",
+    "sourceSha256": "0d625f8eb4c1cecd2640a3b0ba85600e104a57f0275fc9196d5aef7dea9c01c0",
+    "ledger": [
+      "V-02",
+      "V-01",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "V-02",
+      "V-01",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "V-02-valid-json-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/V-02-valid-json-cp1-e02-accepted.json",
+    "sourceSha256": "66c56ff7119d21802ebca6946e8fd207a4d7b1e7335dcd733994137afe83e3fe",
+    "ledger": [
+      "V-01",
+      "V-02",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "V-01",
+      "V-02",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "V-03-body-edge-0-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/V-03-body-edge-0-cp1-e02-accepted.json",
+    "sourceSha256": "697979655201c5c3b62efd35b0c96edd0c24898eefc53bf6a081927d94b07b93",
+    "ledger": [
+      "V-03",
+      "E-03",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "V-03",
+      "E-03",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "V-03-body-edge-1-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/V-03-body-edge-1-cp1-e02-accepted.json",
+    "sourceSha256": "8eeb02a6e0d62ae65acc56cbf884a1c8792ec0a173af825df0a8c4e464bef114",
+    "ledger": [
+      "V-03",
+      "E-03",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "V-03",
+      "E-03",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "V-03-body-edge-2-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/V-03-body-edge-2-cp1-e02-accepted.json",
+    "sourceSha256": "15e62624750264733d1737cb126d5e92124894bd6679deec95169a2fde869a0f",
+    "ledger": [
+      "V-03",
+      "E-03",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "V-03",
+      "E-03",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  },
+  {
+    "id": "V-03-json-object-cp1-e02-accepted",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-candidates/V-03-json-object-cp1-e02-accepted.json",
+    "sourceSha256": "9e8168e14c535720ed3bb5f400d4676f339739681e6b3276756c5d7cfdc7abc9",
+    "ledger": [
+      "V-03",
+      "E-13"
+    ],
+    "relatedWP2Ledger": [
+      "V-03",
+      "E-13"
+    ],
+    "decision": "Retain exact WP2 Java assertions; retain separately authored CP1 Rust assertions. Relative wall clock replaces unexercised epoch. E-13 single-mode rejection does not prove Rust policy behavior. No assertions generated from runner outputs."
+  }
+]

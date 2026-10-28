@@ -1,0 +1,33 @@
+[
+  {
+    "fixture": "V-02-body-edges-multi-contract-v1",
+    "source": "V-02-body-edge-2-cp1-e02-accepted; RequestValidator.validateRequest treats absent single Content-Type as JSON and skips null body before required check",
+    "javaBehaviorAsserted": [
+      "V-02",
+      "C-02",
+      "C-05"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-02",
+      "C-02",
+      "C-05",
+      "E-06a"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "WP2 reviewed exact null/empty/schema-error and successful JSON assertions retained. Authored shared raw multimap variant; no per-runner transformation. Rust preserves approved Java null-body early skip, exact error bytes and zero Invoke on rejection; metadata/map changes only under E-10 and casing under E-06a. Java empty pathParameters and Rust null when empty remain distinct.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T021519.703056Z"
+  },
+  {
+    "fixture": "V-02-valid-json-multi-contract-v1",
+    "source": "V-02-valid-json-cp1-e02-accepted; RequestValidator.validateRequest treats absent single Content-Type as JSON and skips null body before required check",
+    "javaBehaviorAsserted": [
+      "V-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "V-02"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "WP2 reviewed exact null/empty/schema-error and successful JSON assertions retained. Authored shared raw multimap variant; no per-runner transformation. Rust preserves approved Java null-body early skip, exact error bytes and zero Invoke on rejection; metadata/map changes only under E-10 and casing under E-06a. Java empty pathParameters and Rust null when empty remain distinct.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T021519.703056Z"
+  }
+]

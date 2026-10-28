@@ -1,0 +1,20 @@
+[
+  {
+    "fixture": "S-13a-failed-refresh-cooldown-multi-contract-v1",
+    "source": "Approved shared JWKS prerequisite and S-13a cooldown contract",
+    "javaBehaviorAsserted": [
+      "S-13",
+      "S-13a"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-13",
+      "S-13a"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Two exact unknown-kid401 requests in one initialized gateway. Java refreshes each; authored Rust refreshes first then suppresses second within30sec cooldown. Actual loopback Java requests asserted. This covers failed attempt cooldown only; normalized service sets, success/cancellation cooldown, starter-drop and caller deadlines remain open. Init/bootstrap fetches now asserted separately from per-request fetches. Failed-refresh cooldown fixture explicitly disables bootstrap so first request establishes the failed attempt, rather than inheriting Init cooldown. Prior revisions retained.",
+    "remainingContractAssertions": [
+      "Normalized service-id sets and trigger filtering; success/cancellation cooldown; starter-drop and caller deadlines"
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T043042.345473Z"
+  }
+]

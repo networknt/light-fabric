@@ -1,0 +1,277 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "T-01-caught-native-cel-rule-error-multi-contract-v1",
+  "title": "Request transformer catches native/CEL engine failure and preserves dispatch",
+  "ledger": [
+    "T-01",
+    "T-02",
+    "E-10"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.transformer.RequestTransformerMiddleware@request0"
+        ],
+        "chains": {
+          "request": [
+            "request0"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      },
+      "request-transformer": {
+        "enabled": true,
+        "appliedPathPrefixes": [
+          "/x"
+        ]
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "No virtual deadline or elapsed-time equality; exact observed rule result is asserted."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "backendCalls"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "test-rule": "throw"
+        },
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false,
+        "multiValueHeaders": {
+          "test-rule": [
+            "throw"
+          ]
+        },
+        "multiValueQueryStringParameters": {}
+      },
+      "backend": [
+        {
+          "match": {
+            "target": "FnX"
+          },
+          "respond": {
+            "functionError": null,
+            "payload": {
+              "statusCode": 200,
+              "headers": {
+                "x-backend": "synthetic"
+              },
+              "body": "ok",
+              "isBase64Encoded": false
+            }
+          }
+        }
+      ],
+      "expectJava": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "POST",
+              "headers": {
+                "test-rule": "throw"
+              },
+              "queryStringParameters": {},
+              "requestContext": {},
+              "isBase64Encoded": false,
+              "multiValueHeaders": {
+                "test-rule": [
+                  "throw"
+                ]
+              },
+              "multiValueQueryStringParameters": {}
+            },
+            "eventExact": {
+              "headers": {
+                "test-rule": "throw"
+              },
+              "queryStringParameters": {},
+              "requestContext": {}
+            },
+            "eventAbsent": [
+              "/body"
+            ]
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response",
+        "ruleFailuresCaught": 1
+      },
+      "expect": {
+        "status": 200,
+        "headers": [
+          [
+            "x-backend",
+            "synthetic"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "ok",
+        "bodyBase64": false,
+        "backendCalls": [
+          {
+            "target": "FnX",
+            "event": {
+              "path": "/x",
+              "httpMethod": "POST",
+              "headers": {
+                "test-rule": "throw"
+              },
+              "queryStringParameters": null,
+              "requestContext": {
+                "stage": "test-only"
+              },
+              "isBase64Encoded": false,
+              "multiValueHeaders": {
+                "test-rule": [
+                  "throw"
+                ]
+              },
+              "multiValueQueryStringParameters": null,
+              "body": null,
+              "pathParameters": null
+            },
+            "eventExact": {
+              "headers": {
+                "test-rule": "throw"
+              },
+              "multiValueHeaders": {
+                "test-rule": [
+                  "throw"
+                ]
+              },
+              "queryStringParameters": null,
+              "multiValueQueryStringParameters": null,
+              "pathParameters": null
+            },
+            "eventAbsent": []
+          }
+        ],
+        "jwksFetches": 0,
+        "outcome": "response",
+        "ruleFailuresCaught": 1
+      },
+      "headerMode": "multi"
+    }
+  ],
+  "ruleFailureProbe": "caught-request-error-v1",
+  "ruleConfigurationPair": {
+    "java": {
+      "executor": "java-yaml-rule",
+      "rule": {
+        "endpointRules": {
+          "/x@post": {
+            "req-tra": [
+              "test-edge"
+            ]
+          }
+        },
+        "ruleBodies": {
+          "test-edge": {
+            "ruleId": "test-edge",
+            "ruleType": "req-tra",
+            "common": "Y",
+            "ruleName": "test-only-edge",
+            "conditions": [],
+            "actions": [
+              {
+                "actionId": "edge",
+                "actionClassName": "com.networknt.aws.lambda.characterization.RequestTransformEdgesTest$EdgeAction"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "rust": {
+      "executor": "light-rule-cel",
+      "rule": {
+        "endpointRules": {
+          "/x@post": {
+            "req-tra": [
+              "test-edge"
+            ]
+          }
+        },
+        "ruleBodies": {
+          "test-edge": {
+            "ruleId": "test-edge",
+            "ruleType": "req-tra",
+            "common": "Y",
+            "ruleName": "test-only-edge",
+            "actions": [
+              {
+                "actionId": "edge",
+                "actionRef": "request-body-literal",
+                "actionValues": {
+                  "body": "must-not-appear"
+                }
+              }
+            ],
+            "conditionLanguage": "cel",
+            "conditionSecurityProfile": "standard",
+            "expression": "int(requestHeaders['test-rule']) > 0"
+          }
+        }
+      }
+    }
+  }
+}

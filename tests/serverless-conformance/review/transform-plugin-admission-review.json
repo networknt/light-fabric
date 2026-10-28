@@ -1,0 +1,103 @@
+[
+  {
+    "fixture": "T-01-local-response-dispatch-selected-plugin-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/T-01-local-response-dispatch-cp1-e02-accepted.json",
+    "sourceSha256": "7bcf78a70287b0932dd5986f881fc90eaff72246c4a1d1e61fbefa1300c2eef4",
+    "review": "Exact source-recorded assertions retained, with explicit real proxy enablement matching WP2 CapturingProxy always-enabled behavior. Selected actionClassName binding is explicitly unsupported by CP1 T-03, hence one Rust Init rejection and nonexecuted steps. Java executes actual configured middleware and original WP2 public action plugin. No Rust transformer/downstream/deadline coverage claimed; slow case asserts returned body but does not claim a deadline measurement.",
+    "javaBehaviorAsserted": [
+      "T-01",
+      "C-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "T-03",
+      "CFG-04"
+    ],
+    "validation": "pending focused workflow",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "T-01-metadata-mutations-selected-plugin-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/T-01-metadata-mutations-cp1-e02-accepted.json",
+    "sourceSha256": "89bd488dc7e8d7f23f45c5ee47709055537ac3b6afa2fc71e76f04b2de01d28e",
+    "review": "Exact source-recorded assertions retained, with explicit real proxy enablement matching WP2 CapturingProxy always-enabled behavior. Selected actionClassName binding is explicitly unsupported by CP1 T-03, hence one Rust Init rejection and nonexecuted steps. Java executes actual configured middleware and original WP2 public action plugin. No Rust transformer/downstream/deadline coverage claimed; slow case asserts returned body but does not claim a deadline measurement.",
+    "javaBehaviorAsserted": [
+      "T-01",
+      "D-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "T-03",
+      "CFG-04"
+    ],
+    "validation": "pending focused workflow",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "T-01-validation-error-selected-plugin-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/T-01-validation-error-cp1-e02-accepted.json",
+    "sourceSha256": "801777680dc3108eeddb5fec64c9422ab21c04823c4843e68eb0305d49c686e7",
+    "review": "Exact source-recorded assertions retained, with explicit real proxy enablement matching WP2 CapturingProxy always-enabled behavior. Selected actionClassName binding is explicitly unsupported by CP1 T-03, hence one Rust Init rejection and nonexecuted steps. Java executes actual configured middleware and original WP2 public action plugin. No Rust transformer/downstream/deadline coverage claimed; slow case asserts returned body but does not claim a deadline measurement.",
+    "javaBehaviorAsserted": [
+      "T-01",
+      "C-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "T-03",
+      "CFG-04"
+    ],
+    "validation": "pending focused workflow",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "T-02-response-rule-exception-selected-plugin-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/T-02-response-rule-exception-cp1-e02-accepted.json",
+    "sourceSha256": "f7b2f1ac95c640864f3614f5cdad48d1dfb2a281321ce8366baa01551bb9580b",
+    "review": "Exact source-recorded assertions retained, with explicit real proxy enablement matching WP2 CapturingProxy always-enabled behavior. Selected actionClassName binding is explicitly unsupported by CP1 T-03, hence one Rust Init rejection and nonexecuted steps. Java executes actual configured middleware and original WP2 public action plugin. No Rust transformer/downstream/deadline coverage claimed; slow case asserts returned body but does not claim a deadline measurement.",
+    "javaBehaviorAsserted": [
+      "T-02",
+      "T-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "T-03",
+      "CFG-04"
+    ],
+    "validation": "pending focused workflow",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "T-04-slow-response-rule-selected-plugin-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/T-04-slow-response-rule-cp1-e02-accepted.json",
+    "sourceSha256": "fd60ef5de4259670163580207ed530b470bbb0fe01fb8f48435af8a3d6c79bf6",
+    "review": "Exact source-recorded assertions retained, with explicit real proxy enablement matching WP2 CapturingProxy always-enabled behavior. Selected actionClassName binding is explicitly unsupported by CP1 T-03, hence one Rust Init rejection and nonexecuted steps. Java executes actual configured middleware and original WP2 public action plugin. No Rust transformer/downstream/deadline coverage claimed; slow case asserts returned body but does not claim a deadline measurement.",
+    "javaBehaviorAsserted": [
+      "T-02",
+      "T-03",
+      "T-04",
+      "D-08b",
+      "D-08c",
+      "D-08d"
+    ],
+    "proposedRustBehaviorReached": [
+      "T-03",
+      "CFG-04"
+    ],
+    "validation": "pending focused workflow",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "T-02-request-header-input-selected-plugin-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/T-02-request-header-input-cp1-e02-accepted.json",
+    "sourceSha256": "259d8bd81daa3be689c2f13b0fc3004e9792cb1206c8ae1f3523a5450825113c",
+    "review": "Exact source-recorded assertions retained, with explicit real proxy enablement matching WP2 CapturingProxy always-enabled behavior. Selected actionClassName binding is explicitly unsupported by CP1 T-03, hence one Rust Init rejection and nonexecuted steps. Java executes actual configured middleware and original WP2 public action plugin. No Rust transformer/downstream/deadline coverage claimed; slow case asserts returned body but does not claim a deadline measurement.",
+    "javaBehaviorAsserted": [
+      "T-01",
+      "T-02",
+      "T-03"
+    ],
+    "proposedRustBehaviorReached": [
+      "T-03",
+      "CFG-04"
+    ],
+    "validation": "pending focused workflow",
+    "rustExecutionEvidence": null
+  }
+]

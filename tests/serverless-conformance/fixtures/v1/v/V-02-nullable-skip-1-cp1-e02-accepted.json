@@ -1,0 +1,229 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "V-02-nullable-skip-1-cp1-e02-accepted",
+  "title": "V-02-nullable-skip-1",
+  "ledger": [
+    "V-02",
+    "E-13"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only",
+      "light-lambda.accountId": "000000000000",
+      "light-lambda.apiId": "test-only",
+      "light-lambda.domainName": "test.example",
+      "light-lambda.resourceId": "test-only"
+    },
+    "files": {
+      "openapi": {
+        "openapi": "3.0.3",
+        "info": {
+          "title": "test-only-characterization",
+          "version": "1.0.0"
+        },
+        "paths": {
+          "/x": {
+            "post": {
+              "responses": {
+                "200": {
+                  "description": "synthetic response"
+                }
+              },
+              "requestBody": {
+                "required": true,
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "required": [
+                        "name"
+                      ],
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "nullable": true
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "/x/skip": {
+            "post": {
+              "responses": {
+                "200": {
+                  "description": "synthetic response"
+                }
+              },
+              "requestBody": {
+                "required": true,
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "required": [
+                        "name"
+                      ],
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "nullable": true
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "openapi-inject": {},
+      "openapi-handler": {
+        "enabled": true
+      },
+      "openapi-validator": {
+        "enabled": true,
+        "validateRequest": true,
+        "skipPathPrefixes": [
+          "/x/skip"
+        ]
+      },
+      "lambda-proxy": {
+        "functions": {
+          "/x@post": "FnX",
+          "/x/skip@post": "FnX"
+        },
+        "logType": "Tail",
+        "enabled": true
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware@h0",
+          "com.networknt.aws.lambda.handler.middleware.validator.ValidatorMiddleware@h1"
+        ],
+        "chains": {
+          "request": [
+            "h0",
+            "h1"
+          ],
+          "response": []
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {},
+  "tokens": {},
+  "headerMode": "single",
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "status",
+    "body",
+    "header:content-type",
+    "backendCalls",
+    "jwksFetches",
+    "header:x-backend"
+  ],
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "POST",
+    "path": "/x/skip",
+    "headers": {
+      "content-type": "application/json"
+    },
+    "queryStringParameters": {},
+    "body": "{\"name\":99}",
+    "isBase64Encoded": false
+  },
+  "backend": [
+    {
+      "match": {
+        "target": "FnX"
+      },
+      "respond": {
+        "functionError": null,
+        "payload": {
+          "statusCode": 200,
+          "headers": {
+            "x-backend": "synthetic"
+          },
+          "body": "ok",
+          "isBase64Encoded": false
+        }
+      }
+    }
+  ],
+  "expectJava": {
+    "status": 200,
+    "headers": [
+      [
+        "x-backend",
+        "synthetic"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "ok",
+    "bodyBase64": false,
+    "backendCalls": [
+      {
+        "target": "FnX",
+        "event": {
+          "path": "/x/skip",
+          "httpMethod": "POST",
+          "headers": {
+            "content-type": "application/json"
+          },
+          "queryStringParameters": {},
+          "pathParameters": {},
+          "requestContext": {},
+          "body": "{\"name\":99}",
+          "isBase64Encoded": false
+        }
+      }
+    ],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "expect": {
+    "status": 500,
+    "headers": [
+      [
+        "content-type",
+        "application/json"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "{\"statusCode\":500,\"code\":\"ERR14011\",\"message\":\"ALB_MULTI_VALUE_HEADERS_REQUIRED\",\"description\":\"The target group must enable multi-value headers.\",\"severity\":\"ERROR\"}",
+    "bodyBase64": false,
+    "backendCalls": [],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "substitutions": []
+}

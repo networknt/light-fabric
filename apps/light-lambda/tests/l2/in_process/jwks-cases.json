@@ -1,0 +1,200 @@
+[
+  {
+    "id": "initial-key-a",
+    "key": "A",
+    "publish": "A",
+    "status": 200,
+    "code": null,
+    "expectedInvokeTotal": 1,
+    "expectedJwksTotal": 1
+  },
+  {
+    "id": "rotate-unknown-kid-b",
+    "key": "B",
+    "publish": "B",
+    "status": 200,
+    "code": null,
+    "expectedInvokeTotal": 2,
+    "expectedJwksTotal": 2
+  },
+  {
+    "id": "jwks-http503",
+    "key": "C",
+    "publish": "503",
+    "status": 401,
+    "code": "ERR10000",
+    "expectedInvokeTotal": 2,
+    "expectedJwksTotal": 3
+  },
+  {
+    "id": "warm-cached-b-after503",
+    "key": "B",
+    "publish": null,
+    "status": 200,
+    "code": null,
+    "expectedInvokeTotal": 3,
+    "expectedJwksTotal": 3
+  },
+  {
+    "id": "recover-key-c",
+    "key": "C",
+    "publish": "C",
+    "status": 200,
+    "code": null,
+    "expectedInvokeTotal": 4,
+    "expectedJwksTotal": 4
+  },
+  {
+    "id": "reuse-key-c",
+    "key": "C",
+    "publish": null,
+    "status": 200,
+    "code": null,
+    "expectedInvokeTotal": 5,
+    "expectedJwksTotal": 4
+  },
+  {
+    "id": "jwks-malformed",
+    "key": "D",
+    "publish": "malformed",
+    "status": 401,
+    "code": "ERR10000",
+    "expectedInvokeTotal": 5,
+    "expectedJwksTotal": 5
+  },
+  {
+    "id": "warm-cached-c-after-malformed",
+    "key": "C",
+    "publish": null,
+    "status": 200,
+    "code": null,
+    "expectedInvokeTotal": 6,
+    "expectedJwksTotal": 5
+  },
+  {
+    "id": "recover-key-d",
+    "key": "D",
+    "publish": "D",
+    "status": 200,
+    "code": null,
+    "expectedInvokeTotal": 7,
+    "expectedJwksTotal": 6
+  },
+  {
+    "id": "reuse-key-d",
+    "key": "D",
+    "publish": null,
+    "status": 200,
+    "code": null,
+    "expectedInvokeTotal": 8,
+    "expectedJwksTotal": 6
+  },
+  {
+    "id": "jwks-empty",
+    "key": "E",
+    "publish": "empty",
+    "status": 401,
+    "code": "ERR10000",
+    "expectedInvokeTotal": 8,
+    "expectedJwksTotal": 7
+  },
+  {
+    "id": "warm-cached-d-after-empty",
+    "key": "D",
+    "publish": null,
+    "status": 200,
+    "code": null,
+    "expectedInvokeTotal": 9,
+    "expectedJwksTotal": 7
+  },
+  {
+    "id": "recover-key-e",
+    "key": "E",
+    "publish": "E",
+    "status": 200,
+    "code": null,
+    "expectedInvokeTotal": 10,
+    "expectedJwksTotal": 8
+  },
+  {
+    "id": "reuse-key-e",
+    "key": "E",
+    "publish": null,
+    "status": 200,
+    "code": null,
+    "expectedInvokeTotal": 11,
+    "expectedJwksTotal": 8
+  },
+  {
+    "id": "same-kid-rotation-e2",
+    "key": "E2",
+    "publish": "E2",
+    "status": 200,
+    "code": null,
+    "expectedInvokeTotal": 12,
+    "expectedJwksTotal": 9
+  },
+  {
+    "id": "reuse-key-e2",
+    "key": "E2",
+    "publish": null,
+    "status": 200,
+    "code": null,
+    "expectedInvokeTotal": 13,
+    "expectedJwksTotal": 9
+  },
+  {
+    "id": "known-key-wrong-issuer",
+    "key": "E2",
+    "publish": null,
+    "status": 401,
+    "code": "ERR10000",
+    "expectedInvokeTotal": 13,
+    "expectedJwksTotal": 9
+  },
+  {
+    "id": "warm-after-wrong-issuer",
+    "key": "E2",
+    "publish": null,
+    "status": 200,
+    "code": null,
+    "expectedInvokeTotal": 14,
+    "expectedJwksTotal": 9
+  },
+  {
+    "id": "known-key-invalid-signature",
+    "key": "E2",
+    "publish": null,
+    "status": 401,
+    "code": "ERR10000",
+    "expectedInvokeTotal": 14,
+    "expectedJwksTotal": 10
+  },
+  {
+    "id": "warm-after-bad-signature",
+    "key": "E2",
+    "publish": null,
+    "status": 200,
+    "code": null,
+    "expectedInvokeTotal": 15,
+    "expectedJwksTotal": 10
+  },
+  {
+    "id": "unknown-kid-absent-from-jwks",
+    "key": "Z",
+    "publish": null,
+    "status": 401,
+    "code": "ERR10000",
+    "expectedInvokeTotal": 15,
+    "expectedJwksTotal": 11
+  },
+  {
+    "id": "warm-after-unknown-kid",
+    "key": "E2",
+    "publish": null,
+    "status": 200,
+    "code": null,
+    "expectedInvokeTotal": 16,
+    "expectedJwksTotal": 11
+  }
+]

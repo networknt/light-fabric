@@ -260,6 +260,67 @@ Dropping it also removes cost and risk: no controller credential in the function
 - Flush essential telemetry within the invocation budget. A custom runtime receives `SIGTERM` at shutdown only if at least one extension is registered, so a shutdown flush requires an internal extension; otherwise assume none. In-memory buffering cannot guarantee delivery after termination. Where audit durability is mandatory, require a durable acknowledgment before success under a separately specified failure policy.
 - Apply artifact provenance, locked dependencies, architecture checks, executable bootstrap permissions and clean-environment TLS tests to ZIP/image releases. Select a supported Lambda OS/runtime baseline at implementation time and pin the tested build environment.
 
+### Trusted proxy addresses for rate limits
+
+`limit.yml` uses transport/admitted source identity by default. In Address mode,
+X-Forwarded-For from an untrusted peer has no authority. To run behind proxies,
+configure `trustedProxyCidrs` with only the proxy egress networks that sanitize
+forwarded addresses. The resolver walks X-Forwarded-For from right to left and
+stops at the first untrusted hop; caller-controlled prefixes cannot select buckets.
+Trusted XFF proxies must append their actual immediate peer or provide an
+equivalently verified chain, rather than merely pass through a caller's claim.
+Pingora supplies its socket peer. Lambda supplies the last address from the ALB
+append-mode chain, under the existing ALB ingress prerequisite.
+
+Akamai mode reads a single IP from True-Client-IP only when that peer is explicitly
+trusted. It requires a nonempty allowlist at startup. Untrusted peers are rejected,
+so an unknown CDN range cannot silently become a shared edge bucket. Direct-client
+traffic should use Address mode. Missing, repeated or malformed
+assertions from a trusted proxy fail closed; they do not silently group clients
+under the edge address. The proxy must overwrite/sanitize this header, and the
+origin must prevent bypass of that trusted ingress. Generic forwarding proxies
+that do not sanitize True-Client-IP should use Address mode with a validated XFF
+chain instead. CIDR membership alone does not prove header sanitization.
+
+For example, these documentation-only addresses represent an owned CDN edge range;
+replace them with the reviewed egress networks for the actual deployment:
+
+```yaml
+# Gateway limit.yml
+enabled: true
+key: akamai
+rateLimit: 10/s
+trustedProxyCidrs: ['203.0.113.0/24']
+```
+
+```yaml
+# Lambda limit.yml
+enabled: true
+key: address
+addressKeyResolver: com.networknt.limit.key.AkamaiAddressKeyResolver
+rateLimit: 10/s
+trustedProxyCidrs: ['203.0.113.0/24']
+address:
+  '198.51.100.7': 10/s
+  '198.51.100.8': 10/s
+```
+
+Both shipped templates also accept the same list through
+`limit.trustedProxyCidrs` in values.yml. No CDN ranges are inferred automatically, and no environment flag bypasses
+allowlist or assertion validation. Invalid CIDRs, `/0` catch-alls and allowlists
+larger than 64 entries are rejected. Address-chain inspection is bounded to 64
+hops/8 KiB, and IPv4-mapped IPv6 identities are normalized before bucketing.
+Address headers must contain bare IPv4/IPv6 addresses, not bracketed or
+port-suffixed forms. Configuration changes require rebuilding the runtime/snapshot
+through the normal configuration workflow. Lambda's existing native direct-fallback
+quota behavior is unchanged; the new identity tests use explicit address quotas
+where persistent per-client counters are required.
+
+The bucket cap still bounds process-local storage. It is not a fleet-wide quota
+or a guarantee against saturation by many genuine client identities. No live CDN,
+ALB configuration, origin restriction or deployment capacity is qualified by the
+synthetic proxy tests.
+
 ## Test parity and qualification plan
 
 ### Characterize behavior before translating it

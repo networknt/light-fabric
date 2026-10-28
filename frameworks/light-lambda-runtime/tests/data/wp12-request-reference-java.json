@@ -1,0 +1,364 @@
+[
+  {
+    "input": {
+      "id": "reference-3.0.3-query",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "parameters": [
+                  {
+                    "$ref": "#/components/parameters/value"
+                  }
+                ]
+              }
+            }
+          },
+          "components": {
+            "parameters": {
+              "value": {
+                "name": "v",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-3.0.3-query",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11000\",\"message\":\"VALIDATOR_REQUEST_PARAMETER_QUERY_MISSING\",\"description\":\"Query parameter v is required on path /x but not found in request.\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/bounded-admission-20261016T201237Z/request-reference-probes/reference-3.0.3-query.json",
+    "sha256": "7b0b5cf811cd2afc93bd0134856eecac04ab61e13983c92375ea6659fcf5090c"
+  },
+  {
+    "input": {
+      "id": "reference-3.1.0-query",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "parameters": [
+                  {
+                    "$ref": "#/components/parameters/value"
+                  }
+                ]
+              }
+            }
+          },
+          "components": {
+            "parameters": {
+              "value": {
+                "name": "v",
+                "in": "query",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-3.1.0-query",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11000\",\"message\":\"VALIDATOR_REQUEST_PARAMETER_QUERY_MISSING\",\"description\":\"Query parameter v is required on path /x but not found in request.\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/bounded-admission-20261016T201237Z/request-reference-probes/reference-3.1.0-query.json",
+    "sha256": "5cf25d6766b5e6a357dbbd995961ae67bc19e28fcd0536c998b0d18f91ffbbdd"
+  },
+  {
+    "input": {
+      "id": "reference-3.0.3-body",
+      "files": {
+        "openapi": {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "$ref": "#/components/requestBodies/value"
+                }
+              }
+            }
+          },
+          "components": {
+            "requestBodies": {
+              "value": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "v": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\":\"bad\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-3.0.3-body",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: string found, integer expected\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/bounded-admission-20261016T201237Z/request-reference-probes/reference-3.0.3-body.json",
+    "sha256": "b9076da67685c43ef3ae48d2befa4a195828cbf8cef7f30ac196200feaec2f85"
+  },
+  {
+    "input": {
+      "id": "reference-3.1.0-body",
+      "files": {
+        "openapi": {
+          "openapi": "3.1.0",
+          "info": {
+            "title": "owned-reference-characterization",
+            "version": "1"
+          },
+          "paths": {
+            "/x": {
+              "post": {
+                "responses": {
+                  "200": {
+                    "description": "ok"
+                  }
+                },
+                "requestBody": {
+                  "$ref": "#/components/requestBodies/value"
+                }
+              }
+            }
+          },
+          "components": {
+            "requestBodies": {
+              "value": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "type": "object",
+                      "properties": {
+                        "v": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "openapi-inject": {},
+        "openapi-handler": {
+          "enabled": true
+        },
+        "openapi-validator": {
+          "enabled": true,
+          "validateRequest": true
+        },
+        "values": {},
+        "lambda-app": {
+          "lambdaAppId": "test-only-gateway",
+          "encodeBase64Request": false,
+          "encodeBase64Response": false
+        },
+        "lambda-proxy": {
+          "enabled": true,
+          "region": "us-east-1",
+          "metricsInjection": false,
+          "logType": "Tail",
+          "functions": {
+            "/x@get": "FnX",
+            "/x@post": "FnX"
+          }
+        }
+      },
+      "event": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/x",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"v\":\"bad\"}",
+        "isBase64Encoded": false
+      },
+      "externalReferenceExcludedFromJavaProbe": false
+    },
+    "java": {
+      "id": "reference-3.1.0-body",
+      "status": 400,
+      "body": "{\"statusCode\":400,\"code\":\"ERR11004\",\"message\":\"VALIDATOR_SCHEMA\",\"description\":\"Schema Validation Error - /v: string found, integer expected\",\"severity\":\"ERROR\"}",
+      "lambdaCaptures": 0
+    },
+    "source": "/home/steve/workspace/artifacts/implementation/light-lambda/WP12/bounded-admission-20261016T201237Z/request-reference-probes/reference-3.1.0-body.json",
+    "sha256": "94b33afcee1e61ef6bd86ea2d0ff7c58b3b14eefcb4297e5b1068f7baa389900"
+  }
+]

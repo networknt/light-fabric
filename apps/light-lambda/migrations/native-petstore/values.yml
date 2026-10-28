@@ -1,0 +1,10 @@
+{
+  "light-lambda.stage": "native-petstore-validator-qualification",
+  "lambda-proxy.region": "us-east-1",
+  "lambda-proxy.endpointOverride": "http://127.0.0.1:19091",
+  "lambda-proxy.functions": {"/v1/pets@post": "test-only-business"},
+  "lambda-proxy.logType": "None",
+  "lambda-proxy.metricsInjection": false,
+  "security.enabled": false,
+  "unified-security.enabled": false
+}

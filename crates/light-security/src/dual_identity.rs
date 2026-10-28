@@ -375,6 +375,79 @@ pub async fn authenticate<'a>(
     })
 }
 
+/// Service-only evidence reporting. This profile cannot disclose user results or
+/// authorize target work; its callers must expose only fixed completion routes.
+pub async fn authenticate_application<'a>(
+    runtime: &SecurityRuntime,
+    policy: &RoutePolicy,
+    headers: &HeaderMap,
+    tls_peer: impl Into<TlsPeer<'a>>,
+) -> Result<(AuthPrincipal, String, Origin), HandlerRejection> {
+    let tls_peer = tls_peer.into();
+    policy.validate()?;
+    if runtime.config.ignore_jwt_expiry
+        || runtime.config.enable_mock_jwt
+        || !runtime.config.enable_verify_jwt
+    {
+        return Err(denied());
+    }
+    if tls_peer.sha256.is_none() && tls_peer.issuer_sha256.is_none() {
+        return Err(denied());
+    }
+    let app = verify_with_purpose(
+        runtime,
+        bearer(headers, "x-scope-token")?,
+        TokenUse::App,
+        &policy.legacy_long_lived_app_keys,
+    )
+    .await?;
+    check_claims(&app, policy, false)?;
+    let sid = app
+        .claims
+        .get("sid")
+        .and_then(|s| s.as_str())
+        .ok_or_else(denied)?
+        .to_owned();
+    let profile = policy.apps.get(&sid).ok_or_else(denied)?;
+    if !profile_trusts_peer(profile, &tls_peer, &sid) {
+        return Err(denied());
+    }
+    Ok((app, sid, profile.origin))
+}
+
+/// Bearer-only application authentication for a Gateway-routed internal job
+/// bridge. Callers must pin the resulting service ID to the stored job owner
+/// and keep the backend route unreachable to unauthenticated clients.
+pub async fn authenticate_application_token(
+    runtime: &SecurityRuntime,
+    policy: &RoutePolicy,
+    headers: &HeaderMap,
+) -> Result<(AuthPrincipal, String, Origin), HandlerRejection> {
+    policy.validate()?;
+    if runtime.config.ignore_jwt_expiry
+        || runtime.config.enable_mock_jwt
+        || !runtime.config.enable_verify_jwt
+    {
+        return Err(denied());
+    }
+    let app = verify_with_purpose(
+        runtime,
+        bearer(headers, "x-scope-token")?,
+        TokenUse::App,
+        &policy.legacy_long_lived_app_keys,
+    )
+    .await?;
+    check_claims(&app, policy, false)?;
+    let sid = app
+        .claims
+        .get("sid")
+        .and_then(|s| s.as_str())
+        .ok_or_else(denied)?
+        .to_owned();
+    let profile = policy.apps.get(&sid).ok_or_else(denied)?;
+    Ok((app, sid, profile.origin))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -500,6 +573,7 @@ mod tests {
             })),
             jwks: Default::default(),
             cache: Default::default(),
+            refresh_gate: Default::default(),
         };
         let jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(serde_json::json!({
             "kty": "oct", "kid": "k1", "alg": "HS256",
@@ -954,77 +1028,4 @@ mod tests {
                 .is_err()
         );
     }
-}
-
-/// Service-only evidence reporting. This profile cannot disclose user results or
-/// authorize target work; its callers must expose only fixed completion routes.
-pub async fn authenticate_application<'a>(
-    runtime: &SecurityRuntime,
-    policy: &RoutePolicy,
-    headers: &HeaderMap,
-    tls_peer: impl Into<TlsPeer<'a>>,
-) -> Result<(AuthPrincipal, String, Origin), HandlerRejection> {
-    let tls_peer = tls_peer.into();
-    policy.validate()?;
-    if runtime.config.ignore_jwt_expiry
-        || runtime.config.enable_mock_jwt
-        || !runtime.config.enable_verify_jwt
-    {
-        return Err(denied());
-    }
-    if tls_peer.sha256.is_none() && tls_peer.issuer_sha256.is_none() {
-        return Err(denied());
-    }
-    let app = verify_with_purpose(
-        runtime,
-        bearer(headers, "x-scope-token")?,
-        TokenUse::App,
-        &policy.legacy_long_lived_app_keys,
-    )
-    .await?;
-    check_claims(&app, policy, false)?;
-    let sid = app
-        .claims
-        .get("sid")
-        .and_then(|s| s.as_str())
-        .ok_or_else(denied)?
-        .to_owned();
-    let profile = policy.apps.get(&sid).ok_or_else(denied)?;
-    if !profile_trusts_peer(profile, &tls_peer, &sid) {
-        return Err(denied());
-    }
-    Ok((app, sid, profile.origin))
-}
-
-/// Bearer-only application authentication for a Gateway-routed internal job
-/// bridge. Callers must pin the resulting service ID to the stored job owner
-/// and keep the backend route unreachable to unauthenticated clients.
-pub async fn authenticate_application_token(
-    runtime: &SecurityRuntime,
-    policy: &RoutePolicy,
-    headers: &HeaderMap,
-) -> Result<(AuthPrincipal, String, Origin), HandlerRejection> {
-    policy.validate()?;
-    if runtime.config.ignore_jwt_expiry
-        || runtime.config.enable_mock_jwt
-        || !runtime.config.enable_verify_jwt
-    {
-        return Err(denied());
-    }
-    let app = verify_with_purpose(
-        runtime,
-        bearer(headers, "x-scope-token")?,
-        TokenUse::App,
-        &policy.legacy_long_lived_app_keys,
-    )
-    .await?;
-    check_claims(&app, policy, false)?;
-    let sid = app
-        .claims
-        .get("sid")
-        .and_then(|s| s.as_str())
-        .ok_or_else(denied)?
-        .to_owned();
-    let profile = policy.apps.get(&sid).ok_or_else(denied)?;
-    Ok((app, sid, profile.origin))
 }

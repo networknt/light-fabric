@@ -8,6 +8,7 @@ use std::sync::Arc;
 pub trait RuleActionPlugin: Send + Sync {
     /// Executes the action. It may mutate the `rule_context` map in place.
     /// Returns a boolean indicating success of the action.
+    #[must_use = "the action future must be awaited to execute the rule"]
     async fn execute(
         &self,
         rule_context: &mut Value,

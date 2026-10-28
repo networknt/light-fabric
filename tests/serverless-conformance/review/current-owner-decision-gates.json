@@ -1,0 +1,10 @@
+{
+  "CFG-05": "resolved: four closed fault contracts admitted",
+  "S-13c": "resolved: synchronized task-boundary panic/recovery admitted; exact public error mapping explicitly unspecified",
+  "R-01": {
+    "status": "concrete contract decision pending",
+    "fixture": "drafts/v1/r/R-01-longest-template-multi-contract-v1.json",
+    "conflict": "JavaFnWildcard vs proposedRustFnLongest; equivalent R01 cannot authorize difference"
+  },
+  "acceptance": "incomplete pending R01 decision, all-row audit and final qualification"
+}

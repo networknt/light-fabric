@@ -1,0 +1,242 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "X-04-empty-body-warm-init-v1",
+  "title": "X-04-empty-body local Java admin behavior",
+  "ledger": [
+    "X-04",
+    "C-10"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.correlation.CorrelationMiddleware@correlation",
+          "com.networknt.aws.lambda.handler.middleware.specification.OpenApiMiddleware@specification",
+          "com.networknt.aws.lambda.handler.middleware.security.BasicAuthMiddleware@security",
+          "com.networknt.aws.lambda.handler.middleware.validator.ValidatorMiddleware@validator",
+          "com.networknt.aws.lambda.handler.health.HealthCheckHandler@health",
+          "com.networknt.aws.lambda.handler.info.ServerInfoHandler@info",
+          "com.networknt.aws.lambda.handler.logger.LoggerGetHandler@getLogger",
+          "com.networknt.aws.lambda.handler.logger.LoggerSetHandler@setLogger"
+        ],
+        "chains": {
+          "admin": [
+            "correlation",
+            "specification",
+            "security",
+            "validator"
+          ]
+        },
+        "paths": [
+          {
+            "path": "/health",
+            "method": "get",
+            "exec": [
+              "health"
+            ]
+          },
+          {
+            "path": "/adm/health",
+            "method": "get",
+            "exec": [
+              "admin",
+              "health"
+            ]
+          },
+          {
+            "path": "/adm/server/info",
+            "method": "get",
+            "exec": [
+              "admin",
+              "info"
+            ]
+          },
+          {
+            "path": "/adm/logger",
+            "method": "get",
+            "exec": [
+              "admin",
+              "getLogger"
+            ]
+          },
+          {
+            "path": "/adm/logger",
+            "method": "post",
+            "exec": [
+              "admin",
+              "setLogger"
+            ]
+          }
+        ],
+        "defaultHandlers": []
+      },
+      "correlation": {
+        "enabled": true,
+        "autogenCorrelationID": false
+      },
+      "health": {
+        "enabled": true,
+        "downstreamEnabled": true,
+        "useJson": true
+      },
+      "info": {
+        "enableServerInfo": true
+      },
+      "logging": {
+        "enabled": true
+      },
+      "basic-auth": {
+        "enabled": true,
+        "allowAnonymous": false,
+        "users": [
+          {
+            "username": "test-user",
+            "password": "test-only-password",
+            "paths": [
+              "/adm"
+            ]
+          }
+        ]
+      },
+      "openapi": {
+        "openapi": "3.0.3",
+        "info": {
+          "title": "test-only-characterization",
+          "version": "1.0.0"
+        },
+        "paths": {
+          "/adm/health": {
+            "get": {
+              "responses": {
+                "200": {
+                  "description": "synthetic response"
+                }
+              }
+            }
+          },
+          "/adm/server/info": {
+            "get": {
+              "responses": {
+                "200": {
+                  "description": "synthetic response"
+                }
+              }
+            }
+          },
+          "/adm/logger": {
+            "get": {
+              "responses": {
+                "200": {
+                  "description": "synthetic response"
+                }
+              }
+            },
+            "post": {
+              "responses": {
+                "200": {
+                  "description": "synthetic response"
+                }
+              }
+            }
+          }
+        }
+      },
+      "openapi-inject": {},
+      "openapi-handler": {
+        "enabled": true
+      },
+      "openapi-validator": {
+        "enabled": true,
+        "validateRequest": true
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "No time-sensitive admin expectation. ROOT logging OFF is the declared runner baseline."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "expectRustInit": {
+    "outcome": "initError",
+    "code": "InvalidConfiguration",
+    "backendCalls": [],
+    "jwksFetches": 0
+  },
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls",
+    "cacheActions",
+    "header:content-type",
+    "header:www-authenticate"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "POST",
+        "path": "/adm/logger",
+        "headers": {
+          "Authorization": "Basic test-user:test-only-password"
+        },
+        "queryStringParameters": {},
+        "body": "",
+        "isBase64Encoded": false
+      },
+      "backend": [],
+      "expectJava": {
+        "status": 400,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ]
+        ],
+        "headersAbsent": [],
+        "body": "{\"statusCode\":400,\"code\":\"ERR10059\",\"message\":\"REQUEST_BODY_MISSING\",\"description\":\"Request body is missing.\",\"severity\":\"ERROR\"}",
+        "bodyBase64": false,
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "outcome": "response"
+      },
+      "headerMode": "single",
+      "expect": {
+        "outcome": "notExecuted",
+        "reason": "initError",
+        "backendCalls": [],
+        "jwksFetches": 0
+      }
+    }
+  ]
+}

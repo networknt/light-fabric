@@ -1,0 +1,3 @@
+enabled: ${unified-security.enabled:true}
+anonymousPrefixes: ${unified-security.anonymousPrefixes:[]}
+pathPrefixAuths: ${unified-security.pathPrefixAuths:[]}

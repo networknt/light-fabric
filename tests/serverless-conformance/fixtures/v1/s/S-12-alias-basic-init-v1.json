@@ -1,0 +1,155 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "S-12-alias-basic-init-v1",
+  "title": "S-12-alias-basic malformed alias selection",
+  "ledger": [
+    "S-12",
+    "C-10",
+    "C-04"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "lambda-proxy": {
+        "functions": {
+          "/x/basic@get": "FnX",
+          "/x/jwt@get": "FnX",
+          "/x/swt@get": "FnX",
+          "/x/apikey@get": "FnX"
+        },
+        "logType": "Tail",
+        "enabled": true
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "handler": {
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@basic",
+          "com.networknt.aws.lambda.handler.middleware.security.UnifiedSecurityMiddleware@unified"
+        ],
+        "chains": {},
+        "paths": [],
+        "defaultHandlers": [
+          "unified",
+          "proxy"
+        ]
+      },
+      "unified-security": {
+        "enabled": true,
+        "pathPrefixAuths": [
+          {
+            "prefix": "/x/basic",
+            "basic": true
+          },
+          {
+            "prefix": "/x/jwt",
+            "jwt": true
+          },
+          {
+            "prefix": "/x/swt",
+            "swt": true
+          },
+          {
+            "prefix": "/x/apikey",
+            "apikey": true
+          }
+        ]
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Synthetic literal malformed bearer; no production or generated token."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "headerMode": "single",
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "GET",
+    "path": "/x/basic",
+    "headers": {
+      "Authorization": "Basic test-only:wrong"
+    },
+    "queryStringParameters": {},
+    "body": null,
+    "isBase64Encoded": false
+  },
+  "backend": [
+    {
+      "match": {
+        "target": "FnX"
+      },
+      "respond": {
+        "functionError": null,
+        "payload": {
+          "statusCode": 200,
+          "headers": {
+            "x-backend": "synthetic"
+          },
+          "body": "ok",
+          "isBase64Encoded": false
+        }
+      }
+    }
+  ],
+  "expectJava": {
+    "outcome": "response",
+    "status": 200,
+    "headers": [
+      [
+        "x-backend",
+        "synthetic"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "ok",
+    "bodyBase64": false,
+    "backendCalls": [
+      {
+        "target": "FnX",
+        "event": {
+          "path": "/x/basic",
+          "httpMethod": "GET",
+          "headers": {
+            "Authorization": "Basic test-only:wrong"
+          },
+          "queryStringParameters": {},
+          "requestContext": {},
+          "isBase64Encoded": false
+        }
+      }
+    ],
+    "jwksFetches": 0
+  },
+  "expect": {
+    "outcome": "initError",
+    "code": "InvalidConfiguration",
+    "backendCalls": [],
+    "jwksFetches": 0
+  },
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls",
+    "header:content-type",
+    "header:x-backend"
+  ]
+}

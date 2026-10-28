@@ -1,0 +1,86 @@
+[
+  {
+    "fixture": "S-05-primary-0-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-05-primary-0-cp1-e02-accepted.json",
+    "sourceSha256": "aafd10b33797a4fdfab7a0bb000e87e922087b2870ab9ff7043070682bbfd050",
+    "review": "JwtScopeTest or MultiProviderSecurityTest source reviewed: exact primary/secondary scope list/string/missing/wrong and expired/malformed cases, or path/explicit provider audience/key selection. All archived warm steps retained, only referenced token recipes signed. Declared /jwks k1 and /other k2 reproduce provider setup without external credentials. Explicit JKS options reject proposed Rust once at Init; step expectations remain notExecuted and are not counted as Rust security coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-05-primary-1-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-05-primary-1-cp1-e02-accepted.json",
+    "sourceSha256": "c0238bd205f7d0a2d4dfd77a73e0d109298d7a646bb2528cdb0c238968662ea4",
+    "review": "JwtScopeTest or MultiProviderSecurityTest source reviewed: exact primary/secondary scope list/string/missing/wrong and expired/malformed cases, or path/explicit provider audience/key selection. All archived warm steps retained, only referenced token recipes signed. Declared /jwks k1 and /other k2 reproduce provider setup without external credentials. Explicit JKS options reject proposed Rust once at Init; step expectations remain notExecuted and are not counted as Rust security coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-05-primary-2-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-05-primary-2-cp1-e02-accepted.json",
+    "sourceSha256": "b236c41309796c677adb7244594c6ed88b1ed6648d17e8b561c4f27deabfd00d",
+    "review": "JwtScopeTest or MultiProviderSecurityTest source reviewed: exact primary/secondary scope list/string/missing/wrong and expired/malformed cases, or path/explicit provider audience/key selection. All archived warm steps retained, only referenced token recipes signed. Declared /jwks k1 and /other k2 reproduce provider setup without external credentials. Explicit JKS options reject proposed Rust once at Init; step expectations remain notExecuted and are not counted as Rust security coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-05-primary-3-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-05-primary-3-cp1-e02-accepted.json",
+    "sourceSha256": "c4a032414a1330c1ff6c9c1b86111f86c403aa190c030809b7477099770e5d95",
+    "review": "JwtScopeTest or MultiProviderSecurityTest source reviewed: exact primary/secondary scope list/string/missing/wrong and expired/malformed cases, or path/explicit provider audience/key selection. All archived warm steps retained, only referenced token recipes signed. Declared /jwks k1 and /other k2 reproduce provider setup without external credentials. Explicit JKS options reject proposed Rust once at Init; step expectations remain notExecuted and are not counted as Rust security coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-06-secondary-0-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-06-secondary-0-cp1-e02-accepted.json",
+    "sourceSha256": "88d462e4cb6b559312e892e1013b40aa46a86d749096b118371c50eca2c33e88",
+    "review": "JwtScopeTest or MultiProviderSecurityTest source reviewed: exact primary/secondary scope list/string/missing/wrong and expired/malformed cases, or path/explicit provider audience/key selection. All archived warm steps retained, only referenced token recipes signed. Declared /jwks k1 and /other k2 reproduce provider setup without external credentials. Explicit JKS options reject proposed Rust once at Init; step expectations remain notExecuted and are not counted as Rust security coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-06-secondary-1-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-06-secondary-1-cp1-e02-accepted.json",
+    "sourceSha256": "8ba8663a92e38131a5164f16ad6473b9acd5d1f23079778f89f045d6ed8b9633",
+    "review": "JwtScopeTest or MultiProviderSecurityTest source reviewed: exact primary/secondary scope list/string/missing/wrong and expired/malformed cases, or path/explicit provider audience/key selection. All archived warm steps retained, only referenced token recipes signed. Declared /jwks k1 and /other k2 reproduce provider setup without external credentials. Explicit JKS options reject proposed Rust once at Init; step expectations remain notExecuted and are not counted as Rust security coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-06-secondary-invalid-0-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-06-secondary-invalid-0-cp1-e02-accepted.json",
+    "sourceSha256": "b32595eb92f65596fdf9b2b9011d3c07fa81655aaa20be7cc838ac68d66d61d9",
+    "review": "JwtScopeTest or MultiProviderSecurityTest source reviewed: exact primary/secondary scope list/string/missing/wrong and expired/malformed cases, or path/explicit provider audience/key selection. All archived warm steps retained, only referenced token recipes signed. Declared /jwks k1 and /other k2 reproduce provider setup without external credentials. Explicit JKS options reject proposed Rust once at Init; step expectations remain notExecuted and are not counted as Rust security coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-06-secondary-invalid-1-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-06-secondary-invalid-1-cp1-e02-accepted.json",
+    "sourceSha256": "4ae98f0c59182c2a1552a15d3a89d7ecf6d4f1e0287cf512ead60c52730694dc",
+    "review": "JwtScopeTest or MultiProviderSecurityTest source reviewed: exact primary/secondary scope list/string/missing/wrong and expired/malformed cases, or path/explicit provider audience/key selection. All archived warm steps retained, only referenced token recipes signed. Declared /jwks k1 and /other k2 reproduce provider setup without external credentials. Explicit JKS options reject proposed Rust once at Init; step expectations remain notExecuted and are not counted as Rust security coverage.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-04-provider-path-0-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-04-provider-path-0-cp1-e02-accepted.json",
+    "sourceSha256": "43606259c9eadd7b42f0e9eac96a47c3afd031f14b64f0059ebe6e091a02f338",
+    "review": "JwtScopeTest or MultiProviderSecurityTest source reviewed: exact primary/secondary scope list/string/missing/wrong and expired/malformed cases, or path/explicit provider audience/key selection. All archived warm steps retained, only referenced token recipes signed. Declared /jwks k1 and /other k2 reproduce provider setup without external credentials. Explicit JKS options reject proposed Rust once at Init; step expectations remain notExecuted and are not counted as Rust security coverage. Original WP2 CapturingProxy overrides isEnabled=true while its custom lambda-proxy file omitted enabled; this separately authored fixture explicitly enables the actual injected-client production proxy. No runner/production enabled override is added; the archived config and failed disabled-proxy execution are preserved.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-04-provider-path-1-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-04-provider-path-1-cp1-e02-accepted.json",
+    "sourceSha256": "5146ae3d7a2933a60dc2d820f0b05244465a024e0b7559937bd3bec886c74a38",
+    "review": "JwtScopeTest or MultiProviderSecurityTest source reviewed: exact primary/secondary scope list/string/missing/wrong and expired/malformed cases, or path/explicit provider audience/key selection. All archived warm steps retained, only referenced token recipes signed. Declared /jwks k1 and /other k2 reproduce provider setup without external credentials. Explicit JKS options reject proposed Rust once at Init; step expectations remain notExecuted and are not counted as Rust security coverage. Original WP2 CapturingProxy overrides isEnabled=true while its custom lambda-proxy file omitted enabled; this separately authored fixture explicitly enables the actual injected-client production proxy. No runner/production enabled override is added; the archived config and failed disabled-proxy execution are preserved.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-04-provider-path-2-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-04-provider-path-2-cp1-e02-accepted.json",
+    "sourceSha256": "7350e01662e42dfb3e2a9ee58a14cbd34792dd13166ba1cf76aee405ac3aa5bc",
+    "review": "JwtScopeTest or MultiProviderSecurityTest source reviewed: exact primary/secondary scope list/string/missing/wrong and expired/malformed cases, or path/explicit provider audience/key selection. All archived warm steps retained, only referenced token recipes signed. Declared /jwks k1 and /other k2 reproduce provider setup without external credentials. Explicit JKS options reject proposed Rust once at Init; step expectations remain notExecuted and are not counted as Rust security coverage. Original WP2 CapturingProxy overrides isEnabled=true while its custom lambda-proxy file omitted enabled; this separately authored fixture explicitly enables the actual injected-client production proxy. No runner/production enabled override is added; the archived config and failed disabled-proxy execution are preserved.",
+    "rustExecutionEvidence": null
+  },
+  {
+    "fixture": "S-04-provider-explicit-warm-jks-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/S-04-provider-explicit-cp1-e02-accepted.json",
+    "sourceSha256": "d0427661eb06125899b800cf6269a347d227eba319fbf7d28776cd2a7c69baf5",
+    "review": "JwtScopeTest or MultiProviderSecurityTest source reviewed: exact primary/secondary scope list/string/missing/wrong and expired/malformed cases, or path/explicit provider audience/key selection. All archived warm steps retained, only referenced token recipes signed. Declared /jwks k1 and /other k2 reproduce provider setup without external credentials. Explicit JKS options reject proposed Rust once at Init; step expectations remain notExecuted and are not counted as Rust security coverage. Original WP2 CapturingProxy overrides isEnabled=true while its custom lambda-proxy file omitted enabled; this separately authored fixture explicitly enables the actual injected-client production proxy. No runner/production enabled override is added; the archived config and failed disabled-proxy execution are preserved.",
+    "rustExecutionEvidence": null
+  }
+]

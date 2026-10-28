@@ -1,0 +1,7 @@
+{
+  "regex": {
+    "requestHeader": {
+      "x-test-mask": "id=(.+)"
+    }
+  }
+}

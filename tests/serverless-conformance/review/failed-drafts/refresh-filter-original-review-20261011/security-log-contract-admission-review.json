@@ -1,0 +1,34 @@
+[
+  {
+    "fixture": "S-14-verified-jwt-no-secret-logs-multi-contract-v1",
+    "javaRun": "20261011T144746.751707Z",
+    "javaBehaviorAsserted": [
+      "S-14",
+      "A-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-14",
+      "A-02"
+    ],
+    "review": "Closed JWT trace profile observes actual Java LambdaApp DEBUG and JwtVerifyMiddleware TRACE events with logJwtToken=false. Exact verification outcome and backend calls retained. Rust authored supported trace logging forbids token, token fragment and synthetic sensitive claim. Evidence substitutes generated token material only; actual response remains intact.",
+    "source": "Reviewed actual in-memory logger events; approved bounded redacted telemetry contract",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T144746.751707Z"
+  },
+  {
+    "fixture": "S-14-expired-jwt-no-secret-logs-multi-contract-v1",
+    "javaRun": "20261011T144746.751707Z",
+    "javaBehaviorAsserted": [
+      "S-14",
+      "A-02"
+    ],
+    "proposedRustBehaviorReached": [
+      "S-14",
+      "A-02"
+    ],
+    "review": "Closed JWT trace profile observes actual Java LambdaApp DEBUG and JwtVerifyMiddleware TRACE events with logJwtToken=false. Exact verification outcome and backend calls retained. Rust authored supported trace logging forbids token, token fragment and synthetic sensitive claim. Evidence substitutes generated token material only; actual response remains intact.",
+    "source": "Reviewed actual in-memory logger events; approved bounded redacted telemetry contract",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T144746.751707Z"
+  }
+]

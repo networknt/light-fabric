@@ -1,0 +1,17 @@
+[
+  {
+    "fixture": "H-04-already-failed-router-component-v1",
+    "javaRun": "20261011T145435.159067Z",
+    "kind": "equivalent",
+    "javaBehaviorAsserted": [
+      "H-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "H-04"
+    ],
+    "review": "Owner-approved closed direct real-router invocation after LambdaApp initialization. Shared raw ALB input and failed exchange state10; actual returned Status400 ERR10087 exact JSON, no HTTP/business/JWKS calls. Normal ChainExecutor stops before this branch, so no fabricated gateway response. Rust assertion authored only; no execution evidence.",
+    "source": "Unchanged LambdaRouterMiddleware.execute and LightLambdaExchange request-failure state bits; approved H04 component",
+    "rustExecutionEvidence": null,
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T145435.159067Z"
+  }
+]

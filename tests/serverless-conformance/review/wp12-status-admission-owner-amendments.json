@@ -1,0 +1,27 @@
+{
+  "ownerDisposition": "2026-10-17 status default and catalogue narrow admission",
+  "ledgerRows": [
+    "CFG-04",
+    "E-01"
+  ],
+  "KEY-371": {
+    "historicalMissingMapAccessorDefault": false,
+    "shippedTemplate": "${status.showMetadata:true}",
+    "effectiveShippedTemplateDefault": true,
+    "admissionAbsent": "warn and accept; not serializer equivalence",
+    "admissionTrue": "warn and accept unsupported default",
+    "admissionFalseOrMalformed": "static redacted Init rejection",
+    "intentionalChange": "Unsupported explicit false is rejected; runtime status bytes and historical observations are unchanged"
+  },
+  "KEY-372And373": "Settled absent/true warn; false/malformed Init rejection",
+  "catalogue": {
+    "stockEntries": 311,
+    "pinnedBaseline": "frameworks/light-lambda-runtime/src/status_catalogue.json",
+    "sha256": "cb8b3ad67fb40abfaff0d78983ec6c42d954459957cf2b63bdd0a58783b93c51",
+    "absentSubsetFull": "accept exactly matching resolved entries; warn ignored",
+    "customUnknownOverride": "static redacted Init rejection",
+    "intentionalRestriction": "Custom codes and overridden catalogue entries are excluded; no dynamic renderer or Info exposure"
+  },
+  "originalInventoryAndJavaEvidencePreserved": true,
+  "differentialConformanceClaim": false
+}

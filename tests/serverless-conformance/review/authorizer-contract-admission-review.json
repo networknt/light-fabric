@@ -1,0 +1,28 @@
+[
+  {
+    "fixture": "E-08-verified-authorizer-multi-contract-v1",
+    "source": "Approved E-08 and plan 5.3 verified authorizer exact shape; retained S-05 scope-string token recipe and source reviewed forwarding maps",
+    "javaBehaviorAsserted": [
+      "E-08"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-08"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Valid multimap JWT reaches Rust verification and dispatch. Authorizer must equal the complete declared signed input claims plus exact test-user principal and write read scope, with no missing or extra fields. Relative iat/exp come from declared input signing, never gateway output. Forged inbound authorizer is not trusted. Java retains context {} and multimap JWT skip. Java forwarding assertion does not claim Java verified authorization. Source correction: LightLambdaExchange.getFinalizedRequest returns the original request and LambdaProxyMiddleware serializes it; Java preserves the exact declared forged inbound authorizer, which must be asserted rather than erased. First failed draft is retained at 20261011T024917.202714Z.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T025035.240504Z"
+  },
+  {
+    "fixture": "E-08-unverified-authorizer-absent-multi-contract-v1",
+    "source": "Approved E-08 absence on unverified routes; plan 5.3 never trust inbound authorizer/header identity",
+    "javaBehaviorAsserted": [
+      "E-08"
+    ],
+    "proposedRustBehaviorReached": [
+      "E-08"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Supported unauthenticated dispatch with forged inbound context and identity header. Exact Rust authorizer absence, one target call and preserved declared ordinary header assert identity is not elevated. Java exact context {} retained. Source correction: LightLambdaExchange.getFinalizedRequest returns the original request and LambdaProxyMiddleware serializes it; Java preserves the exact declared forged inbound authorizer, which must be asserted rather than erased. First failed draft is retained at 20261011T024917.202714Z.",
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T025035.240504Z"
+  }
+]

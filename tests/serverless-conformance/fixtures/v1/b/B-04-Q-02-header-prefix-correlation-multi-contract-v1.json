@@ -1,0 +1,256 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "B-04-Q-02-header-prefix-correlation-multi-contract-v1",
+  "title": "Valid multimap reaches prefix header policy and supplied correlation preservation",
+  "ledger": [
+    "B-04",
+    "Q-02",
+    "E-10"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only",
+      "light-lambda.accountId": "000000000000",
+      "light-lambda.apiId": "test-only",
+      "light-lambda.domainName": "test.example",
+      "light-lambda.resourceId": "test-only"
+    },
+    "files": {
+      "header": {
+        "enabled": true,
+        "request": {
+          "remove": [
+            "x-remove"
+          ],
+          "update": {
+            "x-added": "request"
+          }
+        },
+        "response": {
+          "remove": [
+            "x-backend"
+          ],
+          "update": {
+            "x-added": "response"
+          }
+        },
+        "pathPrefixHeader": {
+          "/x": {
+            "request": {
+              "update": {
+                "x-added": "prefix"
+              }
+            },
+            "response": {
+              "update": {
+                "x-added": "response-prefix"
+              }
+            }
+          }
+        }
+      },
+      "correlation": {
+        "enabled": true,
+        "autogenCorrelationID": true
+      },
+      "traceability": {
+        "enabled": true
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "lambda-proxy": {
+        "enabled": true,
+        "region": "us-east-1",
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@post": "FnX"
+        }
+      },
+      "handler": {
+        "enabled": true,
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.proxy.LambdaProxyMiddleware@proxy",
+          "com.networknt.aws.lambda.handler.middleware.correlation.CorrelationMiddleware@h0",
+          "com.networknt.aws.lambda.handler.middleware.traceability.TraceabilityMiddleware@h1",
+          "com.networknt.aws.lambda.handler.middleware.header.RequestHeaderMiddleware@h2",
+          "com.networknt.aws.lambda.handler.middleware.header.ResponseHeaderMiddleware@response0"
+        ],
+        "chains": {
+          "request": [
+            "h0",
+            "h1",
+            "h2"
+          ],
+          "response": [
+            "response0"
+          ]
+        },
+        "defaultHandlers": [
+          "request",
+          "proxy",
+          "response"
+        ],
+        "paths": []
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "Token recipes use runner-start wall time. No deterministic gateway clock is claimed; no generated token is stored."
+  },
+  "keys": {},
+  "tokens": {},
+  "headerMode": "multi",
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "backendCalls"
+  ],
+  "rawEvent": {
+    "requestContext": {
+      "elb": {
+        "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+      }
+    },
+    "httpMethod": "GET",
+    "path": "/x",
+    "headers": {
+      "X-Remove": "remove-me",
+      "X-Correlation-Id": "test-only-correlation",
+      "X-Traceability-Id": "test-only-trace"
+    },
+    "queryStringParameters": {},
+    "body": null,
+    "isBase64Encoded": false,
+    "multiValueHeaders": {
+      "x-remove": [
+        "remove-me"
+      ],
+      "x-correlation-id": [
+        "test-only-correlation"
+      ],
+      "x-traceability-id": [
+        "test-only-trace"
+      ]
+    },
+    "multiValueQueryStringParameters": {}
+  },
+  "backend": [
+    {
+      "match": {
+        "target": "FnX"
+      },
+      "respond": {
+        "functionError": null,
+        "payload": {
+          "statusCode": 200,
+          "headers": {
+            "x-backend": "synthetic"
+          },
+          "body": "ok",
+          "isBase64Encoded": false
+        }
+      }
+    }
+  ],
+  "expectJava": {
+    "status": 200,
+    "headers": [
+      [
+        "x-added",
+        "response-prefix"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "ok",
+    "bodyBase64": false,
+    "backendCalls": [
+      {
+        "target": "FnX",
+        "event": {
+          "path": "/x",
+          "httpMethod": "GET",
+          "headers": {
+            "X-Correlation-Id": "test-only-correlation",
+            "X-Traceability-Id": "test-only-trace",
+            "x-added": "prefix"
+          },
+          "queryStringParameters": {},
+          "requestContext": {},
+          "isBase64Encoded": false,
+          "multiValueHeaders": {
+            "x-remove": [
+              "remove-me"
+            ],
+            "x-correlation-id": [
+              "test-only-correlation"
+            ],
+            "x-traceability-id": [
+              "test-only-trace"
+            ]
+          },
+          "multiValueQueryStringParameters": {}
+        }
+      }
+    ],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "expect": {
+    "status": 200,
+    "headers": [
+      [
+        "x-added",
+        "response-prefix"
+      ]
+    ],
+    "headersAbsent": [],
+    "body": "ok",
+    "bodyBase64": false,
+    "backendCalls": [
+      {
+        "target": "FnX",
+        "event": {
+          "path": "/x",
+          "httpMethod": "GET",
+          "body": null,
+          "isBase64Encoded": false,
+          "requestContext": {
+            "stage": "test-only"
+          }
+        },
+        "eventExact": {
+          "headers": {
+            "x-correlation-id": "test-only-correlation",
+            "x-traceability-id": "test-only-trace",
+            "x-added": "prefix"
+          },
+          "multiValueHeaders": {
+            "x-correlation-id": [
+              "test-only-correlation"
+            ],
+            "x-traceability-id": [
+              "test-only-trace"
+            ],
+            "x-added": [
+              "prefix"
+            ]
+          },
+          "queryStringParameters": null,
+          "multiValueQueryStringParameters": null,
+          "pathParameters": null
+        }
+      }
+    ],
+    "jwksFetches": 0,
+    "outcome": "response"
+  },
+  "substitutions": []
+}

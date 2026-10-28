@@ -1,0 +1,18 @@
+[
+  {
+    "fixture": "D-07-self-name-init-contract-v1",
+    "source": "Owner-approved process-start runtimeIdentity and plan 5.5 self-target rejection",
+    "javaBehaviorAsserted": [
+      "D-07"
+    ],
+    "proposedRustBehaviorReached": [
+      "D-07"
+    ],
+    "rustExecutionEvidence": null,
+    "review": "Shared synthetic process-start functionName is checked before Java gateway Init. Java preserves one exact fake dispatch to test-only-gateway; Rust authored expectation is InvalidConfiguration Init and zero calls. No per-runner request transformation.",
+    "remainingContractAssertions": [
+      "Qualified self ARN/name variants and arbitrary caller target selection still need clause review."
+    ],
+    "validation": "Java passed; result-v1 validation exit 0; /home/steve/workspace/light-lambda-native-conformance/target/conformance-results/20261011T032015.802647Z"
+  }
+]

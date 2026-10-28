@@ -1,0 +1,27 @@
+{
+  "requestContext": {
+    "elb": {
+      "targetGroupArn": "synthetic-direct-invoke-no-alb"
+    }
+  },
+  "httpMethod": "GET",
+  "path": "/v1/pets",
+  "multiValueHeaders": {
+    "content-type": [
+      "application/json"
+    ],
+    "x-forwarded-for": [
+      "198.51.100.7"
+    ],
+    "x-correlation-id": [
+      "direct-trial-list"
+    ]
+  },
+  "multiValueQueryStringParameters": {
+    "limit": [
+      "1"
+    ]
+  },
+  "body": null,
+  "isBase64Encoded": false
+}

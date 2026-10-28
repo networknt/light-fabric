@@ -1,0 +1,46 @@
+[
+  {
+    "fixture": "D-02-sdk-loopback-finalized-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-02-sdk-loopback-finalized-cp1-e02-accepted.json",
+    "review": "Reviewed SdkLoopbackTest source assertions and preserved WP2 wire observation: exact status/body, finalized event, Tail and absent invocation type, and exact protocol attempt count. No expectation derived from new runner output. Unchanged production constructor uses only runner-owned loopback endpoint and dummy property credentials; Java test Listeners plugin makes proposed Rust Init reject under C-10. No Rust downstream transport credit.",
+    "javaBehaviorAsserted": [
+      "D-02",
+      "D-04"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "validation": "passed focused workflow 20261011T004653.924415Z",
+    "archivedSource": "/home/steve/artifacts/implementation/light-lambda/WP2/e02-amendment-20261010T201042.738620Z/candidate-review-cp1-e02-accepted-completed/conformance-observations/D-02-sdk-loopback-finalized-cp1-e02-accepted.json"
+  },
+  {
+    "fixture": "D-05-sdk-loopback-retry-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-05-sdk-loopback-retry-cp1-e02-accepted.json",
+    "review": "Reviewed SdkLoopbackTest source assertions and preserved WP2 wire observation: exact status/body, finalized event, Tail and absent invocation type, and exact protocol attempt count. No expectation derived from new runner output. Unchanged production constructor uses only runner-owned loopback endpoint and dummy property credentials; Java test Listeners plugin makes proposed Rust Init reject under C-10. No Rust downstream transport credit.",
+    "javaBehaviorAsserted": [
+      "D-05"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "validation": "passed focused workflow 20261011T004653.924415Z",
+    "archivedSource": "/home/steve/artifacts/implementation/light-lambda/WP2/e02-amendment-20261010T201042.738620Z/candidate-review-cp1-e02-accepted-completed/conformance-observations/D-05-sdk-loopback-retry-cp1-e02-accepted.json"
+  },
+  {
+    "fixture": "D-01-sdk-loopback-404-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-01-sdk-loopback-404-cp1-e02-accepted.json",
+    "review": "Reviewed SdkLoopbackTest source assertions and preserved WP2 wire observation: exact status/body, finalized event, Tail and absent invocation type, and exact protocol attempt count. No expectation derived from new runner output. Unchanged production constructor uses only runner-owned loopback endpoint and dummy property credentials; Java test Listeners plugin makes proposed Rust Init reject under C-10. No Rust downstream transport credit.",
+    "javaBehaviorAsserted": [
+      "D-01",
+      "D-05"
+    ],
+    "proposedRustBehaviorReached": [
+      "C-10"
+    ],
+    "rustExecutionEvidence": null,
+    "validation": "passed focused workflow 20261011T004653.924415Z",
+    "archivedSource": "/home/steve/artifacts/implementation/light-lambda/WP2/e02-amendment-20261010T201042.738620Z/candidate-review-cp1-e02-accepted-completed/conformance-observations/D-01-sdk-loopback-404-cp1-e02-accepted.json"
+  }
+]

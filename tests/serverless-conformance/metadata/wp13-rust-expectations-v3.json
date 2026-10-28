@@ -1,0 +1,324 @@
+{
+  "schema": "light-lambda-rust-expectations/v3",
+  "sourcePackageSha256": "17d4a2261c8e232b68ed3dd8d8a6b1dec60a8d5dd4c2aa6abf0a339a105c4b1f",
+  "proposals": [
+    {
+      "id": "D-06-typed-sdk-0-multi-contract-v1",
+      "originalFixtureDigest": "5812e34ff3522605a6e4d2d33457a70e589ddda1218a95a18eb3e94babed44c3",
+      "originalExpected": [
+        {
+          "outcome": "response",
+          "status": 502,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":502,\"code\":\"ERR14014\",\"message\":\"BACKEND_FUNCTION_ERROR\",\"description\":\"Backend function FnX failed.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "jwksFetches": 0,
+          "backendCalls": [
+            {
+              "target": "FnX",
+              "event": {
+                "path": "/x",
+                "httpMethod": "GET",
+                "body": null,
+                "isBase64Encoded": false,
+                "requestContext": {
+                  "stage": "test-only"
+                }
+              },
+              "eventExact": {
+                "headers": null,
+                "multiValueHeaders": null,
+                "queryStringParameters": null,
+                "multiValueQueryStringParameters": null,
+                "pathParameters": null
+              },
+              "invoke": {
+                "logType": "None"
+              }
+            }
+          ]
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "outcome": "response",
+          "status": 502,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":502,\"code\":\"ERR14014\",\"message\":\"BACKEND_FUNCTION_ERROR\",\"description\":\"Backend function function0 failed.\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "jwksFetches": 0,
+          "backendCalls": [
+            {
+              "target": "FnX",
+              "event": {
+                "path": "/x",
+                "httpMethod": "GET",
+                "body": null,
+                "isBase64Encoded": false,
+                "requestContext": {
+                  "stage": "test-only"
+                }
+              },
+              "eventExact": {
+                "headers": null,
+                "multiValueHeaders": null,
+                "queryStringParameters": null,
+                "multiValueQueryStringParameters": null,
+                "pathParameters": null
+              },
+              "invoke": {
+                "logType": "None"
+              }
+            }
+          ]
+        }
+      ],
+      "approvedExpectationDifferenceFields": [
+        "backendCalls",
+        "body",
+        "status"
+      ],
+      "authority": "Owner approved all four exact proposals in this session; no production behavior changes authorized by this amendment",
+      "status": "approved-active-v3"
+    },
+    {
+      "id": "S-14-enableMockJwt-explicit-test-override-contract-v1",
+      "originalFixtureDigest": "7b86738e0a147f3df7a87543fd204dfb0a77806c0b0c910c6de9abd824e8cc7d",
+      "originalExpected": [
+        {
+          "outcome": "response",
+          "status": 200,
+          "headers": [],
+          "headersAbsent": [],
+          "body": "ok",
+          "bodyBase64": false,
+          "jwksFetches": 0,
+          "backendCalls": [
+            {
+              "target": "FnX",
+              "event": {
+                "path": "/x",
+                "httpMethod": "GET",
+                "isBase64Encoded": false,
+                "body": null,
+                "requestContext": {
+                  "stage": "test-only"
+                }
+              },
+              "eventExact": {
+                "headers": null,
+                "multiValueHeaders": null,
+                "queryStringParameters": null,
+                "multiValueQueryStringParameters": null,
+                "pathParameters": null
+              }
+            }
+          ],
+          "jwksCalls": []
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "outcome": "response",
+          "status": 200,
+          "headers": [],
+          "headersAbsent": [],
+          "body": "ok",
+          "bodyBase64": false,
+          "jwksFetches": 0,
+          "backendCalls": [
+            {
+              "target": "FnX",
+              "event": {
+                "path": "/pets/fixed",
+                "httpMethod": "GET",
+                "isBase64Encoded": false,
+                "body": null,
+                "requestContext": {
+                  "stage": "test-only"
+                }
+              },
+              "eventExact": {
+                "headers": null,
+                "multiValueHeaders": null,
+                "queryStringParameters": {
+                  "a": "2"
+                },
+                "multiValueQueryStringParameters": {
+                  "a": [
+                    "1",
+                    "2"
+                  ]
+                },
+                "pathParameters": null
+              }
+            }
+          ],
+          "jwksCalls": []
+        }
+      ],
+      "approvedExpectationDifferenceFields": [
+        "backendCalls",
+        "jwksFetches"
+      ],
+      "authority": "Owner approved all four exact proposals in this session; no production behavior changes authorized by this amendment",
+      "status": "approved-active-v3",
+      "originalRustInit": {
+        "outcome": "initSuccess",
+        "backendCalls": [],
+        "jwksFetches": 1,
+        "jwksCalls": [
+          {
+            "target": "jwks",
+            "method": "GET",
+            "uri": "/jwks"
+          }
+        ]
+      },
+      "proposedRustInit": {
+        "outcome": "initSuccess",
+        "backendCalls": [],
+        "jwksFetches": 0,
+        "jwksCalls": []
+      }
+    },
+    {
+      "id": "S-14-ignoreJwtExpiry-explicit-test-override-contract-v1",
+      "originalFixtureDigest": "9dc7e20018e2fee34e090da1af7cacb924068310a86340d436ed3a62f1db2d1f",
+      "originalExpected": [
+        {
+          "outcome": "response",
+          "status": 200,
+          "headers": [],
+          "headersAbsent": [],
+          "body": "ok",
+          "bodyBase64": false,
+          "jwksFetches": 0,
+          "backendCalls": [
+            {
+              "target": "FnX",
+              "event": {
+                "path": "/x",
+                "httpMethod": "GET",
+                "isBase64Encoded": false,
+                "body": null,
+                "requestContext": {
+                  "stage": "test-only"
+                }
+              },
+              "eventExact": {
+                "headers": null,
+                "multiValueHeaders": null,
+                "queryStringParameters": null,
+                "multiValueQueryStringParameters": null,
+                "pathParameters": null
+              }
+            }
+          ],
+          "jwksCalls": []
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "outcome": "response",
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "jwksFetches": 0,
+          "backendCalls": [],
+          "jwksCalls": []
+        }
+      ],
+      "approvedExpectationDifferenceFields": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "status"
+      ],
+      "authority": "Owner approved all four exact proposals in this session; no production behavior changes authorized by this amendment",
+      "status": "approved-active-v3"
+    },
+    {
+      "id": "S-14-logJwtToken-explicit-test-override-contract-v1",
+      "originalFixtureDigest": "7e60802bf38614993a02639135a959afb663c81e5f7471c9c81718c9a1997633",
+      "originalExpected": [
+        {
+          "outcome": "response",
+          "status": 200,
+          "headers": [],
+          "headersAbsent": [],
+          "body": "ok",
+          "bodyBase64": false,
+          "jwksFetches": 0,
+          "backendCalls": [
+            {
+              "target": "FnX",
+              "event": {
+                "path": "/x",
+                "httpMethod": "GET",
+                "isBase64Encoded": false,
+                "body": null,
+                "requestContext": {
+                  "stage": "test-only"
+                }
+              },
+              "eventExact": {
+                "headers": null,
+                "multiValueHeaders": null,
+                "queryStringParameters": null,
+                "multiValueQueryStringParameters": null,
+                "pathParameters": null
+              }
+            }
+          ],
+          "jwksCalls": []
+        }
+      ],
+      "proposedVersionedRustExpectation": [
+        {
+          "outcome": "response",
+          "status": 401,
+          "headers": [
+            [
+              "content-type",
+              "application/json"
+            ]
+          ],
+          "headersAbsent": [],
+          "body": "{\"statusCode\":401,\"code\":\"ERR10002\",\"message\":\"MISSING_AUTH_TOKEN\",\"description\":\"No Authorization header or the token is not bearer type\",\"severity\":\"ERROR\"}",
+          "bodyBase64": false,
+          "jwksFetches": 0,
+          "backendCalls": [],
+          "jwksCalls": []
+        }
+      ],
+      "approvedExpectationDifferenceFields": [
+        "backendCalls",
+        "body",
+        "header:content-type",
+        "status"
+      ],
+      "authority": "Owner approved all four exact proposals in this session; no production behavior changes authorized by this amendment",
+      "status": "approved-active-v3"
+    }
+  ]
+}

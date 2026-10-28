@@ -1,0 +1,17 @@
+{
+  "path": "/hello",
+  "httpMethod": "GET",
+  "multiValueHeaders": {
+    "Accept": [
+      "application/json"
+    ]
+  },
+  "multiValueQueryStringParameters": {},
+  "body": null,
+  "isBase64Encoded": false,
+  "requestContext": {
+    "elb": {
+      "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0000000000000000"
+    }
+  }
+}

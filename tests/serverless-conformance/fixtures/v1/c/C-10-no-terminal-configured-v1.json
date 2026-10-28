@@ -1,0 +1,103 @@
+{
+  "schema": "light-lambda-conformance/fixture/v1",
+  "id": "C-10-no-terminal-configured-v1",
+  "title": "C-10-no-terminal exact configured Java pipeline",
+  "ledger": [
+    "C-10"
+  ],
+  "config": {
+    "values": {
+      "light-lambda.stage": "test-only"
+    },
+    "files": {
+      "lambda-proxy": {
+        "enabled": true,
+        "metricsInjection": false,
+        "logType": "Tail",
+        "functions": {
+          "/x@get": "FnX",
+          "/x@options": "FnX"
+        }
+      },
+      "values": {},
+      "lambda-app": {
+        "lambdaAppId": "test-only-gateway",
+        "encodeBase64Request": false,
+        "encodeBase64Response": false
+      },
+      "handler": {
+        "handlers": [
+          "com.networknt.aws.lambda.handler.middleware.correlation.CorrelationMiddleware@correlation"
+        ],
+        "chains": {},
+        "paths": [],
+        "defaultHandlers": [
+          "correlation"
+        ]
+      },
+      "correlation": {
+        "enabled": true,
+        "autogenCorrelationID": false
+      }
+    }
+  },
+  "clock": {
+    "mode": "relative-wall",
+    "description": "No virtual limiter clock. Exact duration-string RateLimit-Reset is not a timestamp."
+  },
+  "keys": {},
+  "tokens": {},
+  "substitutions": [],
+  "nondeterministic": [],
+  "javaOnly": false,
+  "rustOnly": false,
+  "differences": [
+    "outcome",
+    "status",
+    "body",
+    "bodyBase64",
+    "backendCalls",
+    "header:content-type",
+    "header:x-backend",
+    "header:ratelimit-limit",
+    "header:ratelimit-remaining",
+    "header:ratelimit-reset"
+  ],
+  "steps": [
+    {
+      "rawEvent": {
+        "requestContext": {
+          "elb": {
+            "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/test-only/0"
+          }
+        },
+        "httpMethod": "GET",
+        "path": "/x",
+        "headers": {},
+        "queryStringParameters": {},
+        "body": null,
+        "isBase64Encoded": false
+      },
+      "backend": [],
+      "expectJava": {
+        "outcome": "exception",
+        "phase": "invocation",
+        "class": "com.networknt.aws.lambda.exception.LambdaExchangeStateException",
+        "backendCalls": [],
+        "jwksFetches": 0
+      },
+      "expect": {
+        "outcome": "notExecuted",
+        "reason": "initError",
+        "backendCalls": [],
+        "jwksFetches": 0
+      }
+    }
+  ],
+  "expectRustInit": {
+    "outcome": "initError",
+    "code": "InvalidConfiguration",
+    "backendCalls": [],
+    "jwksFetches": 0
+  }
+}

@@ -1,0 +1,178 @@
+[
+  {
+    "id": "R-01-literal-duplicate-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/R-01-literal-duplicate-cp1-e02-accepted.json",
+    "decision": "Malformed and duplicate mapping config preserved. Rust Init rejection is a distinct outcome; Java assertions retained, including deliberately synthetic pathParameters (not a captured ALB field)."
+  },
+  {
+    "id": "R-03-query-overwrite-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/R-03-query-overwrite-cp1-e02-accepted.json",
+    "decision": "Malformed and duplicate mapping config preserved. Rust Init rejection is a distinct outcome; Java assertions retained, including deliberately synthetic pathParameters (not a captured ALB field)."
+  },
+  {
+    "id": "R-05-missing-route-0-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/R-05-missing-route-0-cp1-e02-accepted.json",
+    "decision": "Malformed and duplicate mapping config preserved. Rust Init rejection is a distinct outcome; Java assertions retained, including deliberately synthetic pathParameters (not a captured ALB field)."
+  },
+  {
+    "id": "R-05-missing-route-1-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/R-05-missing-route-1-cp1-e02-accepted.json",
+    "decision": "Malformed and duplicate mapping config preserved. Rust Init rejection is a distinct outcome; Java assertions retained, including deliberately synthetic pathParameters (not a captured ALB field)."
+  },
+  {
+    "id": "R-05-missing-route-2-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/R-05-missing-route-2-cp1-e02-accepted.json",
+    "decision": "Malformed and duplicate mapping config preserved. Rust Init rejection is a distinct outcome; Java assertions retained, including deliberately synthetic pathParameters (not a captured ALB field)."
+  },
+  {
+    "id": "R-04-null-path-parameters-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/R-04-null-path-parameters-cp1-e02-accepted.json",
+    "decision": "Assert the recorded Java exception class/phase and zero dispatch. No message assertion invented where WP2 recorded none. Raw input unchanged; Java maps are not repaired. Single-mode Rust rejection remains explicit E-13."
+  },
+  {
+    "id": "R-04-null-query-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/R-04-null-query-cp1-e02-accepted.json",
+    "decision": "Assert the recorded Java exception class/phase and zero dispatch. No message assertion invented where WP2 recorded none. Raw input unchanged; Java maps are not repaired. Single-mode Rust rejection remains explicit E-13."
+  },
+  {
+    "id": "C-10-self-cycle-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-10-self-cycle-init-cp1-e02-accepted.json",
+    "decision": "Init-only case. No HTTP response or invocation is fabricated."
+  },
+  {
+    "id": "C-10-unknown-alias-init-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-10-unknown-alias-init-cp1-e02-accepted.json",
+    "decision": "Init-only case. No HTTP response or invocation is fabricated."
+  },
+  {
+    "id": "E-02-nonoverlap-multi-fidelity-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/E-02-nonoverlap-multi-fidelity-cp1-e02-accepted.json",
+    "decision": "Equivalent response-map fidelity assertion; Rust backend event is an explicit subset, not complete metadata equality. Raw query arrays retain order and encoded values."
+  },
+  {
+    "id": "C-06-body-on-1-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-06-body-on-1-cp1-e02-accepted.json",
+    "decision": "Encoding flags and exact body bytes asserted separately, based on already-approved C-06/E-03 behavior and E-13 single-value rejection."
+  },
+  {
+    "id": "C-06-body-on-2-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-06-body-on-2-cp1-e02-accepted.json",
+    "decision": "Encoding flags and exact body bytes asserted separately, based on already-approved C-06/E-03 behavior and E-13 single-value rejection."
+  },
+  {
+    "id": "C-06-body-on-3-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-06-body-on-3-cp1-e02-accepted.json",
+    "decision": "Encoding flags and exact body bytes asserted separately, based on already-approved C-06/E-03 behavior and E-13 single-value rejection."
+  },
+  {
+    "id": "C-06-body-on-4-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/C-06-body-on-4-cp1-e02-accepted.json",
+    "decision": "Encoding flags and exact body bytes asserted separately, based on already-approved C-06/E-03 behavior and E-13 single-value rejection."
+  },
+  {
+    "id": "E-02-response-cookies-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/E-02-response-cookies-cp1-e02-accepted.json",
+    "decision": "Encoding flags and exact body bytes asserted separately, based on already-approved C-06/E-03 behavior and E-13 single-value rejection."
+  },
+  {
+    "id": "E-03-response-off-4-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/E-03-response-off-4-cp1-e02-accepted.json",
+    "decision": "Encoding flags and exact body bytes asserted separately, based on already-approved C-06/E-03 behavior and E-13 single-value rejection."
+  },
+  {
+    "id": "X-02-java-info-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/X-02-java-info-cp1-e02-accepted.json",
+    "sourceSha256": "9abc94027067d1c65b16834d484f67f92eb680bbabb08187031050b4abae6652",
+    "decision": "Java stable fields retain the archived WP2 JSON assertion snapshot, including complete ModuleRegistry configuration and environmental fields; source configuration independently reconstructed from AdminTest.configure. Only the three owner-approved heap fields use fixed-path constraints. No current runner output generated expectations. Rust expects only E-13 ingress rejection; X-02/X-02a downstream Rust behavior is not reached. Stable environment/version fields can legitimately fail after environment drift and are not excluded."
+  },
+  {
+    "id": "D-06-nonobject-0-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-06-nonobject-0-cp1-e02-accepted.json",
+    "sourceSha256": "7d51f40a297d0b976a88e3b77661fc32c487ce901707f463b2b7bfe31e1d0256",
+    "decision": "Reviewed ResponseShapesTest/InvocationTest and CharacterizationSupport.install/Listeners. Preserve archived exception class/phase or serialized status 999; backend call target/count and request subset asserted. Payload strings independently transcribed from characterization source, not current runner output. No exception message invented. Listener plugin retained for InvocationTest setup; Rust rejects unknown compatibility class at Init, not dispatcher behavior."
+  },
+  {
+    "id": "D-06-nonobject-1-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-06-nonobject-1-cp1-e02-accepted.json",
+    "sourceSha256": "bc4ef10daa0cba4f60e920beb8b14eee12d44e881c3cb81e51877b34a2bb4460",
+    "decision": "Reviewed ResponseShapesTest/InvocationTest and CharacterizationSupport.install/Listeners. Preserve archived exception class/phase or serialized status 999; backend call target/count and request subset asserted. Payload strings independently transcribed from characterization source, not current runner output. No exception message invented. Listener plugin retained for InvocationTest setup; Rust rejects unknown compatibility class at Init, not dispatcher behavior."
+  },
+  {
+    "id": "D-06-nonobject-2-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-06-nonobject-2-cp1-e02-accepted.json",
+    "sourceSha256": "f486a5ddae77a92d3dd99ecde774499f3db1a852031359e4d1d97e8de13f994f",
+    "decision": "Reviewed ResponseShapesTest/InvocationTest and CharacterizationSupport.install/Listeners. Preserve archived exception class/phase or serialized status 999; backend call target/count and request subset asserted. Payload strings independently transcribed from characterization source, not current runner output. No exception message invented. Listener plugin retained for InvocationTest setup; Rust rejects unknown compatibility class at Init, not dispatcher behavior."
+  },
+  {
+    "id": "D-06-malformed-response-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-06-malformed-response-cp1-e02-accepted.json",
+    "sourceSha256": "6ff6e09779bdf5bf59446ce3303874dcf2e5047a279148478be1d84e15cf62b8",
+    "decision": "Reviewed ResponseShapesTest/InvocationTest and CharacterizationSupport.install/Listeners. Preserve archived exception class/phase or serialized status 999; backend call target/count and request subset asserted. Payload strings independently transcribed from characterization source, not current runner output. No exception message invented. Listener plugin retained for InvocationTest setup; Rust rejects unknown compatibility class at Init, not dispatcher behavior."
+  },
+  {
+    "id": "D-03-error-json-exception-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-03-error-json-exception-cp1-e02-accepted.json",
+    "sourceSha256": "6658e52994405b399ffc644806b0357028da365321763c926218b92710cedf5b",
+    "decision": "Reviewed ResponseShapesTest/InvocationTest and CharacterizationSupport.install/Listeners. Preserve archived exception class/phase or serialized status 999; backend call target/count and request subset asserted. Payload strings independently transcribed from characterization source, not current runner output. No exception message invented. Listener plugin retained for InvocationTest setup; Rust rejects unknown compatibility class at Init, not dispatcher behavior."
+  },
+  {
+    "id": "D-06-status-out-of-range-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-06-status-out-of-range-cp1-e02-accepted.json",
+    "sourceSha256": "895bbec805da2495c704c327497bf278367ee9585f583d012fac26d9dc1145e4",
+    "decision": "Reviewed ResponseShapesTest/InvocationTest and CharacterizationSupport.install/Listeners. Preserve archived exception class/phase or serialized status 999; backend call target/count and request subset asserted. Payload strings independently transcribed from characterization source, not current runner output. No exception message invented. Listener plugin retained for InvocationTest setup; Rust rejects unknown compatibility class at Init, not dispatcher behavior."
+  },
+  {
+    "id": "D-01-typed-sdk-0-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-01-typed-sdk-0-cp1-e02-accepted.json",
+    "sourceSha256": "235cbc9c356d5f275c163c90065e92374d8f59356d6c8db43c2fe4d134a8566b",
+    "decision": "Reviewed TypedSdkFailureTest/InvocationTest source. Exact archived Java status/body/headers/event assertions retained. Failure recipes explicitly transcribed from test source; null SDK payload distinguished from JSON null. CapturingProxy binding replaced with existing production proxy plus WP2 injected fake client seam, preserving enablement/configuration. Listener plugin unchanged where installed. LogType Tail is explicitly asserted for D-04-tail. Rust reaches only recorded ingress rejection or unknown-plugin Init rejection; no Rust dispatcher evidence."
+  },
+  {
+    "id": "D-01-typed-sdk-1-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-01-typed-sdk-1-cp1-e02-accepted.json",
+    "sourceSha256": "99348ad9fd45dd6bf9b21d2f40d21eb821fc482923fb2cb4ffe995586a0a115b",
+    "decision": "Reviewed TypedSdkFailureTest/InvocationTest source. Exact archived Java status/body/headers/event assertions retained. Failure recipes explicitly transcribed from test source; null SDK payload distinguished from JSON null. CapturingProxy binding replaced with existing production proxy plus WP2 injected fake client seam, preserving enablement/configuration. Listener plugin unchanged where installed. LogType Tail is explicitly asserted for D-04-tail. Rust reaches only recorded ingress rejection or unknown-plugin Init rejection; no Rust dispatcher evidence."
+  },
+  {
+    "id": "D-01-typed-sdk-2-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-01-typed-sdk-2-cp1-e02-accepted.json",
+    "sourceSha256": "fb842faa34e8ecba7465da8f7d680e67c87f0729bd903db6da0abd7ea86b40f2",
+    "decision": "Reviewed TypedSdkFailureTest/InvocationTest source. Exact archived Java status/body/headers/event assertions retained. Failure recipes explicitly transcribed from test source; null SDK payload distinguished from JSON null. CapturingProxy binding replaced with existing production proxy plus WP2 injected fake client seam, preserving enablement/configuration. Listener plugin unchanged where installed. LogType Tail is explicitly asserted for D-04-tail. Rust reaches only recorded ingress rejection or unknown-plugin Init rejection; no Rust dispatcher evidence."
+  },
+  {
+    "id": "D-01-typed-sdk-3-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-01-typed-sdk-3-cp1-e02-accepted.json",
+    "sourceSha256": "188c55ec6bb6364604067d03453d303bdf37abcad7e1082439582fc9faaf03e1",
+    "decision": "Reviewed TypedSdkFailureTest/InvocationTest source. Exact archived Java status/body/headers/event assertions retained. Failure recipes explicitly transcribed from test source; null SDK payload distinguished from JSON null. CapturingProxy binding replaced with existing production proxy plus WP2 injected fake client seam, preserving enablement/configuration. Listener plugin unchanged where installed. LogType Tail is explicitly asserted for D-04-tail. Rust reaches only recorded ingress rejection or unknown-plugin Init rejection; no Rust dispatcher evidence."
+  },
+  {
+    "id": "D-01-sdk-exception-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-01-sdk-exception-cp1-e02-accepted.json",
+    "sourceSha256": "dad54db78a7c1aba815dd7b7253c6cbea153411c9f06e70778935d2b75bb1d74",
+    "decision": "Reviewed TypedSdkFailureTest/InvocationTest source. Exact archived Java status/body/headers/event assertions retained. Failure recipes explicitly transcribed from test source; null SDK payload distinguished from JSON null. CapturingProxy binding replaced with existing production proxy plus WP2 injected fake client seam, preserving enablement/configuration. Listener plugin unchanged where installed. LogType Tail is explicitly asserted for D-04-tail. Rust reaches only recorded ingress rejection or unknown-plugin Init rejection; no Rust dispatcher evidence."
+  },
+  {
+    "id": "D-01-null-payload-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-01-null-payload-cp1-e02-accepted.json",
+    "sourceSha256": "b6e94dfcb3871b2d42d4b5bf1e6aa19a2dddd769254452ca656102b5ca4cb9f3",
+    "decision": "Reviewed TypedSdkFailureTest/InvocationTest source. Exact archived Java status/body/headers/event assertions retained. Failure recipes explicitly transcribed from test source; null SDK payload distinguished from JSON null. CapturingProxy binding replaced with existing production proxy plus WP2 injected fake client seam, preserving enablement/configuration. Listener plugin unchanged where installed. LogType Tail is explicitly asserted for D-04-tail. Rust reaches only recorded ingress rejection or unknown-plugin Init rejection; no Rust dispatcher evidence."
+  },
+  {
+    "id": "D-04-tail-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-04-tail-cp1-e02-accepted.json",
+    "sourceSha256": "559393c58b51dc918ae9826fdbcff07e1c24740a5f46c629d97abe34e48125c1",
+    "decision": "Reviewed TypedSdkFailureTest/InvocationTest source. Exact archived Java status/body/headers/event assertions retained. Failure recipes explicitly transcribed from test source; null SDK payload distinguished from JSON null. CapturingProxy binding replaced with existing production proxy plus WP2 injected fake client seam, preserving enablement/configuration. Listener plugin unchanged where installed. LogType Tail is explicitly asserted for D-04-tail. Rust reaches only recorded ingress rejection or unknown-plugin Init rejection; no Rust dispatcher evidence."
+  },
+  {
+    "id": "D-03-function-error-proxy-shape-v1",
+    "source": "/home/steve/workspace/light-lambda-native-conformance/target/conformance-observations/D-03-function-error-proxy-shape-cp1-e02-accepted.json",
+    "sourceSha256": "8ef7303a5d1fbaed21249a471737ca7939153c3838367a8d835d4ad1e6137fb0",
+    "decision": "Reviewed TypedSdkFailureTest/InvocationTest source. Exact archived Java status/body/headers/event assertions retained. Failure recipes explicitly transcribed from test source; null SDK payload distinguished from JSON null. CapturingProxy binding replaced with existing production proxy plus WP2 injected fake client seam, preserving enablement/configuration. Listener plugin unchanged where installed. LogType Tail is explicitly asserted for D-04-tail. Rust reaches only recorded ingress rejection or unknown-plugin Init rejection; no Rust dispatcher evidence."
+  },
+  {
+    "id": "E-02-nonoverlap-multi-fidelity-v1",
+    "source": "/home/steve/workspace/light-fabric-light-lambda/tests/serverless-conformance/review/held/E-02-nonoverlap-multi-fidelity-v1.json",
+    "sourceSha256": "897c3f2069defc970004c83b9b75bceacbbf380aeb9cff94e518ee3824694a53",
+    "decision": "Held Java draft retained unchanged as historical review evidence. Approved E-02a already covers lowercase Rust encoding; not a new owner-approval blocker. Java exact responseMaps preserved. Rust response/forwarded-event expectations authored from approved plan 5.3/5.6 with lowercase names, last-value single maps, and ordered repeated multi maps. No per-runner input changes; original raw multi ALB envelope retained."
+  }
+]
