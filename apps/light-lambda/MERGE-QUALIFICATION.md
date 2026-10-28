@@ -212,3 +212,14 @@ Local validation: the initial wp13_families run passed 57/57; the final run afte
 the concurrent-entry adjustment passed 57/57 in 98.50 seconds. Core deadline and
 deadline_scheduling tests passed 7/7. Workspace formatting and git diff whitespace
 checks passed. Remote full-workspace CI remains pending for this repair.
+
+## Token-provider timeout fixture cancellation repair
+
+Run 40725727641 stopped in serverless-core wp12_token before reaching D-08e.
+The timeout provider accepted a TCP connection but read EOF: the production
+20 ms request deadline cancelled the HTTP operation before request bytes arrived.
+The fixture now accepts no connection or EOF only in its timeout branch, with a
+bounded one-second accept wait. Non-timeout denial/redirect branches still require
+both a connection and request bytes. All status/code, privacy, zero-dispatch,
+response-entry and finalization assertions and the production deadline are kept.
+Local full serverless-core validation passed 192 tests across 36 suites.

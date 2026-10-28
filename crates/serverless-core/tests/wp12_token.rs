@@ -160,9 +160,20 @@ async fn real_pipeline_provider_denials_redirect_and_timeout_never_dispatch() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
+            let connection = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await;
+            let Ok(connection) = connection else {
+                assert!(delay > 0, "non-timeout provider must receive a connection");
+                return;
+            };
+            let (mut stream, _) = connection.unwrap();
             let mut bytes = [0; 4096];
-            assert!(stream.read(&mut bytes).await.unwrap() > 0);
+            let received = stream.read(&mut bytes).await.unwrap();
+            if received == 0 {
+                // The request deadline can cancel after connect but before HTTP
+                // bytes are sent. That is a valid outcome only for this timeout.
+                assert!(delay > 0, "non-timeout provider must receive request bytes");
+                return;
+            }
             tokio::time::sleep(Duration::from_millis(delay)).await;
             let _=stream.write_all(format!("HTTP/1.1 {status} Reply\r\nLocation: {location}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await;
         });
