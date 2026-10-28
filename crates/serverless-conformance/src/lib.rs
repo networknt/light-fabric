@@ -14,6 +14,7 @@ mod legacy_correlation;
 mod logging_component;
 mod panic_component;
 mod policy_observer;
+mod probe_timing;
 mod reporting_component;
 mod router_failed_component;
 mod single_runner;

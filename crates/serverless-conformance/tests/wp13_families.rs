@@ -23,7 +23,11 @@ async fn run(id: &str) -> Value {
     )
     .unwrap();
     serverless_conformance::schema_validate(&schema, &r).unwrap();
-    assert_eq!(r["execution"], "passed", "{id}: {}", r["assertionErrors"]);
+    assert_eq!(
+        r["execution"], "passed",
+        "{id}: {}; timing: {}",
+        r["assertionErrors"], r["boundedWorkTiming"]
+    );
     r
 }
 
@@ -35,6 +39,7 @@ async fn concurrent_response_timeout_emissions_keep_independent_probe_and_depend
         }))
         .await;
     for result in results {
+        eprintln!("D-08e timing: {}", result["boundedWorkTiming"]);
         let observation = &result["observations"][0];
         assert_eq!(observation["boundedWorkProbeExecutions"], 1);
         assert_eq!(observation["backendCalls"].as_array().unwrap().len(), 1);

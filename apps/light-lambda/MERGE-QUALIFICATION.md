@@ -117,3 +117,26 @@ then failed because Linux compilation had not downloaded a pinned Android-only
 crate. CI now runs `cargo fetch --locked` before checks to populate the complete
 all-target metadata graph. The boundary test remains offline and unchanged;
 there are no exclusions, relaxed assertions or dependency-version updates.
+
+## D-08e remote recurrence and timing investigation
+
+Run 40667543846 at aa494c9 passed four jobs, including the repaired offline
+boundary check, but Rust CI reproduced the retained D-08e count failure:
+56 wp13_families tests passed and one failed, expecting one response-probe entry
+and observing zero. This remains a merge blocker, not a waived or repaired test.
+
+The runner now records a bounded, per-invocation monotonic timing witness at
+service start/return, fake Invoke receipt/response preparation and response-probe
+entry/completion. The result schema admits only enumerated phases, elapsed times,
+step and budget. No event contents or credentials are collected. This witness is
+separate from response expectations and is not raw SDK-wire proof. Failure messages
+include it. No fixture, digest, assertion, deadline or production code is changed.
+
+The first observed local run passed all 57 wp13_families tests. Four D-08e copies
+received Invoke at 15-27 ms and entered the probe at 16-28 ms, within the nominal
+40 ms response deadline. This passing run does not establish the earlier CI cause.
+A new paused-clock component control proves that resuming after that deadline
+correctly produces one backend call, zero response entries and one finalization.
+It supplements rather than replaces the wall-clock fixture. Deterministic fixture
+timing and exact attribution of the CI failure remain open; no retries, broader
+serialization, tolerance expansion or count normalization have been applied.

@@ -19,6 +19,7 @@ use std::time::Duration;
 pub(crate) struct Work {
     entries: AtomicUsize,
     pub counts: Arc<crate::policy_observer::Counts>,
+    pub timing: Arc<crate::probe_timing::Timeline>,
     failure: Option<String>,
 }
 impl Work {
@@ -59,9 +60,11 @@ impl ResponseHandler for Work {
         _: &mut GatewayResponse,
     ) -> Result<(), HandlerFailure> {
         self.entries.fetch_add(1, Ordering::SeqCst);
+        self.timing.record("response-enter");
         self.counts.entry();
         tokio::time::sleep(Duration::from_millis(100)).await;
         self.counts.complete();
+        self.timing.record("response-complete");
         Ok(())
     }
 }

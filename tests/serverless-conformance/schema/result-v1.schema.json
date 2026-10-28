@@ -90,6 +90,58 @@
         }
       }
     },
+    "boundedWorkTiming": {
+      "description": "Optional bounded runner phase timings; not response equality or SDK-wire proof.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "step",
+          "budgetMs",
+          "events"
+        ],
+        "properties": {
+          "step": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "budgetMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 900000
+          },
+          "events": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "phase",
+                "elapsedUs"
+              ],
+              "properties": {
+                "phase": {
+                  "enum": [
+                    "service-start",
+                    "invoke-received",
+                    "invoke-response-ready",
+                    "response-enter",
+                    "response-complete",
+                    "service-return"
+                  ]
+                },
+                "elapsedUs": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "invocationWindows": {
       "type": "array",
       "items": {

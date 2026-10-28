@@ -20,6 +20,7 @@ struct WireState {
     invoke: bool,
     sdk_http: bool,
     base: String,
+    timing: Mutex<Option<Arc<crate::probe_timing::Timeline>>>,
 }
 pub(crate) struct Dependency {
     pub url: String,
@@ -32,6 +33,9 @@ impl Drop for Dependency {
     }
 }
 impl Dependency {
+    pub fn observe_timing(&self, timing: Arc<crate::probe_timing::Timeline>) {
+        *self.state.timing.lock().unwrap() = Some(timing);
+    }
     pub fn calls(&self) -> Vec<Value> {
         self.state.calls.lock().unwrap().clone()
     }
@@ -51,6 +55,7 @@ impl Dependency {
             invoke: false,
             sdk_http: false,
             base: url.clone(),
+            timing: Mutex::new(None),
         });
         let task = tokio::spawn(async move {
             let _socket = socket;
@@ -90,8 +95,13 @@ impl Dependency {
             invoke,
             sdk_http,
             base: url.clone(),
+            timing: Mutex::new(None),
         });
         async fn handle(State(s): State<Arc<WireState>>, request: Request) -> Response {
+            let timing = s.timing.lock().unwrap().clone();
+            if let Some(timing) = &timing {
+                timing.record("invoke-received");
+            }
             let (parts, body) = request.into_parts();
             let body = match to_bytes(body, 8_000_000).await {
                 Ok(body) => body,
@@ -225,6 +235,9 @@ impl Dependency {
             };
             if let Some(ms) = reply["delayMs"].as_u64() {
                 tokio::time::sleep(Duration::from_millis(ms)).await;
+            }
+            if let Some(timing) = &timing {
+                timing.record("invoke-response-ready");
             }
             (
                 http::StatusCode::from_u16(status).unwrap(),
@@ -428,6 +441,9 @@ pub async fn run(f: &Value, revision: &str) -> Result<Value> {
     let blocking_probe = crate::blocking_probe::configure(f, &mut config)?;
     let completion_probe = crate::completion_probe::configure(f, &mut config)?;
     let work = crate::bounded_work::configure(f, &mut config)?;
+    if let Some(work) = &work {
+        invoke.observe_timing(work.timing.clone());
+    }
     let files = config["files"].as_object().context("config files")?;
     for (name, value) in files {
         ensure!(
@@ -552,6 +568,7 @@ pub async fn run(f: &Value, revision: &str) -> Result<Value> {
     let snapshot = light_lambda_runtime::init::initialize(input).await;
     let mut observations = vec![];
     let mut invocation_windows = vec![];
+    let mut bounded_work_timing = vec![];
     let mut signing_epochs = vec![];
     let mut errors = vec![];
     let mut initialization = None;
@@ -683,6 +700,9 @@ pub async fn run(f: &Value, revision: &str) -> Result<Value> {
                 let remaining = recipe
                     .and_then(|c| c["remainingTimeMs"].as_u64())
                     .unwrap_or(10_000);
+                if let Some(work) = &work {
+                    work.timing.begin(remaining);
+                }
                 context.deadline = (SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis()
                     as u64)
                     .checked_add(remaining)
@@ -698,7 +718,11 @@ pub async fn run(f: &Value, revision: &str) -> Result<Value> {
                     if copies > 1 {
                         context.request_id = format!("test-only-request-{copy}");
                     }
+                    let timing = work.as_ref().map(|work| work.timing.clone());
                     async move {
+                        if let Some(timing) = &timing {
+                            timing.record("service-start");
+                        }
                         light_lambda_runtime::service::handle_with_guard(
                             snapshot,
                             lambda_runtime::LambdaEvent::new(event, context),
@@ -711,6 +735,10 @@ pub async fn run(f: &Value, revision: &str) -> Result<Value> {
                 .await
                 .into_iter()
                 .collect::<Result<Vec<_>>>()?;
+                if let Some(work) = &work {
+                    work.timing.record("service-return");
+                    bounded_work_timing.push(work.timing.observation(index));
+                }
                 let response = &responses[0];
                 let invocation_duration = invocation_start.elapsed().as_millis() as u64;
                 let window = json!({"step":index,"startEpochMs":window_start,"endEpochMs":SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64});
@@ -828,6 +856,9 @@ pub async fn run(f: &Value, revision: &str) -> Result<Value> {
         errors.extend(http.errors());
     }
     let mut result = json!({"schema":"light-lambda-conformance/result/v1","id":f["id"],"runner":"rust","runnerRevision":revision,"fixtureDigest":crate::fixture_digest(f)?,"execution":if errors.is_empty(){"passed"}else{"failed"},"durationMs":start.elapsed().as_millis() as u64,"observations":observations,"assertionErrors":errors});
+    if !bounded_work_timing.is_empty() {
+        result["boundedWorkTiming"] = json!(bounded_work_timing);
+    }
     if let Some(actual) = initialization {
         result["initialization"] = actual;
     }
