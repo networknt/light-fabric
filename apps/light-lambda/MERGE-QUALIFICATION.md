@@ -111,3 +111,9 @@ linking, before test assertions. Its logs are retained. The Rust CI job now
 uses the locally qualified no-debug-symbol/nonincremental settings and two build
 jobs, with a separate cache prefix to avoid restoring large debug-enabled caches.
 Debug assertions, test selection, fixture expectations and deadlines are unchanged.
+
+A subsequent remote run reached the unchanged offline dependency-boundary test,
+then failed because Linux compilation had not downloaded a pinned Android-only
+crate. CI now runs `cargo fetch --locked` before checks to populate the complete
+all-target metadata graph. The boundary test remains offline and unchanged;
+there are no exclusions, relaxed assertions or dependency-version updates.

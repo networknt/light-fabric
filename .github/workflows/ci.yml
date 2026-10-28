@@ -89,6 +89,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: light-fabric-ci-debug0-v1
+      - name: Fetch locked graph for offline dependency-boundary checks
+        # Metadata inspects all target dependencies, including non-Linux crates.
+        # Keep the boundary tests offline and unchanged; populate their inputs.
+        run: cargo fetch --locked
       - name: Formatting
         run: cargo fmt --all --check
       - name: Compile all targets
