@@ -40,6 +40,7 @@ WORKDIR /app
 
 COPY --from=builder --chown=gateway:gateway /out/light-gateway /app/light-gateway
 COPY --from=builder --chown=gateway:gateway /usr/src/app/apps/light-gateway/config/*.yml /app/config-defaults/
+COPY --from=builder --chown=gateway:gateway --chmod=0644 /usr/src/app/apps/light-gateway/config/ca.pem /config/ca.pem
 
 ENV GATEWAY_LOG_ANSI=false
 

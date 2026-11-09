@@ -66,16 +66,44 @@ spa-token-trust.microsoftApi.allowedClientIds: [33333333-3333-3333-3333-33333333
 ```
 
 Replace example authorities and application IDs with independently reviewed
-provider settings. There is no default trusted issuer or key endpoint. Stateless
-and social handlers need only `internal`. Exchange also needs `microsoftId`;
+provider settings. The framework has no implicit trusted issuer or key endpoint.
+Stateless and social handlers need only `internal`. Exchange also needs `microsoftId`;
 `microsoftApi` is mandatory only in azure-msal mode. Disabled/inactive handlers
 do not require their unused policies. An enabled handler fails startup when a
 required role or its CA configuration is invalid.
 
+The **gateway application template** opts into a complete `portalInternalDefaults`
+preset for existing Portal deployments without internal trust settings:
+
+- Issuer: `urn:com:networknt:oauth2:v1`
+- Audience: `urn:com.networknt`
+- JWKS: `https://light-oauth:6881/oauth2/AZZRJE52eXu3t1hseacnGQ/keys`
+- CA: `/config/ca.pem`; clock skew: 60 seconds
+
+This is a Portal Docker Compose preset, not a topology-independent authority.
+The gateway image packages its public CA at `/config/ca.pem`. A deployment that
+mounts a replacement `/config` directory must provide the appropriate CA there.
+A missing or invalid CA for the selected preset fails startup; it never disables
+TLS verification. Starting the server does not prove DNS/JWKS availability.
+Requests remain subject to the signing-source availability and validation rules
+below.
+
+The preset is selected only when there are no `spa-token-trust.internal.*`
+resolved-value overrides and the file's internal policy is otherwise empty.
+Any such override, including a CA or clock-skew override, requires a complete
+explicit issuer, audience and JWKS URI. Partial policies, unknown trust-property
+names and unknown YAML fields fail startup. Preset fields are never merged into
+an explicit policy. To use another topology, supply the complete internal policy
+shown above; a custom trust file can also omit `portalInternalDefaults` entirely.
+Microsoft ID/API policies never inherit the Portal preset.
+
 `jwksCaPaths` contains absolute paths to PEM CA bundles. Additional roots extend
 the client's default public roots, apply only to that source, and never inherit
-`client.yml` TLS relaxations. Direct MSAL uses `msal-auth.jwksCaPaths` for the same
-purpose. All JWKS URLs must be administrator-configured HTTPS endpoints without
+`client.yml` TLS relaxations. For an explicit policy, an unset or empty CA list
+uses public roots only; it does not inherit the Portal preset's CA. An explicitly
+configured missing/invalid CA still fails startup. Direct MSAL uses
+`msal-auth.jwksCaPaths` for the same purpose. All JWKS URLs must be independently
+reviewed HTTPS endpoints without
 credentials or fragments; redirects are disabled. Token-controlled `jku`, generic
 certificate routes and unrelated authorities with a colliding `kid` cannot select
 another signing source.
