@@ -16,7 +16,7 @@ pub const SPA_TOKEN_TRUST_FILE: &str = "spa-token-trust.yml";
 pub const SPA_TOKEN_TRUST_MODULE_ID: &str = "light-pingora/spa-token-trust";
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SpaTokenPolicy {
     #[serde(default)]
     pub issuer: String,
@@ -46,7 +46,7 @@ pub struct SpaTokenPolicy {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SpaTokenTrustConfig {
     #[serde(default)]
     pub internal: SpaTokenPolicy,
@@ -54,9 +54,6 @@ pub struct SpaTokenTrustConfig {
     pub microsoft_id: SpaTokenPolicy,
     #[serde(default)]
     pub microsoft_api: SpaTokenPolicy,
-    /// Optional application-owned whole-policy preset. Generic configs omit it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub portal_internal_defaults: Option<SpaTokenPolicy>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -308,42 +305,9 @@ pub(crate) fn load_spa_trust(
     id: bool,
     api: bool,
 ) -> Result<SpaTrustBundle, RuntimeError> {
-    // Unknown Portal property names must not silently activate the preset.
-    let fields = serde_json::to_value(SpaTokenPolicy::default())
-        .map_err(|_| RuntimeError::Unsupported("Invalid SPA token trust schema".into()))?;
-    for key in config.resolved_values.keys() {
-        if let Some(suffix) = key.strip_prefix("spa-token-trust.") {
-            let known = suffix.split_once('.').is_some_and(|(role, field)| {
-                matches!(role, "internal" | "microsoftId" | "microsoftApi")
-                    && fields.get(field).is_some()
-            });
-            if !known {
-                return Err(RuntimeError::Unsupported(
-                    "Unknown SPA token trust property".into(),
-                ));
-            }
-        }
-    }
-    let mut policies: SpaTokenTrustConfig = config
+    let policies: SpaTokenTrustConfig = config
         .module_registry
         .load_config(config, SPA_TOKEN_TRUST_FILE)?;
-    let internal_override = config
-        .resolved_values
-        .keys()
-        .any(|key| key.starts_with("spa-token-trust.internal."));
-    let empty_template_policy = SpaTokenPolicy {
-        clock_skew_seconds: 60,
-        ..Default::default()
-    };
-    if internal
-        && !internal_override
-        && (policies.internal == SpaTokenPolicy::default()
-            || policies.internal == empty_template_policy)
-    {
-        if let Some(defaults) = &policies.portal_internal_defaults {
-            policies.internal = defaults.clone();
-        }
-    }
     let mut sources: BTreeMap<(String, Vec<String>), Arc<JwksSource>> = BTreeMap::new();
     let mut build = |policy: &SpaTokenPolicy,
                      role: TokenRole,

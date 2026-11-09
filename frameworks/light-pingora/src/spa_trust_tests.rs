@@ -272,7 +272,6 @@ async fn selected_role_startup_validation_and_replacement_reset_source_state() {
         internal: policy(TokenRole::Internal, &server.uri),
         microsoft_id: policy(TokenRole::MicrosoftId, &server.uri),
         microsoft_api: policy(TokenRole::MicrosoftApi, &server.uri),
-        ..Default::default()
     };
     std::fs::write(
         dir.path().join(SPA_TOKEN_TRUST_FILE),
@@ -348,22 +347,25 @@ async fn selected_role_startup_validation_and_replacement_reset_source_state() {
 #[test]
 fn shipped_trust_template_supplies_portal_internal_defaults_for_startup() {
     let dir = tempfile::tempdir().unwrap();
-    let cfg = shipped_template_config(&dir);
+    let mut cfg = config(&dir);
+    std::fs::write(
+        dir.path().join(SPA_TOKEN_TRUST_FILE),
+        include_str!("../../../apps/light-gateway/config/spa-token-trust.yml"),
+    )
+    .unwrap();
     let policies: SpaTokenTrustConfig = cfg
         .module_registry
         .load_config(&cfg, SPA_TOKEN_TRUST_FILE)
         .unwrap();
-    assert!(policies.internal.issuer.is_empty());
-    let defaults = policies.portal_internal_defaults.as_ref().unwrap();
-    assert_eq!(defaults.issuer, "urn:com:networknt:oauth2:v1");
-    assert_eq!(defaults.audience, "urn:com.networknt");
+    assert_eq!(policies.internal.issuer, "urn:com:networknt:oauth2:v1");
+    assert_eq!(policies.internal.audience, "urn:com.networknt");
     assert_eq!(
-        defaults.jwks_uri,
+        policies.internal.jwks_uri,
         "https://light-oauth:6881/oauth2/AZZRJE52eXu3t1hseacnGQ/keys"
     );
-    assert_eq!(defaults.jwks_ca_paths, ["/config/ca.pem"]);
-    assert_eq!(defaults.clock_skew_seconds, 60);
-    defaults.validate(TokenRole::Internal).unwrap();
+    assert_eq!(policies.internal.jwks_ca_paths, ["/config/ca.pem"]);
+    assert_eq!(policies.internal.clock_skew_seconds, 60);
+    policies.internal.validate(TokenRole::Internal).unwrap();
     assert!(
         policies
             .microsoft_id
@@ -377,20 +379,18 @@ fn shipped_trust_template_supplies_portal_internal_defaults_for_startup() {
             .is_err()
     );
 
-    // Retarget the preset's packaged CA into this fixture's filesystem. Do not
-    // supply internal property overrides: those must disable the whole preset.
+    // The deployed CA mount is supplied at a temporary path for this fixture.
+    // Issuer, audience and JWKS URI still come only from the shipped defaults.
     let ca = dir.path().join("ca.pem");
     std::fs::write(
         &ca,
         include_str!("../../../apps/light-gateway/config/ca.pem"),
     )
     .unwrap();
-    std::fs::write(
-        dir.path().join(SPA_TOKEN_TRUST_FILE),
-        include_str!("../../../apps/light-gateway/config/spa-token-trust.yml")
-            .replace("/config/ca.pem", ca.to_str().unwrap()),
-    )
-    .unwrap();
+    cfg.resolved_values.insert(
+        "spa-token-trust.internal.jwksCaPaths".into(),
+        serde_yaml::Value::String(ca.to_str().unwrap().into()),
+    );
     std::fs::write(dir.path().join("statelessAuth.yml"), "enabled: true\n").unwrap();
     std::fs::write(dir.path().join("client.yml"), "{}\n").unwrap();
     assert!(
@@ -401,23 +401,34 @@ fn shipped_trust_template_supplies_portal_internal_defaults_for_startup() {
     assert!(load_spa_trust(&cfg, true, true, false).is_err());
 }
 
-fn shipped_template_config(dir: &tempfile::TempDir) -> RuntimeConfig {
+#[test]
+fn shipped_trust_template_resolves_selected_role_values_without_unused_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = config(&dir);
     std::fs::write(
         dir.path().join(SPA_TOKEN_TRUST_FILE),
         include_str!("../../../apps/light-gateway/config/spa-token-trust.yml"),
     )
     .unwrap();
-    config(dir)
-}
-
-#[test]
-fn shipped_trust_template_resolves_selected_role_values_without_unused_defaults() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut cfg = shipped_template_config(&dir);
+    cfg.resolved_values.insert(
+        "spa-token-trust.internal.issuer".into(),
+        serde_yaml::Value::String("https://internal.example".into()),
+    );
+    let partial: SpaTokenTrustConfig = cfg
+        .module_registry
+        .load_config(&cfg, SPA_TOKEN_TRUST_FILE)
+        .unwrap();
+    assert_eq!(partial.internal.issuer, "https://internal.example");
+    assert_eq!(partial.internal.audience, "urn:com.networknt");
+    assert_eq!(
+        partial.internal.jwks_uri,
+        "https://light-oauth:6881/oauth2/AZZRJE52eXu3t1hseacnGQ/keys"
+    );
     for (key, value) in [
         ("issuer", "https://internal.example"),
         ("audience", "portal"),
         ("jwksUri", "https://internal.example/keys"),
+        ("jwksCaPaths", ""),
     ] {
         cfg.resolved_values.insert(
             format!("spa-token-trust.internal.{key}"),
@@ -433,92 +444,4 @@ fn shipped_trust_template_resolves_selected_role_values_without_unused_defaults(
     assert!(bundle.id.is_none());
     assert!(bundle.api.is_none());
     assert!(load_spa_trust(&cfg, true, true, false).is_err());
-}
-
-#[test]
-fn shipped_trust_template_rejects_partial_and_misspelled_overrides() {
-    for mask in 0..7 {
-        let dir = tempfile::tempdir().unwrap();
-        let mut cfg = shipped_template_config(&dir);
-        // An empty explicit CA list must not hide a mixed identity policy.
-        cfg.resolved_values.insert(
-            "spa-token-trust.internal.jwksCaPaths".into(),
-            serde_yaml::Value::String(String::new()),
-        );
-        for (index, (key, value)) in [
-            ("issuer", "https://custom.example"),
-            ("audience", "custom"),
-            ("jwksUri", "https://custom.example/keys"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            if mask & (1 << index) != 0 {
-                cfg.resolved_values.insert(
-                    format!("spa-token-trust.internal.{key}"),
-                    serde_yaml::Value::String(value.into()),
-                );
-            }
-        }
-        assert!(
-            load_spa_trust(&cfg, true, false, false).is_err(),
-            "mask={mask}"
-        );
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let mut cfg = shipped_template_config(&dir);
-    cfg.resolved_values.insert(
-        "spa-token-trust.internal.issure".into(),
-        serde_yaml::Value::String("https://custom.example".into()),
-    );
-    cfg.resolved_values.insert(
-        "spa-token-trust.internal.jwksCaPaths".into(),
-        serde_yaml::Value::String(String::new()),
-    );
-    assert!(load_spa_trust(&cfg, true, false, false).is_err());
-}
-
-#[test]
-fn shipped_trust_template_rejects_missing_preset_ca_and_invalid_explicit_ca() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut cfg = shipped_template_config(&dir);
-    let missing = dir.path().join("missing-ca.pem");
-    std::fs::write(
-        dir.path().join(SPA_TOKEN_TRUST_FILE),
-        include_str!("../../../apps/light-gateway/config/spa-token-trust.yml")
-            .replace("/config/ca.pem", missing.to_str().unwrap()),
-    )
-    .unwrap();
-    assert!(matches!(
-        load_spa_trust(&cfg, true, false, false),
-        Err(RuntimeError::Unsupported(message)) if message == "Cannot read SPA JWKS CA certificate"
-    ));
-    for (key, value) in [
-        ("issuer", "https://custom.example"),
-        ("audience", "custom"),
-        ("jwksUri", "https://custom.example/keys"),
-    ] {
-        cfg.resolved_values.insert(
-            format!("spa-token-trust.internal.{key}"),
-            serde_yaml::Value::String(value.into()),
-        );
-    }
-    // A full explicit authority uses public roots when CA is unset, regardless
-    // of whether the unused preset's CA exists on this topology.
-    assert!(load_spa_trust(&cfg, true, false, false).is_ok());
-    cfg.resolved_values.insert(
-        "spa-token-trust.internal.jwksCaPaths".into(),
-        serde_yaml::Value::String(missing.to_str().unwrap().into()),
-    );
-    assert!(load_spa_trust(&cfg, true, false, false).is_err());
-}
-
-#[test]
-fn literal_policy_typos_are_rejected_and_framework_has_no_implicit_preset() {
-    assert!(serde_yaml::from_str::<SpaTokenTrustConfig>("internal:\n  issure: wrong\n").is_err());
-    assert!(serde_yaml::from_str::<SpaTokenTrustConfig>("internl:\n  issuer: wrong\n").is_err());
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = config(&dir);
-    std::fs::write(dir.path().join(SPA_TOKEN_TRUST_FILE), "internal: {}\n").unwrap();
-    assert!(load_spa_trust(&cfg, true, false, false).is_err());
 }

@@ -1,20 +1,12 @@
 # Configuration-owned RS256 authorities; configure only the roles in use.
-# A complete internal override replaces the Portal preset as a unit. Partial or
-# misspelled overrides fail startup instead of mixing authorities.
+# Internal defaults match the standard Portal light-oauth deployment. Explicit
+# Portal values override them; Microsoft authorities require their own policy.
 internal:
-  issuer: ${spa-token-trust.internal.issuer:}
-  audience: ${spa-token-trust.internal.audience:}
-  jwksUri: ${spa-token-trust.internal.jwksUri:}
-  jwksCaPaths: ${spa-token-trust.internal.jwksCaPaths:}
+  issuer: ${spa-token-trust.internal.issuer:urn:com:networknt:oauth2:v1}
+  audience: ${spa-token-trust.internal.audience:urn:com.networknt}
+  jwksUri: ${spa-token-trust.internal.jwksUri:https://light-oauth:6881/oauth2/AZZRJE52eXu3t1hseacnGQ/keys}
+  jwksCaPaths: ${spa-token-trust.internal.jwksCaPaths:/config/ca.pem}
   clockSkewSeconds: ${spa-token-trust.internal.clockSkewSeconds:60}
-# Application-owned preset for the standard Portal Docker Compose topology.
-# Other topologies must supply a complete internal policy or omit this block.
-portalInternalDefaults:
-  issuer: urn:com:networknt:oauth2:v1
-  audience: urn:com.networknt
-  jwksUri: https://light-oauth:6881/oauth2/AZZRJE52eXu3t1hseacnGQ/keys
-  jwksCaPaths: [/config/ca.pem]
-  clockSkewSeconds: 60
 microsoftId:
   issuer: ${spa-token-trust.microsoftId.issuer:}
   audience: ${spa-token-trust.microsoftId.audience:}
