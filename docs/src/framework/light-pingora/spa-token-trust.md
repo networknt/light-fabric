@@ -66,16 +66,47 @@ spa-token-trust.microsoftApi.allowedClientIds: [33333333-3333-3333-3333-33333333
 ```
 
 Replace example authorities and application IDs with independently reviewed
-provider settings. There is no default trusted issuer or key endpoint. Stateless
-and social handlers need only `internal`. Exchange also needs `microsoftId`;
+provider settings. The framework has no implicit trusted issuer or key endpoint.
+Stateless and social handlers need only `internal`. Exchange also needs `microsoftId`;
 `microsoftApi` is mandatory only in azure-msal mode. Disabled/inactive handlers
 do not require their unused policies. An enabled handler fails startup when a
 required role or its CA configuration is invalid.
 
+The **gateway application template** supplies per-field internal defaults for
+the standard Portal deployment:
+
+- Issuer: `urn:com:networknt:oauth2:v1`
+- Audience: `urn:com.networknt`
+- JWKS: `https://light-oauth:6881/oauth2/AZZRJE52eXu3t1hseacnGQ/keys`
+- CA: `/config/ca.pem`; clock skew: 60 seconds
+
+These defaults assume the Portal Docker Compose topology.
+The gateway image packages the local development CA (`CN=networknt-local-ca`)
+at `/config/ca.pem`. Production deployments should replace it with their own
+CA bundle or explicitly select public roots only for a publicly trusted JWKS
+endpoint. This development CA is distinct from the client's default public root
+trust store. A deployment that mounts a replacement `/config` directory must provide
+the appropriate CA there.
+A missing or invalid configured CA fails startup; it never disables
+TLS verification. Starting the server does not prove DNS/JWKS availability.
+Requests remain subject to the signing-source availability and validation rules
+below.
+
+Each `spa-token-trust.internal.*` property independently overrides its YAML
+default. A partial override inherits the remaining defaults; review the effective
+issuer, audience and JWKS URI together when changing authorities. Other
+topologies must override the endpoint and any other values that differ.
+Microsoft ID/API authorities have no defaults and remain explicitly configured.
+
 `jwksCaPaths` contains absolute paths to PEM CA bundles. Additional roots extend
 the client's default public roots, apply only to that source, and never inherit
-`client.yml` TLS relaxations. Direct MSAL uses `msal-auth.jwksCaPaths` for the same
-purpose. All JWKS URLs must be administrator-configured HTTPS endpoints without
+`client.yml` TLS relaxations. In the gateway template, an unset internal CA
+property inherits `/config/ca.pem`. Set `spa-token-trust.internal.jwksCaPaths`
+explicitly to an empty list to use public roots only, or to the appropriate CA
+path for a custom authority. A configured missing/invalid CA fails startup.
+Direct MSAL uses
+`msal-auth.jwksCaPaths` for the same purpose. All JWKS URLs must be independently
+reviewed HTTPS endpoints without
 credentials or fragments; redirects are disabled. Token-controlled `jku`, generic
 certificate routes and unrelated authorities with a colliding `kid` cannot select
 another signing source.
