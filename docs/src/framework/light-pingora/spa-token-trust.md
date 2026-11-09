@@ -81,8 +81,12 @@ the standard Portal deployment:
 - CA: `/config/ca.pem`; clock skew: 60 seconds
 
 These defaults assume the Portal Docker Compose topology.
-The gateway image packages its public CA at `/config/ca.pem`. A deployment that
-mounts a replacement `/config` directory must provide the appropriate CA there.
+The gateway image packages the local development CA (`CN=networknt-local-ca`)
+at `/config/ca.pem`. Production deployments should replace it with their own
+CA bundle or explicitly select public roots only for a publicly trusted JWKS
+endpoint. This development CA is distinct from the client's default public root
+trust store. A deployment that mounts a replacement `/config` directory must provide
+the appropriate CA there.
 A missing or invalid configured CA fails startup; it never disables
 TLS verification. Starting the server does not prove DNS/JWKS availability.
 Requests remain subject to the signing-source availability and validation rules

@@ -344,15 +344,19 @@ async fn selected_role_startup_validation_and_replacement_reset_source_state() {
     assert!(p.validate(TokenRole::MicrosoftApi).is_ok());
 }
 
-#[test]
-fn shipped_trust_template_supplies_portal_internal_defaults_for_startup() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut cfg = config(&dir);
+fn shipped_template_config(dir: &tempfile::TempDir) -> RuntimeConfig {
     std::fs::write(
         dir.path().join(SPA_TOKEN_TRUST_FILE),
         include_str!("../../../apps/light-gateway/config/spa-token-trust.yml"),
     )
     .unwrap();
+    config(dir)
+}
+
+#[test]
+fn shipped_trust_template_supplies_portal_internal_defaults_for_startup() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = shipped_template_config(&dir);
     let policies: SpaTokenTrustConfig = cfg
         .module_registry
         .load_config(&cfg, SPA_TOKEN_TRUST_FILE)
@@ -402,14 +406,9 @@ fn shipped_trust_template_supplies_portal_internal_defaults_for_startup() {
 }
 
 #[test]
-fn shipped_trust_template_resolves_selected_role_values_without_unused_defaults() {
+fn shipped_template_partial_override_inherits_identity_and_ca_defaults() {
     let dir = tempfile::tempdir().unwrap();
-    let mut cfg = config(&dir);
-    std::fs::write(
-        dir.path().join(SPA_TOKEN_TRUST_FILE),
-        include_str!("../../../apps/light-gateway/config/spa-token-trust.yml"),
-    )
-    .unwrap();
+    let mut cfg = shipped_template_config(&dir);
     cfg.resolved_values.insert(
         "spa-token-trust.internal.issuer".into(),
         serde_yaml::Value::String("https://internal.example".into()),
@@ -424,24 +423,119 @@ fn shipped_trust_template_resolves_selected_role_values_without_unused_defaults(
         partial.internal.jwks_uri,
         "https://light-oauth:6881/oauth2/AZZRJE52eXu3t1hseacnGQ/keys"
     );
+    assert_eq!(partial.internal.jwks_ca_paths, ["/config/ca.pem"]);
+}
+
+#[test]
+fn shipped_trust_template_resolves_selected_role_values_without_unused_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = shipped_template_config(&dir);
     for (key, value) in [
         ("issuer", "https://internal.example"),
         ("audience", "portal"),
         ("jwksUri", "https://internal.example/keys"),
-        ("jwksCaPaths", ""),
     ] {
         cfg.resolved_values.insert(
             format!("spa-token-trust.internal.{key}"),
             serde_yaml::Value::String(value.into()),
         );
     }
-    let bundle = load_spa_trust(&cfg, true, false, false).unwrap();
-    let policy = &bundle.internal.as_ref().unwrap().policy;
-    assert_eq!(policy.issuer, "https://internal.example");
-    assert_eq!(policy.audience, "portal");
-    assert_eq!(policy.jwks_uri, "https://internal.example/keys");
-    assert!(policy.jwks_ca_paths.is_empty());
-    assert!(bundle.id.is_none());
-    assert!(bundle.api.is_none());
-    assert!(load_spa_trust(&cfg, true, true, false).is_err());
+    // Cover both the legacy empty string and a real YAML [] value.
+    for ca_value in [
+        serde_yaml::Value::String(String::new()),
+        serde_yaml::from_str("[]").unwrap(),
+    ] {
+        cfg.resolved_values
+            .insert("spa-token-trust.internal.jwksCaPaths".into(), ca_value);
+        let bundle = load_spa_trust(&cfg, true, false, false).unwrap();
+        let policy = &bundle.internal.as_ref().unwrap().policy;
+        assert_eq!(policy.issuer, "https://internal.example");
+        assert_eq!(policy.audience, "portal");
+        assert_eq!(policy.jwks_uri, "https://internal.example/keys");
+        assert!(policy.jwks_ca_paths.is_empty());
+        assert!(bundle.id.is_none());
+        assert!(bundle.api.is_none());
+        assert!(load_spa_trust(&cfg, true, true, false).is_err());
+    }
+}
+
+#[test]
+fn shipped_template_missing_default_ca_prevents_stateless_startup() {
+    for custom_endpoint in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = shipped_template_config(&dir);
+        if custom_endpoint {
+            for (key, value) in [
+                ("issuer", "https://custom.example"),
+                ("audience", "custom"),
+                ("jwksUri", "https://custom.example/keys"),
+            ] {
+                cfg.resolved_values.insert(
+                    format!("spa-token-trust.internal.{key}"),
+                    serde_yaml::Value::String(value.into()),
+                );
+            }
+        }
+        let policies: SpaTokenTrustConfig = cfg
+            .module_registry
+            .load_config(&cfg, SPA_TOKEN_TRUST_FILE)
+            .unwrap();
+        // A custom endpoint does not change the unset CA property's default.
+        assert_eq!(policies.internal.jwks_ca_paths, ["/config/ca.pem"]);
+        if custom_endpoint {
+            assert_eq!(policies.internal.jwks_uri, "https://custom.example/keys");
+        }
+        // Relocate the default to an absent file inside the fixture instead of
+        // relying on the test host's /config directory or deleting its files.
+        let missing = dir.path().join("absent-default-ca.pem");
+        std::fs::write(
+            dir.path().join(SPA_TOKEN_TRUST_FILE),
+            include_str!("../../../apps/light-gateway/config/spa-token-trust.yml")
+                .replace("/config/ca.pem", missing.to_str().unwrap()),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("statelessAuth.yml"), "enabled: true\n").unwrap();
+        std::fs::write(dir.path().join("client.yml"), "{}\n").unwrap();
+        assert!(matches!(
+            crate::stateless_auth::load_stateless_auth_runtime(&cfg, true),
+            Err(RuntimeError::Unsupported(reason)) if reason == "Cannot read SPA JWKS CA certificate"
+        ));
+    }
+}
+
+#[test]
+fn gateway_image_copy_matches_shipped_template_default_ca() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = shipped_template_config(&dir);
+    let policies: SpaTokenTrustConfig = cfg
+        .module_registry
+        .load_config(&cfg, SPA_TOKEN_TRUST_FILE)
+        .unwrap();
+    assert!(!policies.internal.jwks_ca_paths.is_empty());
+    let dockerfile = include_str!("../../../apps/light-gateway/docker/Dockerfile");
+    for ca_path in policies.internal.jwks_ca_paths {
+        let source = dockerfile
+            .lines()
+            .filter(|line| line.starts_with("COPY "))
+            .find_map(|line| {
+                let args: Vec<_> = line.split_whitespace().collect();
+                (args.contains(&"--from=builder") && args.last() == Some(&ca_path.as_str()))
+                    .then(|| args[args.len() - 2])
+            })
+            .expect("gateway image must COPY the CA to the template's default path");
+        let relative = source
+            .strip_prefix("/usr/src/app/")
+            .expect("CA must come from the builder's workspace");
+        let packaged_ca = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(relative),
+        )
+        .expect("packaged CA source must exist");
+        assert!(
+            !reqwest::Certificate::from_pem_bundle(&packaged_ca)
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
