@@ -12220,8 +12220,21 @@ oauth:
 "#,
         )
         .expect("write client config");
-        write_spa_trust_fixture(&config_dir);
-        let config = runtime_config(&config_dir, &external_dir, HashMap::new());
+        std::fs::write(
+            config_dir.path().join(light_pingora::SPA_TOKEN_TRUST_FILE),
+            include_str!("../config/spa-token-trust.yml"),
+        )
+        .expect("write shipped trust defaults");
+        let ca_path = config_dir.path().join("ca.pem");
+        std::fs::write(&ca_path, include_str!("../config/ca.pem")).expect("write fixture CA");
+        let config = runtime_config(
+            &config_dir,
+            &external_dir,
+            HashMap::from([(
+                "spa-token-trust.internal.jwksCaPaths".into(),
+                serde_yaml::Value::String(ca_path.to_str().unwrap().into()),
+            )]),
+        );
 
         let proxy = GatewayProxy::from_runtime_config(&config).expect("build proxy");
 

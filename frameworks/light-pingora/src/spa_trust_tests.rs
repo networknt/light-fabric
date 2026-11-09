@@ -345,6 +345,63 @@ async fn selected_role_startup_validation_and_replacement_reset_source_state() {
 }
 
 #[test]
+fn shipped_trust_template_supplies_portal_internal_defaults_for_startup() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = config(&dir);
+    std::fs::write(
+        dir.path().join(SPA_TOKEN_TRUST_FILE),
+        include_str!("../../../apps/light-gateway/config/spa-token-trust.yml"),
+    )
+    .unwrap();
+    let policies: SpaTokenTrustConfig = cfg
+        .module_registry
+        .load_config(&cfg, SPA_TOKEN_TRUST_FILE)
+        .unwrap();
+    assert_eq!(policies.internal.issuer, "urn:com:networknt:oauth2:v1");
+    assert_eq!(policies.internal.audience, "urn:com.networknt");
+    assert_eq!(
+        policies.internal.jwks_uri,
+        "https://light-oauth:6881/oauth2/AZZRJE52eXu3t1hseacnGQ/keys"
+    );
+    assert_eq!(policies.internal.jwks_ca_paths, ["/config/ca.pem"]);
+    assert_eq!(policies.internal.clock_skew_seconds, 60);
+    policies.internal.validate(TokenRole::Internal).unwrap();
+    assert!(
+        policies
+            .microsoft_id
+            .validate(TokenRole::MicrosoftId)
+            .is_err()
+    );
+    assert!(
+        policies
+            .microsoft_api
+            .validate(TokenRole::MicrosoftApi)
+            .is_err()
+    );
+
+    // The deployed CA mount is supplied at a temporary path for this fixture.
+    // Issuer, audience and JWKS URI still come only from the shipped defaults.
+    let ca = dir.path().join("ca.pem");
+    std::fs::write(
+        &ca,
+        include_str!("../../../apps/light-gateway/config/ca.pem"),
+    )
+    .unwrap();
+    cfg.resolved_values.insert(
+        "spa-token-trust.internal.jwksCaPaths".into(),
+        serde_yaml::Value::String(ca.to_str().unwrap().into()),
+    );
+    std::fs::write(dir.path().join("statelessAuth.yml"), "enabled: true\n").unwrap();
+    std::fs::write(dir.path().join("client.yml"), "{}\n").unwrap();
+    assert!(
+        crate::stateless_auth::load_stateless_auth_runtime(&cfg, true)
+            .unwrap()
+            .is_some()
+    );
+    assert!(load_spa_trust(&cfg, true, true, false).is_err());
+}
+
+#[test]
 fn shipped_trust_template_resolves_selected_role_values_without_unused_defaults() {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = config(&dir);
@@ -357,6 +414,7 @@ fn shipped_trust_template_resolves_selected_role_values_without_unused_defaults(
         ("issuer", "https://internal.example"),
         ("audience", "portal"),
         ("jwksUri", "https://internal.example/keys"),
+        ("jwksCaPaths", ""),
     ] {
         cfg.resolved_values.insert(
             format!("spa-token-trust.internal.{key}"),
@@ -364,7 +422,11 @@ fn shipped_trust_template_resolves_selected_role_values_without_unused_defaults(
         );
     }
     let bundle = load_spa_trust(&cfg, true, false, false).unwrap();
-    assert!(bundle.internal.is_some());
+    let policy = &bundle.internal.as_ref().unwrap().policy;
+    assert_eq!(policy.issuer, "https://internal.example");
+    assert_eq!(policy.audience, "portal");
+    assert_eq!(policy.jwks_uri, "https://internal.example/keys");
+    assert!(policy.jwks_ca_paths.is_empty());
     assert!(bundle.id.is_none());
     assert!(bundle.api.is_none());
     assert!(load_spa_trust(&cfg, true, true, false).is_err());
