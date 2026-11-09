@@ -1,0 +1,47 @@
+name: Gateway image CA
+
+on:
+  pull_request:
+    paths: &build-inputs
+      - '.github/workflows/gateway-image-ca.yml'
+      - 'scripts/check-gateway-image-ca.py'
+      - '.dockerignore'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'apps/**'
+      - 'crates/**'
+      - 'frameworks/**'
+      - 'patches/**'
+  push:
+    branches: [master, main]
+    paths: *build-inputs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gateway-image-ca-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gateway-image-ca:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build gateway image with cached layers
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/light-gateway/docker/Dockerfile
+          tags: light-gateway:ca-smoke-ci
+          load: true
+          push: false
+          cache-from: type=gha,scope=gateway-image-ca
+          cache-to: type=gha,scope=gateway-image-ca,mode=max
+      - name: Install YAML reader
+        run: python3 -m pip install PyYAML==6.0.3
+      - name: Verify packaged gateway CA as the image user
+        run: python3 scripts/check-gateway-image-ca.py light-gateway:ca-smoke-ci
