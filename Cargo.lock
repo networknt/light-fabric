@@ -5252,7 +5252,6 @@ dependencies = [
  "light-security",
  "llm-gateway",
  "operational-store",
- "parse-dockerfile",
  "pingora",
  "portal-registry",
  "rcgen",
@@ -6758,15 +6757,6 @@ dependencies = [
  "redox_syscall 0.5.18",
  "smallvec",
  "windows-link",
-]
-
-[[package]]
-name = "parse-dockerfile"
-version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d1a04a7f4bc081ef4f89e9921ba32a7f524f41270019b81c8099e24f23be0c6"
-dependencies = [
- "smallvec",
 ]
 
 [[package]]

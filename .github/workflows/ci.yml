@@ -196,6 +196,21 @@ jobs:
           cargo test --locked -p light-workflow --lib executor::durable_timer_tests::
           -- --ignored --test-threads=1
 
+  gateway-image-ca:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build gateway image
+        run: docker build --file apps/light-gateway/docker/Dockerfile --tag light-gateway:ca-smoke-ci .
+      - name: Verify packaged gateway CA as the image user
+        run: cargo run -p light-gateway --example image_ca_smoke --locked -- light-gateway:ca-smoke-ci
+
   runner-image-and-manifests:
     runs-on: ubuntu-latest
     timeout-minutes: 45

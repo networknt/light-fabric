@@ -34,7 +34,6 @@ url = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-parse-dockerfile = { version = "0.1.9", default-features = false }
 light-pingora = { path = "../../frameworks/light-pingora", features = ["test-support"] }
 base64 = { workspace = true }
 futures-util = { workspace = true }
